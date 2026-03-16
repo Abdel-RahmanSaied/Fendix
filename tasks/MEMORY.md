@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 0 — Foundation
-**Overall progress:** 100% (Phase 0 complete)
-**Last updated:** 2026-03-14
+**Phase:** 2 — Auth Scanner
+**Overall progress:** 100% (Phase 2 complete)
+**Last updated:** 2026-03-15
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -307,6 +307,23 @@ packaging>=23.0               — Dependency version comparison
 - TASK-008: Write Makefile
 - TASK-009: ADR-001: Go+Python hybrid architecture
 - TASK-010: ADR-002: Newline-delimited JSON IPC contract
+- TASK-011: Implement endpoint crawler (spec parser + JS + brute-force)
+- TASK-012: Implement headers check with mock server tests
+- TASK-013: Implement CORS check with 4 scenario tests
+- TASK-014: Implement exposure check with regex pattern tests
+- TASK-015: Implement rate limit detection
+- TASK-016: Implement worker pool concurrency model
+- TASK-017: Implement JSON reporter with scan metadata
+- TASK-018: Implement HTML reporter (self-contained, color-coded)
+- TASK-019: Wire all passive checks into orchestrator (Go-only path)
+- TASK-020: Integration test: scan mock server, assert finding counts
+- TASK-021: Implement AuthContext model and multi-source resolution
+- TASK-022: Implement unauthenticated access check
+- TASK-023: Implement JWT validation bypass checks (3 scenarios)
+- TASK-024: Implement IDOR two-account check
+- TASK-025: Implement credential masking in all reporters
+- TASK-026: Implement ~/.fendix/profiles/ config system
+- TASK-027: Tests: auth checks against mock JWT server
 
 ### In progress
 *(none)*
@@ -318,45 +335,49 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-03-14
-**Session goal:** Complete Phase 0 — Foundation
+**Date:** 2026-03-15
+**Session goal:** Complete Phase 2 — Auth Scanner
 **Accomplished:**
-- Go module initialized with cobra CLI (4 commands, 17 scan flags)
-- Finding, ScanConfig, AuthContext models implemented with JSON serialization
-- Severity scoring logic with 25 table-driven tests (all passing)
-- Python engine entrypoint with IPC contract + 2 contract tests
-- All 5 Python analyzer stubs created
-- GitHub Actions CI workflow (Go build+test+vet+format, Python pytest)
-- Makefile with build, test, lint, clean targets
-- ADR-001 and ADR-002 written
+- AuthContext model with auth type constants (bearer, apikey, basic, cookie), auto-detection from credential value, and multi-source resolution (CLI flag → env var → config profile) (30 tests)
+- Unauthenticated access check: sends request without auth, flags CRITICAL if endpoint returns 200 instead of 401/403 (3 tests)
+- JWT validation bypass checks covering 3 scenarios: malformed JWT, expired JWT (HS256-signed with exp in past), alg:none algorithm confusion — all CRITICAL severity (8 tests)
+- IDOR two-account check: sends same request with two different user credentials, detects identical responses as broken object-level authorization — HIGH severity (5 tests)
+- Credential masking/sanitization: SanitizeFindings function replaces auth values in evidence/fix/title with [REDACTED], strips both full "Bearer <token>" and bare token forms (7 tests)
+- Profile config system: ~/.fendix/profiles/<name>.yaml YAML files for saved auth credentials, ProfileLoader function integrates with ResolveAuth (8 tests)
+- Comprehensive integration tests with realistic JWT-validating mock server: decodes JWT headers, verifies HS256 signatures, checks exp claims, rejects alg:none, tests partial-security scenarios (5 integration tests)
+- Added --auth-user2 and --profile CLI flags, wired CheckAuth and CheckIDOR into orchestrator
+- 202 Go tests + 2 Python tests = 204 total, all passing
 
 **Decisions made:**
-- Go module path: github.com/fendix/fendix
-- PYTHON Make variable is overridable via `PYTHON=... make test`
-- System uses python3.13 (Homebrew) for pytest; macOS system python3 (3.9.6) lacks pytest
+- Auth resolution priority: CLI --auth flag > FENDIX_AUTH env var > ~/.fendix/profiles/ config file
+- Auth type auto-detection: "Bearer ..." → bearer, "Basic ..." → basic, key=value → cookie, else → bearer
+- Redacted() always returns "[REDACTED]" (no partial reveal — security constraint)
+- ApplyToRequest method on AuthContext encapsulates nil-safe header setting
+- IDOR check compares response bodies byte-for-byte; empty responses do not trigger findings
+- JWT bypass checks only run when isJWTAuth detects 3-part dot-separated token
+- SanitizeFindings called in orchestrator before rendering (defense-in-depth)
+- AuthUser2 field added to ScanConfig for IDOR two-account testing
+- ResolveAuth accepts a profileLoader callback for extensible auth source chain
+- JWT test tokens built with crypto/hmac + encoding/base64 (no external JWT library needed for test token generation)
 
 **Files created/modified:**
-- go/cmd/fendix/main.go — cobra CLI skeleton
-- go/internal/models/finding.go — Finding, Severity, Confidence, Source types
-- go/internal/models/config.go — AuthContext, ScanConfig
-- go/internal/models/scoring.go — CalculateSeverity + scoring tables
-- go/internal/models/finding_test.go — JSON serialization tests
-- go/internal/models/scoring_test.go — severity scoring table-driven tests
-- go/internal/scanner/scanner.go — Endpoint, CheckFn types
-- go/internal/engine/engine.go — package placeholder
-- go/internal/reporters/reporters.go — package placeholder
-- go/go.mod, go/go.sum — Go dependencies
-- python/engine.py — Python engine entrypoint
-- python/analyzers/*.py — 5 analyzer stubs
-- python/requirements.txt — Python dependencies
-- python/tests/test_engine_contract.py — IPC contract tests
-- .github/workflows/ci.yml — CI workflow
-- Makefile — build system
-- docs/adr/ADR-001-go-python-hybrid.md
-- docs/adr/ADR-002-ndjson-ipc.md
+- go/internal/models/auth.go — NEW: auth type constants, DetectAuthType, ResolveAuth, NormalizeAuth, Redacted, ApplyToRequest
+- go/internal/models/auth_test.go — NEW: 30 tests (detect, normalize, resolve, redact, apply)
+- go/internal/models/profiles.go — NEW: LoadProfile, LoadProfileFrom, ProfileLoader, ProfilesDir
+- go/internal/models/profiles_test.go — NEW: 8 tests (valid, apikey, missing, empty, invalid, minimal, integration, override)
+- go/internal/models/config.go — added AuthUser2 field to ScanConfig
+- go/internal/scanner/auth.go — NEW: CheckAuth, unauthenticated check, JWT bypass checks (malformed, expired, alg:none)
+- go/internal/scanner/auth_test.go — NEW: 14 tests (vulnerable/secure for each check type, non-JWT skip, full vulnerability scan)
+- go/internal/scanner/auth_integration_test.go — NEW: 5 integration tests with realistic JWT-validating mock server
+- go/internal/scanner/idor.go — NEW: CheckIDOR two-account check
+- go/internal/scanner/idor_test.go — NEW: 5 tests (vulnerable, secure, no-user2, no-auth, empty-response)
+- go/internal/reporters/sanitize.go — NEW: SanitizeFindings credential masking
+- go/internal/reporters/sanitize_test.go — NEW: 7 tests (redact auth, bare token, nil, multiple, immutability, empty, title)
+- go/internal/engine/orchestrator.go — wired CheckAuth, CheckIDOR, SanitizeFindings
+- go/cmd/fendix/main.go — added --auth-user2, --profile flags, wired ResolveAuth + ProfileLoader
 
 **Next session should start with:**
-- TASK-011: Implement endpoint crawler (Phase 1 begins)
+- TASK-028: Implement engine.py entrypoint and IPC contract (Phase 3 — Python Engine begins)
 
 **Open questions:**
 - None

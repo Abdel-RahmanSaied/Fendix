@@ -15,6 +15,7 @@ type ScanConfig struct {
 	SpecPath     string
 	CodePath     string
 	Auth         *AuthContext
+	AuthUser2    *AuthContext
 	EnableActive bool
 	Workers      int
 	Timeout      int
@@ -23,4 +24,7 @@ type ScanConfig struct {
 	Verbose      bool
 	IgnorePath   string
 	BaselinePath string
+	OutputPath   string
+	Format       string
+	FailOn       string
 }

@@ -1,0 +1,368 @@
+package scanner
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/fendix/fendix/internal/models"
+	"gopkg.in/yaml.v3"
+)
+
+// CommonPaths is a hardcoded list of frequently found API paths to brute-force.
+var CommonPaths = []string{
+	"/api", "/api/v1", "/api/v2", "/api/v3",
+	"/api/health", "/api/status", "/api/ping",
+	"/api/v1/users", "/api/v1/user", "/api/v1/me",
+	"/api/v1/accounts", "/api/v1/auth", "/api/v1/login",
+	"/api/v1/logout", "/api/v1/register", "/api/v1/signup",
+	"/api/v1/token", "/api/v1/refresh",
+	"/api/v1/admin", "/api/v1/config", "/api/v1/settings",
+	"/api/v1/products", "/api/v1/orders", "/api/v1/items",
+	"/api/v1/search", "/api/v1/upload", "/api/v1/files",
+	"/health", "/healthz", "/ready", "/readyz",
+	"/status", "/ping", "/info", "/version",
+	"/swagger.json", "/swagger/", "/swagger-ui/",
+	"/openapi.json", "/openapi.yaml",
+	"/api-docs", "/docs", "/graphql",
+	"/metrics", "/actuator", "/actuator/health",
+	"/v1", "/v2", "/v3",
+	"/users", "/admin", "/auth", "/login",
+	"/.well-known/openapi.yaml", "/.well-known/openapi.json",
+	"/robots.txt", "/sitemap.xml",
+}
+
+// apiPathRe matches patterns like "/api/something" or "'/api/v1/users'" in JS source.
+var apiPathRe = regexp.MustCompile(`["'` + "`" + `](/(?:api|v\d+)/[a-zA-Z0-9/_\-{}]+)["'` + "`" + `]`)
+
+// scriptSrcRe matches <script src="..."> tags.
+var scriptSrcRe = regexp.MustCompile(`<script[^>]+src=["']([^"']+)["']`)
+
+// Crawler discovers API endpoints using multiple strategies.
+type Crawler struct {
+	client *http.Client
+	cfg    *models.ScanConfig
+	seen   map[string]bool
+}
+
+// NewCrawler creates a Crawler with an HTTP client configured from scan config.
+func NewCrawler(cfg *models.ScanConfig) *Crawler {
+	return &Crawler{
+		client: &http.Client{
+			Timeout: time.Duration(cfg.Timeout) * time.Second,
+		},
+		cfg:  cfg,
+		seen: make(map[string]bool),
+	}
+}
+
+// CrawlEndpoints discovers endpoints using all available strategies in priority order:
+// 1. OpenAPI spec parsing (if --spec provided)
+// 2. JavaScript source analysis (if --url provided)
+// 3. Common path brute-force (if --url provided)
+// Returns a deduplicated, sorted list of endpoints.
+func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
+	var endpoints []Endpoint
+
+	if c.cfg.SpecPath != "" {
+		specEndpoints, err := c.fromSpec(ctx)
+		if err != nil {
+			slog.Warn("spec parsing failed, continuing with other strategies", "error", err)
+		} else {
+			endpoints = append(endpoints, specEndpoints...)
+		}
+	}
+
+	if c.cfg.URL != "" {
+		jsEndpoints, err := c.fromJS(ctx)
+		if err != nil {
+			slog.Debug("JS discovery failed", "error", err)
+		} else {
+			endpoints = append(endpoints, jsEndpoints...)
+		}
+
+		bruteEndpoints, err := c.fromBruteForce(ctx)
+		if err != nil {
+			slog.Debug("brute-force discovery failed", "error", err)
+		} else {
+			endpoints = append(endpoints, bruteEndpoints...)
+		}
+	}
+
+	deduped := c.deduplicate(endpoints)
+	sort.Slice(deduped, func(i, j int) bool {
+		if deduped[i].Path != deduped[j].Path {
+			return deduped[i].Path < deduped[j].Path
+		}
+		return deduped[i].Method < deduped[j].Method
+	})
+
+	slog.Info("endpoint discovery complete", "total", len(deduped))
+	return deduped, nil
+}
+
+// fromSpec parses an OpenAPI 2.0/3.x spec file and extracts all path+method combinations.
+func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
+	data, err := os.ReadFile(c.cfg.SpecPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading spec file %s: %w", c.cfg.SpecPath, err)
+	}
+
+	var spec map[string]interface{}
+
+	if strings.HasSuffix(c.cfg.SpecPath, ".json") {
+		if err := json.Unmarshal(data, &spec); err != nil {
+			return nil, fmt.Errorf("parsing JSON spec: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal(data, &spec); err != nil {
+			return nil, fmt.Errorf("parsing YAML spec: %w", err)
+		}
+	}
+
+	paths, ok := spec["paths"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("spec has no 'paths' field or invalid format")
+	}
+
+	baseURL := c.specBaseURL(spec)
+	var endpoints []Endpoint
+
+	httpMethods := map[string]bool{
+		"get": true, "post": true, "put": true, "patch": true,
+		"delete": true, "head": true, "options": true,
+	}
+
+	for path, methods := range paths {
+		methodMap, ok := methods.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for method := range methodMap {
+			method = strings.ToLower(method)
+			if !httpMethods[method] {
+				continue
+			}
+			ep := Endpoint{
+				Method:  strings.ToUpper(method),
+				Path:    path,
+				FullURL: baseURL + path,
+				Params:  extractPathParams(path),
+			}
+			endpoints = append(endpoints, ep)
+		}
+	}
+
+	slog.Info("endpoints from spec", "count", len(endpoints), "spec", c.cfg.SpecPath)
+	return endpoints, nil
+}
+
+// specBaseURL extracts the base URL from an OpenAPI spec.
+// Supports both OpenAPI 3.x (servers[0].url) and Swagger 2.0 (host + basePath).
+func (c *Crawler) specBaseURL(spec map[string]interface{}) string {
+	// Prefer explicit --url flag
+	if c.cfg.URL != "" {
+		return strings.TrimRight(c.cfg.URL, "/")
+	}
+
+	// OpenAPI 3.x: servers[0].url
+	if servers, ok := spec["servers"].([]interface{}); ok && len(servers) > 0 {
+		if srv, ok := servers[0].(map[string]interface{}); ok {
+			if u, ok := srv["url"].(string); ok {
+				return strings.TrimRight(u, "/")
+			}
+		}
+	}
+
+	// Swagger 2.0: host + basePath
+	host, _ := spec["host"].(string)
+	basePath, _ := spec["basePath"].(string)
+	scheme := "https"
+	if schemes, ok := spec["schemes"].([]interface{}); ok && len(schemes) > 0 {
+		if s, ok := schemes[0].(string); ok {
+			scheme = s
+		}
+	}
+	if host != "" {
+		return fmt.Sprintf("%s://%s%s", scheme, host, strings.TrimRight(basePath, "/"))
+	}
+
+	return "http://localhost"
+}
+
+// fromJS fetches the base URL page, extracts <script> sources,
+// downloads each JS file, and extracts API path patterns.
+func (c *Crawler) fromJS(ctx context.Context) ([]Endpoint, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.cfg.URL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request for %s: %w", c.cfg.URL, err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching base URL %s: %w", c.cfg.URL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+
+	var endpoints []Endpoint
+	baseURL := strings.TrimRight(c.cfg.URL, "/")
+
+	// Extract paths directly from HTML/JSON response
+	for _, match := range apiPathRe.FindAllSubmatch(body, -1) {
+		path := string(match[1])
+		endpoints = append(endpoints, Endpoint{
+			Method:  "GET",
+			Path:    path,
+			FullURL: baseURL + path,
+			Params:  extractPathParams(path),
+		})
+	}
+
+	// Find and fetch script sources
+	scriptMatches := scriptSrcRe.FindAllSubmatch(body, -1)
+	for _, match := range scriptMatches {
+		scriptURL := resolveURL(c.cfg.URL, string(match[1]))
+		jsPaths, err := c.extractPathsFromJS(ctx, scriptURL)
+		if err != nil {
+			slog.Debug("failed to fetch JS", "url", scriptURL, "error", err)
+			continue
+		}
+		for _, path := range jsPaths {
+			endpoints = append(endpoints, Endpoint{
+				Method:  "GET",
+				Path:    path,
+				FullURL: baseURL + path,
+				Params:  extractPathParams(path),
+			})
+		}
+	}
+
+	slog.Info("endpoints from JS discovery", "count", len(endpoints))
+	return endpoints, nil
+}
+
+// extractPathsFromJS downloads a JS file and extracts API path patterns.
+func (c *Crawler) extractPathsFromJS(ctx context.Context, jsURL string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", jsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating JS request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching JS %s: %w", jsURL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("reading JS body: %w", err)
+	}
+
+	var paths []string
+	for _, match := range apiPathRe.FindAllSubmatch(body, -1) {
+		paths = append(paths, string(match[1]))
+	}
+	return paths, nil
+}
+
+// fromBruteForce tries common API paths against the target and returns those that respond.
+func (c *Crawler) fromBruteForce(ctx context.Context) ([]Endpoint, error) {
+	baseURL := strings.TrimRight(c.cfg.URL, "/")
+	var endpoints []Endpoint
+
+	for _, path := range CommonPaths {
+		select {
+		case <-ctx.Done():
+			return endpoints, ctx.Err()
+		default:
+		}
+
+		fullURL := baseURL + path
+		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		if err != nil {
+			continue
+		}
+		if c.cfg.Auth != nil {
+			req.Header.Set(c.cfg.Auth.Header, c.cfg.Auth.Value)
+		}
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode < 404 {
+			endpoints = append(endpoints, Endpoint{
+				Method:  "GET",
+				Path:    path,
+				FullURL: fullURL,
+			})
+		}
+
+		if c.cfg.DelayMs > 0 {
+			time.Sleep(time.Duration(c.cfg.DelayMs) * time.Millisecond)
+		}
+	}
+
+	slog.Info("endpoints from brute-force", "count", len(endpoints))
+	return endpoints, nil
+}
+
+// deduplicate removes duplicate endpoints by Method+Path key.
+func (c *Crawler) deduplicate(endpoints []Endpoint) []Endpoint {
+	var result []Endpoint
+	for _, ep := range endpoints {
+		key := ep.Method + " " + ep.Path
+		if !c.seen[key] {
+			c.seen[key] = true
+			result = append(result, ep)
+		}
+	}
+	return result
+}
+
+// extractPathParams returns parameter names from a path template like /users/{id}.
+func extractPathParams(path string) []string {
+	re := regexp.MustCompile(`\{([^}]+)\}`)
+	matches := re.FindAllStringSubmatch(path, -1)
+	var params []string
+	for _, m := range matches {
+		params = append(params, m[1])
+	}
+	return params
+}
+
+// resolveURL resolves a potentially relative URL against a base URL.
+func resolveURL(base, ref string) string {
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return ref
+	}
+
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+
+	return baseURL.ResolveReference(refURL).String()
+}

@@ -4,10 +4,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
 
+	"github.com/fendix/fendix/internal/engine"
+	"github.com/fendix/fendix/internal/models"
 	"github.com/spf13/cobra"
 )
 
@@ -57,12 +61,76 @@ func newScanCmd() *cobra.Command {
 		Short: "Run a security scan",
 		Long:  "Scan an API endpoint, source code, or both for security vulnerabilities.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("scan: not yet implemented (Phase 1)")
+			flags := cmd.Flags()
+
+			urlFlag, _ := flags.GetString("url")
+			specFlag, _ := flags.GetString("spec")
+			codeFlag, _ := flags.GetString("code")
+			authFlag, _ := flags.GetString("auth")
+			authTypeFlag, _ := flags.GetString("auth-type")
+			authHeaderFlag, _ := flags.GetString("auth-header")
+			authUser2Flag, _ := flags.GetString("auth-user2")
+			profileFlag, _ := flags.GetString("profile")
+			outputFlag, _ := flags.GetString("output")
+			formatFlag, _ := flags.GetString("format")
+			failOnFlag, _ := flags.GetString("fail-on")
+			baselineFlag, _ := flags.GetString("baseline")
+			enableActive, _ := flags.GetBool("enable-active")
+			workers, _ := flags.GetInt("workers")
+			timeout, _ := flags.GetInt("timeout")
+			delay, _ := flags.GetInt("delay")
+			ignoreFlag, _ := flags.GetString("ignore")
+			verbose, _ := flags.GetBool("verbose")
+
+			if urlFlag == "" && specFlag == "" && codeFlag == "" {
+				return fmt.Errorf("at least one of --url, --spec, or --code is required")
+			}
+
+			cfg := &models.ScanConfig{
+				URL:          urlFlag,
+				SpecPath:     specFlag,
+				CodePath:     codeFlag,
+				EnableActive: enableActive,
+				Workers:      workers,
+				Timeout:      timeout,
+				DelayMs:      delay,
+				Verbose:      verbose,
+				IgnorePath:   ignoreFlag,
+				BaselinePath: baselineFlag,
+				OutputPath:   outputFlag,
+				Format:       formatFlag,
+				FailOn:       failOnFlag,
+			}
+
+			var flagAuth *models.AuthContext
+			if authFlag != "" {
+				flagAuth = &models.AuthContext{
+					Type:   authTypeFlag,
+					Value:  authFlag,
+					Header: authHeaderFlag,
+				}
+			}
+			cfg.Auth = models.ResolveAuth(flagAuth, models.ProfileLoader(profileFlag))
+
+			if authUser2Flag != "" {
+				cfg.AuthUser2 = models.NormalizeAuth(&models.AuthContext{
+					Value:  authUser2Flag,
+					Header: authHeaderFlag,
+				})
+			}
+
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer cancel()
+
+			orch := engine.NewOrchestrator(cfg)
+			exitCode := orch.Run(ctx)
+			if exitCode != 0 {
+				os.Exit(exitCode)
+			}
 			return nil
 		},
 	}
 
-	// All scan flags per spec — wired to variables in later tasks.
 	flags := cmd.Flags()
 	flags.String("url", "", "Target API base URL (black-box scanning)")
 	flags.String("spec", "", "Path to OpenAPI/Swagger YAML or JSON spec")
@@ -70,6 +138,8 @@ func newScanCmd() *cobra.Command {
 	flags.String("auth", "", `Auth header value, e.g. "Bearer token123"`)
 	flags.String("auth-type", "", "Auth type: bearer, apikey, basic, cookie (default: auto-detect)")
 	flags.String("auth-header", "Authorization", "Custom auth header name")
+	flags.String("auth-user2", "", `Second user auth for IDOR checks, e.g. "Bearer token-user2"`)
+	flags.String("profile", "", "Auth profile name from ~/.fendix/profiles/<name>.yaml")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
 	flags.StringP("format", "f", "json", "Output format: json, html, sarif")
 	flags.String("fail-on", "", "Exit 1 if findings at this severity: CRITICAL, HIGH, MEDIUM")

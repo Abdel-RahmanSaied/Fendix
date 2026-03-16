@@ -9,9 +9,9 @@
 
 | Phase | Name | Status | Goal |
 |---|---|---|---|
-| 0 | Foundation | 🔲 Not Started | Project skeleton, models, CI |
-| 1 | Passive Scanner | 🔲 Not Started | Headers, CORS, exposure checks |
-| 2 | Auth Scanner | 🔲 Not Started | JWT, auth bypass detection |
+| 0 | Foundation | ✅ Complete | Project skeleton, models, CI |
+| 1 | Passive Scanner | ✅ Complete | Headers, CORS, exposure checks |
+| 2 | Auth Scanner | ✅ Complete | JWT, auth bypass detection |
 | 3 | Python Engine | 🔲 Not Started | Secrets, Semgrep, spec parser |
 | 4 | Orchestration | 🔲 Not Started | Hybrid scan, correlator |
 | 5 | Active Scanner | 🔲 Not Started | Injection probes (opt-in) |
