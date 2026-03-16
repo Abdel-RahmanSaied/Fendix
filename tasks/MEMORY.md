@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 2 — Auth Scanner
-**Overall progress:** 100% (Phase 2 complete)
-**Last updated:** 2026-03-15
+**Phase:** 4 — Orchestration & Correlation (next)
+**Overall progress:** Phases 0–3 complete (3/9 phases done)
+**Last updated:** 2026-03-16
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -324,6 +324,16 @@ packaging>=23.0               — Dependency version comparison
 - TASK-025: Implement credential masking in all reporters
 - TASK-026: Implement ~/.fendix/profiles/ config system
 - TASK-027: Tests: auth checks against mock JWT server
+- TASK-028: engine.py entrypoint with full IPC contract, error handling, all 5 checks, stderr logging
+- TASK-029: Secrets analyzer — 7 pattern types (AWS key ID, AWS secret, private key PEM, generic API key, hardcoded password, JWT token, DB connection string)
+- TASK-030: OpenAPI spec parser — 2.0 + 3.x, 4 auth checks (no global security, HTTP server/scheme, no-auth endpoint, basic auth scheme)
+- TASK-031: Semgrep rules auth.yaml — 4 rules (Flask login_required, Django LoginRequiredMixin, FastAPI Depends, jwt.decode no-verify)
+- TASK-032: Semgrep rules injection.yaml — 3 rules (SQL % formatting, subprocess shell=True, eval/exec)
+- TASK-033: Semgrep rules secrets.yaml — 2 rules (hardcoded assignment, DB URL with credentials)
+- TASK-034: Semgrep runner — subprocess integration, JSON output mapping, graceful fallback when semgrep not installed
+- TASK-035: AST analyzer — Python stdlib ast module (os.system, eval/exec dynamic, subprocess shell=True, cursor.execute SQL injection) + JS heuristics (eval, innerHTML, document.write, SQL template literal)
+- TASK-036: Dependency CVE checker — requirements.txt + package.json parsing, pip-audit primary with local known-vuln list fallback (10 PyPI vulns, 4 npm vulns), npm audit integration
+- TASK-037: Performance benchmark — engine startup < 2s measured (3-run median), fixture scan timing tests
 
 ### In progress
 *(none)*
@@ -335,49 +345,53 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-03-15
-**Session goal:** Complete Phase 2 — Auth Scanner
+**Date:** 2026-03-16
+**Session goal:** Complete Phase 3 — Python Engine (all 10 tasks)
 **Accomplished:**
-- AuthContext model with auth type constants (bearer, apikey, basic, cookie), auto-detection from credential value, and multi-source resolution (CLI flag → env var → config profile) (30 tests)
-- Unauthenticated access check: sends request without auth, flags CRITICAL if endpoint returns 200 instead of 401/403 (3 tests)
-- JWT validation bypass checks covering 3 scenarios: malformed JWT, expired JWT (HS256-signed with exp in past), alg:none algorithm confusion — all CRITICAL severity (8 tests)
-- IDOR two-account check: sends same request with two different user credentials, detects identical responses as broken object-level authorization — HIGH severity (5 tests)
-- Credential masking/sanitization: SanitizeFindings function replaces auth values in evidence/fix/title with [REDACTED], strips both full "Bearer <token>" and bare token forms (7 tests)
-- Profile config system: ~/.fendix/profiles/<name>.yaml YAML files for saved auth credentials, ProfileLoader function integrates with ResolveAuth (8 tests)
-- Comprehensive integration tests with realistic JWT-validating mock server: decodes JWT headers, verifies HS256 signatures, checks exp claims, rejects alg:none, tests partial-security scenarios (5 integration tests)
-- Added --auth-user2 and --profile CLI flags, wired CheckAuth and CheckIDOR into orchestrator
-- 202 Go tests + 2 Python tests = 204 total, all passing
+- engine.py enhanced with full error handling: per-analyzer exception isolation (crash in one check → others continue), verbose logging to stderr (never stdout), all 5 check types dispatched (secrets, auth, semgrep, injection/ast, deps), invalid JSON input handled with exit code 2 (8 tests)
+- Secrets analyzer: 7 pattern types (AWS Access Key ID AKIA..., AWS Secret Key, RSA/PEM private key header, generic API key/token, hardcoded password, JWT token 3-part, DB connection string with credentials), file walker skips .git/node_modules/vendor/__pycache__, 1MB file limit, evidence truncated, secrets values truncated for safe reporting (24 tests)
+- OpenAPI spec parser: supports 2.0+3.x YAML+JSON; 4 auth checks: missing global security, HTTP/non-TLS server/scheme, per-endpoint no auth when global absent, explicit open endpoint (security:[]), HTTP Basic auth scheme; graceful error finding on parse failure (18 tests)
+- Semgrep rules auth.yaml (4 rules): Flask @login_required, Django LoginRequiredMixin, FastAPI Depends(), jwt.decode with verify_signature:False
+- Semgrep rules injection.yaml (3 rules): cursor.execute with % / f-string / join, subprocess shell=True / os.system, eval()/exec()
+- Semgrep rules secrets.yaml (2 rules): hardcoded secret assignment, DB URL with embedded credentials
+- Semgrep runner: subprocess integration with --json output, graceful fallback when semgrep not in PATH or times out, result-to-finding mapping (severity from metadata fendix_severity, confidence, category, CWE), evidence truncated to 200 chars (20 tests, all mocked)
+- AST analyzer: Python stdlib ast module (os.system → CWE-78, eval/exec dynamic arg → CWE-95, subprocess shell=True → CWE-78, cursor.execute with BinOp/JoinedStr/Call → CWE-89); JS heuristics (eval, innerHTML=, document.write, SQL template literal); both skip minified JS lines >500 chars; safe forms not flagged (21 tests)
+- Dependency CVE checker: parses requirements.txt (11-field known-vuln list for 10 PyPI packages) and package.json (4 npm packages); pip-audit primary / local list fallback for PyPI; npm audit primary / local list fallback for npm; pinned version comparison; unpinned → INFO finding; (32 tests)
+- Performance benchmark: engine startup < 2s measured (3-run median), fixture scan timing for secrets/AST/combined scan (7 tests, all well under limits)
+- Total: 202 Go + 130 Python = 332 tests passing
 
 **Decisions made:**
-- Auth resolution priority: CLI --auth flag > FENDIX_AUTH env var > ~/.fendix/profiles/ config file
-- Auth type auto-detection: "Bearer ..." → bearer, "Basic ..." → basic, key=value → cookie, else → bearer
-- Redacted() always returns "[REDACTED]" (no partial reveal — security constraint)
-- ApplyToRequest method on AuthContext encapsulates nil-safe header setting
-- IDOR check compares response bodies byte-for-byte; empty responses do not trigger findings
-- JWT bypass checks only run when isJWTAuth detects 3-part dot-separated token
-- SanitizeFindings called in orchestrator before rendering (defense-in-depth)
-- AuthUser2 field added to ScanConfig for IDOR two-account testing
-- ResolveAuth accepts a profileLoader callback for extensible auth source chain
-- JWT test tokens built with crypto/hmac + encoding/base64 (no external JWT library needed for test token generation)
+- engine.py verbose logging goes to stderr only — stdout is reserved for clean Finding JSON and the done terminator
+- Semgrep graceful degradation: if `semgrep` not in PATH, log warning to stderr and emit zero findings (never crash)
+- AST analyzer: eval("literal") not flagged (safe); only dynamic eval() arguments trigger findings
+- AST analyzer: cursor.execute("literal", (params,)) not flagged — only bare non-literal first arg
+- DepsAnalyzer fallback: when pip-audit absent, compare pinned versions against local curated list; unpinned versions with known-vuln packages → INFO severity (not HIGH)
+- SemgrepRunner._map_result returns None on malformed result (engine skips it); no crash
+- pyyaml installed via pip install pyyaml --break-system-packages for python3.13 on this machine
 
 **Files created/modified:**
-- go/internal/models/auth.go — NEW: auth type constants, DetectAuthType, ResolveAuth, NormalizeAuth, Redacted, ApplyToRequest
-- go/internal/models/auth_test.go — NEW: 30 tests (detect, normalize, resolve, redact, apply)
-- go/internal/models/profiles.go — NEW: LoadProfile, LoadProfileFrom, ProfileLoader, ProfilesDir
-- go/internal/models/profiles_test.go — NEW: 8 tests (valid, apikey, missing, empty, invalid, minimal, integration, override)
-- go/internal/models/config.go — added AuthUser2 field to ScanConfig
-- go/internal/scanner/auth.go — NEW: CheckAuth, unauthenticated check, JWT bypass checks (malformed, expired, alg:none)
-- go/internal/scanner/auth_test.go — NEW: 14 tests (vulnerable/secure for each check type, non-JWT skip, full vulnerability scan)
-- go/internal/scanner/auth_integration_test.go — NEW: 5 integration tests with realistic JWT-validating mock server
-- go/internal/scanner/idor.go — NEW: CheckIDOR two-account check
-- go/internal/scanner/idor_test.go — NEW: 5 tests (vulnerable, secure, no-user2, no-auth, empty-response)
-- go/internal/reporters/sanitize.go — NEW: SanitizeFindings credential masking
-- go/internal/reporters/sanitize_test.go — NEW: 7 tests (redact auth, bare token, nil, multiple, immutability, empty, title)
-- go/internal/engine/orchestrator.go — wired CheckAuth, CheckIDOR, SanitizeFindings
-- go/cmd/fendix/main.go — added --auth-user2, --profile flags, wired ResolveAuth + ProfileLoader
+- python/engine.py — enhanced: all 5 checks, per-analyzer error isolation, stderr logging, verbose to stderr
+- python/analyzers/secrets.py — full implementation: 7 patterns, file walker, evidence truncation
+- python/analyzers/spec_parser.py — full implementation: 2.0+3.x parser, 4 auth checks
+- python/analyzers/semgrep_runner.py — full implementation: subprocess, JSON parsing, result mapping
+- python/analyzers/ast_analyzer.py — full implementation: Python AST + JS heuristics
+- python/analyzers/deps.py — full implementation: requirements.txt + package.json, pip-audit + local fallback
+- python/rules/auth.yaml — NEW: 4 Semgrep auth rules
+- python/rules/injection.yaml — NEW: 3 Semgrep injection rules
+- python/rules/secrets.yaml — NEW: 2 Semgrep secrets rules
+- python/tests/test_engine_contract.py — expanded from 2 to 8 tests
+- python/tests/test_secrets.py — NEW: 24 tests
+- python/tests/test_spec_parser.py — NEW: 18 tests
+- python/tests/test_semgrep_runner.py — NEW: 20 tests
+- python/tests/test_ast_analyzer.py — NEW: 21 tests
+- python/tests/test_deps.py — NEW: 32 tests
+- python/tests/test_performance.py — NEW: 7 benchmark tests
+- python/tests/fixtures/secrets_target/ — NEW: config.py, server.js, clean.py (test data with intentional secrets)
+- python/tests/fixtures/ast_target/ — NEW: dangerous.py, dangerous.js, clean.py (test data with intentional vulnerabilities)
+- python/tests/fixtures/specs/ — NEW: 6 OpenAPI YAML fixtures (secure, no-global-auth, http-server, basic-auth, swagger2 variants)
 
 **Next session should start with:**
-- TASK-028: Implement engine.py entrypoint and IPC contract (Phase 3 — Python Engine begins)
+- TASK-038: Implement subprocess spawner with stdin/stdout wiring (Phase 4 — Orchestration begins)
 
 **Open questions:**
 - None

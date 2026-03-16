@@ -1,0 +1,19 @@
+openapi: "3.0.3"
+info:
+  title: HTTP Server API
+  version: "1.0"
+servers:
+  - url: http://api.example.com
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /data:
+    get:
+      responses:
+        "200":
+          description: OK

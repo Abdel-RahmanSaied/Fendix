@@ -1,0 +1,24 @@
+openapi: "3.0.3"
+info:
+  title: Insecure API - no global security
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        "200":
+          description: OK
+  /admin:
+    delete:
+      operationId: deleteAll
+      responses:
+        "200":
+          description: OK

@@ -1,0 +1,18 @@
+swagger: "2.0"
+info:
+  title: Swagger 2.0 Basic Auth
+  version: "1.0"
+host: api.example.com
+schemes:
+  - https
+securityDefinitions:
+  basicAuth:
+    type: basic
+security:
+  - basicAuth: []
+paths:
+  /data:
+    get:
+      responses:
+        200:
+          description: OK

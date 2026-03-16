@@ -1,0 +1,60 @@
+rules:
+  # Rule 1: SQL injection via string formatting / concatenation
+  - id: python-sql-injection-string-format
+    patterns:
+      - pattern: |
+          $CURSOR.execute("..." % ...)
+      - pattern: |
+          $CURSOR.execute("..." + ...)
+      - pattern: |
+          $CURSOR.execute(f"...{$VAR}...")
+    message: >
+      SQL query built via string formatting — SQL injection risk.
+      Use parameterized queries: cursor.execute("SELECT ... WHERE x = %s", (value,))
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: injection
+      cwe: CWE-89
+      confidence: HIGH
+      fendix_severity: CRITICAL
+
+  # Rule 2: Command injection via os.system or subprocess with shell=True
+  - id: python-command-injection-shell-true
+    patterns:
+      - pattern: subprocess.run($CMD, shell=True, ...)
+      - pattern: subprocess.call($CMD, shell=True, ...)
+      - pattern: subprocess.Popen($CMD, shell=True, ...)
+      - pattern: os.system($CMD)
+      - pattern: os.popen($CMD)
+    message: >
+      Command execution with user-controlled input — command injection risk.
+      Use subprocess.run() with a list of arguments and shell=False.
+      Never pass user input directly to shell commands.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: injection
+      cwe: CWE-78
+      confidence: HIGH
+      fendix_severity: CRITICAL
+
+  # Rule 3: eval() with potentially dynamic/user-controlled input
+  - id: python-eval-injection
+    patterns:
+      - pattern: eval($X)
+      - pattern: exec($X)
+    pattern-not-inside: |
+      def $FUNC():
+          eval("...")
+    message: >
+      eval()/exec() with dynamic argument — code injection risk.
+      Avoid eval/exec entirely. If required, validate input strictly
+      against an allowlist before execution.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: injection
+      cwe: CWE-95
+      confidence: MEDIUM
+      fendix_severity: CRITICAL

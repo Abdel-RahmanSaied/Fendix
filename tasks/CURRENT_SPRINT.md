@@ -24,35 +24,48 @@
 
 ---
 
-## This Sprint's Tasks
+## This Sprint's Tasks (Phase 3 — COMPLETE ✅)
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| TASK-028 | engine.py entrypoint and IPC contract | 🔲 | |
-| TASK-029 | Secrets analyzer with 7 pattern types + tests | 🔲 | |
-| TASK-030 | OpenAPI spec parser (2.0 + 3.x) + tests | 🔲 | |
-| TASK-031 | Semgrep rules: auth.yaml (4 rules) | 🔲 | |
-| TASK-032 | Semgrep rules: injection.yaml (3 rules) | 🔲 | |
-| TASK-033 | Semgrep rules: secrets.yaml (2 rules) | 🔲 | |
-| TASK-034 | Semgrep runner + result mapping | 🔲 | |
-| TASK-035 | AST analyzer (Python + JS basic patterns) | 🔲 | |
-| TASK-036 | Dependency CVE checker (PyPI + npm) | 🔲 | |
-| TASK-037 | Performance test: engine startup and scan time | 🔲 | |
+| TASK-028 | engine.py entrypoint and IPC contract | ✅ | All 5 checks, stderr logging, error isolation, 8 tests |
+| TASK-029 | Secrets analyzer with 7 pattern types + tests | ✅ | AWS key/secret, PEM, API key, password, JWT, DB conn string; 24 tests |
+| TASK-030 | OpenAPI spec parser (2.0 + 3.x) + tests | ✅ | 4 auth checks, 6 YAML fixtures, 18 tests |
+| TASK-031 | Semgrep rules: auth.yaml (4 rules) | ✅ | Flask, Django, FastAPI, jwt.decode |
+| TASK-032 | Semgrep rules: injection.yaml (3 rules) | ✅ | SQL %, subprocess shell=True, eval/exec |
+| TASK-033 | Semgrep rules: secrets.yaml (2 rules) | ✅ | Hardcoded assignment, DB URL |
+| TASK-034 | Semgrep runner + result mapping | ✅ | Mocked subprocess, graceful fallback, 20 tests |
+| TASK-035 | AST analyzer (Python + JS basic patterns) | ✅ | Python ast + JS heuristics, 21 tests |
+| TASK-036 | Dependency CVE checker (PyPI + npm) | ✅ | Local vuln list + pip-audit/npm-audit, 32 tests |
+| TASK-037 | Performance test: engine startup and scan time | ✅ | Startup < 2s measured, 7 tests |
 
 **Status:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
 
 ---
 
-## Definition of Done for This Sprint
+## Next Sprint: Phase 4 — Orchestration & Correlation
 
-- [ ] engine.py reads stdin ScanRequest, streams Findings, emits {"done":true}
-- [ ] Secrets analyzer detects all 7 pattern types
-- [ ] OpenAPI 2.0 + 3.x spec parsing with auth checks
-- [ ] Semgrep rules for auth, injection, secrets
-- [ ] Semgrep runner executes rules and maps results
-- [ ] AST analyzer for Python + JS patterns
-- [ ] Dependency CVE checker
-- [ ] Engine startup < 2 seconds
-- [ ] `go build ./...` passes
-- [ ] `go test ./...` passes
-- [ ] `python -m pytest` passes
+| ID | Task | Status | Notes |
+|---|---|---|---|
+| TASK-038 | Subprocess spawner with stdin/stdout wiring | 🔲 | Go spawns python/engine.py |
+| TASK-039 | Streaming Finding reader (Go side) | 🔲 | Read JSON lines from Python stdout |
+| TASK-040 | Correlator with endpoint normalization | 🔲 | Cross-reference black+white findings |
+| TASK-041 | Sequential ID assignment (SEC-001...) | 🔲 | Deterministic ordering |
+| TASK-042 | .fendix-ignore suppression parser | 🔲 | Suppress by rule/path/endpoint |
+| TASK-043 | Baseline diff comparison | 🔲 | --baseline / --save-baseline |
+| TASK-044 | --fail-on exit code logic | 🔲 | Exit 1 if findings at threshold |
+| TASK-045 | End-to-end integration test: hybrid scan | 🔲 | Fixture project, correlated findings |
+
+## Definition of Done for Phase 3 (ACHIEVED ✅)
+
+- [x] engine.py reads stdin ScanRequest, streams Findings, emits {"done":true}
+- [x] Secrets analyzer detects all 7 pattern types
+- [x] OpenAPI 2.0 + 3.x spec parsing with auth checks
+- [x] Semgrep rules for auth, injection, secrets
+- [x] Semgrep runner executes rules and maps results
+- [x] AST analyzer for Python + JS patterns
+- [x] Dependency CVE checker
+- [x] Engine startup < 2 seconds (measured)
+- [x] `go build ./...` passes
+- [x] `go test ./...` passes (202 tests)
+- [x] `python -m pytest` passes (130 tests)

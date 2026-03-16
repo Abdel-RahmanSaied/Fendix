@@ -1,0 +1,19 @@
+openapi: "3.0.3"
+info:
+  title: Basic Auth API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - basicAuth: []
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /data:
+    get:
+      responses:
+        "200":
+          description: OK

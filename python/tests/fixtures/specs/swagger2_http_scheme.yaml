@@ -1,0 +1,21 @@
+swagger: "2.0"
+info:
+  title: Swagger 2.0 HTTP scheme
+  version: "1.0"
+host: api.example.com
+schemes:
+  - http
+  - https
+securityDefinitions:
+  apiKey:
+    type: apiKey
+    in: header
+    name: X-API-Key
+security:
+  - apiKey: []
+paths:
+  /data:
+    get:
+      responses:
+        200:
+          description: OK
