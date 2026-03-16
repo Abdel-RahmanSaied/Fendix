@@ -475,8 +475,8 @@ func TestCheckAuth_AllFindingsForVulnerableServer(t *testing.T) {
 
 	expectedTitles := map[string]bool{
 		"Missing authentication on endpoint":          false,
-		"JWT not validated":                            false,
-		"Expired JWT accepted":                         false,
+		"JWT not validated":                           false,
+		"Expired JWT accepted":                        false,
 		"JWT algorithm confusion (alg:none accepted)": false,
 	}
 
@@ -495,4 +495,3 @@ func TestCheckAuth_AllFindingsForVulnerableServer(t *testing.T) {
 		}
 	}
 }
-
