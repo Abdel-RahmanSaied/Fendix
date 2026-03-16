@@ -495,3 +495,4 @@ func TestCheckAuth_AllFindingsForVulnerableServer(t *testing.T) {
 		}
 	}
 }
+
