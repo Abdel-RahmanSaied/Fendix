@@ -15,14 +15,26 @@ import (
 )
 
 // Orchestrator coordinates the full scan lifecycle:
-// crawl endpoints → run checks → assign IDs → render report.
+// crawl endpoints → run checks → spawn Python → correlate → assign IDs → render report.
 type Orchestrator struct {
-	cfg *models.ScanConfig
+	cfg     *models.ScanConfig
+	spawner *PythonSpawner
 }
 
 // NewOrchestrator creates an orchestrator from scan config.
 func NewOrchestrator(cfg *models.ScanConfig) *Orchestrator {
-	return &Orchestrator{cfg: cfg}
+	return &Orchestrator{
+		cfg:     cfg,
+		spawner: NewPythonSpawner("", ""),
+	}
+}
+
+// NewOrchestratorWithSpawner creates an orchestrator with a custom Python spawner.
+func NewOrchestratorWithSpawner(cfg *models.ScanConfig, spawner *PythonSpawner) *Orchestrator {
+	return &Orchestrator{
+		cfg:     cfg,
+		spawner: spawner,
+	}
 }
 
 // Run executes the full scan pipeline and returns an exit code.
@@ -66,7 +78,18 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	pool := NewWorkerPool(o.cfg.Workers, o.cfg.DelayMs, checks)
 	findings := pool.Run(ctx, o.cfg, endpoints)
 
-	// 4. Sort findings deterministically by endpoint+category for stable ID assignment
+	// 4. Spawn Python engine for white-box analysis (if code path or spec provided)
+	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
+		wbFindings := o.runWhiteboxScan(ctx)
+		findings = append(findings, wbFindings...)
+	}
+
+	// 5. Correlate black-box and white-box findings
+	if hasWhitebox(findings) && hasBlackbox(findings) {
+		findings = Correlate(findings)
+	}
+
+	// 6. Sort findings deterministically by endpoint+category for stable ID assignment
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Endpoint != findings[j].Endpoint {
 			return findings[i].Endpoint < findings[j].Endpoint
@@ -77,9 +100,24 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		return findings[i].Title < findings[j].Title
 	})
 
-	// 5. Assign sequential IDs
+	// 7. Assign sequential IDs
 	for i := range findings {
 		findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)
+	}
+
+	// 8. Apply ignore rules from .fendix-ignore
+	if o.cfg.IgnorePath != "" {
+		ignoreFile, err := ParseIgnoreFile(o.cfg.IgnorePath)
+		if err != nil {
+			slog.Error("failed to parse ignore file", "path", o.cfg.IgnorePath, "error", err)
+		} else {
+			findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
+		}
+	}
+
+	// 9. Apply baseline diff if --baseline provided
+	if o.cfg.BaselinePath != "" {
+		findings = ApplyBaselineDiff(findings, o.cfg.BaselinePath)
 	}
 
 	duration := time.Since(startTime)
@@ -90,10 +128,17 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		Version:   "dev",
 	}
 
-	// 6. Sanitize credentials from findings before rendering
+	// 10. Save baseline if requested (before sanitization, so credentials are available for future diff)
+	if o.cfg.SaveBaselinePath != "" {
+		if err := SaveBaseline(findings, o.cfg.SaveBaselinePath); err != nil {
+			slog.Error("failed to save baseline", "error", err)
+		}
+	}
+
+	// 11. Sanitize credentials from findings before rendering
 	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
 
-	// 7. Render report
+	// 12. Render report
 	if err := o.renderReport(findings, meta); err != nil {
 		slog.Error("report rendering failed", "error", err)
 		return 2
@@ -154,4 +199,50 @@ func (o *Orchestrator) checkFailOn(findings []models.Finding) int {
 		}
 	}
 	return 0
+}
+
+// runWhiteboxScan spawns the Python engine and collects whitebox findings.
+func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
+	checks := []string{"secrets", "auth", "semgrep", "injection", "deps"}
+	if len(o.cfg.Checks) > 0 {
+		checks = o.cfg.Checks
+	}
+
+	req := ScanRequest{
+		Mode:     "whitebox",
+		Spec:     o.cfg.SpecPath,
+		CodePath: o.cfg.CodePath,
+		Checks:   checks,
+		Verbose:  o.cfg.Verbose,
+	}
+
+	result := o.spawner.Run(ctx, req)
+	if result.Err != nil {
+		slog.Error("python engine failed", "error", result.Err)
+		// Return whatever findings we collected before the error
+		return result.Findings
+	}
+
+	slog.Info("whitebox scan complete", "findings", len(result.Findings))
+	return result.Findings
+}
+
+// hasWhitebox returns true if any finding has source=whitebox.
+func hasWhitebox(findings []models.Finding) bool {
+	for _, f := range findings {
+		if f.Source == models.SourceWhitebox {
+			return true
+		}
+	}
+	return false
+}
+
+// hasBlackbox returns true if any finding has source=blackbox.
+func hasBlackbox(findings []models.Finding) bool {
+	for _, f := range findings {
+		if f.Source == models.SourceBlackbox {
+			return true
+		}
+	}
+	return false
 }

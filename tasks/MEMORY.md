@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 4 — Orchestration & Correlation (next)
-**Overall progress:** Phases 0–3 complete (3/9 phases done)
-**Last updated:** 2026-03-16
+**Phase:** 4 — Orchestration & Correlation ✅ Complete
+**Overall progress:** Phases 0–4 complete (5/9 phases done)
+**Last updated:** 2026-03-20
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -334,6 +334,14 @@ packaging>=23.0               — Dependency version comparison
 - TASK-035: AST analyzer — Python stdlib ast module (os.system, eval/exec dynamic, subprocess shell=True, cursor.execute SQL injection) + JS heuristics (eval, innerHTML, document.write, SQL template literal)
 - TASK-036: Dependency CVE checker — requirements.txt + package.json parsing, pip-audit primary with local known-vuln list fallback (10 PyPI vulns, 4 npm vulns), npm audit integration
 - TASK-037: Performance benchmark — engine startup < 2s measured (3-run median), fixture scan timing tests
+- TASK-038: Subprocess spawner — Go spawns Python engine, sends ScanRequest via stdin, reads findings from stdout, captures stderr diagnostics
+- TASK-039: Streaming Finding reader — bufio.Scanner-based JSON line reader with malformed line skip, missing field validation, whitebox source default
+- TASK-040: Correlator — endpoint normalization (URL→path, file:line→file), fuzzy endpoint matching (path segment overlap), category mapping (auth↔auth_bypass, secrets↔data_exposure), severity escalation, reference deduplication
+- TASK-041: Sequential ID assignment — verified existing (SEC-001, SEC-002, ...) in orchestrator
+- TASK-042: .fendix-ignore suppression parser — YAML format, suppress by ID/endpoint/category, glob patterns, expiry dates (until field)
+- TASK-043: Baseline diff — compare by title+endpoint+category (ID-independent), supports JSONReport and raw Finding array formats, --save-baseline saves current findings
+- TASK-044: --fail-on exit code logic — verified existing in orchestrator
+- TASK-045: End-to-end integration test — hybrid scan with mock Python engine, ignore rules integration, baseline diff integration (3 new integration tests)
 
 ### In progress
 *(none)*
@@ -345,53 +353,42 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-03-16
-**Session goal:** Complete Phase 3 — Python Engine (all 10 tasks)
+**Date:** 2026-03-20
+**Session goal:** Complete Phase 4 — Orchestration & Correlation (all 8 tasks)
 **Accomplished:**
-- engine.py enhanced with full error handling: per-analyzer exception isolation (crash in one check → others continue), verbose logging to stderr (never stdout), all 5 check types dispatched (secrets, auth, semgrep, injection/ast, deps), invalid JSON input handled with exit code 2 (8 tests)
-- Secrets analyzer: 7 pattern types (AWS Access Key ID AKIA..., AWS Secret Key, RSA/PEM private key header, generic API key/token, hardcoded password, JWT token 3-part, DB connection string with credentials), file walker skips .git/node_modules/vendor/__pycache__, 1MB file limit, evidence truncated, secrets values truncated for safe reporting (24 tests)
-- OpenAPI spec parser: supports 2.0+3.x YAML+JSON; 4 auth checks: missing global security, HTTP/non-TLS server/scheme, per-endpoint no auth when global absent, explicit open endpoint (security:[]), HTTP Basic auth scheme; graceful error finding on parse failure (18 tests)
-- Semgrep rules auth.yaml (4 rules): Flask @login_required, Django LoginRequiredMixin, FastAPI Depends(), jwt.decode with verify_signature:False
-- Semgrep rules injection.yaml (3 rules): cursor.execute with % / f-string / join, subprocess shell=True / os.system, eval()/exec()
-- Semgrep rules secrets.yaml (2 rules): hardcoded secret assignment, DB URL with embedded credentials
-- Semgrep runner: subprocess integration with --json output, graceful fallback when semgrep not in PATH or times out, result-to-finding mapping (severity from metadata fendix_severity, confidence, category, CWE), evidence truncated to 200 chars (20 tests, all mocked)
-- AST analyzer: Python stdlib ast module (os.system → CWE-78, eval/exec dynamic arg → CWE-95, subprocess shell=True → CWE-78, cursor.execute with BinOp/JoinedStr/Call → CWE-89); JS heuristics (eval, innerHTML=, document.write, SQL template literal); both skip minified JS lines >500 chars; safe forms not flagged (21 tests)
-- Dependency CVE checker: parses requirements.txt (11-field known-vuln list for 10 PyPI packages) and package.json (4 npm packages); pip-audit primary / local list fallback for PyPI; npm audit primary / local list fallback for npm; pinned version comparison; unpinned → INFO finding; (32 tests)
-- Performance benchmark: engine startup < 2s measured (3-run median), fixture scan timing for secrets/AST/combined scan (7 tests, all well under limits)
-- Total: 202 Go + 130 Python = 332 tests passing
+- PythonSpawner: Go spawns python/engine.py as subprocess, sends ScanRequest JSON via stdin pipe, reads streaming Finding JSON from stdout via bufio.Scanner, captures stderr for diagnostics, handles context cancellation (kills subprocess), handles engine crashes gracefully (19 tests)
+- Streaming Finding reader: readFindings() parses newline-delimited JSON, skips malformed lines with warning, validates required fields (title+severity), defaults empty source to "whitebox", handles done message with error field, handles missing terminator gracefully (8 reader tests)
+- Correlator: cross-references blackbox and whitebox findings by normalized endpoint + related category; normalizeEndpoint() strips scheme/host/port/query from URLs and line numbers from file paths; endpointsRelated() uses path segment overlap (filters noise words like api/v1/src/py); category mapping (auth↔auth_bypass, secrets↔data_exposure, injection↔injection); correlated findings get source=correlated, confidence=HIGH, severity escalated by one level; unconfirmed whitebox findings get confidence=MEDIUM + "[Unconfirmed by live scan]" note; references deduplicated on merge (14 correlator tests)
+- .fendix-ignore parser: YAML format with suppress by ID (exact), endpoint (path matching with glob/*), category (case-insensitive), or endpoint+category combo; expiry dates (until field, YYYY-MM-DD); expired rules skipped; ParseIgnoreFile + ApplyIgnoreRules (15 ignore tests)
+- Baseline diff: compare by title+endpoint+category key (ID-independent since IDs are reassigned each run); supports both raw Finding array and JSONReport format; SaveBaseline writes findings to JSON; graceful fallback on missing/invalid baseline file (11 baseline tests)
+- Orchestrator updated: full hybrid pipeline — crawl → blackbox checks → spawn Python → correlate → sort → assign IDs → apply ignore → apply baseline diff → save baseline → sanitize → render report; NewOrchestratorWithSpawner for testing with mock engines
+- End-to-end integration tests: hybrid scan with mock Python engine producing 2 whitebox findings (correlated 1 with blackbox), ignore rules suppressing headers category, baseline diff suppressing all known findings on second scan (3 integration tests)
+- Total: 179 Go + 130 Python = 309 tests passing
 
 **Decisions made:**
-- engine.py verbose logging goes to stderr only — stdout is reserved for clean Finding JSON and the done terminator
-- Semgrep graceful degradation: if `semgrep` not in PATH, log warning to stderr and emit zero findings (never crash)
-- AST analyzer: eval("literal") not flagged (safe); only dynamic eval() arguments trigger findings
-- AST analyzer: cursor.execute("literal", (params,)) not flagged — only bare non-literal first arg
-- DepsAnalyzer fallback: when pip-audit absent, compare pinned versions against local curated list; unpinned versions with known-vuln packages → INFO severity (not HIGH)
-- SemgrepRunner._map_result returns None on malformed result (engine skips it); no crash
-- pyyaml installed via pip install pyyaml --break-system-packages for python3.13 on this machine
+- readFindings() uses 1MB buffer max for individual JSON lines (handles large evidence fields)
+- Correlator fuzzy matching: path segments must be >2 chars to avoid false matches on short names
+- Correlator noise words filtered: api, v1, v2, v3, src, py, js, go, ts, internal, routes, handlers
+- Baseline diff uses title+endpoint+category as key (not ID) since IDs are reassigned each run
+- .fendix-ignore glob: trailing /* matches prefix; trailing * without other wildcards matches prefix; general glob splits on * and matches segments
+- SaveBaseline happens before credential sanitization so baseline contains original endpoint URLs for accurate future diff
+- ScanConfig got SaveBaselinePath field added for --save-baseline flag
 
 **Files created/modified:**
-- python/engine.py — enhanced: all 5 checks, per-analyzer error isolation, stderr logging, verbose to stderr
-- python/analyzers/secrets.py — full implementation: 7 patterns, file walker, evidence truncation
-- python/analyzers/spec_parser.py — full implementation: 2.0+3.x parser, 4 auth checks
-- python/analyzers/semgrep_runner.py — full implementation: subprocess, JSON parsing, result mapping
-- python/analyzers/ast_analyzer.py — full implementation: Python AST + JS heuristics
-- python/analyzers/deps.py — full implementation: requirements.txt + package.json, pip-audit + local fallback
-- python/rules/auth.yaml — NEW: 4 Semgrep auth rules
-- python/rules/injection.yaml — NEW: 3 Semgrep injection rules
-- python/rules/secrets.yaml — NEW: 2 Semgrep secrets rules
-- python/tests/test_engine_contract.py — expanded from 2 to 8 tests
-- python/tests/test_secrets.py — NEW: 24 tests
-- python/tests/test_spec_parser.py — NEW: 18 tests
-- python/tests/test_semgrep_runner.py — NEW: 20 tests
-- python/tests/test_ast_analyzer.py — NEW: 21 tests
-- python/tests/test_deps.py — NEW: 32 tests
-- python/tests/test_performance.py — NEW: 7 benchmark tests
-- python/tests/fixtures/secrets_target/ — NEW: config.py, server.js, clean.py (test data with intentional secrets)
-- python/tests/fixtures/ast_target/ — NEW: dangerous.py, dangerous.js, clean.py (test data with intentional vulnerabilities)
-- python/tests/fixtures/specs/ — NEW: 6 OpenAPI YAML fixtures (secure, no-global-auth, http-server, basic-auth, swagger2 variants)
+- go/internal/engine/spawner.go — NEW: PythonSpawner, ScanRequest, DoneMessage, readFindings
+- go/internal/engine/spawner_test.go — NEW: 19 tests (reader + spawner + serialization)
+- go/internal/engine/correlator.go — NEW: Correlate, normalizeEndpoint, endpointsRelated, escalateSeverity, mergeFindings
+- go/internal/engine/correlator_test.go — NEW: 14 tests (correlation, normalization, helpers)
+- go/internal/engine/ignore.go — NEW: IgnoreFile, IgnoreRule, ParseIgnoreFile, ApplyIgnoreRules, globMatch
+- go/internal/engine/ignore_test.go — NEW: 15 tests (parsing, suppression by ID/endpoint/category/glob/expiry)
+- go/internal/engine/baseline.go — NEW: ApplyBaselineDiff, SaveBaseline, loadBaseline, findingKey
+- go/internal/engine/baseline_test.go — NEW: 11 tests (diff, save, formats, edge cases)
+- go/internal/engine/orchestrator.go — MODIFIED: integrated spawner, correlator, ignore, baseline into pipeline; added NewOrchestratorWithSpawner, runWhiteboxScan, hasWhitebox, hasBlackbox
+- go/internal/engine/orchestrator_test.go — MODIFIED: added 3 integration tests (hybrid, ignore, baseline)
+- go/internal/models/config.go — MODIFIED: added SaveBaselinePath field
 
 **Next session should start with:**
-- TASK-038: Implement subprocess spawner with stdin/stdout wiring (Phase 4 — Orchestration begins)
+- TASK-046: Implement safe probe framework with audit logging (Phase 5 — Active Scanner begins)
 
 **Open questions:**
 - None

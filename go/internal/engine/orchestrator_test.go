@@ -250,3 +250,257 @@ func TestOrchestrator_NoEndpoints(t *testing.T) {
 		t.Fatalf("expected exit code 2 for no endpoints, got %d", exitCode)
 	}
 }
+
+func TestOrchestrator_HybridScanWithMockEngine(t *testing.T) {
+	server := newVulnerableServer()
+	defer server.Close()
+
+	// Write a mock Python engine that emits whitebox findings
+	engineDir := t.TempDir()
+	mockEngine := `import json, sys
+sys.stdin.read()
+findings = [
+    {
+        "id": "",
+        "title": "Missing auth decorator on users endpoint",
+        "severity": "HIGH",
+        "source": "whitebox",
+        "category": "auth",
+        "endpoint": "routes/users.py:10",
+        "evidence": "No @login_required on get_users()",
+        "fix": "Add @login_required decorator",
+        "references": ["CWE-862"],
+        "confidence": "HIGH",
+        "line": "routes/users.py:10"
+    },
+    {
+        "id": "",
+        "title": "Hardcoded API key",
+        "severity": "CRITICAL",
+        "source": "whitebox",
+        "category": "secrets",
+        "endpoint": "config/settings.py:5",
+        "evidence": "API_KEY = 'sk-live-...'",
+        "fix": "Use environment variable",
+        "references": ["CWE-798"],
+        "confidence": "HIGH",
+        "line": "config/settings.py:5"
+    }
+]
+for f in findings:
+    print(json.dumps(f), flush=True)
+print(json.dumps({"done": True, "total": len(findings)}), flush=True)
+`
+	os.WriteFile(filepath.Join(engineDir, "engine.py"), []byte(mockEngine), 0755)
+
+	spec := fmt.Sprintf(`
+openapi: "3.0.0"
+info:
+  title: Test API
+  version: "1.0"
+servers:
+  - url: %s
+paths:
+  /api/v1/users:
+    get:
+      summary: List users
+  /api/v1/config:
+    get:
+      summary: Get config
+  /api/v1/health:
+    get:
+      summary: Health check
+  /api/v1/debug:
+    get:
+      summary: Debug info
+`, server.URL)
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	outputPath := filepath.Join(dir, "report.json")
+	os.WriteFile(specPath, []byte(spec), 0644)
+
+	cfg := &models.ScanConfig{
+		URL:        server.URL,
+		SpecPath:   specPath,
+		CodePath:   engineDir, // triggers whitebox scan
+		Workers:    2,
+		Timeout:    10,
+		DelayMs:    0,
+		Format:     "json",
+		OutputPath: outputPath,
+	}
+
+	spawner := NewPythonSpawner("python3", engineDir)
+	orch := NewOrchestratorWithSpawner(cfg, spawner)
+	exitCode := orch.Run(context.Background())
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// Read and parse output
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("reading report: %v", err)
+	}
+
+	var report reporters.JSONReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("parsing report: %v", err)
+	}
+
+	// Should have blackbox + whitebox findings
+	if report.Total == 0 {
+		t.Fatal("expected findings from hybrid scan, got 0")
+	}
+
+	// Check for whitebox findings
+	hasWhiteboxFinding := false
+	hasCorrelatedFinding := false
+	for _, f := range report.Findings {
+		if f.Source == models.SourceWhitebox {
+			hasWhiteboxFinding = true
+		}
+		if f.Source == models.SourceCorrelated {
+			hasCorrelatedFinding = true
+		}
+	}
+
+	if !hasWhiteboxFinding && !hasCorrelatedFinding {
+		t.Error("expected at least one whitebox or correlated finding from hybrid scan")
+	}
+
+	// Verify sequential IDs
+	for i, f := range report.Findings {
+		expectedID := fmt.Sprintf("SEC-%03d", i+1)
+		if f.ID != expectedID {
+			t.Errorf("finding %d: expected ID %s, got %s", i, expectedID, f.ID)
+		}
+	}
+}
+
+func TestOrchestrator_IgnoreRulesIntegration(t *testing.T) {
+	server := newVulnerableServer()
+	defer server.Close()
+
+	spec := fmt.Sprintf(`
+openapi: "3.0.0"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: %s
+paths:
+  /api/v1/users:
+    get:
+      summary: test
+`, server.URL)
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	outputPath := filepath.Join(dir, "report.json")
+	os.WriteFile(specPath, []byte(spec), 0644)
+
+	// Write ignore file that suppresses all headers findings
+	ignoreContent := `
+ignore:
+  - category: headers
+    reason: "Headers handled by reverse proxy"
+`
+	ignorePath := filepath.Join(dir, ".fendix-ignore")
+	os.WriteFile(ignorePath, []byte(ignoreContent), 0644)
+
+	cfg := &models.ScanConfig{
+		URL:        server.URL,
+		SpecPath:   specPath,
+		Workers:    2,
+		Timeout:    10,
+		DelayMs:    0,
+		Format:     "json",
+		OutputPath: outputPath,
+		IgnorePath: ignorePath,
+	}
+
+	orch := NewOrchestrator(cfg)
+	orch.Run(context.Background())
+
+	data, _ := os.ReadFile(outputPath)
+	var report reporters.JSONReport
+	json.Unmarshal(data, &report)
+
+	for _, f := range report.Findings {
+		if f.Category == "headers" {
+			t.Errorf("headers findings should be suppressed by ignore rule, found: %s", f.Title)
+		}
+	}
+}
+
+func TestOrchestrator_BaselineDiffIntegration(t *testing.T) {
+	server := newVulnerableServer()
+	defer server.Close()
+
+	spec := fmt.Sprintf(`
+openapi: "3.0.0"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: %s
+paths:
+  /api/v1/users:
+    get:
+      summary: test
+`, server.URL)
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	outputPath1 := filepath.Join(dir, "report1.json")
+	baselinePath := filepath.Join(dir, "baseline.json")
+
+	os.WriteFile(specPath, []byte(spec), 0644)
+
+	// First scan — save baseline
+	cfg1 := &models.ScanConfig{
+		URL:              server.URL,
+		SpecPath:         specPath,
+		Workers:          2,
+		Timeout:          10,
+		DelayMs:          0,
+		Format:           "json",
+		OutputPath:       outputPath1,
+		SaveBaselinePath: baselinePath,
+	}
+
+	orch1 := NewOrchestrator(cfg1)
+	orch1.Run(context.Background())
+
+	// Verify baseline was saved
+	if _, err := os.Stat(baselinePath); os.IsNotExist(err) {
+		t.Fatal("baseline file was not created")
+	}
+
+	// Second scan — diff against baseline (same server = same findings)
+	outputPath2 := filepath.Join(dir, "report2.json")
+	cfg2 := &models.ScanConfig{
+		URL:          server.URL,
+		SpecPath:     specPath,
+		Workers:      2,
+		Timeout:      10,
+		DelayMs:      0,
+		Format:       "json",
+		OutputPath:   outputPath2,
+		BaselinePath: baselinePath,
+	}
+
+	orch2 := NewOrchestrator(cfg2)
+	orch2.Run(context.Background())
+
+	data, _ := os.ReadFile(outputPath2)
+	var report reporters.JSONReport
+	json.Unmarshal(data, &report)
+
+	// All findings should be suppressed since nothing changed
+	if report.Total != 0 {
+		t.Errorf("expected 0 new findings (all in baseline), got %d", report.Total)
+	}
+}

@@ -12,8 +12,8 @@
 | 0 | Foundation | ✅ Complete | Project skeleton, models, CI |
 | 1 | Passive Scanner | ✅ Complete | Headers, CORS, exposure checks |
 | 2 | Auth Scanner | ✅ Complete | JWT, auth bypass detection |
-| 3 | Python Engine | 🔲 Not Started | Secrets, Semgrep, spec parser |
-| 4 | Orchestration | 🔲 Not Started | Hybrid scan, correlator |
+| 3 | Python Engine | ✅ Complete | Secrets, Semgrep, spec parser |
+| 4 | Orchestration | ✅ Complete | Hybrid scan, correlator |
 | 5 | Active Scanner | 🔲 Not Started | Injection probes (opt-in) |
 | 6 | Reporting | 🔲 Not Started | HTML, SARIF, baseline diff |
 | 7 | Distribution | 🔲 Not Started | Build, Docker, install script |

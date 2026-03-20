@@ -23,8 +23,9 @@ type ScanConfig struct {
 	Checks       []string
 	Verbose      bool
 	IgnorePath   string
-	BaselinePath string
-	OutputPath   string
+	BaselinePath     string
+	SaveBaselinePath string
+	OutputPath       string
 	Format       string
 	FailOn       string
 }

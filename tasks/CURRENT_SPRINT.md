@@ -4,27 +4,13 @@
 
 ---
 
-## Active Phase: 3 — Python Engine
+## Active Phase: 5 — Active Scanner (next)
 
-**Sprint goal:** Build a standalone Python static analysis engine that reads ScanRequest from stdin and streams Finding JSON to stdout.
-
----
-
-## Previous Sprint (Phase 2 — Auth Scanner) ✅ Complete
-
-| ID | Task | Status | Notes |
-|---|---|---|---|
-| TASK-021 | AuthContext model and multi-source resolution | ✅ | 4 auth types, auto-detect, flag→env→profile, 30 tests |
-| TASK-022 | Unauthenticated access check | ✅ | CRITICAL if 200 without auth, 3 tests |
-| TASK-023 | JWT validation bypass checks (3 scenarios) | ✅ | Malformed, expired, alg:none — all CRITICAL, 8 tests |
-| TASK-024 | IDOR two-account check | ✅ | --auth-user2, response comparison, 5 tests |
-| TASK-025 | Credential masking in all reporters | ✅ | SanitizeFindings, 7 tests |
-| TASK-026 | ~/.fendix/profiles/ config system | ✅ | YAML profiles, ProfileLoader, 8 tests |
-| TASK-027 | Tests: auth checks against mock JWT server | ✅ | Realistic JWT validator, 5 integration tests |
+**Sprint goal:** Implement optional injection probing — SQL injection, command injection, header injection. Off by default, requires `--enable-active`.
 
 ---
 
-## This Sprint's Tasks (Phase 3 — COMPLETE ✅)
+## Previous Sprint (Phase 3 — Python Engine) ✅ Complete
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
@@ -39,33 +25,48 @@
 | TASK-036 | Dependency CVE checker (PyPI + npm) | ✅ | Local vuln list + pip-audit/npm-audit, 32 tests |
 | TASK-037 | Performance test: engine startup and scan time | ✅ | Startup < 2s measured, 7 tests |
 
+---
+
+## This Sprint's Tasks (Phase 4 — COMPLETE ✅)
+
+| ID | Task | Status | Notes |
+|---|---|---|---|
+| TASK-038 | Subprocess spawner with stdin/stdout wiring | ✅ | PythonSpawner, ScanRequest, mock engine tests, 19 tests |
+| TASK-039 | Streaming Finding reader (Go side) | ✅ | readFindings() with malformed skip, field validation, 8 reader tests |
+| TASK-040 | Correlator with endpoint normalization | ✅ | Fuzzy endpoint match, category mapping, severity escalation, 14 tests |
+| TASK-041 | Sequential ID assignment (SEC-001...) | ✅ | Verified existing in orchestrator |
+| TASK-042 | .fendix-ignore suppression parser | ✅ | YAML, ID/endpoint/category/glob, expiry dates, 15 tests |
+| TASK-043 | Baseline diff comparison | ✅ | title+endpoint+category key, JSONReport format, 11 tests |
+| TASK-044 | --fail-on exit code logic | ✅ | Verified existing in orchestrator |
+| TASK-045 | End-to-end integration test: hybrid scan | ✅ | Mock engine, ignore, baseline, 3 integration tests |
+
 **Status:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
 
 ---
 
-## Next Sprint: Phase 4 — Orchestration & Correlation
+## Next Sprint: Phase 5 — Active Scanner
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| TASK-038 | Subprocess spawner with stdin/stdout wiring | 🔲 | Go spawns python/engine.py |
-| TASK-039 | Streaming Finding reader (Go side) | 🔲 | Read JSON lines from Python stdout |
-| TASK-040 | Correlator with endpoint normalization | 🔲 | Cross-reference black+white findings |
-| TASK-041 | Sequential ID assignment (SEC-001...) | 🔲 | Deterministic ordering |
-| TASK-042 | .fendix-ignore suppression parser | 🔲 | Suppress by rule/path/endpoint |
-| TASK-043 | Baseline diff comparison | 🔲 | --baseline / --save-baseline |
-| TASK-044 | --fail-on exit code logic | 🔲 | Exit 1 if findings at threshold |
-| TASK-045 | End-to-end integration test: hybrid scan | 🔲 | Fixture project, correlated findings |
+| TASK-046 | Safe probe framework with audit logging | 🔲 | --enable-active gate, probe audit log |
+| TASK-047 | Time-based SQLi detection (3 DB types) | 🔲 | MySQL, Postgres, MSSQL payloads |
+| TASK-048 | CMDi canary detection | 🔲 | Echo canary, no destructive payloads |
+| TASK-049 | CRLF header injection detection | 🔲 | Header injection via CRLF |
+| TASK-050 | Per-endpoint probe rate limiter | 🔲 | Max probes per endpoint |
+| TASK-051 | Tests: active probes against vulnerable mock server | 🔲 | Deliberately vulnerable endpoints |
 
-## Definition of Done for Phase 3 (ACHIEVED ✅)
+## Definition of Done for Phase 4 (ACHIEVED ✅)
 
-- [x] engine.py reads stdin ScanRequest, streams Findings, emits {"done":true}
-- [x] Secrets analyzer detects all 7 pattern types
-- [x] OpenAPI 2.0 + 3.x spec parsing with auth checks
-- [x] Semgrep rules for auth, injection, secrets
-- [x] Semgrep runner executes rules and maps results
-- [x] AST analyzer for Python + JS patterns
-- [x] Dependency CVE checker
-- [x] Engine startup < 2 seconds (measured)
+- [x] Orchestrator spawns Python engine as subprocess
+- [x] Stdin/stdout IPC working end-to-end
+- [x] Go collects streaming findings from Python
+- [x] Correlator merges matching black-box + white-box findings
+- [x] Correlated findings have elevated confidence
+- [x] Unconfirmed white-box findings marked MEDIUM confidence
+- [x] Sequential ID assignment (SEC-001, SEC-002...)
+- [x] `.fendix-ignore` suppression file working
+- [x] Baseline diff mode working (`--baseline`, `--save-baseline`)
+- [x] `--fail-on` exit code logic working (for CI/CD)
 - [x] `go build ./...` passes
-- [x] `go test ./...` passes (202 tests)
+- [x] `go test ./...` passes (179 tests)
 - [x] `python -m pytest` passes (130 tests)
