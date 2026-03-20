@@ -14,7 +14,7 @@
 | 2 | Auth Scanner | ✅ Complete | JWT, auth bypass detection |
 | 3 | Python Engine | ✅ Complete | Secrets, Semgrep, spec parser |
 | 4 | Orchestration | ✅ Complete | Hybrid scan, correlator |
-| 5 | Active Scanner | 🔲 Not Started | Injection probes (opt-in) |
+| 5 | Active Scanner | ✅ Complete | Injection probes (opt-in) |
 | 6 | Reporting | 🔲 Not Started | HTML, SARIF, baseline diff |
 | 7 | Distribution | 🔲 Not Started | Build, Docker, install script |
 | 8 | Documentation | 🔲 Not Started | README, ADRs, contributing guide |

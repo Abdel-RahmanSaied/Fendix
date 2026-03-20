@@ -74,6 +74,11 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		checks = append(checks, scanner.CheckIDOR)
 	}
 
+	if o.cfg.EnableActive {
+		scanner.PrintDisclaimer()
+		checks = append(checks, scanner.CheckInjection)
+	}
+
 	// 3. Run checks via worker pool
 	pool := NewWorkerPool(o.cfg.Workers, o.cfg.DelayMs, checks)
 	findings := pool.Run(ctx, o.cfg, endpoints)

@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 4 — Orchestration & Correlation ✅ Complete
-**Overall progress:** Phases 0–4 complete (5/9 phases done)
+**Phase:** 5 — Active Scanner ✅ Complete
+**Overall progress:** Phases 0–5 complete (6/9 phases done)
 **Last updated:** 2026-03-20
 
 ### Completed tasks
@@ -342,6 +342,12 @@ packaging>=23.0               — Dependency version comparison
 - TASK-043: Baseline diff — compare by title+endpoint+category (ID-independent), supports JSONReport and raw Finding array formats, --save-baseline saves current findings
 - TASK-044: --fail-on exit code logic — verified existing in orchestrator
 - TASK-045: End-to-end integration test — hybrid scan with mock Python engine, ignore rules integration, baseline diff integration (3 new integration tests)
+- TASK-046: Safe probe framework — ProbeAuditLog, ProbeRecord, PrintDisclaimer, --enable-active gate, CheckInjection wired into orchestrator
+- TASK-047: Time-based SQLi detection — MySQL SLEEP, Postgres pg_sleep, MSSQL WAITFOR; 3-sample median baseline; baseline+4s threshold; confirmation probe for HIGH confidence
+- TASK-048: CMDi canary detection — safe echo payload, canary reflection detection in response body, CRITICAL severity
+- TASK-049: CRLF header injection — %0d%0a Set-Cookie injection, cookie reflection check, HIGH severity
+- TASK-050: Per-endpoint probe rate limiter — MaxProbesPerEndpoint=20, enforced via audit log count before every probe
+- TASK-051: Integration tests for active probes — vulnerable mock server (CMDi+CRLF), safe server, multi-param, auth propagation, context cancellation (22 new tests)
 
 ### In progress
 *(none)*
@@ -354,41 +360,36 @@ packaging>=23.0               — Dependency version comparison
 ## Last Session Summary
 
 **Date:** 2026-03-20
-**Session goal:** Complete Phase 4 — Orchestration & Correlation (all 8 tasks)
+**Session goal:** Complete Phase 5 — Active Scanner (all 6 tasks)
 **Accomplished:**
-- PythonSpawner: Go spawns python/engine.py as subprocess, sends ScanRequest JSON via stdin pipe, reads streaming Finding JSON from stdout via bufio.Scanner, captures stderr for diagnostics, handles context cancellation (kills subprocess), handles engine crashes gracefully (19 tests)
-- Streaming Finding reader: readFindings() parses newline-delimited JSON, skips malformed lines with warning, validates required fields (title+severity), defaults empty source to "whitebox", handles done message with error field, handles missing terminator gracefully (8 reader tests)
-- Correlator: cross-references blackbox and whitebox findings by normalized endpoint + related category; normalizeEndpoint() strips scheme/host/port/query from URLs and line numbers from file paths; endpointsRelated() uses path segment overlap (filters noise words like api/v1/src/py); category mapping (auth↔auth_bypass, secrets↔data_exposure, injection↔injection); correlated findings get source=correlated, confidence=HIGH, severity escalated by one level; unconfirmed whitebox findings get confidence=MEDIUM + "[Unconfirmed by live scan]" note; references deduplicated on merge (14 correlator tests)
-- .fendix-ignore parser: YAML format with suppress by ID (exact), endpoint (path matching with glob/*), category (case-insensitive), or endpoint+category combo; expiry dates (until field, YYYY-MM-DD); expired rules skipped; ParseIgnoreFile + ApplyIgnoreRules (15 ignore tests)
-- Baseline diff: compare by title+endpoint+category key (ID-independent since IDs are reassigned each run); supports both raw Finding array and JSONReport format; SaveBaseline writes findings to JSON; graceful fallback on missing/invalid baseline file (11 baseline tests)
-- Orchestrator updated: full hybrid pipeline — crawl → blackbox checks → spawn Python → correlate → sort → assign IDs → apply ignore → apply baseline diff → save baseline → sanitize → render report; NewOrchestratorWithSpawner for testing with mock engines
-- End-to-end integration tests: hybrid scan with mock Python engine producing 2 whitebox findings (correlated 1 with blackbox), ignore rules suppressing headers category, baseline diff suppressing all known findings on second scan (3 integration tests)
-- Total: 179 Go + 130 Python = 309 tests passing
+- Safe probe framework: ProbeAuditLog with mutex-protected concurrent access, ProbeRecord capturing timestamp/endpoint/type/payload/param/method/status/duration/finding; NewProbeAuditLogWithWriter for testing; Record() writes structured [PROBE] log lines to stderr; Count() per-endpoint tracking
+- Legal disclaimer: PrintDisclaimer() prints warning to stderr when --enable-active used
+- --enable-active gate: CheckInjection returns nil immediately when EnableActive=false; orchestrator only adds CheckInjection to check list when EnableActive=true
+- Time-based SQLi detection: probeSQLi() sends 3 DB-specific payloads (MySQL SLEEP, Postgres pg_sleep, MSSQL WAITFOR DELAY); measures 3-sample median baseline response time; threshold = baseline + 4 seconds; runs confirmation probe — HIGH confidence if both delayed, MEDIUM if single; breaks on first DB type match per parameter
+- CMDi canary detection: probeCMDi() sends safe echo payload ("; echo fendix_canary_PROBE"); reads up to 1MB response body; checks for canary prefix in response; CRITICAL severity, HIGH confidence
+- CRLF header injection: probeCRLF() injects %0d%0aSet-Cookie:%20fendix=injected as raw (not double-encoded) query value; checks resp.Cookies() for fendix=injected; HIGH severity
+- Per-endpoint probe rate limiter: MaxProbesPerEndpoint=20 constant; checked via auditLog.Count() before every probe call; warning logged when limit reached
+- Orchestrator wiring: CheckInjection added to check list when cfg.EnableActive is true; PrintDisclaimer called before scan starts
+- URL encoding: buildProbeURL uses url.QueryEscape for param/payload (except CRLF which uses raw %0d%0a); addAuth helper propagates auth headers to probe requests
+- Integration tests: vulnerable mock server (CMDi + CRLF detection), safe server (no false positives), multi-param (3 CMDi findings), auth propagation verification, context cancellation graceful handling
+- Total: 201 Go + 130 Python = 331 tests passing
 
 **Decisions made:**
-- readFindings() uses 1MB buffer max for individual JSON lines (handles large evidence fields)
-- Correlator fuzzy matching: path segments must be >2 chars to avoid false matches on short names
-- Correlator noise words filtered: api, v1, v2, v3, src, py, js, go, ts, internal, routes, handlers
-- Baseline diff uses title+endpoint+category as key (not ID) since IDs are reassigned each run
-- .fendix-ignore glob: trailing /* matches prefix; trailing * without other wildcards matches prefix; general glob splits on * and matches segments
-- SaveBaseline happens before credential sanitization so baseline contains original endpoint URLs for accurate future diff
-- ScanConfig got SaveBaselinePath field added for --save-baseline flag
+- Probe payloads are URL-encoded via url.QueryEscape in query params (except CRLF which needs raw %0d%0a to test real injection)
+- CRLF payload uses %20 instead of space to keep URL valid: %0d%0aSet-Cookie:%20fendix=injected
+- MaxProbesPerEndpoint = 20 (prevents excessive probing of a single endpoint)
+- When no params are known for an endpoint, defaults to testing "id" parameter
+- SQLi confirmation: second probe sent only if first exceeds threshold; confidence escalated to HIGH only if both probes delayed
+- SQLi breaks on first matching DB type per parameter (no need to test all 3 if MySQL SLEEP already confirmed)
+- addAuth helper centralizes auth header logic for all probe types (bearer/apikey/basic/cookie)
 
 **Files created/modified:**
-- go/internal/engine/spawner.go — NEW: PythonSpawner, ScanRequest, DoneMessage, readFindings
-- go/internal/engine/spawner_test.go — NEW: 19 tests (reader + spawner + serialization)
-- go/internal/engine/correlator.go — NEW: Correlate, normalizeEndpoint, endpointsRelated, escalateSeverity, mergeFindings
-- go/internal/engine/correlator_test.go — NEW: 14 tests (correlation, normalization, helpers)
-- go/internal/engine/ignore.go — NEW: IgnoreFile, IgnoreRule, ParseIgnoreFile, ApplyIgnoreRules, globMatch
-- go/internal/engine/ignore_test.go — NEW: 15 tests (parsing, suppression by ID/endpoint/category/glob/expiry)
-- go/internal/engine/baseline.go — NEW: ApplyBaselineDiff, SaveBaseline, loadBaseline, findingKey
-- go/internal/engine/baseline_test.go — NEW: 11 tests (diff, save, formats, edge cases)
-- go/internal/engine/orchestrator.go — MODIFIED: integrated spawner, correlator, ignore, baseline into pipeline; added NewOrchestratorWithSpawner, runWhiteboxScan, hasWhitebox, hasBlackbox
-- go/internal/engine/orchestrator_test.go — MODIFIED: added 3 integration tests (hybrid, ignore, baseline)
-- go/internal/models/config.go — MODIFIED: added SaveBaselinePath field
+- go/internal/scanner/injection.go — NEW: CheckInjection, CheckInjectionWithAudit, ProbeAuditLog, ProbeRecord, probeSQLi, probeCMDi, probeCRLF, buildProbeURL, addAuth, measureBaseline, PrintDisclaimer, sqliPayloads, medianDuration
+- go/internal/scanner/injection_test.go — NEW: 22 tests (unit + integration: gate check, audit log, SQLi probes, CMDi canary, CRLF detection, URL building, auth propagation, concurrent access, vulnerable server, safe server, multi-param, context cancellation)
+- go/internal/engine/orchestrator.go — MODIFIED: added CheckInjection + PrintDisclaimer when EnableActive=true
 
 **Next session should start with:**
-- TASK-046: Implement safe probe framework with audit logging (Phase 5 — Active Scanner begins)
+- TASK-052: Finalize JSON reporter with full metadata schema (Phase 6 — Reporting begins)
 
 **Open questions:**
 - None
