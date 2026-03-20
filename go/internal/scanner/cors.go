@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 const evilOrigin = "https://evil.example.com"

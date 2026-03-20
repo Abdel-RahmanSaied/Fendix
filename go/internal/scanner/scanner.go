@@ -5,7 +5,7 @@ package scanner
 
 import "context"
 
-import "github.com/fendix/fendix/internal/models"
+import "github.com/Abdel-RahmanSaied/Fendix/internal/models"
 
 // Endpoint represents a discovered API endpoint to scan.
 type Endpoint struct {

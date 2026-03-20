@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // headerCheck defines what to look for in a single response header.

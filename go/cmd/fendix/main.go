@@ -10,8 +10,8 @@ import (
 	"os/signal"
 	"runtime"
 
-	"github.com/fendix/fendix/internal/engine"
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/spf13/cobra"
 )
 

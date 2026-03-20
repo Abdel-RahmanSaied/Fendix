@@ -54,7 +54,7 @@ The Docker image includes Python and all static analysis dependencies, so hybrid
 Requires Go 1.21+ and Python 3.9+.
 
 ```bash
-git clone https://github.com/fendix/fendix.git
+git clone https://github.com/Abdel-RahmanSaied/Fendix.git
 cd fendix
 make build
 ./bin/fendix version
@@ -465,7 +465,7 @@ package scanner
 
 import (
     "context"
-    "github.com/fendix/fendix/internal/models"
+    "github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // CheckMyThing scans for [describe what it checks].

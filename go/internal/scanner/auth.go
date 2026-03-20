@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // CheckAuth runs authentication checks on an endpoint.

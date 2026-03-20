@@ -3,7 +3,7 @@ package reporters
 import (
 	"strings"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // SanitizeFindings replaces any occurrence of auth credential values

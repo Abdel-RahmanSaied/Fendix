@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/fendix/fendix/internal/models"
-	"github.com/fendix/fendix/internal/scanner"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
 
 func TestWorkerPool_RunsAllChecks(t *testing.T) {

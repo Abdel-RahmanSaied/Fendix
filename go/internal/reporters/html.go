@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 const htmlTemplate = `<!DOCTYPE html>

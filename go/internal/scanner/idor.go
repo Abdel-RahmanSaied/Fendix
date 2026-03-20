@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 const idorMaxBodySize = 64 * 1024 // 64KB for response comparison

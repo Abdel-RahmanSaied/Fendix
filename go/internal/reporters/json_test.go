@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 func sampleFindings() []models.Finding {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // newAuthTestServer creates a mock server that validates auth:

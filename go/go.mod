@@ -1,4 +1,4 @@
-module github.com/fendix/fendix
+module github.com/Abdel-RahmanSaied/Fendix
 
 go 1.21
 

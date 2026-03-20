@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // ScanMetadata contains metadata about the scan run for report output.

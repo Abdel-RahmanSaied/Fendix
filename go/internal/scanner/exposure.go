@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 const maxEvidenceLen = 200

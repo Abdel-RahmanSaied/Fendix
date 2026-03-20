@@ -9,9 +9,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
-	"github.com/fendix/fendix/internal/reporters"
-	"github.com/fendix/fendix/internal/scanner"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
 
 // Orchestrator coordinates the full scan lifecycle:

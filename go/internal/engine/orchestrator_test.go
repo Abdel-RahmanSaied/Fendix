@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fendix/fendix/internal/models"
-	"github.com/fendix/fendix/internal/reporters"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 )
 
 // newVulnerableServer creates a mock API server with deliberate security issues

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fendix/fendix/internal/models"
-	"github.com/fendix/fendix/internal/scanner"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
 
 // WorkerPool runs scanner checks concurrently across endpoints using a bounded goroutine pool.

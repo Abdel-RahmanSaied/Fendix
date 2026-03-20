@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fendix/fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 func TestSanitizeFindings_RedactsAuthValues(t *testing.T) {
