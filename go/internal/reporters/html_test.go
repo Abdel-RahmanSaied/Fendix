@@ -16,6 +16,7 @@ func TestRenderHTML_ValidOutput(t *testing.T) {
 		StartedAt: time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC),
 		Duration:  "12.5s",
 		Version:   "dev",
+		Mode:      "blackbox",
 	}
 
 	err := RenderHTML(&buf, sampleFindings(), meta)
@@ -154,5 +155,149 @@ func TestRenderHTML_WithLineField(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "src/app.py:42") {
 		t.Error("expected line reference in HTML output")
+	}
+}
+
+func TestRenderHTML_ContainsSortButtons(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+
+	err := RenderHTML(&buf, sampleFindings(), meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "sortFindings") {
+		t.Error("missing sortFindings JavaScript function")
+	}
+	if !strings.Contains(html, `sortFindings('severity'`) {
+		t.Error("missing severity sort button")
+	}
+	if !strings.Contains(html, `sortFindings('endpoint'`) {
+		t.Error("missing endpoint sort button")
+	}
+	if !strings.Contains(html, `sortFindings('source'`) {
+		t.Error("missing source sort button")
+	}
+}
+
+func TestRenderHTML_ContainsExpandCollapseButtons(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+
+	err := RenderHTML(&buf, sampleFindings(), meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "toggleAll") {
+		t.Error("missing toggleAll JavaScript function")
+	}
+	if !strings.Contains(html, "Expand All") {
+		t.Error("missing Expand All button")
+	}
+	if !strings.Contains(html, "Collapse All") {
+		t.Error("missing Collapse All button")
+	}
+}
+
+func TestRenderHTML_ContainsSeverityDataAttributes(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "Critical Issue", Severity: models.SeverityCritical, Source: models.SourceBlackbox, References: []string{}},
+		{ID: "SEC-002", Title: "Low Issue", Severity: models.SeverityLow, Source: models.SourceWhitebox, References: []string{}},
+	}
+
+	err := RenderHTML(&buf, findings, meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `data-severity="4"`) {
+		t.Error("missing severity rank data attribute for CRITICAL (4)")
+	}
+	if !strings.Contains(html, `data-severity="1"`) {
+		t.Error("missing severity rank data attribute for LOW (1)")
+	}
+	if !strings.Contains(html, `data-source="blackbox"`) {
+		t.Error("missing source data attribute")
+	}
+}
+
+func TestRenderHTML_PrintCSS(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+
+	err := RenderHTML(&buf, sampleFindings(), meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "@media print") {
+		t.Error("missing print media query")
+	}
+	if !strings.Contains(html, "display:block !important") {
+		t.Error("print CSS should force finding bodies to display:block")
+	}
+	if !strings.Contains(html, ".toolbar{display:none}") {
+		t.Error("print CSS should hide toolbar")
+	}
+}
+
+func TestRenderHTML_ContainsMode(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "hybrid"}
+
+	err := RenderHTML(&buf, sampleFindings(), meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "hybrid scan") {
+		t.Error("missing scan mode in subtitle")
+	}
+	if !strings.Contains(html, "Mode: hybrid") {
+		t.Error("missing mode in metadata footer")
+	}
+}
+
+func TestRenderHTML_ContainsFindingID(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "Test Finding", Severity: models.SeverityHigh, Source: models.SourceBlackbox, References: []string{}},
+	}
+
+	err := RenderHTML(&buf, findings, meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "SEC-001") {
+		t.Error("expected finding ID in HTML output")
+	}
+}
+
+func TestRenderHTML_ContainsCategory(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "Test", Severity: models.SeverityHigh, Source: models.SourceBlackbox, Category: "injection", References: []string{}},
+	}
+
+	err := RenderHTML(&buf, findings, meta)
+	if err != nil {
+		t.Fatalf("RenderHTML failed: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "injection") {
+		t.Error("expected category in finding body")
 	}
 }

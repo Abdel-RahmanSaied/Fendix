@@ -97,7 +97,7 @@ paths:
 		OutputPath: outputPath,
 	}
 
-	orch := NewOrchestrator(cfg)
+	orch := NewOrchestrator(cfg, "dev")
 	exitCode := orch.Run(context.Background())
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
@@ -182,7 +182,7 @@ paths:
 		OutputPath: outputPath,
 	}
 
-	orch := NewOrchestrator(cfg)
+	orch := NewOrchestrator(cfg, "dev")
 	exitCode := orch.Run(context.Background())
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
@@ -231,7 +231,7 @@ paths:
 		FailOn:     "CRITICAL",
 	}
 
-	orch := NewOrchestrator(cfg)
+	orch := NewOrchestrator(cfg, "dev")
 	exitCode := orch.Run(context.Background())
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1 for --fail-on CRITICAL (password in response), got %d", exitCode)
@@ -244,7 +244,7 @@ func TestOrchestrator_NoEndpoints(t *testing.T) {
 		Workers: 1,
 	}
 
-	orch := NewOrchestrator(cfg)
+	orch := NewOrchestrator(cfg, "dev")
 	exitCode := orch.Run(context.Background())
 	if exitCode != 2 {
 		t.Fatalf("expected exit code 2 for no endpoints, got %d", exitCode)
@@ -421,7 +421,7 @@ ignore:
 		IgnorePath: ignorePath,
 	}
 
-	orch := NewOrchestrator(cfg)
+	orch := NewOrchestrator(cfg, "dev")
 	orch.Run(context.Background())
 
 	data, _ := os.ReadFile(outputPath)
@@ -471,7 +471,7 @@ paths:
 		SaveBaselinePath: baselinePath,
 	}
 
-	orch1 := NewOrchestrator(cfg1)
+	orch1 := NewOrchestrator(cfg1, "dev")
 	orch1.Run(context.Background())
 
 	// Verify baseline was saved
@@ -492,7 +492,7 @@ paths:
 		BaselinePath: baselinePath,
 	}
 
-	orch2 := NewOrchestrator(cfg2)
+	orch2 := NewOrchestrator(cfg2, "dev")
 	orch2.Run(context.Background())
 
 	data, _ := os.ReadFile(outputPath2)

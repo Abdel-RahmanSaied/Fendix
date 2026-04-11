@@ -61,6 +61,11 @@ func TestRenderJSON_ValidOutput(t *testing.T) {
 	if report.Metadata.Target != "https://api.example.com" {
 		t.Errorf("unexpected target: %s", report.Metadata.Target)
 	}
+
+	// Verify source counts
+	if report.Sources.Blackbox != 7 {
+		t.Errorf("expected 7 blackbox sources, got %d", report.Sources.Blackbox)
+	}
 }
 
 func TestRenderJSON_EmptyFindings(t *testing.T) {
@@ -116,5 +121,82 @@ func TestCountSeverities_Empty(t *testing.T) {
 	counts := CountSeverities(nil)
 	if counts.Critical != 0 || counts.High != 0 || counts.Medium != 0 || counts.Low != 0 || counts.Info != 0 {
 		t.Errorf("expected all zeros, got %+v", counts)
+	}
+}
+
+func TestCountSources(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "SEC-001", Source: models.SourceBlackbox},
+		{ID: "SEC-002", Source: models.SourceBlackbox},
+		{ID: "SEC-003", Source: models.SourceWhitebox},
+		{ID: "SEC-004", Source: models.SourceCorrelated},
+		{ID: "SEC-005", Source: models.SourceCorrelated},
+		{ID: "SEC-006", Source: models.SourceCorrelated},
+	}
+	counts := CountSources(findings)
+	if counts.Blackbox != 2 {
+		t.Errorf("expected 2 blackbox, got %d", counts.Blackbox)
+	}
+	if counts.Whitebox != 1 {
+		t.Errorf("expected 1 whitebox, got %d", counts.Whitebox)
+	}
+	if counts.Correlated != 3 {
+		t.Errorf("expected 3 correlated, got %d", counts.Correlated)
+	}
+}
+
+func TestCountSources_Empty(t *testing.T) {
+	counts := CountSources(nil)
+	if counts.Blackbox != 0 || counts.Whitebox != 0 || counts.Correlated != 0 {
+		t.Errorf("expected all zeros, got %+v", counts)
+	}
+}
+
+func TestRenderJSON_IncludesSourceCounts(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{
+		Target:         "https://api.example.com",
+		Version:        "dev",
+		Mode:           "hybrid",
+		EndpointsCount: 15,
+		ActiveProbes:   true,
+		ChecksRun:      []string{"headers", "cors", "injection"},
+	}
+	findings := []models.Finding{
+		{ID: "SEC-001", Source: models.SourceBlackbox, Severity: models.SeverityHigh, References: []string{}},
+		{ID: "SEC-002", Source: models.SourceWhitebox, Severity: models.SeverityMedium, References: []string{}},
+		{ID: "SEC-003", Source: models.SourceCorrelated, Severity: models.SeverityCritical, References: []string{}},
+	}
+
+	err := RenderJSON(&buf, findings, meta)
+	if err != nil {
+		t.Fatalf("RenderJSON failed: %v", err)
+	}
+
+	var report JSONReport
+	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if report.Sources.Blackbox != 1 {
+		t.Errorf("expected 1 blackbox, got %d", report.Sources.Blackbox)
+	}
+	if report.Sources.Whitebox != 1 {
+		t.Errorf("expected 1 whitebox, got %d", report.Sources.Whitebox)
+	}
+	if report.Sources.Correlated != 1 {
+		t.Errorf("expected 1 correlated, got %d", report.Sources.Correlated)
+	}
+	if report.Metadata.Mode != "hybrid" {
+		t.Errorf("expected mode hybrid, got %s", report.Metadata.Mode)
+	}
+	if report.Metadata.EndpointsCount != 15 {
+		t.Errorf("expected 15 endpoints, got %d", report.Metadata.EndpointsCount)
+	}
+	if report.Metadata.ActiveProbes != true {
+		t.Error("expected active_probes true")
+	}
+	if len(report.Metadata.ChecksRun) != 3 {
+		t.Errorf("expected 3 checks, got %d", len(report.Metadata.ChecksRun))
 	}
 }

@@ -54,6 +54,7 @@ def main() -> None:
     counter = 0
 
     def emit_finding(f: dict) -> None:
+        """Emit a single finding to stdout and increment the counter."""
         nonlocal counter
         counter += 1
         emit(f)

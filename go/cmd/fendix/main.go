@@ -5,13 +5,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/spf13/cobra"
 )
 
@@ -122,7 +125,7 @@ func newScanCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer cancel()
 
-			orch := engine.NewOrchestrator(cfg)
+			orch := engine.NewOrchestrator(cfg, Version)
 			exitCode := orch.Run(ctx)
 			if exitCode != 0 {
 				os.Exit(exitCode)
@@ -161,8 +164,45 @@ func newReportCmd() *cobra.Command {
 		Short: "Re-render a saved findings file",
 		Long:  "Convert a previously saved JSON findings file to HTML or SARIF format.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("report: not yet implemented (Phase 6)")
-			return nil
+			flags := cmd.Flags()
+			inputPath, _ := flags.GetString("input")
+			formatFlag, _ := flags.GetString("format")
+			outputPath, _ := flags.GetString("output")
+
+			if inputPath == "" {
+				return fmt.Errorf("--input is required: path to a findings JSON file")
+			}
+
+			data, err := os.ReadFile(inputPath)
+			if err != nil {
+				return fmt.Errorf("reading input file %s: %w", inputPath, err)
+			}
+
+			var report reporters.JSONReport
+			if err := json.Unmarshal(data, &report); err != nil {
+				return fmt.Errorf("parsing JSON report from %s — ensure it was produced by 'fendix scan --format json': %w", inputPath, err)
+			}
+
+			var w io.Writer = os.Stdout
+			if outputPath != "" {
+				f, err := os.Create(outputPath)
+				if err != nil {
+					return fmt.Errorf("creating output file %s: %w", outputPath, err)
+				}
+				defer f.Close()
+				w = f
+			}
+
+			switch formatFlag {
+			case "html":
+				return reporters.RenderHTML(w, report.Findings, report.Metadata)
+			case "sarif":
+				return reporters.RenderSARIF(w, report.Findings, report.Metadata)
+			case "json":
+				return reporters.RenderJSON(w, report.Findings, report.Metadata)
+			default:
+				return fmt.Errorf("unsupported format %q — use json, html, or sarif", formatFlag)
+			}
 		},
 	}
 

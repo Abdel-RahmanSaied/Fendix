@@ -4,6 +4,10 @@ bin/
 # Go
 go/vendor/
 
+# Embedded engine (build artifact — only .gitkeep is tracked)
+go/internal/embedded/engine/*
+!go/internal/embedded/engine/.gitkeep
+
 # Python
 __pycache__/
 *.pyc
@@ -16,8 +20,12 @@ venv/
 
 # Testing
 .pytest_cache/
+.hypothesis/
 .coverage
 htmlcov/
+
+# Claude Code
+.claude/
 
 # IDE
 .idea/
@@ -41,4 +49,3 @@ Thumbs.db
 
 # Archives
 *.zip
-bin/fendix

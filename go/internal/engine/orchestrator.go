@@ -22,10 +22,18 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator creates an orchestrator from scan config.
-func NewOrchestrator(cfg *models.ScanConfig) *Orchestrator {
+// It resolves the Python engine directory using EnsureEngine:
+// embedded extraction → local fallback → error.
+func NewOrchestrator(cfg *models.ScanConfig, version string) *Orchestrator {
+	engineDir, err := EnsureEngine("", version)
+	if err != nil {
+		slog.Warn("python engine not available — whitebox scanning disabled", "error", err)
+		engineDir = "" // spawner will fail gracefully if whitebox is requested
+	}
+
 	return &Orchestrator{
 		cfg:     cfg,
-		spawner: NewPythonSpawner("", ""),
+		spawner: NewPythonSpawner("", engineDir),
 	}
 }
 
@@ -46,7 +54,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	crawler := scanner.NewCrawler(o.cfg)
 	endpoints, err := crawler.CrawlEndpoints(ctx)
 	if err != nil {
-		slog.Error("endpoint discovery failed", "error", err)
+		slog.Error("endpoint discovery failed — check --url is reachable and --spec is valid YAML/JSON", "error", err)
 		return 2
 	}
 
@@ -85,8 +93,15 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 
 	// 4. Spawn Python engine for white-box analysis (if code path or spec provided)
 	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
-		wbFindings := o.runWhiteboxScan(ctx)
-		findings = append(findings, wbFindings...)
+		pyStatus := CheckPython(o.spawner.pythonBin)
+		if !pyStatus.Available {
+			slog.Warn("python not available — skipping whitebox analysis")
+			fmt.Fprintln(os.Stderr, "fendix: "+PythonRequiredMessage())
+		} else {
+			slog.Info("python available", "version", pyStatus.Version, "binary", pyStatus.Binary)
+			wbFindings := o.runWhiteboxScan(ctx)
+			findings = append(findings, wbFindings...)
+		}
 	}
 
 	// 5. Correlate black-box and white-box findings
@@ -114,7 +129,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	if o.cfg.IgnorePath != "" {
 		ignoreFile, err := ParseIgnoreFile(o.cfg.IgnorePath)
 		if err != nil {
-			slog.Error("failed to parse ignore file", "path", o.cfg.IgnorePath, "error", err)
+			slog.Error("failed to parse ignore file — check YAML syntax and file path", "path", o.cfg.IgnorePath, "error", err)
 		} else {
 			findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
 		}
@@ -126,17 +141,45 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	}
 
 	duration := time.Since(startTime)
+
+	// Determine scan mode for metadata
+	scanMode := "blackbox"
+	if (o.cfg.CodePath != "" || o.cfg.SpecPath != "") && o.cfg.URL != "" {
+		scanMode = "hybrid"
+	} else if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
+		scanMode = "whitebox"
+	}
+
+	// Build list of check names that were run
+	checksRun := []string{"headers", "cors", "exposure", "ratelimit"}
+	if o.cfg.Auth != nil {
+		checksRun = append(checksRun, "auth")
+	}
+	if o.cfg.Auth != nil && o.cfg.AuthUser2 != nil {
+		checksRun = append(checksRun, "idor")
+	}
+	if o.cfg.EnableActive {
+		checksRun = append(checksRun, "injection")
+	}
+	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
+		checksRun = append(checksRun, "secrets", "semgrep", "deps")
+	}
+
 	meta := reporters.ScanMetadata{
-		Target:    o.cfg.URL,
-		StartedAt: startTime,
-		Duration:  duration.Round(time.Millisecond).String(),
-		Version:   "dev",
+		Target:         o.cfg.URL,
+		StartedAt:      startTime,
+		Duration:       duration.Round(time.Millisecond).String(),
+		Version:        "dev",
+		Mode:           scanMode,
+		EndpointsCount: len(endpoints),
+		ActiveProbes:   o.cfg.EnableActive,
+		ChecksRun:      checksRun,
 	}
 
 	// 10. Save baseline if requested (before sanitization, so credentials are available for future diff)
 	if o.cfg.SaveBaselinePath != "" {
 		if err := SaveBaseline(findings, o.cfg.SaveBaselinePath); err != nil {
-			slog.Error("failed to save baseline", "error", err)
+			slog.Error("failed to save baseline — check that the directory exists and is writable", "error", err)
 		}
 	}
 
@@ -145,7 +188,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 
 	// 12. Render report
 	if err := o.renderReport(findings, meta); err != nil {
-		slog.Error("report rendering failed", "error", err)
+		slog.Error("report rendering failed — check --output path is writable and --format is json/html/sarif", "error", err)
 		return 2
 	}
 
@@ -179,10 +222,12 @@ func (o *Orchestrator) renderReport(findings []models.Finding, meta reporters.Sc
 	switch o.cfg.Format {
 	case "html":
 		return reporters.RenderHTML(w, findings, meta)
+	case "sarif":
+		return reporters.RenderSARIF(w, findings, meta)
 	case "json", "":
 		return reporters.RenderJSON(w, findings, meta)
 	default:
-		return fmt.Errorf("unsupported format: %s", o.cfg.Format)
+		return fmt.Errorf("unsupported format %q — use json, html, or sarif", o.cfg.Format)
 	}
 }
 
@@ -194,7 +239,7 @@ func (o *Orchestrator) checkFailOn(findings []models.Finding) int {
 
 	threshold := models.SeverityRank(models.Severity(o.cfg.FailOn))
 	if threshold == 0 {
-		slog.Warn("invalid --fail-on value, ignoring", "value", o.cfg.FailOn)
+		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
 		return 0
 	}
 
@@ -223,7 +268,7 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
 
 	result := o.spawner.Run(ctx, req)
 	if result.Err != nil {
-		slog.Error("python engine failed", "error", result.Err)
+		slog.Error("python engine failed — ensure Python 3 is installed and python/requirements.txt dependencies are available", "error", result.Err)
 		// Return whatever findings we collected before the error
 		return result.Findings
 	}

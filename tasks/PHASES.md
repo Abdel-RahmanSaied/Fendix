@@ -15,10 +15,10 @@
 | 3 | Python Engine | ✅ Complete | Secrets, Semgrep, spec parser |
 | 4 | Orchestration | ✅ Complete | Hybrid scan, correlator |
 | 5 | Active Scanner | ✅ Complete | Injection probes (opt-in) |
-| 6 | Reporting | 🔲 Not Started | HTML, SARIF, baseline diff |
-| 7 | Distribution | 🔲 Not Started | Build, Docker, install script |
-| 8 | Documentation | 🔲 Not Started | README, ADRs, contributing guide |
-| 9 | Hardening | 🔲 Not Started | Perf, edge cases, security review |
+| 6 | Reporting | ✅ Complete | HTML, SARIF, baseline diff |
+| 7 | Distribution | ✅ Complete | Build, Docker, install script |
+| 8 | Documentation | ✅ Complete | README, ADRs, contributing guide |
+| 9 | Hardening | ✅ Complete | Perf, edge cases, security review |
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
 

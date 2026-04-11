@@ -1,0 +1,14 @@
+.git
+bin/
+*.md
+docs/
+tasks/
+.github/
+.vscode/
+.idea/
+__pycache__/
+.pytest_cache/
+*.pyc
+python/tests/
+go/internal/embedded/engine/*
+!go/internal/embedded/engine/.gitkeep

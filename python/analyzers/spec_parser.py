@@ -42,6 +42,8 @@ class SpecParser:
         spec = self.load()
         results: list[dict] = []
         paths = spec.get("paths") or {}
+        if not isinstance(paths, dict):
+            return results
         for path, path_item in paths.items():
             if not isinstance(path_item, dict):
                 continue
@@ -256,12 +258,22 @@ class SpecParser:
     # ------------------------------------------------------------------
 
     def _parse_file(self) -> dict:
-        """Read and parse the spec file (YAML or JSON)."""
+        """Read and parse the spec file (YAML or JSON).
+
+        Always returns a dict. Raises ValueError if the parsed content
+        is not a dict (e.g., empty file, scalar value, list).
+        """
         path = Path(self.spec_path)
         text = path.read_text(encoding="utf-8")
         if path.suffix in {".json"}:
-            return json.loads(text)
-        return yaml.safe_load(text)  # handles both YAML and JSON
+            result = json.loads(text)
+        else:
+            result = yaml.safe_load(text)  # handles both YAML and JSON
+        if not isinstance(result, dict):
+            raise ValueError(
+                f"Expected a YAML/JSON object (dict) but got {type(result).__name__}"
+            )
+        return result
 
     def _version(self, spec: dict) -> str:
         """Return '2' for Swagger 2.0, '3' for OpenAPI 3.x."""
@@ -272,6 +284,10 @@ class SpecParser:
     def _security_schemes(self, spec: dict) -> dict[str, Any]:
         """Return security scheme definitions, abstracting 2.0 vs 3.x structure."""
         if self._version(spec) == "2":
-            return spec.get("securityDefinitions") or {}
-        components = spec.get("components") or {}
-        return components.get("securitySchemes") or {}
+            defs = spec.get("securityDefinitions")
+            return defs if isinstance(defs, dict) else {}
+        components = spec.get("components")
+        if not isinstance(components, dict):
+            return {}
+        schemes = components.get("securitySchemes")
+        return schemes if isinstance(schemes, dict) else {}

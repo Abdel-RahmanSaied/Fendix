@@ -23,6 +23,9 @@ jobs:
         with:
           go-version: "1.21"
 
+      - name: Bundle Python engine
+        run: cd .. && make embed-engine
+
       - name: Build
         run: go build ./...
 

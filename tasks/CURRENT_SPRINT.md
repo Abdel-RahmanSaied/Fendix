@@ -4,9 +4,9 @@
 
 ---
 
-## Active Phase: 5 — Active Scanner ✅ Complete
+## Active Phase: 9 — Hardening ✅ Complete
 
-**Sprint goal:** Implement optional injection probing — SQL injection, command injection, header injection. Off by default, requires `--enable-active`.
+**Sprint goal:** Production-ready. Edge cases handled. Performance validated. Security of the tool itself reviewed.
 
 ---
 
@@ -25,44 +25,83 @@
 
 ---
 
-## This Sprint's Tasks (Phase 5 — COMPLETE ✅)
+## This Sprint's Tasks (Phase 8 — COMPLETE ✅)
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| TASK-046 | Safe probe framework with audit logging | ✅ | ProbeAuditLog, ProbeRecord, PrintDisclaimer, --enable-active gate, wired into orchestrator |
-| TASK-047 | Time-based SQLi detection (3 DB types) | ✅ | MySQL SLEEP, Postgres pg_sleep, MSSQL WAITFOR; baseline+4s threshold; confirmation probe for HIGH confidence |
-| TASK-048 | CMDi canary detection | ✅ | Safe echo payload, canary reflection detection in response body |
-| TASK-049 | CRLF header injection detection | ✅ | %0d%0a Set-Cookie injection, cookie reflection check |
-| TASK-050 | Per-endpoint probe rate limiter | ✅ | MaxProbesPerEndpoint=20, checked before every probe via audit log count |
-| TASK-051 | Tests: active probes against vulnerable mock server | ✅ | 22 tests: vulnerable server, safe server, multi-param, auth propagation, context cancellation |
+| TASK-065 | Write README.md (all 10 sections) | ✅ | Already complete from prior session; verified all 10 sections present |
+| TASK-066 | Write CONTRIBUTING.md | ✅ | Dev setup, check examples (Go/Python/Semgrep), coding standards, IPC contract, PR process |
+| TASK-067 | Write docs/checks/ — one page per check | ✅ | 11 check docs: headers, cors, auth, exposure, ratelimit, injection, secrets, semgrep, spec-parser, ast-analyzer, deps |
+| TASK-068 | Complete all ADRs | ✅ | 4 new ADRs (003-006): severity scoring, active probe safety, embedded engine, report formats; total 6 |
+| TASK-069 | Write CHANGELOG.md | ✅ | Keep a Changelog format; all features under [Unreleased] |
+| TASK-070 | Audit all godoc comments (Go) | ✅ | 92 exported symbols verified; 0 missing |
+| TASK-071 | Audit all docstrings (Python) | ✅ | 16 public symbols; 1 missing fixed (emit_finding); 0 missing |
 
 **Status:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
 
 ---
 
-## Definition of Done for Phase 5 (ACHIEVED ✅)
+## Definition of Done for Phase 8 (ACHIEVED ✅)
 
-- [x] `--enable-active` flag gates all active probes
-- [x] Time-based SQLi detection (MySQL, Postgres, MSSQL payloads)
-- [x] Baseline response time measurement (3-sample median)
-- [x] Safe CMDi detection (echo canary, no destructive payloads)
-- [x] CRLF header injection detection
-- [x] Max probe limit per endpoint enforced (20)
-- [x] Full audit log of every probe sent
-- [x] Legal disclaimer printed when `--enable-active` used
+- [x] README.md complete (all 10 sections)
+- [x] `docs/adr/` — all architectural decisions documented (6 ADRs)
+- [x] `docs/checks/` — one page per check (11 files)
+- [x] `CONTRIBUTING.md` — how to add a new check, development setup
+- [x] `CHANGELOG.md` — maintained from first release
+- [x] All Go exported symbols have godoc comments (92/92)
+- [x] All Python public functions have docstrings (16/16)
 - [x] `go build ./...` passes
-- [x] `go test ./...` passes (201 tests)
+- [x] `go test ./...` passes (385 tests)
 - [x] `python -m pytest` passes (130 tests)
 
 ---
 
-## Next Sprint: Phase 6 — Reporting
+## This Sprint's Tasks (Phase 9 — COMPLETE ✅)
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| TASK-052 | Finalize JSON reporter with full metadata schema | 🔲 | |
-| TASK-053 | Finalize HTML reporter with sorting, expand/collapse, print CSS | 🔲 | |
-| TASK-054 | Implement SARIF 2.1.0 reporter | 🔲 | |
-| TASK-055 | Validate SARIF output against official schema | 🔲 | |
-| TASK-056 | Implement fendix report re-render command | 🔲 | |
-| TASK-057 | Add GitHub Actions example workflow to docs | 🔲 | |
+| TASK-072 | Write performance benchmark suite | ✅ | readFindings, Correlate, normalizeEndpoint, CalculateSeverity, RenderJSON/HTML/SARIF benchmarks with -benchmem |
+| TASK-073 | Fuzz test Finding JSON parser | ✅ | Go native fuzzing; FuzzReadFindings (362k+ execs), FuzzNormalizeEndpoint (204k+ execs); 0 panics |
+| TASK-074 | Fuzz test OpenAPI spec parser | ✅ | Python hypothesis; 8 fuzz tests; found+fixed 3 real bugs (_parse_file None, paths type, components type) |
+| TASK-075 | Self-audit: run Fendix against Fendix codebase | ✅ | 17 findings all from test fixtures; 0 production vulnerabilities; automated self-audit test |
+| TASK-076 | Resilience testing | ✅ | 12 scanner + 17 engine tests: garbage, timeout, cancel, conn refused, invalid URL, slow drip, malformed streams |
+| TASK-077 | Memory profiling on large scan simulation | ✅ | 2000 findings: 2.3KB/finding; 1000 correlation: 15MB; all under budget |
+| TASK-078 | Audit all error messages for actionability | ✅ | 7 messages improved with "what to do" guidance |
+
+**Status:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
+
+---
+
+## Definition of Done for Phase 9 (ACHIEVED ✅)
+
+- [x] Performance benchmarks: readFindings 4ms/1000, CalculateSeverity 27ns, RenderJSON 2.4ms/1000
+- [x] Python engine startup < 2 seconds (verified in Phase 3)
+- [x] Fuzz testing on Finding JSON parser — 362k+ executions, 0 panics
+- [x] Fuzz testing on OpenAPI spec parser — 3 real bugs found and fixed
+- [x] Self-audit: Fendix against itself — 0 production vulnerabilities
+- [x] Malformed responses handled without panic (12 scanner resilience tests)
+- [x] Network timeouts handled without hanging (timeout + context cancel tests)
+- [x] Python engine crash handled without crashing Go binary (verified in spawner tests)
+- [x] Memory profiled for large scans: 2.3KB/finding, 15MB/1000 correlations
+- [x] All error messages are actionable (7 improved)
+- [x] `go build ./...` passes
+- [x] `go test ./...` passes (~454 tests)
+- [x] `python -m pytest` passes (140 tests)
+
+---
+
+## All Phases Complete 🎉
+
+All 9 phases and 78 tasks are done.
+
+### v0.1.0 Release Prep ✅
+
+| Item | Status | Notes |
+|---|---|---|
+| LICENSE file (MIT) | ✅ | Was missing — created |
+| .fendix-ignore.example | ✅ | Was missing (referenced in README) — created with all rule types |
+| CHANGELOG.md versioned | ✅ | [Unreleased] → [0.1.0] - 2026-04-11 |
+| Version updated to 0.1.0 | ✅ | MEMORY.md updated |
+| Build green | ✅ | Go build + tests, Python 140 tests |
+
+**Ready for:** `git tag -a v0.1.0 -m "Fendix v0.1.0 — initial release"` and push.

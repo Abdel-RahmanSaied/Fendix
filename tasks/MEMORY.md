@@ -14,7 +14,7 @@
 | **Type** | Hybrid API & code security scanner |
 | **Tagline** | Find vulnerabilities before attackers do |
 | **Repository** | github.com/yourusername/fendix |
-| **Current version** | 0.0.0 (pre-release) |
+| **Current version** | 0.1.0 |
 | **License** | MIT |
 | **Started** | [DATE] |
 
@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 5 — Active Scanner ✅ Complete
-**Overall progress:** Phases 0–5 complete (6/9 phases done)
-**Last updated:** 2026-03-20
+**Phase:** Release — v0.1.0 ready
+**Overall progress:** All 9 phases + release prep complete
+**Last updated:** 2026-04-12
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -348,6 +348,33 @@ packaging>=23.0               — Dependency version comparison
 - TASK-049: CRLF header injection — %0d%0a Set-Cookie injection, cookie reflection check, HIGH severity
 - TASK-050: Per-endpoint probe rate limiter — MaxProbesPerEndpoint=20, enforced via audit log count before every probe
 - TASK-051: Integration tests for active probes — vulnerable mock server (CMDi+CRLF), safe server, multi-param, auth propagation, context cancellation (22 new tests)
+- TASK-052: Finalize JSON reporter — added Mode, EndpointsCount, ActiveProbes, ChecksRun to ScanMetadata; added SourceCounts (blackbox/whitebox/correlated) to JSONReport; orchestrator populates all new fields
+- TASK-053: Finalize HTML reporter — JavaScript sorting by severity/endpoint/source; Expand All/Collapse All buttons; data-severity/data-source attributes for sort; finding ID + category displayed; enhanced print CSS (force body display, hide toolbar, readable colors)
+- TASK-054: Implement SARIF 2.1.0 reporter — full SARIF 2.1.0 output with tool/driver/rules/results; severity→level mapping (CRITICAL/HIGH→error, MEDIUM→warning, LOW/INFO→note); physical locations for whitebox, logical locations for blackbox; CWE→MITRE URL mapping; rule properties with category/confidence/tags
+- TASK-055: Validate SARIF output against official schema — comprehensive structural validation test covering all required SARIF 2.1.0 fields, level values, rule/result index consistency, invocation metadata
+- TASK-056: Implement fendix report re-render command — reads JSONReport from file, re-renders to HTML/SARIF/JSON; --input/--format/--output flags; error handling for missing input and invalid JSON
+- TASK-057: Add GitHub Actions example workflow to docs — docs/ci-cd-integration.md with SARIF upload, baseline diff, live API scan, active probing, exit code reference, suppression examples
+- TASK-058: Go embed of Python engine — //go:embed all:engine directive in go/internal/embedded/; Makefile embed-engine target copies python/ into embed dir; HasEngine/ExtractEngine/EngineDir functions; .gitkeep placeholder for dev builds; .gitignore excludes build artifacts
+- TASK-059: Python extraction on first run — EnsureEngine() resolves engine dir (explicit → embedded extraction → local fallback); version stamp for re-extraction on upgrade; dev builds skip re-extraction; NewOrchestrator accepts version param; 8 extraction unit tests
+- TASK-060: Python availability check with graceful fallback — CheckPython() verifies python3 is available and captures version; orchestrator skips whitebox if Python missing with clear user message; PythonRequiredMessage() user-facing guidance
+- TASK-061: GitHub Actions release workflow — .github/workflows/release.yml builds for linux/amd64, darwin/amd64, darwin/arm64; sha256 checksums; softprops/action-gh-release publishes; CI updated with embed-engine step
+- TASK-062: Dockerfile (multi-stage) — go-builder stage with Alpine; python:3.11-slim runtime; embedded engine; non-root user; .dockerignore
+- TASK-063: install.sh curl-pipe installer — platform detection (linux/darwin, amd64/arm64); GitHub Releases download; sha256 checksum verification; sudo fallback; scripts/build.sh for local builds
+- TASK-064: Homebrew formula — Formula/fendix.rb with platform-specific URLs; python@3.11 dependency; caveats with quick start
+- TASK-065: README.md — all 10 required sections (hero, quick start, installation, usage, CLI flags, output formats, CI/CD integration, architecture, how to add a check, license + responsible use); already complete from prior session
+- TASK-066: CONTRIBUTING.md — development setup, how to add black-box/white-box/Semgrep checks, coding standards (Go + Python), IPC data contract, safety rules, PR process with checklist
+- TASK-067: docs/checks/ — 11 check documentation pages (headers, cors, auth, exposure, ratelimit, injection, secrets, semgrep, spec-parser, ast-analyzer, deps); each page covers what it detects, how it works, example finding, references
+- TASK-068: ADRs — 4 new ADRs (ADR-003 severity scoring, ADR-004 active probe safety, ADR-005 embedded engine distribution, ADR-006 report formats); total 6 ADRs covering all major architectural decisions
+- TASK-069: CHANGELOG.md — initial changelog with all features for unreleased version; follows Keep a Changelog format
+- TASK-070: Audit all godoc comments — verified all 92 exported Go symbols have godoc comments; 0 missing
+- TASK-071: Audit all docstrings — found 1 missing docstring (emit_finding in engine.py); fixed; all 16 public Python symbols now documented
+- TASK-072: Performance benchmark suite — Go benchmarks for readFindings (10/100/1000 findings), Correlate (20/100/500), normalizeEndpoint, CalculateSeverity, SeverityRank, RenderJSON/HTML/SARIF (10/100/1000 findings); all benchmarks with -benchmem
+- TASK-073: Fuzz test Finding JSON parser — Go native fuzzing (FuzzReadFindings + FuzzNormalizeEndpoint); 14 seed corpus entries; 362k+ executions with no panics found; covers null bytes, unicode, truncated JSON, nested objects, extremely long lines
+- TASK-074: Fuzz test OpenAPI spec parser — Python hypothesis-based property testing (8 tests); found and fixed 3 real bugs: _parse_file returning None on empty YAML, get_endpoints crashing on non-dict paths, _security_schemes crashing on non-dict components; 200 examples per test
+- TASK-075: Self-audit — ran Python whitebox engine against own codebase; 17 findings, all from test fixtures (intentional test data); 0 production code vulnerabilities; automated self-audit test verifying no production secrets
+- TASK-076: Resilience testing — 12 scanner resilience tests (garbage body, empty body, huge body, non-UTF8, HTTP 500, server timeout, context cancellation, connection refused, invalid URLs, slow-drip response); 15 engine resilience tests (14 malformed stream variants + correlator edge cases); all pass without panics
+- TASK-077: Memory profiling — TestMemory_LargeFindingStream (2000 findings: 4.5MB, 2.3KB/finding); TestMemory_LargeCorrelation (1000 findings: 15MB including logging, under 20MB budget); TestMemory_ReporterLargeOutput (1000 ID assignments: 14KB); BenchmarkMemory_ReadFindings2000 + BenchmarkMemory_Correlate1000
+- TASK-078: Audit error messages — improved 7 user-facing error messages with actionable guidance: endpoint discovery, ignore file parsing, baseline saving, report rendering, --fail-on validation, format validation, Python engine failure
 
 ### In progress
 *(none)*
@@ -359,37 +386,29 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-03-20
-**Session goal:** Complete Phase 5 — Active Scanner (all 6 tasks)
+**Date:** 2026-04-12
+**Session goal:** Prepare v0.1.0 release — create missing release artifacts
 **Accomplished:**
-- Safe probe framework: ProbeAuditLog with mutex-protected concurrent access, ProbeRecord capturing timestamp/endpoint/type/payload/param/method/status/duration/finding; NewProbeAuditLogWithWriter for testing; Record() writes structured [PROBE] log lines to stderr; Count() per-endpoint tracking
-- Legal disclaimer: PrintDisclaimer() prints warning to stderr when --enable-active used
-- --enable-active gate: CheckInjection returns nil immediately when EnableActive=false; orchestrator only adds CheckInjection to check list when EnableActive=true
-- Time-based SQLi detection: probeSQLi() sends 3 DB-specific payloads (MySQL SLEEP, Postgres pg_sleep, MSSQL WAITFOR DELAY); measures 3-sample median baseline response time; threshold = baseline + 4 seconds; runs confirmation probe — HIGH confidence if both delayed, MEDIUM if single; breaks on first DB type match per parameter
-- CMDi canary detection: probeCMDi() sends safe echo payload ("; echo fendix_canary_PROBE"); reads up to 1MB response body; checks for canary prefix in response; CRITICAL severity, HIGH confidence
-- CRLF header injection: probeCRLF() injects %0d%0aSet-Cookie:%20fendix=injected as raw (not double-encoded) query value; checks resp.Cookies() for fendix=injected; HIGH severity
-- Per-endpoint probe rate limiter: MaxProbesPerEndpoint=20 constant; checked via auditLog.Count() before every probe call; warning logged when limit reached
-- Orchestrator wiring: CheckInjection added to check list when cfg.EnableActive is true; PrintDisclaimer called before scan starts
-- URL encoding: buildProbeURL uses url.QueryEscape for param/payload (except CRLF which uses raw %0d%0a); addAuth helper propagates auth headers to probe requests
-- Integration tests: vulnerable mock server (CMDi + CRLF detection), safe server (no false positives), multi-param (3 CMDi findings), auth propagation verification, context cancellation graceful handling
-- Total: 201 Go + 130 Python = 331 tests passing
+- Created LICENSE file (MIT) — was referenced in README but missing from repository
+- Created .fendix-ignore.example — suppression file template with examples for all rule types (by ID, endpoint, category, glob patterns, expiry dates); referenced in README but was missing
+- Updated CHANGELOG.md — changed [Unreleased] to [0.1.0] - 2026-04-11 with release date
+- Updated project version from 0.0.0 to 0.1.0 in MEMORY.md
+- Verified all builds pass: Go build ✓, Go tests ✓ (all 6 packages), Python 140 tests ✓
 
 **Decisions made:**
-- Probe payloads are URL-encoded via url.QueryEscape in query params (except CRLF which needs raw %0d%0a to test real injection)
-- CRLF payload uses %20 instead of space to keep URL valid: %0d%0aSet-Cookie:%20fendix=injected
-- MaxProbesPerEndpoint = 20 (prevents excessive probing of a single endpoint)
-- When no params are known for an endpoint, defaults to testing "id" parameter
-- SQLi confirmation: second probe sent only if first exceeds threshold; confidence escalated to HIGH only if both probes delayed
-- SQLi breaks on first matching DB type per parameter (no need to test all 3 if MySQL SLEEP already confirmed)
-- addAuth helper centralizes auth header logic for all probe types (bearer/apikey/basic/cookie)
+- LICENSE uses MIT with "Fendix Contributors" as copyright holder — matches README declaration
+- .fendix-ignore.example covers all 5 rule patterns: by ID, by endpoint, by category, by endpoint+category, by glob — with clear comments explaining each
+- Release version is 0.1.0 (initial release, pre-1.0 per semver)
 
 **Files created/modified:**
-- go/internal/scanner/injection.go — NEW: CheckInjection, CheckInjectionWithAudit, ProbeAuditLog, ProbeRecord, probeSQLi, probeCMDi, probeCRLF, buildProbeURL, addAuth, measureBaseline, PrintDisclaimer, sqliPayloads, medianDuration
-- go/internal/scanner/injection_test.go — NEW: 22 tests (unit + integration: gate check, audit log, SQLi probes, CMDi canary, CRLF detection, URL building, auth propagation, concurrent access, vulnerable server, safe server, multi-param, context cancellation)
-- go/internal/engine/orchestrator.go — MODIFIED: added CheckInjection + PrintDisclaimer when EnableActive=true
+- LICENSE — NEW: MIT license file
+- .fendix-ignore.example — NEW: suppression file template with documented examples
+- CHANGELOG.md — MODIFIED: [Unreleased] → [0.1.0] - 2026-04-11
+- tasks/MEMORY.md — MODIFIED: version updated to 0.1.0, session summary
 
 **Next session should start with:**
-- TASK-052: Finalize JSON reporter with full metadata schema (Phase 6 — Reporting begins)
+- Tag v0.1.0 release: `git tag -a v0.1.0 -m "Fendix v0.1.0 — initial release"` and push
+- Or continue with new feature work from the backlog
 
 **Open questions:**
 - None

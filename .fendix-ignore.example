@@ -1,0 +1,36 @@
+# Fendix Suppression File
+# ========================
+# Place as .fendix-ignore in your project root, or pass via --ignore <path>.
+# Each rule suppresses findings that match ALL specified fields.
+# Omitted fields match everything (e.g. no endpoint = all endpoints).
+
+ignore:
+  # ── Suppress by finding ID ──────────────────────────────────
+  - id: SEC-014
+    reason: "Rate limiting handled at API gateway level"
+    until: 2026-12-01  # optional expiry — rule stops applying after this date
+
+  # ── Suppress an entire endpoint ─────────────────────────────
+  - endpoint: GET /health
+    reason: "Public health check endpoint, no auth required by design"
+
+  # ── Suppress by category on specific endpoints ──────────────
+  - endpoint: GET /api/public/*
+    category: auth
+    reason: "Public endpoints are intentionally unauthenticated"
+
+  # ── Suppress all findings of a category ─────────────────────
+  - category: headers
+    reason: "Security headers managed by reverse proxy (nginx)"
+    until: 2026-06-30
+
+  # ── Suppress a known test fixture secret ────────────────────
+  - endpoint: "tests/fixtures/config.py:*"
+    category: secrets
+    reason: "Test fixtures contain intentional sample secrets"
+
+# Notes:
+# - "until" uses YYYY-MM-DD format. Expired rules are automatically skipped.
+# - "endpoint" supports glob patterns (e.g. /api/v1/*)
+# - "reason" is required — document why the suppression exists.
+# - Rules match ALL specified fields (AND logic, not OR).
