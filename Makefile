@@ -1,4 +1,4 @@
-.PHONY: build test lint clean embed-engine
+.PHONY: build test lint clean embed-engine e2e
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
 GO_DIR := go
@@ -38,9 +38,16 @@ test-go:
 	@echo "→ Running Go tests..."
 	cd $(GO_DIR) && go test -race ./...
 
+# e2e runs end-to-end tests that build the binary and invoke it as a subprocess.
+# Gated behind the `e2e` build tag so normal `go test ./...` skips them.
+# See go/internal/e2e/ — every CLI flag should have a regression test here.
+e2e: build
+	@echo "→ Running e2e tests..."
+	cd $(GO_DIR) && go test -tags e2e -count=1 ./internal/e2e/...
+
 test-python:
 	@echo "→ Running Python tests..."
-	cd $(PY_DIR) && $(PYTHON) -m pytest tests/ -v
+	$(PYTHON) -m pytest $(PY_DIR)/tests/ -v
 
 lint: lint-go lint-python
 

@@ -110,16 +110,19 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	return deduped, nil
 }
 
-// fromSpec parses an OpenAPI 2.0/3.x spec file and extracts all path+method combinations.
+// fromSpec parses an OpenAPI 2.0/3.x spec and extracts all path+method combinations.
+// Accepts both local file paths and HTTP/HTTPS URLs. URL form is needed because
+// many real services publish their spec at /openapi.json or /swagger.json — users
+// would otherwise have to curl-then-pass, and v0.1 silently fell back to brute-force
+// when given a URL (TASK-082).
 func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
-	data, err := os.ReadFile(c.cfg.SpecPath)
+	data, isJSON, err := c.loadSpec(ctx, c.cfg.SpecPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading spec file %s: %w", c.cfg.SpecPath, err)
+		return nil, err
 	}
 
 	var spec map[string]interface{}
-
-	if strings.HasSuffix(c.cfg.SpecPath, ".json") {
+	if isJSON {
 		if err := json.Unmarshal(data, &spec); err != nil {
 			return nil, fmt.Errorf("parsing JSON spec: %w", err)
 		}
@@ -147,16 +150,26 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 		if !ok {
 			continue
 		}
-		for method := range methodMap {
+
+		// OpenAPI/Swagger lets path-level `parameters` apply to every operation
+		// under that path; operation-level `parameters` add to (and may override
+		// by name) the path-level set. Capture path-level once outside the
+		// per-method loop.
+		pathLevelParams := extractParamsList(methodMap["parameters"])
+
+		for method, op := range methodMap {
 			method = strings.ToLower(method)
 			if !httpMethods[method] {
 				continue
 			}
+			opMap, _ := op.(map[string]interface{})
+			opParams := extractParamsList(opMap["parameters"])
+
 			ep := Endpoint{
 				Method:  strings.ToUpper(method),
 				Path:    path,
 				FullURL: baseURL + path,
-				Params:  extractPathParams(path),
+				Params:  mergeParams(extractPathParams(path), pathLevelParams, opParams),
 			}
 			endpoints = append(endpoints, ep)
 		}
@@ -164,6 +177,93 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 
 	slog.Info("endpoints from spec", "count", len(endpoints), "spec", c.cfg.SpecPath)
 	return endpoints, nil
+}
+
+// loadSpec reads a spec from either a local file path or an HTTP/HTTPS URL.
+// Returns the raw bytes and whether the format is JSON (vs YAML).
+//
+// Format detection is layered: explicit .json/.yaml suffix first, then
+// HTTP Content-Type header, finally first non-whitespace byte ('{' or '[' = JSON).
+// We don't fall back to "always YAML" even though yaml.Unmarshal accepts JSON,
+// because the existing tests assert the JSON path produces JSON-typed errors.
+func (c *Crawler) loadSpec(ctx context.Context, src string) (data []byte, isJSON bool, err error) {
+	lower := strings.ToLower(src)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return c.fetchSpec(ctx, src)
+	}
+	data, err = os.ReadFile(src)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading spec file %s: %w", src, err)
+	}
+	return data, strings.HasSuffix(lower, ".json"), nil
+}
+
+// fetchSpec downloads a spec from an HTTP/HTTPS URL using the crawler's HTTP
+// client (so --timeout applies). 4xx/5xx responses are surfaced as errors.
+func (c *Crawler) fetchSpec(ctx context.Context, src string) (data []byte, isJSON bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("building spec request: %w", err)
+	}
+	// Hint preference but don't restrict — many specs are served as text/plain or octet-stream.
+	req.Header.Set("Accept", "application/json, application/yaml, text/yaml, */*")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("fetching spec from %s: %w", src, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, false, fmt.Errorf("fetching spec from %s: HTTP %d", src, resp.StatusCode)
+	}
+
+	const maxSpecBytes = 50 << 20 // 50 MB; GitHub's spec is ~12 MB so this leaves headroom
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSpecBytes+1))
+	if err != nil {
+		return nil, false, fmt.Errorf("reading spec body: %w", err)
+	}
+	if int64(len(body)) > maxSpecBytes {
+		return nil, false, fmt.Errorf("spec too large (>%d bytes) from %s", maxSpecBytes, src)
+	}
+
+	// Format detection: URL suffix > Content-Type > first non-whitespace byte.
+	lowerSrc := strings.ToLower(src)
+	switch {
+	case strings.HasSuffix(lowerSrc, ".json"):
+		isJSON = true
+	case strings.HasSuffix(lowerSrc, ".yaml") || strings.HasSuffix(lowerSrc, ".yml"):
+		isJSON = false
+	default:
+		ct := strings.ToLower(resp.Header.Get("Content-Type"))
+		switch {
+		case strings.Contains(ct, "json"):
+			isJSON = true
+		case strings.Contains(ct, "yaml") || strings.Contains(ct, "yml"):
+			isJSON = false
+		default:
+			isJSON = looksLikeJSON(body)
+		}
+	}
+
+	return body, isJSON, nil
+}
+
+// looksLikeJSON returns true if the first non-whitespace byte is '{' or '['.
+// This is the canonical JSON-vs-YAML sniff used by parsers when no other
+// signal is available (suffix, Content-Type).
+func looksLikeJSON(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // specBaseURL extracts the base URL from an OpenAPI spec.
@@ -346,6 +446,61 @@ func extractPathParams(path string) []string {
 		params = append(params, m[1])
 	}
 	return params
+}
+
+// extractParamsList reads an OpenAPI/Swagger `parameters` array (raw decoded
+// YAML/JSON) and returns the names of params with `in: query` or `in: path`.
+// Body and header params are intentionally skipped here — body probing is
+// scoped to TASK-086 in Phase 11. Returns nil if the input isn't a list.
+//
+// Accepts the value type produced by yaml.v3 (map[string]interface{} entries)
+// and the type produced by encoding/json (also map[string]interface{}). Both
+// land in the same shape after Unmarshal into map[string]interface{}.
+func extractParamsList(raw interface{}) []string {
+	list, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, item := range list {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// $ref-only entries are common in real specs — skip them rather than
+		// resolve, since spec deref is out of scope for v0.2 (TASK-086 covers).
+		if _, hasRef := entry["$ref"]; hasRef {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		in, _ := entry["in"].(string)
+		if name == "" {
+			continue
+		}
+		switch strings.ToLower(in) {
+		case "query", "path":
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// mergeParams combines multiple param-name lists, preserving first-seen order
+// and deduplicating case-sensitively. Used to layer URL-template params,
+// path-level spec params, and operation-level spec params into one list.
+func mergeParams(lists ...[]string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, l := range lists {
+		for _, name := range l {
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // resolveURL resolves a potentially relative URL against a base URL.

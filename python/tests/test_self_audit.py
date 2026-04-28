@@ -8,8 +8,12 @@ Verifies that:
 import json
 import subprocess
 import sys
+from pathlib import Path
 
-import pytest
+# Repo root is two parents above this file: python/tests/test_self_audit.py → repo root.
+# Resolving from __file__ keeps the test cwd-agnostic: pytest can be invoked from
+# anywhere (repo root, python/, go/, CI runner) and the test still finds engine.py.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_self_audit_runs_successfully() -> None:
@@ -26,6 +30,7 @@ def test_self_audit_runs_successfully() -> None:
         capture_output=True,
         text=True,
         timeout=30,
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 0, f"Engine exited with code {result.returncode}: {result.stderr}"
 
@@ -53,6 +58,7 @@ def test_self_audit_no_production_secrets() -> None:
         capture_output=True,
         text=True,
         timeout=30,
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 0
 

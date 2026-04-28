@@ -110,6 +110,48 @@ type SARIFProperties struct {
 	Confidence string   `json:"confidence,omitempty"`
 }
 
+// ruleKeyFor returns a stable, human-readable rule ID for a finding's
+// check type. Two findings with the same (category, title) share a rule ID;
+// the per-finding identifier (Finding.ID, e.g. "SEC-042") stays in the
+// SARIF result, not on the rule.
+//
+// Format: "fendix.<category>.<title-slug>" — opaque to consumers but stable
+// across runs so that suppression baselines and PR-grouping tools (GitHub
+// Code Scanning, sarif-multitool) treat repeat findings as one rule.
+func ruleKeyFor(f models.Finding) string {
+	cat := strings.ToLower(strings.TrimSpace(f.Category))
+	if cat == "" {
+		cat = "uncategorized"
+	}
+	titleSlug := slug(f.Title)
+	if titleSlug == "" {
+		titleSlug = "unnamed"
+	}
+	return "fendix." + cat + "." + titleSlug
+}
+
+// slug lowercases a string and collapses any run of non-[a-z0-9] characters
+// to a single '-'. Used for rule IDs derived from finding titles.
+func slug(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevDash := true // suppress leading dash
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := b.String()
+	return strings.TrimRight(out, "-")
+}
+
 // sarifLevel maps Fendix severity to SARIF level.
 func sarifLevel(s models.Severity) string {
 	switch s {
@@ -155,20 +197,28 @@ func parseLine(line *string) (string, int) {
 }
 
 // RenderSARIF writes a SARIF 2.1.0 report to the writer.
+//
+// Rules are deduplicated by check identity (category + title) rather than per
+// finding (TASK-083). Pre-fix, 160 findings produced 160 unique rule IDs like
+// SEC-001..SEC-160; tools that group results by ruleId (GitHub Code Scanning,
+// `sarif-multitool merge`) scattered identical issues across many "rules".
+// After the fix, "Missing CSP header" reported on 21 endpoints is one rule
+// referenced 21 times — which is what SARIF semantics expect.
 func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) error {
-	// Build deduplicated rules list and map findings to rule indices
-	ruleMap := make(map[string]int) // ruleID -> index
+	// Build deduplicated rules list keyed by stable check identity.
+	ruleMap := make(map[string]int) // stable ruleKey -> index in rules
 	var rules []SARIFRule
 
 	for _, f := range findings {
-		if _, exists := ruleMap[f.ID]; exists {
+		key := ruleKeyFor(f)
+		if _, exists := ruleMap[key]; exists {
 			continue
 		}
 		idx := len(rules)
-		ruleMap[f.ID] = idx
+		ruleMap[key] = idx
 
 		rule := SARIFRule{
-			ID:               f.ID,
+			ID:               key,
 			Name:             f.Title,
 			ShortDescription: SARIFMessage{Text: f.Title},
 			Help:             SARIFMessage{Text: f.Fix},
@@ -183,12 +233,13 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		rules = append(rules, rule)
 	}
 
-	// Build results
+	// Build results — each finding references its check's shared rule, not a per-instance one.
 	results := make([]SARIFResult, 0, len(findings))
 	for _, f := range findings {
+		key := ruleKeyFor(f)
 		result := SARIFResult{
-			RuleID:    f.ID,
-			RuleIndex: ruleMap[f.ID],
+			RuleID:    key,
+			RuleIndex: ruleMap[key],
 			Level:     sarifLevel(f.Severity),
 			Message:   SARIFMessage{Text: f.Evidence},
 		}

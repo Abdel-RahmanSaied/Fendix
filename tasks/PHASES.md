@@ -19,8 +19,14 @@
 | 7 | Distribution | ✅ Complete | Build, Docker, install script |
 | 8 | Documentation | ✅ Complete | README, ADRs, contributing guide |
 | 9 | Hardening | ✅ Complete | Perf, edge cases, security review |
+| 10 | P0 — Flag wiring | ✅ Code Complete | Fix broken user-facing CLI flags found in real-world testing (v0.2) |
+| 11 | P1 — Coverage parity | 🔲 Not Started | Reach industry-baseline detection coverage (secrets, static, active, deps) (v0.3 + v0.4) |
+| 12 | P2 — Quality & ops | 🔲 Not Started | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
+| 13 | P3 — External release | 🔲 Not Started | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
+
+Phases 10-13 grew out of the 2026-04-28 real-world test pass — see `tasks/MEMORY.md` "Last Session Summary" for the bug evidence that informed each task.
 
 ---
 
@@ -361,9 +367,152 @@ TASK-078  Audit all error messages for actionability
 
 ---
 
+## Phase 10 — P0: Flag wiring & broken-feature fixes (v0.2)
+
+**Goal:** Every documented CLI flag and feature actually does what the help text says. No silent failures.
+
+**Value:** Unblocks external evaluation. The first thing reviewers try is the obvious flag (`--save-baseline` for CI gates, `--code` for SAST-only). When those fail silently, the tool loses credibility instantly.
+
+**Target:** A user running `fendix scan --code ./repo --save-baseline base.json` produces a baseline file. Re-running with `--baseline base.json` shows zero new findings. SARIF output validates against the official schema and groups results by check, not by finding.
+
+**Exit criteria:**
+
+- [ ] `--save-baseline` writes a file containing all findings from the current run
+- [ ] `--code`-only scans (no `--url`, no `--spec`) run the Python engine and produce findings
+- [ ] Active injection probes use spec-defined query and path parameters (not just hardcoded `id`)
+- [ ] `--spec http://host/spec.json` fetches the spec over HTTP
+- [ ] SARIF output has 1 rule per check type, not 1 rule per finding
+- [ ] `make test` passes from a clean checkout (no cwd-dependent test failures)
+- [ ] Every CLI flag has an end-to-end test that runs the binary and asserts observable effect
+- [ ] All v0.1 unit tests still pass
+
+**Tasks:**
+```
+TASK-079  Wire --save-baseline flag into ScanConfig (main.go)
+TASK-080  Allow --code-only scans (reorder no-endpoints early-exit in orchestrator.go:61)
+TASK-081  Populate Endpoint.Params from spec parameters (path + query, OAS 2 + 3)
+TASK-082  Accept HTTP/HTTPS URL as --spec input (auto-detect prefix and fetch)
+TASK-083  Fix SARIF: shared rule registry, 1 rule per check type
+TASK-084  Fix Makefile test-python target to run from repo root (cwd bug)
+```
+
+---
+
+## Phase 11 — P1: Coverage parity (v0.3 + v0.4)
+
+**Goal:** Reach industry-baseline detection coverage. Stop being "noticeably worse than gitleaks/semgrep/ZAP" on the obvious checks.
+
+**Value:** External evaluators directly compare against gitleaks (secrets), semgrep (SAST), and ZAP (DAST). The current corpus is too small to hold up under that comparison. Closing these gaps is the difference between "interesting prototype" and "credible alternative."
+
+**Target:** On a juice-shop instance, fendix detects ≥1 SQLi (login bypass), ≥1 reflected XSS, ≥1 IDOR, plus all gitleaks-default secret types in the source tree. Hybrid scans actually emit `correlated` findings.
+
+**Exit criteria:**
+
+- [ ] Secrets analyzer covers all major modern providers (GitHub, Stripe, Slack, Google, Anthropic, OpenAI, npm, GCP service-account JSON)
+- [ ] `.env` files (unquoted `KEY=value` format) are correctly scanned
+- [ ] Static SAST catches string-concat SQLi, pickle/yaml.load, weak crypto, open redirect, SSRF, auth-bypass anti-patterns
+- [ ] Active scanner probes body params and headers, not just query string
+- [ ] SQLi detection includes error-based and boolean-based, plus SQLite/Oracle DBs
+- [ ] Findings deduplicated: same check across N endpoints aggregates into one finding with N affected endpoints
+- [ ] Crawler discovery improved: parses robots.txt + sitemap.xml + HTML links, supports `--wordlist`, larger default wordlist
+- [ ] Dependency CVE coverage is real (pip-audit + npm audit + govulncheck), not 10-package fallback
+- [ ] Correlator produces `correlated` findings on hybrid scans against the vuln-server fixture
+
+**Tasks:**
+```
+TASK-085  Expand secrets patterns (8+ new providers) and fix .env unquoted-value scanning
+TASK-086  Active scanner: probe body params + headers; add error-based + boolean-based SQLi; add SQLite/Oracle DBs; add --max-probes-per-endpoint flag
+TASK-087  Static analyzer: string-concat SQLi, pickle/yaml.load, md5/sha1-for-passwords, open redirect, SSRF, auth-header-trust patterns (AST-based)
+TASK-088  Findings deduplication: AffectedEndpoints []Endpoint field, group identical findings, propagate to JSON/HTML/SARIF
+TASK-089  Crawler upgrade: robots.txt + sitemap.xml + HTML link parsing, recursive depth, --wordlist, larger default list
+TASK-090  CVE coverage: pip-audit primary path, npm audit, govulncheck for go.mod; hardcoded list as offline fallback
+TASK-091  Correlator: instrument with debug logs, loosen matching predicate, add e2e test asserting >=1 correlated finding
+```
+
+---
+
+## Phase 12 — P2: Quality, performance, ops (v0.5)
+
+**Goal:** Polish that turns a working scanner into a tool that fits production workflows.
+
+**Value:** Adoption blockers that don't appear in a single demo but show up in week-2 use: noisy logs, no scan budgets, broken auth profiles, undocumented JSON schema.
+
+**Target:** A 1000-endpoint scan with `--max-duration 5m --max-requests 10000` finishes within budget, with logs aggregated to <50 lines. Auth profiles cover bearer/api-key/basic/cookie/refresh-on-401. Output JSON validates against a published schema.
+
+**Exit criteria:**
+
+- [ ] Output JSON schema documented and validated in tests
+- [ ] `[Unconfirmed by live scan]` evidence suffix only appears when correlation was actually attempted
+- [ ] HIGH/MEDIUM/LOW severity↔confidence consistency rules enforced
+- [ ] Path-parameter substitution: `/users/{id}` becomes `/users/1` (or schema-derived sample), not `/users/%7Bid%7D`
+- [ ] Logging aggregated: max 3 WARN per check, rest at DEBUG
+- [ ] Global scan budget: `--max-requests N`, `--max-duration 5m`, `--respect-robots`
+- [ ] Auth profiles: bearer, api-key (header + query), basic, cookie, refresh-on-401, all e2e tested
+- [ ] `-race` passes on a 1000-endpoint scan in CI
+- [ ] Example GitHub Actions workflow committed: scan → SARIF → upload → PR comment
+- [ ] Worker-pool cancellation has a fuzz test
+
+**Tasks:**
+```
+TASK-092  Output schema cleanup: docs/schema.md, JSON-schema validation in tests, evidence-suffix logic, severity↔confidence consistency
+TASK-093  Crawler placeholder substitution: schema-derived sample values for path params
+TASK-094  Logging hygiene: aggregate per-check failures, cap WARN volume, downgrade rest to DEBUG
+TASK-095  Scan budget controls: --max-requests, --max-duration, --respect-robots, soft-stop semantics
+TASK-096  Auth profiles e2e: bearer + api-key (header/query) + basic + cookie + refresh-on-401, all under tests/e2e/
+TASK-097  Concurrency review: -race against 1000-endpoint scan in CI, fuzz worker-pool cancellation
+TASK-098  CI integration recipe: examples/github-actions/fendix-scan.yml with SARIF upload and baseline-diff PR comment
+```
+
+---
+
+## Phase 13 — P3: External release readiness (v1.0)
+
+**Goal:** Trustworthy, signed, documented v1.0 that an external user can adopt without reading the source.
+
+**Value:** "External evaluation" only succeeds when artifacts are signed, docs answer the obvious questions, and benchmarks back up the marketing claims.
+
+**Target:** `brew install fendix` (or `curl -fsSL get.fendix.dev | sh`) installs a signed binary that passes cosign verification. README links to a juice-shop walkthrough, a CI integration page, and a published performance benchmark.
+
+**Exit criteria:**
+
+- [ ] Release pipeline builds linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 — all signed with cosign
+- [ ] Homebrew formula auto-updates SHA256 per release (no `PLACEHOLDER_*`)
+- [ ] Docker image published to ghcr.io, signed
+- [ ] `.deb` and `.rpm` packages produced via nfpm
+- [ ] One-line installer at `get.fendix.dev` works on macOS + Linux
+- [ ] Docs: 5-minute juice-shop walkthrough, CI integration (GH Actions + GitLab + CircleCI), Semgrep rule guide, triage workflow, JSON schema reference
+- [ ] `--debug` flag bundles a redacted diagnostic tarball
+- [ ] `SECURITY.md` with disclosure policy
+- [ ] Active-scanner safety threat model documented
+- [ ] Performance benchmarks published in README (scan time vs endpoint count, memory, goroutine count)
+
+**Tasks:**
+```
+TASK-099  Reproducible release pipeline: linux/arm64 added, cosign signing, Homebrew auto-update, signed Docker image
+TASK-100  Distribution artifacts: .deb + .rpm via nfpm, get.fendix.dev one-line installer
+TASK-101  Documentation pass: 5-min walkthrough, CI integration page, Semgrep rule guide, triage workflow, JSON schema ref
+TASK-102  --debug bundle: redacted config + OS + Python version + probe audit + slog-debug into a tarball
+TASK-103  SECURITY.md + active-scanner threat model + signed commits/releases
+TASK-104  Performance benchmark suite: scan time vs endpoint count, memory peak, goroutine count, published in README
+```
+
+---
+
+## Cross-cutting (apply during all of Phase 10-13)
+
+1. **End-to-end tests over unit tests.** The `--save-baseline` bug had a passing unit test. Every CLI flag needs an e2e test that runs the binary and asserts the externally-observable effect. Add `tests/e2e/` with table-driven Go tests that shell out to the built binary.
+
+2. **Vulnerable-app test corpus in CI.** Stand up juice-shop in a CI step and assert fendix finds a fixed list of known issues. Single best regression guard.
+
+3. **Rule registry as a first-class concept.** Central registry (id, title, category, severity, CWE, fix-guidance) loaded at startup, referenced everywhere — makes SARIF correct, ignore rules cleaner, and "what does fendix detect" doc auto-generatable.
+
+4. **Don't grow scope before fixing wiring.** Architecture is good. Resist new check types until Phase 10 is done — half-wired flags are worse than missing features.
+
+---
+
 ## Backlog (Future Phases)
 
-Items deferred from current scope. Revisit after Phase 9.
+Items deferred from current scope. Revisit after Phase 13.
 
 ```
 BACKLOG-001  Web dashboard (React + embedded Go server)

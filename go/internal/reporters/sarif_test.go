@@ -258,6 +258,80 @@ func TestRenderSARIF_RuleProperties(t *testing.T) {
 	}
 }
 
+// TestRenderSARIF_RulesDedupedByCheckType is the regression test for TASK-083.
+// Pre-fix, the rule dedup keyed on Finding.ID (per-instance, never duplicates),
+// so 21 findings of "Missing CSP header" produced 21 distinct rules. After
+// the fix, identical (category, title) collapse into one rule referenced N
+// times — which is what GitHub Code Scanning expects for grouping.
+func TestRenderSARIF_RulesDedupedByCheckType(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Version: "dev"}
+
+	// Same check fired across three endpoints — should yield 1 rule, 3 results.
+	findings := []models.Finding{
+		{ID: "SEC-001", Category: "headers", Title: "Missing Content-Security-Policy header",
+			Severity: models.SeverityMedium, Source: models.SourceBlackbox,
+			Endpoint: "GET /api/users", References: []string{}},
+		{ID: "SEC-002", Category: "headers", Title: "Missing Content-Security-Policy header",
+			Severity: models.SeverityMedium, Source: models.SourceBlackbox,
+			Endpoint: "GET /api/orders", References: []string{}},
+		{ID: "SEC-003", Category: "headers", Title: "Missing Content-Security-Policy header",
+			Severity: models.SeverityMedium, Source: models.SourceBlackbox,
+			Endpoint: "POST /api/orders", References: []string{}},
+		// A different check; should produce a second rule.
+		{ID: "SEC-004", Category: "cors", Title: "CORS reflects arbitrary origin",
+			Severity: models.SeverityHigh, Source: models.SourceBlackbox,
+			Endpoint: "GET /api/users", References: []string{}},
+	}
+
+	if err := RenderSARIF(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderSARIF failed: %v", err)
+	}
+
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("unmarshal SARIF: %v", err)
+	}
+
+	rules := log.Runs[0].Tool.Driver.Rules
+	results := log.Runs[0].Results
+
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 unique rules (1 headers + 1 cors), got %d:\n%s",
+			len(rules), buf.String())
+	}
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(results))
+	}
+
+	// All three "headers" findings should share the same ruleId, and that ruleId
+	// must match the rule's stable ID (not a per-finding SEC-NNN).
+	headersRuleID := ""
+	for _, r := range results[:3] {
+		if headersRuleID == "" {
+			headersRuleID = r.RuleID
+		}
+		if r.RuleID != headersRuleID {
+			t.Errorf("expected identical ruleId across same-check findings, got %q vs %q",
+				r.RuleID, headersRuleID)
+		}
+	}
+	if headersRuleID == "SEC-001" || headersRuleID == "SEC-002" {
+		t.Errorf("ruleId %q looks like per-finding ID — TASK-083 regressed", headersRuleID)
+	}
+	if headersRuleID == "" || results[3].RuleID == headersRuleID {
+		t.Errorf("cors finding should have a different ruleId from headers; got %q vs %q",
+			results[3].RuleID, headersRuleID)
+	}
+
+	// Result.ruleIndex must point to the dedup'd rule.
+	for i, r := range results[:3] {
+		if r.RuleIndex < 0 || r.RuleIndex >= len(rules) || rules[r.RuleIndex].ID != headersRuleID {
+			t.Errorf("result[%d].ruleIndex=%d does not point to headers rule", i, r.RuleIndex)
+		}
+	}
+}
+
 func TestRenderSARIF_RuleIndex(t *testing.T) {
 	var buf bytes.Buffer
 	meta := ScanMetadata{Version: "dev"}

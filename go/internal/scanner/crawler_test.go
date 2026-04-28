@@ -416,6 +416,242 @@ func TestFromSpec_InvalidFile(t *testing.T) {
 	}
 }
 
+// TestFromSpec_PopulatesParamsFromOperation is the regression test for TASK-081.
+// Pre-fix, only URL-template path params (`{id}`) populated Endpoint.Params;
+// the OpenAPI `parameters: [{name, in: query}]` block was dropped. This made
+// the active scanner blind to non-`id` query parameters — every probe used
+// the hardcoded "id" fallback in injection.go.
+func TestFromSpec_PopulatesParamsFromOperation(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+servers: [{url: "https://api.example.com"}]
+paths:
+  /widgets:
+    get:
+      parameters:
+        - name: limit
+          in: query
+        - name: offset
+          in: query
+        - name: X-Trace-Id
+          in: header
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
+	}
+	got := endpoints[0].Params
+	want := map[string]bool{"limit": true, "offset": true}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("unexpected param %q in %v (header param leaked through?)", p, got)
+		}
+		delete(want, p)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing params %v from %v", want, endpoints[0].Params)
+	}
+}
+
+// TestFromSpec_PathLevelParamsMergeWithOperation: path-level `parameters` apply
+// to every operation under that path. Plus URL-template params should always
+// appear regardless of whether the spec lists them. Dedupe across all sources.
+func TestFromSpec_PathLevelParamsMergeWithOperation(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+paths:
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+      - name: tenant
+        in: query
+    get:
+      parameters:
+        - name: include
+          in: query
+    delete: {}
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+
+	getParams, deleteParams := map[string]bool{}, map[string]bool{}
+	for _, ep := range endpoints {
+		set := getParams
+		if ep.Method == "DELETE" {
+			set = deleteParams
+		}
+		for _, p := range ep.Params {
+			set[p] = true
+		}
+	}
+
+	// GET should have id (path template + spec path-level), tenant (path-level), include (operation-level)
+	for _, want := range []string{"id", "tenant", "include"} {
+		if !getParams[want] {
+			t.Errorf("GET missing param %q (got %v)", want, getParams)
+		}
+	}
+	// DELETE has no operation-level parameters but inherits path-level + URL template
+	for _, want := range []string{"id", "tenant"} {
+		if !deleteParams[want] {
+			t.Errorf("DELETE missing inherited param %q (got %v)", want, deleteParams)
+		}
+	}
+	if deleteParams["include"] {
+		t.Errorf("DELETE should not inherit GET-only param 'include' (got %v)", deleteParams)
+	}
+}
+
+// TestFromSpec_RefParameterSkipped verifies $ref entries don't crash the parser.
+// Resolving them is out of scope for v0.2 (TASK-086); for now we just skip.
+func TestFromSpec_RefParameterSkipped(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+paths:
+  /things:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: cursor
+          in: query
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+	if len(endpoints) != 1 || len(endpoints[0].Params) != 1 || endpoints[0].Params[0] != "cursor" {
+		t.Fatalf("expected single endpoint with [cursor], got %+v", endpoints)
+	}
+}
+
+// TestFromSpec_URL_JSON exercises TASK-082: --spec accepts an HTTP URL.
+// Before the fix, a URL was passed to os.ReadFile and silently failed;
+// the crawler then fell back to brute-force discovery.
+func TestFromSpec_URL_JSON(t *testing.T) {
+	specBody := `{
+	  "openapi": "3.0.0",
+	  "info": {"title": "Remote", "version": "1.0"},
+	  "servers": [{"url": "https://api.remote.example/v1"}],
+	  "paths": {
+	    "/widgets": {"get": {"summary": "List"}, "post": {"summary": "Create"}},
+	    "/widgets/{id}": {"get": {"summary": "Get"}}
+	  }
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(specBody))
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{
+		SpecPath: srv.URL + "/openapi.json",
+		Timeout:  5,
+	})
+
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec failed: %v", err)
+	}
+	if len(endpoints) != 3 {
+		t.Fatalf("expected 3 endpoints, got %d: %+v", len(endpoints), endpoints)
+	}
+}
+
+// TestFromSpec_URL_YAML covers Content-Type-based format detection (URL has
+// no .yaml suffix, server returns text/yaml — must still parse as YAML).
+func TestFromSpec_URL_YAML(t *testing.T) {
+	specBody := `openapi: "3.0.0"
+info:
+  title: Remote YAML
+  version: "1.0"
+servers:
+  - url: https://api.remote.example/v1
+paths:
+  /things:
+    get:
+      summary: List things
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		_, _ = w.Write([]byte(specBody))
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{
+		// No suffix on the URL — exercises Content-Type fallback.
+		SpecPath: srv.URL + "/spec",
+		Timeout:  5,
+	})
+
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec failed: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
+	}
+}
+
+// TestFromSpec_URL_HTTPError surfaces 4xx/5xx as errors instead of silently
+// falling back. The pre-fix bug masked URL typos as "no endpoints found".
+func TestFromSpec_URL_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{
+		SpecPath: srv.URL + "/missing.json",
+		Timeout:  5,
+	})
+
+	_, err := crawler.fromSpec(context.Background())
+	if err == nil {
+		t.Fatal("expected error for HTTP 404 response, got nil")
+	}
+	if !contains(err.Error(), "404") {
+		t.Errorf("expected error to mention status code, got: %v", err)
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestFromSpec_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	specPath := filepath.Join(dir, "bad.yaml")

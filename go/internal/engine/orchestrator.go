@@ -58,13 +58,19 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		return 2
 	}
 
-	if len(endpoints) == 0 {
+	// Only fail when there's nothing to scan in EITHER engine. Code-only scans
+	// (--code without --url/--spec) legitimately have zero endpoints and should
+	// still run the white-box analyzer (TASK-080). Black-box checks below
+	// receive an empty endpoint list and return zero findings, which is fine.
+	if len(endpoints) == 0 && o.cfg.CodePath == "" {
 		slog.Warn("no endpoints discovered — nothing to scan")
-		fmt.Fprintln(os.Stderr, "fendix: no endpoints discovered. Provide --url, --spec, or both.")
+		fmt.Fprintln(os.Stderr, "fendix: no endpoints discovered. Provide --url, --spec, or --code.")
 		return 2
 	}
 
-	slog.Info("scanning endpoints", "count", len(endpoints))
+	if len(endpoints) > 0 {
+		slog.Info("scanning endpoints", "count", len(endpoints))
+	}
 
 	// 2. Build check list
 	checks := []scanner.CheckFn{

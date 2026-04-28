@@ -78,6 +78,7 @@ func newScanCmd() *cobra.Command {
 			formatFlag, _ := flags.GetString("format")
 			failOnFlag, _ := flags.GetString("fail-on")
 			baselineFlag, _ := flags.GetString("baseline")
+			saveBaselineFlag, _ := flags.GetString("save-baseline")
 			enableActive, _ := flags.GetBool("enable-active")
 			workers, _ := flags.GetInt("workers")
 			timeout, _ := flags.GetInt("timeout")
@@ -90,19 +91,20 @@ func newScanCmd() *cobra.Command {
 			}
 
 			cfg := &models.ScanConfig{
-				URL:          urlFlag,
-				SpecPath:     specFlag,
-				CodePath:     codeFlag,
-				EnableActive: enableActive,
-				Workers:      workers,
-				Timeout:      timeout,
-				DelayMs:      delay,
-				Verbose:      verbose,
-				IgnorePath:   ignoreFlag,
-				BaselinePath: baselineFlag,
-				OutputPath:   outputFlag,
-				Format:       formatFlag,
-				FailOn:       failOnFlag,
+				URL:              urlFlag,
+				SpecPath:         specFlag,
+				CodePath:         codeFlag,
+				EnableActive:     enableActive,
+				Workers:          workers,
+				Timeout:          timeout,
+				DelayMs:          delay,
+				Verbose:          verbose,
+				IgnorePath:       ignoreFlag,
+				BaselinePath:     baselineFlag,
+				SaveBaselinePath: saveBaselineFlag,
+				OutputPath:       outputFlag,
+				Format:           formatFlag,
+				FailOn:           failOnFlag,
 			}
 
 			var flagAuth *models.AuthContext
