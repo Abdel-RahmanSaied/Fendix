@@ -115,6 +115,11 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		findings = Correlate(findings)
 	}
 
+	// 5.5. Deduplicate identical findings across endpoints (TASK-088).
+	// Runs after correlation so correlated findings are grouped too.
+	// "Missing CSP × 21 endpoints" → 1 finding with AffectedEndpoints[21].
+	findings = Deduplicate(findings)
+
 	// 6. Sort findings deterministically by endpoint+category for stable ID assignment
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Endpoint != findings[j].Endpoint {

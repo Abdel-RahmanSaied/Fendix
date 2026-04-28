@@ -15,6 +15,9 @@
 package e2e
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -265,6 +268,230 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestActiveProbe_BodyParam_FindsErrorBasedSQLi is the regression test for
+// TASK-086 — the active scanner now probes JSON-body fields on POST/PUT/PATCH
+// endpoints, and error-based SQLi detection surfaces a finding when the
+// response body contains a known DB error signature.
+//
+// We stand up a mock POST endpoint that:
+//
+//  1. Accepts JSON body
+//  2. Reflects a MySQL syntax error if the `username` field contains a single
+//     quote (mimicking an unparameterized query)
+//
+// Then we declare the endpoint via OpenAPI 3 with `requestBody` containing a
+// `username` property — this is the exact path TASK-086 added (body-param
+// extraction in crawler.go + body-location probing in injection.go).
+//
+// Pre-fix: body params weren't extracted, body probes weren't sent, no finding.
+// Post-fix: error-based SQLi finding appears in the report.
+func TestActiveProbe_BodyParam_FindsErrorBasedSQLi(t *testing.T) {
+	bin := fendixBinary(t)
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		// Naive vulnerable handler: any single quote in the body → MySQL error
+		// reflection. This is exactly the signature error-based SQLi looks for.
+		if bytes.Contains(body, []byte(`'`)) {
+			fmt.Fprintln(w, `{"error":"You have an error in your SQL syntax; check the manual"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(target.Close)
+
+	specBody := `openapi: "3.0.0"
+info: {title: t, version: "1"}
+servers:
+  - url: ` + target.URL + `
+paths:
+  /api/users:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(dir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", target.URL,
+		"--spec", specPath,
+		"--enable-active",
+		"--workers", "2",
+		"--delay", "0",
+		"--timeout", "5",
+		"--output", outputPath,
+	)
+	out, err := cmd.CombinedOutput()
+	// Exit 1 (findings present) is expected and acceptable; exit 2 means a
+	// scan error which would be a regression.
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("fendix scan failed: %v\n%s", err, out)
+		}
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected report at %s: %v\noutput:\n%s", outputPath, err, out)
+	}
+	if !contains(string(report), "error-based") {
+		t.Fatalf("expected error-based SQLi finding in report (TASK-086 body-param probing regressed). Report:\n%s\n\nfendix output:\n%s", report, out)
+	}
+}
+
+// TestActiveProbe_HeaderParam_ProbesCustomHeader is a regression test for the
+// header-probing half of TASK-086. We declare a custom header parameter
+// (X-Trace-Id) and assert the active scanner sends at least one probe with
+// X-Trace-Id set — proves header-location probing actually fires.
+func TestActiveProbe_HeaderParam_ProbesCustomHeader(t *testing.T) {
+	bin := fendixBinary(t)
+
+	var (
+		mu      sync.Mutex
+		hdrHits int
+	)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.Header.Get("X-Trace-Id") != "" {
+			hdrHits++
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(target.Close)
+
+	specBody := `openapi: "3.0.0"
+info: {title: t, version: "1"}
+servers:
+  - url: ` + target.URL + `
+paths:
+  /api/items:
+    get:
+      parameters:
+        - name: X-Trace-Id
+          in: header
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", target.URL,
+		"--spec", specPath,
+		"--enable-active",
+		"--workers", "2",
+		"--delay", "0",
+		"--timeout", "5",
+		"--output", filepath.Join(dir, "report.json"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("fendix scan failed: %v\n%s", err, out)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if hdrHits == 0 {
+		t.Fatalf("expected at least one X-Trace-Id-bearing probe (TASK-086 header probing regressed)\noutput:\n%s", out)
+	}
+}
+
+// TestDedup_GroupsSameFindingAcrossEndpoints is the TASK-088 regression
+// test. We expose three endpoints from the mock target's spec — all
+// served by the same handler that returns weak headers — so the headers
+// check fires the same finding three times. After dedup, exactly one
+// finding should appear in the report with `affected_endpoints` listing
+// all three. Pre-fix the same scan would have produced three near-identical
+// findings and three SARIF rules.
+func TestDedup_GroupsSameFindingAcrossEndpoints(t *testing.T) {
+	bin := fendixBinary(t)
+
+	// Same handler for every path → identical headers → identical findings.
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "test/1.0")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(target.Close)
+
+	specBody := `openapi: "3.0.0"
+info: {title: t, version: "1"}
+servers:
+  - url: ` + target.URL + `
+paths:
+  /api/users:
+    get:
+      summary: List users
+  /api/posts:
+    get:
+      summary: List posts
+  /api/orders:
+    get:
+      summary: List orders
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(dir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", target.URL,
+		"--spec", specPath,
+		"--workers", "2",
+		"--delay", "0",
+		"--timeout", "5",
+		"--output", outputPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("fendix scan failed: %v\n%s", err, out)
+		}
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected report at %s: %v\noutput:\n%s", outputPath, err, out)
+	}
+
+	// At least one finding should carry an `affected_endpoints` array — the
+	// passive headers check fires identically on each spec endpoint and
+	// should collapse into one. We don't assert an exact count because the
+	// number of triggered headers on a stub server varies; the existence of
+	// the array is the signal that dedup ran.
+	if !contains(string(report), `"affected_endpoints"`) {
+		t.Fatalf("expected 'affected_endpoints' in report (TASK-088 dedup regressed). Report:\n%s\nfendix output:\n%s",
+			report, out)
+	}
 }
 
 // TestSaveBaseline_WritesFile is the regression test for TASK-079.

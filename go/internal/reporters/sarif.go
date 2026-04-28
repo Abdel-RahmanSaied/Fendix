@@ -244,7 +244,10 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 			Message:   SARIFMessage{Text: f.Evidence},
 		}
 
-		// Build location from either line (whitebox) or endpoint (blackbox)
+		// Build locations from either line (whitebox) or endpoint(s) (blackbox).
+		// Per SARIF spec, multiple locations on a single result mean "this
+		// finding applies to all of these places" — exactly the semantics we
+		// want for deduplicated findings (TASK-088).
 		if f.Line != nil && *f.Line != "" {
 			filePath, lineNum := parseLine(f.Line)
 			loc := SARIFLocation{
@@ -256,16 +259,25 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				loc.PhysicalLocation.Region = &SARIFRegion{StartLine: lineNum}
 			}
 			result.Locations = []SARIFLocation{loc}
-		} else if f.Endpoint != "" {
-			result.Locations = []SARIFLocation{
-				{
-					LogicalLocations: []SARIFLogicalLocation{
-						{
-							Name: f.Endpoint,
+		} else {
+			// Use AffectedEndpoints when present (deduped finding); otherwise
+			// fall back to the singleton Endpoint. Either way produces one
+			// SARIFLocation per endpoint with kind=endpoint.
+			endpoints := f.AffectedEndpoints
+			if len(endpoints) == 0 && f.Endpoint != "" {
+				endpoints = []string{f.Endpoint}
+			}
+			if len(endpoints) > 0 {
+				locs := make([]SARIFLocation, 0, len(endpoints))
+				for _, ep := range endpoints {
+					locs = append(locs, SARIFLocation{
+						LogicalLocations: []SARIFLogicalLocation{{
+							Name: ep,
 							Kind: "endpoint",
-						},
-					},
-				},
+						}},
+					})
+				}
+				result.Locations = locs
 			}
 		}
 

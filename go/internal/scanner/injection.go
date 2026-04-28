@@ -1,7 +1,9 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -17,8 +20,32 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
-// MaxProbesPerEndpoint limits how many active probes are sent to a single endpoint.
+// MaxProbesPerEndpoint is the default cap on active probes per endpoint when
+// ScanConfig.MaxProbesPerEndpoint is unset (zero). The cap is overridable via
+// the --max-probes-per-endpoint CLI flag (TASK-086).
 const MaxProbesPerEndpoint = 20
+
+// effectiveMaxProbes returns the per-endpoint probe budget for a scan.
+// Treats 0 as "use the default" so that ScanConfig zero-values stay safe.
+func effectiveMaxProbes(cfg *models.ScanConfig) int {
+	if cfg == nil || cfg.MaxProbesPerEndpoint <= 0 {
+		return MaxProbesPerEndpoint
+	}
+	return cfg.MaxProbesPerEndpoint
+}
+
+// ProbeLocation identifies where in the HTTP request a probe payload is placed.
+// Different vulnerabilities surface in different locations: query params get
+// reflected into URLs and SQL, body params reach the same handlers but bypass
+// query-string-only WAFs, and custom headers (X-Trace-Id, X-User-Role, etc.)
+// often flow into logs and SQL queries.
+type ProbeLocation string
+
+const (
+	LocQuery  ProbeLocation = "query"
+	LocHeader ProbeLocation = "header"
+	LocBody   ProbeLocation = "body"
+)
 
 // ActiveDisclaimer is printed to stderr when --enable-active is used.
 const ActiveDisclaimer = `
@@ -128,7 +155,19 @@ func measureBaseline(ctx context.Context, client *http.Client, method, url strin
 	return durations[1], nil // median
 }
 
-// sqliPayloads returns time-based blind SQL injection payloads for MySQL, Postgres, and MSSQL.
+// sqliPayloads returns time-based blind SQL injection payloads.
+// Five DB types are covered (TASK-086 expanded MySQL/Postgres/MSSQL → +SQLite +Oracle):
+//
+//   - MySQL: SLEEP(n)
+//   - Postgres: pg_sleep(n)
+//   - MSSQL: WAITFOR DELAY
+//   - SQLite: randomblob() — no native sleep, but a CASE-gated large blob
+//     allocation reliably blocks for several seconds on default builds
+//   - Oracle: DBMS_PIPE.RECEIVE_MESSAGE waits on a named pipe that never
+//     receives, returning after the timeout
+//
+// Threshold check is `baseline + 4s`, so any payload that pushes the request
+// past 5s detects as positive.
 func sqliPayloads() []struct {
 	DB      string
 	Payload string
@@ -142,8 +181,47 @@ func sqliPayloads() []struct {
 		{DB: "MySQL", Payload: "' AND SLEEP(5)--", Delay: 5 * time.Second},
 		{DB: "Postgres", Payload: "' AND pg_sleep(5)--", Delay: 5 * time.Second},
 		{DB: "MSSQL", Payload: "'; WAITFOR DELAY '00:00:05'--", Delay: 5 * time.Second},
+		{DB: "SQLite", Payload: "' AND CASE WHEN 1=1 THEN randomblob(99999999) ELSE 0 END--", Delay: 5 * time.Second},
+		{DB: "Oracle", Payload: "' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--", Delay: 5 * time.Second},
 	}
 }
+
+// sqliErrorPayload is sent once per (param, location) for error-based SQLi.
+// A bare single-quote is the most universally-effective: virtually every SQL
+// engine returns a syntax error if user input is concatenated into a query
+// without escaping. The follow-up regex match identifies WHICH engine.
+const sqliErrorPayload = "fendix'\""
+
+// sqliErrorPatterns matches DB error signatures in response bodies. Drawn from
+// real-world payloads in sqlmap and OWASP testing guides — kept conservative to
+// avoid false positives on generic "syntax error" strings in unrelated text.
+var sqliErrorPatterns = []struct {
+	DB string
+	Re *regexp.Regexp
+}{
+	{DB: "MySQL", Re: regexp.MustCompile(`(?i)you have an error in your sql syntax|warning.*mysql_|mysql_fetch|valid mysql result|mysqli?_query\(\)|com\.mysql\.jdbc`)},
+	{DB: "Postgres", Re: regexp.MustCompile(`(?i)pg_query\(\)|pg_exec\(\)|syntax error at or near|postgresql\.util\.PSQLException|invalid input syntax for|unterminated quoted string at or near`)},
+	{DB: "MSSQL", Re: regexp.MustCompile(`(?i)unclosed quotation mark after the character string|microsoft.*odbc.*sql server|incorrect syntax near|sqlserver\.jdbc|com\.microsoft\.sqlserver`)},
+	{DB: "Oracle", Re: regexp.MustCompile(`(?i)\bORA-\d{5}\b|quoted string not properly terminated|oracle\.jdbc|oracledatabase`)},
+	{DB: "SQLite", Re: regexp.MustCompile(`(?i)sqlite3?::|sqlite_error|unrecognized token|near \".*\": syntax error|sqlite3\.OperationalError`)},
+}
+
+// sqliBooleanPayloads is a (true-condition, false-condition) pair for boolean-
+// based blind SQLi. If response length or status differs significantly between
+// the two, that suggests the payload was concatenated into a SQL WHERE clause.
+var sqliBooleanPayloads = struct {
+	True  string
+	False string
+}{
+	True:  "' OR '1'='1",
+	False: "' AND '1'='2",
+}
+
+// sqliBooleanLengthThreshold is the minimum percent difference in response
+// body length between the true and false probes that we consider significant.
+// 5% is the spec's default — small enough to catch reflected boolean flips,
+// large enough to ignore byte-level noise (timestamps, request IDs, etc.).
+const sqliBooleanLengthThreshold = 0.05
 
 // cmdiPayload is the safe echo-based command injection canary.
 const cmdiCanaryPrefix = "fendix_canary_"
@@ -152,9 +230,110 @@ const cmdiPayload = "; echo fendix_canary_PROBE"
 // crlfPayload injects a Set-Cookie header via CRLF (URL-encoded spaces for valid HTTP).
 const crlfPayload = "%0d%0aSet-Cookie:%20fendix=injected"
 
+// methodAcceptsBody returns true for HTTP methods that conventionally carry
+// a request body. Body probing is only meaningful for these — sending a body
+// on GET/DELETE typically gets ignored or rejected.
+func methodAcceptsBody(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return true
+	}
+	return false
+}
+
+// probeTarget identifies one (parameter, location) pair to test. The injection
+// orchestrator emits one of these per param-location combination, then each
+// probe function decides whether to send an HTTP request for it.
+type probeTarget struct {
+	Name     string
+	Location ProbeLocation
+}
+
+// targetsForEndpoint returns the (param, location) pairs to probe. Order is
+// query → header → body so that simpler request shapes execute first; if the
+// max-probes budget kicks in, we'd rather have probed query params for every
+// endpoint than headers for one and nothing for the rest.
+//
+// Falls back to a single ("id", query) target when an endpoint has no declared
+// params anywhere — preserves the v0.2 behavior of "always try `id` so we
+// catch undocumented surface" without turning every empty body into a 0-probe
+// no-op.
+func targetsForEndpoint(ep Endpoint) []probeTarget {
+	var targets []probeTarget
+	for _, p := range ep.Params {
+		targets = append(targets, probeTarget{Name: p, Location: LocQuery})
+	}
+	for _, h := range ep.Headers {
+		targets = append(targets, probeTarget{Name: h, Location: LocHeader})
+	}
+	if methodAcceptsBody(ep.Method) {
+		for _, b := range ep.BodyParams {
+			targets = append(targets, probeTarget{Name: b, Location: LocBody})
+		}
+	}
+	if len(targets) == 0 {
+		targets = []probeTarget{{Name: "id", Location: LocQuery}}
+	}
+	return targets
+}
+
+// buildProbeRequest constructs an HTTP request that places `payload` in the
+// requested location. For body probes, the JSON body is built from the
+// endpoint's BodyParams: the target field carries the payload, sibling fields
+// get a non-empty placeholder so the server's input validation doesn't reject
+// the request before it reaches the vulnerable code.
+func buildProbeRequest(ctx context.Context, ep Endpoint, param, payload string, loc ProbeLocation) (*http.Request, error) {
+	switch loc {
+	case LocQuery:
+		probeURL := buildProbeURL(ep.FullURL, param, payload)
+		return http.NewRequestWithContext(ctx, ep.Method, probeURL, nil)
+
+	case LocHeader:
+		req, err := http.NewRequestWithContext(ctx, ep.Method, ep.FullURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		// Header values can't legitimately contain CR/LF; for non-CRLF probes
+		// we strip them to keep the http client from rejecting the request as
+		// malformed. CRLF probes use buildCRLFRequest directly.
+		safe := strings.NewReplacer("\r", "", "\n", "").Replace(payload)
+		req.Header.Set(param, safe)
+		return req, nil
+
+	case LocBody:
+		body := buildJSONBody(ep.BodyParams, param, payload)
+		req, err := http.NewRequestWithContext(ctx, ep.Method, ep.FullURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+
+	default:
+		return nil, fmt.Errorf("unknown probe location %q", loc)
+	}
+}
+
+// buildJSONBody serializes a JSON object where `target` carries `payload` and
+// every other field in `fields` gets the placeholder string "fendix". Falls
+// back to a one-key object when fields is empty.
+func buildJSONBody(fields []string, target, payload string) []byte {
+	body := make(map[string]string, len(fields)+1)
+	for _, f := range fields {
+		body[f] = "fendix"
+	}
+	body[target] = payload
+	if len(body) == 0 {
+		body[target] = payload
+	}
+	out, _ := json.Marshal(body)
+	return out
+}
+
 // CheckInjection runs active injection probes on an endpoint.
 // This function MUST only be called when cfg.EnableActive is true.
-// It runs SQLi, CMDi, and CRLF probes on each parameter.
+// It runs SQLi (time/error/boolean), CMDi, and CRLF probes across each
+// declared query/header/body parameter.
 func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
 	if !cfg.EnableActive {
 		return nil
@@ -165,6 +344,10 @@ func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoi
 }
 
 // CheckInjectionWithAudit runs active injection probes with a provided audit log.
+// Iterates over (param, location) pairs returned by targetsForEndpoint —
+// query params, header params, and (for POST/PUT/PATCH) body fields — and
+// runs all configured probe types against each. The per-endpoint probe
+// budget (cfg.MaxProbesPerEndpoint, default 20) caps total probe count.
 func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint, auditLog *ProbeAuditLog) []models.Finding {
 	if !cfg.EnableActive {
 		return nil
@@ -172,41 +355,37 @@ func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoi
 
 	client := &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second}
 	var findings []models.Finding
+	maxProbes := effectiveMaxProbes(cfg)
 
-	// Determine parameters to test
-	params := endpoint.Params
-	if len(params) == 0 {
-		// If no known params, test with a generic "id" param
-		params = []string{"id"}
-	}
-
-	for _, param := range params {
-		if auditLog.Count(endpoint.FullURL) >= MaxProbesPerEndpoint {
-			slog.Warn("max probes reached for endpoint", "endpoint", endpoint.FullURL, "max", MaxProbesPerEndpoint)
+	for _, t := range targetsForEndpoint(endpoint) {
+		if auditLog.Count(endpoint.FullURL) >= maxProbes {
+			slog.Warn("max probes reached for endpoint", "endpoint", endpoint.FullURL, "max", maxProbes)
 			break
 		}
 
-		// SQLi probes
-		sqlFindings := probeSQLi(ctx, client, cfg, endpoint, param, auditLog)
-		findings = append(findings, sqlFindings...)
+		findings = append(findings, probeSQLi(ctx, client, cfg, endpoint, t.Name, t.Location, auditLog)...)
+		findings = append(findings, probeSQLiErrorBased(ctx, client, cfg, endpoint, t.Name, t.Location, auditLog)...)
+		findings = append(findings, probeSQLiBoolean(ctx, client, cfg, endpoint, t.Name, t.Location, auditLog)...)
+		findings = append(findings, probeCMDi(ctx, client, cfg, endpoint, t.Name, t.Location, auditLog)...)
 
-		// CMDi probes
-		cmdFindings := probeCMDi(ctx, client, cfg, endpoint, param, auditLog)
-		findings = append(findings, cmdFindings...)
-
-		// CRLF probes
-		crlfFindings := probeCRLF(ctx, client, cfg, endpoint, param, auditLog)
-		findings = append(findings, crlfFindings...)
+		// CRLF only makes sense for query params — header/body values that
+		// contain CR/LF are stripped or rejected before reaching response
+		// header construction in any reasonable framework.
+		if t.Location == LocQuery {
+			findings = append(findings, probeCRLF(ctx, client, cfg, endpoint, t.Name, auditLog)...)
+		}
 	}
 
 	return findings
 }
 
 // probeSQLi sends time-based blind SQLi payloads and checks for delayed responses.
-func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, auditLog *ProbeAuditLog) []models.Finding {
+// Supports query, header, and body locations (TASK-086) — same detection logic
+// regardless of where the payload is placed.
+func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
 	var findings []models.Finding
+	maxProbes := effectiveMaxProbes(cfg)
 
-	// Measure baseline response time
 	baseline, err := measureBaseline(ctx, client, endpoint.Method, endpoint.FullURL)
 	if err != nil {
 		slog.Warn("failed to measure baseline for sqli", "endpoint", endpoint.FullURL, "error", err)
@@ -214,21 +393,16 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	}
 
 	for _, p := range sqliPayloads() {
-		if auditLog.Count(endpoint.FullURL) >= MaxProbesPerEndpoint {
+		if auditLog.Count(endpoint.FullURL) >= maxProbes {
 			break
 		}
 
-		// Build probe URL with payload in query parameter
-		probeURL := buildProbeURL(endpoint.FullURL, param, p.Payload)
-
 		start := time.Now()
-		req, err := http.NewRequestWithContext(ctx, endpoint.Method, probeURL, nil)
+		req, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
 		if err != nil {
 			slog.Warn("failed to create sqli probe request", "error", err)
 			continue
 		}
-
-		// Add auth if configured
 		addAuth(req, cfg)
 
 		resp, err := client.Do(req)
@@ -255,16 +429,15 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 
 		record.Status = resp.StatusCode
 
-		// Check if response was delayed (baseline + 4 seconds threshold per spec)
 		threshold := baseline + 4*time.Second
 		if elapsed > threshold {
 			record.Finding = true
 			auditLog.Record(record)
 
 			confidence := models.ConfidenceMedium
-			// Run a second probe to confirm
+			// Run a second probe to confirm timing isn't a one-off blip.
 			start2 := time.Now()
-			req2, err := http.NewRequestWithContext(ctx, endpoint.Method, probeURL, nil)
+			req2, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
 			if err == nil {
 				addAuth(req2, cfg)
 				resp2, err := client.Do(req2)
@@ -289,18 +462,20 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			}
 
 			findings = append(findings, models.Finding{
-				Title:    fmt.Sprintf("Potential SQL Injection (%s)", p.DB),
+				Title:    fmt.Sprintf("Potential SQL Injection (%s, time-based)", p.DB),
 				Severity: models.SeverityHigh,
 				Source:   models.SourceBlackbox,
 				Category: "injection",
 				Endpoint: fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path),
-				Evidence: fmt.Sprintf("Time-based blind SQLi: baseline=%s, probe=%s (threshold=%s), param=%q, payload=%q",
-					baseline.Round(time.Millisecond), elapsed.Round(time.Millisecond), threshold.Round(time.Millisecond), param, p.Payload),
+				Evidence: fmt.Sprintf("Time-based blind SQLi: baseline=%s, probe=%s (threshold=%s), %s, payload=%q",
+					baseline.Round(time.Millisecond), elapsed.Round(time.Millisecond), threshold.Round(time.Millisecond), paramLabel(param, loc), p.Payload),
 				Fix:        "Use parameterized queries / prepared statements. Never concatenate user input into SQL.",
 				References: []string{"CWE-89", "OWASP-A03"},
 				Confidence: confidence,
 			})
-			// Found SQLi with this DB type, skip remaining DB payloads for this param
+			// Once one DB type confirms, skip the rest for this (param, loc) —
+			// the underlying vuln is the same; multiple findings would just be
+			// noise.
 			break
 		}
 
@@ -311,16 +486,180 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	return findings
 }
 
-// probeCMDi sends a safe echo canary payload and checks for reflection in the response.
-func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, auditLog *ProbeAuditLog) []models.Finding {
-	if auditLog.Count(endpoint.FullURL) >= MaxProbesPerEndpoint {
+// paramLabel formats a (param, location) pair for log messages and finding
+// evidence — disambiguates "param=id" between query/header/body so the user
+// can immediately tell which surface a finding came from.
+func paramLabel(param string, loc ProbeLocation) string {
+	return fmt.Sprintf("%s=%q (in=%s)", "param", param, loc)
+}
+
+// probeSQLiErrorBased sends a single bare-quote payload and scans the response
+// body for known database error signatures. Confirmed errors are HIGH-severity
+// HIGH-confidence — the response body literally contains "you have an error in
+// your SQL syntax", which is unambiguous evidence the input reached an
+// unparameterized query.
+func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+	if auditLog.Count(endpoint.FullURL) >= effectiveMaxProbes(cfg) {
 		return nil
 	}
 
-	probeURL := buildProbeURL(endpoint.FullURL, param, cmdiPayload)
+	start := time.Now()
+	req, err := buildProbeRequest(ctx, endpoint, param, sqliErrorPayload, loc)
+	if err != nil {
+		slog.Warn("failed to create error-based sqli probe request", "error", err)
+		return nil
+	}
+	addAuth(req, cfg)
+
+	resp, err := client.Do(req)
+	elapsed := time.Since(start)
+
+	record := ProbeRecord{
+		Timestamp: start,
+		Endpoint:  endpoint.FullURL,
+		ProbeType: ProbeSQLi,
+		Payload:   sqliErrorPayload,
+		Parameter: param,
+		Method:    endpoint.Method,
+		Duration:  elapsed.Round(time.Millisecond).String(),
+	}
+
+	if err != nil {
+		slog.Warn("error-based sqli probe failed", "endpoint", endpoint.FullURL, "error", err)
+		record.Status = 0
+		auditLog.Record(record)
+		return nil
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	record.Status = resp.StatusCode
+
+	bodyStr := string(body)
+	for _, p := range sqliErrorPatterns {
+		if !p.Re.MatchString(bodyStr) {
+			continue
+		}
+		record.Finding = true
+		auditLog.Record(record)
+
+		match := p.Re.FindString(bodyStr)
+		// Cap evidence size; the matched string is the high-signal part,
+		// arbitrary trailing body would just be noise.
+		if len(match) > 160 {
+			match = match[:160] + "..."
+		}
+		return []models.Finding{{
+			Title:    fmt.Sprintf("SQL Injection (%s, error-based)", p.DB),
+			Severity: models.SeverityHigh,
+			Source:   models.SourceBlackbox,
+			Category: "injection",
+			Endpoint: fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path),
+			Evidence: fmt.Sprintf("DB error signature in response: %q. %s, payload=%q",
+				match, paramLabel(param, loc), sqliErrorPayload),
+			Fix:        "Use parameterized queries / prepared statements. Sanitize input before SQL.",
+			References: []string{"CWE-89", "OWASP-A03"},
+			Confidence: models.ConfidenceHigh,
+		}}
+	}
+
+	record.Finding = false
+	auditLog.Record(record)
+	return nil
+}
+
+// probeSQLiBoolean sends a (true, false) payload pair and detects whether the
+// server's response shape changes — status flip or response-body length delta
+// > sqliBooleanLengthThreshold (5%). Either signal indicates the payload was
+// concatenated into the WHERE clause and the engine evaluated the condition.
+func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+	maxProbes := effectiveMaxProbes(cfg)
+	if auditLog.Count(endpoint.FullURL)+2 > maxProbes {
+		// We need two probes; if even one of them busts the budget, skip.
+		return nil
+	}
+
+	trueStatus, trueLen, ok := sendBoolProbe(ctx, client, cfg, endpoint, param, sqliBooleanPayloads.True, loc, auditLog)
+	if !ok {
+		return nil
+	}
+	falseStatus, falseLen, ok := sendBoolProbe(ctx, client, cfg, endpoint, param, sqliBooleanPayloads.False, loc, auditLog)
+	if !ok {
+		return nil
+	}
+
+	statusFlip := trueStatus != falseStatus
+	lenDelta := math.Abs(float64(trueLen-falseLen)) / math.Max(float64(trueLen), 1)
+	lengthFlip := lenDelta > sqliBooleanLengthThreshold
+
+	if !statusFlip && !lengthFlip {
+		return nil
+	}
+
+	return []models.Finding{{
+		Title:    "SQL Injection (boolean-based)",
+		Severity: models.SeverityHigh,
+		Source:   models.SourceBlackbox,
+		Category: "injection",
+		Endpoint: fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path),
+		Evidence: fmt.Sprintf("Response differs between true (%q → status=%d len=%d) and false (%q → status=%d len=%d) payloads. delta=%.1f%%, %s",
+			sqliBooleanPayloads.True, trueStatus, trueLen,
+			sqliBooleanPayloads.False, falseStatus, falseLen,
+			lenDelta*100, paramLabel(param, loc)),
+		Fix:        "Use parameterized queries / prepared statements. Sanitize input before SQL.",
+		References: []string{"CWE-89", "OWASP-A03"},
+		Confidence: models.ConfidenceMedium,
+	}}
+}
+
+// sendBoolProbe sends one boolean probe and records the audit entry. Returns
+// (status, response-body-length, ok) — ok=false means the request failed and
+// the caller should abandon the boolean test.
+func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param, payload string, loc ProbeLocation, auditLog *ProbeAuditLog) (status int, bodyLen int, ok bool) {
+	start := time.Now()
+	req, err := buildProbeRequest(ctx, endpoint, param, payload, loc)
+	if err != nil {
+		slog.Warn("failed to create boolean sqli probe request", "error", err)
+		return 0, 0, false
+	}
+	addAuth(req, cfg)
+
+	resp, err := client.Do(req)
+	elapsed := time.Since(start)
+
+	record := ProbeRecord{
+		Timestamp: start,
+		Endpoint:  endpoint.FullURL,
+		ProbeType: ProbeSQLi,
+		Payload:   payload,
+		Parameter: param,
+		Method:    endpoint.Method,
+		Duration:  elapsed.Round(time.Millisecond).String(),
+	}
+
+	if err != nil {
+		slog.Warn("boolean sqli probe failed", "endpoint", endpoint.FullURL, "error", err)
+		auditLog.Record(record)
+		return 0, 0, false
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	record.Status = resp.StatusCode
+	auditLog.Record(record)
+	return resp.StatusCode, len(body), true
+}
+
+// probeCMDi sends a safe echo canary payload and checks for reflection in the response.
+// Location-aware: works on query, header, and body params. The canary is the
+// echoed substring "fendix_canary_" — if it appears in the response body, the
+// payload was passed to a shell.
+func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+	if auditLog.Count(endpoint.FullURL) >= effectiveMaxProbes(cfg) {
+		return nil
+	}
 
 	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, endpoint.Method, probeURL, nil)
+	req, err := buildProbeRequest(ctx, endpoint, param, cmdiPayload, loc)
 	if err != nil {
 		slog.Warn("failed to create cmdi probe request", "error", err)
 		return nil
@@ -357,7 +696,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		record.Finding = true
 		auditLog.Record(record)
 
-		evidence := fmt.Sprintf("Command injection confirmed: canary %q found in response body, param=%q", cmdiCanaryPrefix, param)
+		evidence := fmt.Sprintf("Command injection confirmed: canary %q in response body, %s", cmdiCanaryPrefix, paramLabel(param, loc))
 		if len(body) > 200 {
 			body = body[:200]
 		}
@@ -381,9 +720,12 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	return nil
 }
 
-// probeCRLF injects CRLF characters into query params and header values, checking for header injection.
+// probeCRLF injects CRLF characters into a query parameter and checks whether
+// the resulting Set-Cookie header is reflected in the response. Query-only —
+// header values can't smuggle CR/LF past the http client, and body values
+// don't reach response-header construction in any reasonable framework.
 func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, auditLog *ProbeAuditLog) []models.Finding {
-	if auditLog.Count(endpoint.FullURL) >= MaxProbesPerEndpoint {
+	if auditLog.Count(endpoint.FullURL) >= effectiveMaxProbes(cfg) {
 		return nil
 	}
 

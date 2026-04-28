@@ -56,6 +56,9 @@ h1{font-size:1.75rem;margin-bottom:.5rem;color:#f8fafc}
 .field-label{color:#64748b;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem}
 .field-value{color:#cbd5e1}
 .evidence{background:#0f172a;padding:.75rem;border-radius:.5rem;font-family:monospace;font-size:.8rem;word-break:break-all;color:#fbbf24}
+.affected-list{margin:0;padding-left:1.25rem;font-family:monospace;font-size:.85rem;list-style:disc}
+.affected-list li{margin:.1rem 0}
+.finding-endpoint em{color:#fbbf24;font-style:normal;font-size:.75rem}
 .meta{margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;color:#64748b;font-size:.8rem;display:flex;gap:2rem;flex-wrap:wrap}
 @media print{
 body{background:#fff;color:#1e293b;padding:1rem}
@@ -106,7 +109,7 @@ body{background:#fff;color:#1e293b;padding:1rem}
 <span class="badge {{.Severity}}">{{.Severity}}</span>
 <span class="finding-id">{{.ID}}</span>
 <span class="finding-title">{{.Title}}</span>
-<span class="finding-endpoint">{{.Endpoint}}</span>
+<span class="finding-endpoint">{{.Endpoint}}{{if gt (len .AffectedEndpoints) 1}} <em>(+{{sub (len .AffectedEndpoints) 1}} more)</em>{{end}}</span>
 <span class="toggle">&#x25B6;</span>
 </div>
 <div class="finding-body">
@@ -114,6 +117,7 @@ body{background:#fff;color:#1e293b;padding:1rem}
 <div class="field"><div class="field-label">Fix</div><div class="field-value">{{.Fix}}</div></div>
 <div class="field"><div class="field-label">Source</div><div class="field-value">{{.Source}} &middot; {{.Confidence}} confidence</div></div>
 <div class="field"><div class="field-label">Category</div><div class="field-value">{{.Category}}</div></div>
+{{if gt (len .AffectedEndpoints) 1}}<div class="field"><div class="field-label">Affected endpoints ({{len .AffectedEndpoints}})</div><div class="field-value"><ul class="affected-list">{{range .AffectedEndpoints}}<li>{{.}}</li>{{end}}</ul></div></div>{{end}}
 {{if .References}}<div class="field"><div class="field-label">References</div><div class="field-value">{{joinRefs .References}}</div></div>{{end}}
 {{if .Line}}<div class="field"><div class="field-label">Location</div><div class="field-value">{{derefLine .Line}}</div></div>{{end}}
 </div>
@@ -171,6 +175,10 @@ func RenderHTML(w io.Writer, findings []models.Finding, meta ScanMetadata) error
 		},
 		"severityRank": func(s models.Severity) int {
 			return models.SeverityRank(s)
+		},
+		// `sub` is used by the affected-endpoints "+N more" badge.
+		"sub": func(a, b int) int {
+			return a - b
 		},
 	}
 

@@ -670,6 +670,194 @@ func TestFromSpec_InvalidYAML(t *testing.T) {
 	}
 }
 
+// TestFromSpec_PopulatesHeaderParams covers TASK-086 — `in: header` params now
+// land in Endpoint.Headers, with standard auth headers (Authorization, Cookie,
+// X-Api-Key) filtered out so the active scanner doesn't scribble payloads into
+// real auth values.
+func TestFromSpec_PopulatesHeaderParams(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+paths:
+  /widgets:
+    get:
+      parameters:
+        - name: X-Trace-Id
+          in: header
+        - name: X-Tenant-Id
+          in: header
+        - name: Authorization
+          in: header
+        - name: Cookie
+          in: header
+        - name: limit
+          in: query
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
+	}
+	got := endpoints[0].Headers
+	wantSet := map[string]bool{"X-Trace-Id": true, "X-Tenant-Id": true}
+	for _, h := range got {
+		if !wantSet[h] {
+			t.Errorf("unexpected header %q (auth headers should be skipped); got Headers=%v", h, got)
+		}
+		delete(wantSet, h)
+	}
+	if len(wantSet) != 0 {
+		t.Errorf("missing headers %v from %v", wantSet, got)
+	}
+	// Query param still flows through Params, not Headers.
+	if len(endpoints[0].Params) != 1 || endpoints[0].Params[0] != "limit" {
+		t.Errorf("expected Params=[limit], got %v", endpoints[0].Params)
+	}
+}
+
+// TestFromSpec_PopulatesBodyParams_OAS3 covers TASK-086 — OpenAPI 3 JSON
+// requestBody schemas surface their property names in Endpoint.BodyParams so
+// the active scanner can probe POST/PUT/PATCH body fields.
+func TestFromSpec_PopulatesBodyParams_OAS3(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+paths:
+  /users:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                email:
+                  type: string
+                age:
+                  type: integer
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
+	}
+	got := endpoints[0].BodyParams
+	want := map[string]bool{"username": true, "email": true, "age": true}
+	for _, b := range got {
+		if !want[b] {
+			t.Errorf("unexpected body param %q in %v", b, got)
+		}
+		delete(want, b)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing body params %v from %v", want, got)
+	}
+}
+
+// TestFromSpec_PopulatesBodyParams_Swagger2 covers Swagger 2.0 bodies, which
+// live in `parameters` with `in: body` rather than the OAS 3 `requestBody`.
+func TestFromSpec_PopulatesBodyParams_Swagger2(t *testing.T) {
+	spec := `
+swagger: "2.0"
+info: {title: t, version: "1"}
+host: api.example.com
+basePath: /v1
+paths:
+  /users:
+    post:
+      parameters:
+        - name: body
+          in: body
+          schema:
+            type: object
+            properties:
+              username:
+                type: string
+              password:
+                type: string
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "swagger.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
+	}
+	got := endpoints[0].BodyParams
+	want := map[string]bool{"username": true, "password": true}
+	for _, b := range got {
+		if !want[b] {
+			t.Errorf("unexpected body param %q in %v", b, got)
+		}
+		delete(want, b)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing body params %v from %v", want, got)
+	}
+}
+
+// TestFromSpec_BodyParams_RefSchemaSkipped — schemas with $ref are not
+// dereferenced in v0.3, so they yield no body params (rather than crashing).
+func TestFromSpec_BodyParams_RefSchemaSkipped(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+paths:
+  /users:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 5})
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
+	}
+	if len(endpoints[0].BodyParams) != 0 {
+		t.Errorf("expected no body params for $ref schema, got %v", endpoints[0].BodyParams)
+	}
+}
+
 func TestFromSpec_NoPaths(t *testing.T) {
 	dir := t.TempDir()
 	specPath := filepath.Join(dir, "empty.yaml")

@@ -34,18 +34,25 @@ const (
 
 // Finding represents a single security finding produced by either engine.
 // This struct is the shared data contract between Go and Python.
+//
+// AffectedEndpoints is populated by the orchestrator's deduplication pass
+// (TASK-088) when N findings of the same (Title, Category, Severity)
+// collapse into one. The slice contains every affected endpoint including
+// the primary one in `Endpoint`. When the finding represents a single
+// occurrence, AffectedEndpoints is nil (omitted from JSON via omitempty).
 type Finding struct {
-	ID         string     `json:"id"`
-	Title      string     `json:"title"`
-	Severity   Severity   `json:"severity"`
-	Source     Source     `json:"source"`
-	Category   string     `json:"category"`
-	Endpoint   string     `json:"endpoint"`
-	Evidence   string     `json:"evidence"`
-	Fix        string     `json:"fix"`
-	References []string   `json:"references"`
-	Confidence Confidence `json:"confidence"`
-	Line       *string    `json:"line"`
+	ID                string     `json:"id"`
+	Title             string     `json:"title"`
+	Severity          Severity   `json:"severity"`
+	Source            Source     `json:"source"`
+	Category          string     `json:"category"`
+	Endpoint          string     `json:"endpoint"`
+	AffectedEndpoints []string   `json:"affected_endpoints,omitempty"`
+	Evidence          string     `json:"evidence"`
+	Fix               string     `json:"fix"`
+	References        []string   `json:"references"`
+	Confidence        Confidence `json:"confidence"`
+	Line              *string    `json:"line"`
 }
 
 // SeverityRank returns a numeric rank for severity comparison.

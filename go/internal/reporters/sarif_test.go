@@ -204,6 +204,53 @@ func TestRenderSARIF_BlackboxLocation(t *testing.T) {
 	}
 }
 
+// TestRenderSARIF_AffectedEndpointsAsMultipleLocations covers TASK-088:
+// a deduplicated finding should serialize each affected endpoint as its
+// own SARIFLocation under the result. Per SARIF 2.1.0 §3.27.12, multiple
+// locations on a result mean "this issue applies to all of them" — exactly
+// the semantics we want.
+func TestRenderSARIF_AffectedEndpointsAsMultipleLocations(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Version: "dev"}
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Missing CSP", Severity: models.SeverityMedium,
+			Source: models.SourceBlackbox, Category: "headers",
+			Endpoint:          "GET /api/users",
+			AffectedEndpoints: []string{"GET /api/users", "GET /api/posts", "POST /api/login"},
+			Evidence:          "no CSP header observed", Fix: "Add Content-Security-Policy",
+			Confidence: models.ConfidenceHigh, References: []string{"CWE-693"},
+		},
+	}
+	if err := RenderSARIF(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	results := log.Runs[0].Results
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	locs := results[0].Locations
+	if len(locs) != 3 {
+		t.Fatalf("expected 3 SARIFLocation entries (one per affected endpoint), got %d", len(locs))
+	}
+	gotNames := []string{
+		locs[0].LogicalLocations[0].Name,
+		locs[1].LogicalLocations[0].Name,
+		locs[2].LogicalLocations[0].Name,
+	}
+	wantSet := map[string]bool{"GET /api/users": true, "GET /api/posts": true, "POST /api/login": true}
+	for _, n := range gotNames {
+		if !wantSet[n] {
+			t.Errorf("unexpected endpoint name in SARIFLocation: %q (got names: %v)", n, gotNames)
+		}
+	}
+}
+
 func TestRenderSARIF_EmptyFindings(t *testing.T) {
 	var buf bytes.Buffer
 	meta := ScanMetadata{Version: "dev"}

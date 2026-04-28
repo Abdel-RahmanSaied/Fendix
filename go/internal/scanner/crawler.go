@@ -157,6 +157,13 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 		// per-method loop.
 		pathLevelParams := extractParamsList(methodMap["parameters"])
 
+		// Path-level header params apply to every operation under the path,
+		// same as query/path. Body params can only be declared per-operation
+		// in OAS 3 (`requestBody` is operation-level), but Swagger 2 allows
+		// `in: body` at path level so we extract from both layers.
+		pathLevelHeaders := extractHeaderParamsList(methodMap["parameters"])
+		pathLevelBodyParams := extractBodyParamNames(methodMap)
+
 		for method, op := range methodMap {
 			method = strings.ToLower(method)
 			if !httpMethods[method] {
@@ -164,12 +171,16 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 			}
 			opMap, _ := op.(map[string]interface{})
 			opParams := extractParamsList(opMap["parameters"])
+			opHeaders := extractHeaderParamsList(opMap["parameters"])
+			opBodyParams := extractBodyParamNames(opMap)
 
 			ep := Endpoint{
-				Method:  strings.ToUpper(method),
-				Path:    path,
-				FullURL: baseURL + path,
-				Params:  mergeParams(extractPathParams(path), pathLevelParams, opParams),
+				Method:     strings.ToUpper(method),
+				Path:       path,
+				FullURL:    baseURL + path,
+				Params:     mergeParams(extractPathParams(path), pathLevelParams, opParams),
+				Headers:    mergeParams(pathLevelHeaders, opHeaders),
+				BodyParams: mergeParams(pathLevelBodyParams, opBodyParams),
 			}
 			endpoints = append(endpoints, ep)
 		}
@@ -450,8 +461,8 @@ func extractPathParams(path string) []string {
 
 // extractParamsList reads an OpenAPI/Swagger `parameters` array (raw decoded
 // YAML/JSON) and returns the names of params with `in: query` or `in: path`.
-// Body and header params are intentionally skipped here — body probing is
-// scoped to TASK-086 in Phase 11. Returns nil if the input isn't a list.
+// Header and body params have their own extractors (extractHeaderParamsList,
+// extractBodyParamNames). Returns nil if the input isn't a list.
 //
 // Accepts the value type produced by yaml.v3 (map[string]interface{} entries)
 // and the type produced by encoding/json (also map[string]interface{}). Both
@@ -467,8 +478,7 @@ func extractParamsList(raw interface{}) []string {
 		if !ok {
 			continue
 		}
-		// $ref-only entries are common in real specs — skip them rather than
-		// resolve, since spec deref is out of scope for v0.2 (TASK-086 covers).
+		// $ref entries left unresolved; deref is out of scope for v0.3.
 		if _, hasRef := entry["$ref"]; hasRef {
 			continue
 		}
@@ -482,6 +492,131 @@ func extractParamsList(raw interface{}) []string {
 			names = append(names, name)
 		}
 	}
+	return names
+}
+
+// skippableHeaderNames are headers we never probe with injection payloads.
+// Authorization-class headers are the auth scanner's responsibility, and
+// scribbling junk into them risks breaking the test session for downstream
+// endpoints. Compared lower-case.
+var skippableHeaderNames = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"cookie":              true,
+	"set-cookie":          true,
+	"x-api-key":           true,
+	"apikey":              true,
+	"api-key":             true,
+}
+
+// extractHeaderParamsList returns the names of `in: header` params, with
+// standard auth headers filtered out (see skippableHeaderNames). Same input
+// shape as extractParamsList. Custom headers like X-Trace-Id, X-User-Role,
+// etc. are preserved — those are exactly the fields where header-value
+// injection bugs hide.
+func extractHeaderParamsList(raw interface{}) []string {
+	list, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, item := range list {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasRef := entry["$ref"]; hasRef {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		in, _ := entry["in"].(string)
+		if name == "" || strings.ToLower(in) != "header" {
+			continue
+		}
+		if skippableHeaderNames[strings.ToLower(name)] {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// extractBodyParamNames returns the JSON body field names declared on an
+// operation (or path-level entry). Handles both:
+//
+//   - OpenAPI 3: operation.requestBody.content["application/json"].schema.properties
+//   - Swagger 2: parameters[*] where in=body, schema.properties
+//
+// Nested objects are walked one level deep (top-level properties only) since
+// active probing of nested fields would multiply the probe budget without
+// matching how most JSON-body SQLi bugs surface in practice. $ref schemas
+// are skipped — deref is out of scope, same as extractParamsList.
+func extractBodyParamNames(opMap map[string]interface{}) []string {
+	if opMap == nil {
+		return nil
+	}
+	var names []string
+
+	// OpenAPI 3: requestBody.content."application/json".schema.properties
+	if rb, ok := opMap["requestBody"].(map[string]interface{}); ok {
+		if content, ok := rb["content"].(map[string]interface{}); ok {
+			// Pick the JSON content type if present; spec authors commonly
+			// duplicate the schema across content types so the first JSON-y
+			// match is enough.
+			for ct, body := range content {
+				ctLower := strings.ToLower(ct)
+				if !strings.Contains(ctLower, "json") {
+					continue
+				}
+				bodyMap, ok := body.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				schema, _ := bodyMap["schema"].(map[string]interface{})
+				names = append(names, schemaPropertyNames(schema)...)
+				break
+			}
+		}
+	}
+
+	// Swagger 2: parameters[*] where in=body, schema.properties
+	if params, ok := opMap["parameters"].([]interface{}); ok {
+		for _, p := range params {
+			entry, ok := p.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			in, _ := entry["in"].(string)
+			if strings.ToLower(in) != "body" {
+				continue
+			}
+			schema, _ := entry["schema"].(map[string]interface{})
+			names = append(names, schemaPropertyNames(schema)...)
+		}
+	}
+
+	return names
+}
+
+// schemaPropertyNames returns the top-level property names from a JSON-Schema
+// `properties` object. Returns nil for $ref-only schemas or non-object types.
+func schemaPropertyNames(schema map[string]interface{}) []string {
+	if schema == nil {
+		return nil
+	}
+	if _, hasRef := schema["$ref"]; hasRef {
+		return nil
+	}
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	// Sort for deterministic ordering (map iteration is random in Go).
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	return names
 }
 

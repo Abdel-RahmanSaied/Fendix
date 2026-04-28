@@ -17,6 +17,9 @@ type ScanConfig struct {
 	Auth         *AuthContext
 	AuthUser2    *AuthContext
 	EnableActive bool
+	// MaxProbesPerEndpoint caps the number of active probes sent to a single
+	// endpoint. Zero means "use the scanner's default" (currently 20).
+	MaxProbesPerEndpoint int
 	Workers      int
 	Timeout      int
 	DelayMs      int

@@ -1,6 +1,9 @@
 """Secrets analyzer — detects hardcoded secrets in source code.
 
-Walks the code path recursively and matches against 7 known secret pattern types.
+Walks the code path recursively and matches against 15 secret pattern types
+(7 generic + 8 provider-specific). Plus a .env-only pattern for unquoted
+KEY=value lines, which the generic password regex misses.
+
 Skips .git/, node_modules/, vendor/, and minified JS files.
 Evidence is truncated to avoid leaking full secret values in reports.
 """
@@ -12,8 +15,10 @@ from pathlib import Path
 from typing import Callable
 
 # ---------------------------------------------------------------------------
-# Pattern registry — 7 types as required by the spec
-# Each entry: (pattern_id, title, regex, severity, cwe)
+# Pattern registry. Each entry: (pattern_id, title, regex, severity, cwe).
+# Generic patterns first, then provider-specific high-confidence prefixes.
+# Provider patterns use lookarounds to anchor the prefix and avoid matches
+# inside concatenated strings (e.g. "ghp_..." inside a base64 blob).
 # ---------------------------------------------------------------------------
 _PATTERNS: list[tuple[str, str, re.Pattern[str], str, str]] = [
     (
@@ -80,7 +85,103 @@ _PATTERNS: list[tuple[str, str, re.Pattern[str], str, str]] = [
         "HIGH",
         "CWE-214",
     ),
+    # Provider-specific token prefixes. High confidence because the prefix
+    # uniquely identifies the issuer; length/charset constraints reduce
+    # false positives in random base64.
+    (
+        "GITHUB_TOKEN",
+        "GitHub token hardcoded",
+        # Personal access (ghp_), OAuth (gho_), user-to-server (ghu_),
+        # server-to-server (ghs_), refresh (ghr_).
+        re.compile(r"(?<![A-Za-z0-9])gh[opusr]_[A-Za-z0-9]{36}(?![A-Za-z0-9])"),
+        "CRITICAL",
+        "CWE-798",
+    ),
+    (
+        "STRIPE_LIVE_KEY",
+        "Stripe live secret key hardcoded",
+        re.compile(r"(?<![A-Za-z0-9])sk_live_[A-Za-z0-9]{20,}(?![A-Za-z0-9])"),
+        "CRITICAL",
+        "CWE-798",
+    ),
+    (
+        "SLACK_TOKEN",
+        "Slack token hardcoded",
+        # xoxa-/xoxb-/xoxp-/xoxr-/xoxs-.
+        re.compile(r"(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}(?![A-Za-z0-9-])"),
+        "HIGH",
+        "CWE-798",
+    ),
+    (
+        "GOOGLE_API_KEY",
+        "Google API key hardcoded",
+        re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_\-]{35}(?![A-Za-z0-9_\-])"),
+        "HIGH",
+        "CWE-798",
+    ),
+    (
+        "ANTHROPIC_API_KEY",
+        "Anthropic API key hardcoded",
+        re.compile(r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_\-])"),
+        "CRITICAL",
+        "CWE-798",
+    ),
+    (
+        "OPENAI_API_KEY",
+        "OpenAI API key hardcoded",
+        # Legacy sk-<48 alnum>; project sk-proj-<...>; service-account sk-svcacct-<...>.
+        # Cannot match Anthropic sk-ant-* because `-` after `ant` breaks the alnum body.
+        re.compile(
+            r"(?<![A-Za-z0-9])sk-(?:proj-|svcacct-)?[A-Za-z0-9]{32,}(?![A-Za-z0-9])"
+        ),
+        "CRITICAL",
+        "CWE-798",
+    ),
+    (
+        "NPM_TOKEN",
+        "npm registry token hardcoded",
+        re.compile(r"(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])"),
+        "HIGH",
+        "CWE-798",
+    ),
+    (
+        "GCP_SERVICE_ACCOUNT",
+        "GCP service-account JSON key hardcoded",
+        # Canonical signature line in Google's downloaded SA JSON files.
+        re.compile(r'"type"\s*:\s*"service_account"'),
+        "CRITICAL",
+        "CWE-798",
+    ),
 ]
+
+# .env-only patterns. The generic HARDCODED_PASSWORD regex requires quoted
+# values, but .env files use unquoted KEY=value. Applying these patterns
+# globally would cause false positives in regular source where unquoted
+# assignments are normal syntax — so they are gated to .env* files only via
+# _is_env_file() in _scan_file.
+_ENV_PATTERNS: list[tuple[str, str, re.Pattern[str], str, str]] = [
+    (
+        "ENV_SECRET",
+        "Hardcoded credential in .env file",
+        # KEY ends with a credential-y suffix (KEY/TOKEN/SECRET/PASSWORD/...);
+        # value is unquoted, ≥4 chars, not starting with whitespace/quote/#.
+        re.compile(
+            r"^([A-Z][A-Z0-9_]*"
+            r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH)S?"
+            r"(?:_[A-Z0-9_]+)?)"
+            r"\s*=\s*"
+            r"([^\s\"'#][^\n#]{3,})\s*$"
+        ),
+        "HIGH",
+        "CWE-798",
+    ),
+]
+
+
+def _is_env_file(p: Path) -> bool:
+    """Return True if p is a .env-style config file (.env, .env.local, .env.production)."""
+    name = p.name
+    return name == ".env" or name.startswith(".env.") or p.suffix == ".env"
 
 # Files/directories to skip
 _SKIP_DIRS: frozenset[str] = frozenset({
@@ -152,7 +253,10 @@ class SecretsAnalyzer:
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
             for fname in filenames:
                 fpath = Path(dirpath) / fname
-                if fpath.suffix in _SCAN_EXTENSIONS:
+                # .env / .env.local / .env.production: pathlib reports
+                # suffix="" or suffix=".local", neither in _SCAN_EXTENSIONS.
+                # Match by name explicitly so the env-pattern path can fire.
+                if fpath.suffix in _SCAN_EXTENSIONS or _is_env_file(fpath):
                     yield fpath
 
     def _scan_file(
@@ -168,11 +272,12 @@ class SecretsAnalyzer:
             return
 
         rel = str(filepath.relative_to(root))
+        patterns = _PATTERNS + _ENV_PATTERNS if _is_env_file(filepath) else _PATTERNS
 
         for lineno, line in enumerate(text.splitlines(), start=1):
             if _is_minified(filepath, line):
                 continue
-            for pat_id, title, pattern, severity, cwe in _PATTERNS:
+            for pat_id, title, pattern, severity, cwe in patterns:
                 for m in pattern.finditer(line):
                     secret_val = m.group(0)
                     safe_evidence = _truncate_evidence(

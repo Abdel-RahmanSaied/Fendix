@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 11 — P1 Coverage Parity (v0.3 + v0.4) — 🔲 Not Started. Phase 10 ✅ Complete (v0.2.0 tagged + pushed 2026-04-29).
-**Overall progress:** Phases 0-10 complete; v0.1.0 + v0.2.0 released
+**Phase:** 11 — P1 Coverage Parity (v0.3 + v0.4) — 🔄 In Progress. TASK-085 + TASK-086 ✅ done (v0.3 batch complete); TASK-087 + TASK-088 ✅ done (v0.4 batch 2/5). Phase 10 ✅ Complete (v0.2.0 tagged + pushed 2026-04-29).
+**Overall progress:** Phases 0-10 complete; Phase 11 4/7 tasks done; v0.1.0 + v0.2.0 released; v0.3.0 not yet cut (v0.3 batch ready to ship; v0.4 batch 2/5 tasks done)
 **Last updated:** 2026-04-29
 
 ### Completed tasks
@@ -402,12 +402,15 @@ Phase 11 — P1 Coverage Parity (v0.3 + v0.4). Not yet started; tracked in `task
 - [x] Commit `2ca82ce` ("feat: v0.2.0 — fix P0 CLI flag wiring (TASK-079..084)") pushed to `origin/main`
 - [x] Annotated tag `v0.2.0` (object `acd2f32`) pushed to `origin` — `release.yml` triggered for linux/amd64, darwin/amd64, darwin/arm64
 
-### Pending tasks (Phase 11 — P1 Coverage Parity, v0.3 + v0.4)
+### Completed tasks — Phase 11 (P1 Coverage Parity, v0.3 + v0.4)
 
-- TASK-085: Expand secret patterns (GitHub `ghp_`, Stripe `sk_live_`, Slack, Google `AIza`, Anthropic, OpenAI, npm, GCP); fix `.env` unquoted-value matching
-- TASK-086: Active scanner — body params + headers, error-based + boolean-based SQLi, SQLite/Oracle DBs, `--max-probes-per-endpoint`
-- TASK-087: Static analyzer — string-concat SQLi, pickle/yaml.load, weak crypto for passwords, open redirect, SSRF, auth-header-trust (AST-based)
-- TASK-088: Findings deduplication — `AffectedEndpoints []Endpoint`, group identical findings across N endpoints into one
+- TASK-085: Expanded secret patterns 7 → 15. Added `GITHUB_TOKEN` (`gh[opusr]_` prefix + 36 alnum, CRITICAL), `STRIPE_LIVE_KEY` (`sk_live_` + 20+ alnum, CRITICAL), `SLACK_TOKEN` (`xox[abprs]-` + 10+, HIGH), `GOOGLE_API_KEY` (`AIza` + exactly 35, HIGH), `ANTHROPIC_API_KEY` (`sk-ant-` + 20+, CRITICAL), `OPENAI_API_KEY` (`sk-(?:proj-|svcacct-)?` + 32+ alnum, CRITICAL — anti-overlap with Anthropic verified), `NPM_TOKEN` (`npm_` + 36, HIGH), `GCP_SERVICE_ACCOUNT` (`"type": "service_account"`, CRITICAL). Plus `.env`-only `ENV_SECRET` pattern in new `_ENV_PATTERNS` list, gated by `_is_env_file()`. Fixed dotfile-walker bug — `.env` files had `Path.suffix=""` and were silently skipped; `_walk` now also yields env-files by name. New fixtures: `provider_tokens.py`, `gcp_service_account.json`, `.env`. 10 new test methods (8 provider + 1 ENV + 1 anti-overlap). All 150 Python tests pass; 4/4 e2e pass; Go race-clean.
+- TASK-086: Active scanner expansion. **Endpoint model**: extended with `Headers []string` and `BodyParams []string` (in addition to existing `Params []string` for query/path). **Crawler**: new `extractHeaderParamsList()` filters out standard auth headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Apikey`, `Api-Key`, `Proxy-Authorization`); new `extractBodyParamNames()` reads OAS 3 `requestBody.content."application/json".schema.properties` and Swagger 2 `parameters[in:body].schema.properties`; both skip `$ref` schemas (deref out of scope). Path-level + operation-level merging matches the existing `Params` flow. **Injection**: introduced `ProbeLocation` enum (`LocQuery`/`LocHeader`/`LocBody`); new `buildProbeRequest()` constructs HTTP requests for each location (body uses `Content-Type: application/json` with sibling fields filled with `"fendix"` placeholder so server validation doesn't reject before reaching vulnerable code; header values strip CR/LF since net/http rejects malformed headers); new `targetsForEndpoint()` enumerates (param, location) pairs (body only on POST/PUT/PATCH; falls back to single `("id", query)` for fully-bare endpoints); new `methodAcceptsBody()` helper. **SQLi expansion**: time-based DBs 3 → 5 (added SQLite `randomblob(99999999)`, Oracle `DBMS_PIPE.RECEIVE_MESSAGE('a',5)`); new `probeSQLiErrorBased()` (single `'"`-class payload, regex match against 5 DB-specific error signatures from sqlmap/OWASP; HIGH severity HIGH confidence on match); new `probeSQLiBoolean()` (true/false payload pair `' OR '1'='1` vs `' AND '1'='2`, finding on status flip OR length-delta > 5%, MEDIUM confidence). **CMDi**: location-aware (works on query/header/body). **CRLF**: query-only by design (`net/http` strips CR/LF from headers; body values don't reach response-header construction). **Config + CLI**: new `cfg.MaxProbesPerEndpoint int` field + `--max-probes-per-endpoint` flag (default 20); new `effectiveMaxProbes(cfg)` helper (treats 0 as default for safe zero-values); old `MaxProbesPerEndpoint` constant kept as the default value to preserve back-compat with existing test code. **Tests**: 14 new unit tests across `crawler_test.go` + `injection_test.go` (header param extraction with auth-header filter, body param extraction OAS 3 + Swagger 2, $ref-schema skip, error-based detection + no-FP, boolean-based detection + no-flip, body-JSON serialization, CR/LF header stripping, body probing reaches target, header probing reaches target, max-probes override, max-probes default-on-zero, fallback id, body-only-for-body-methods); 2 new e2e regressions (`TestActiveProbe_BodyParam_FindsErrorBasedSQLi` POSTs to vulnerable JSON endpoint reflecting MySQL syntax error, `TestActiveProbe_HeaderParam_ProbesCustomHeader` confirms X-Trace-Id-bearing probes reach target). **Real-world re-test on `/tmp/fendix-test/vuln_server.py`**: scan now emits `SQL Injection (SQLite, error-based) @ GET /api/v1/users` (was completely missed pre-TASK-086) plus `SQL Injection (boolean-based) @ GET /api/v1/ping`. All builds green: Go race-clean across 5 packages; Python 150/150; 6/6 e2e (4 prior + 2 new).
+- TASK-087: Static analyzer expansion (first v0.4 task). **6 new patterns** added to `python/analyzers/ast_analyzer.py`: `PY_PICKLE_LOAD` (pickle.load/loads + cPickle/_pickle aliases, CRITICAL HIGH, CWE-502), `PY_YAML_UNSAFE_LOAD` (yaml.load without `Loader=SafeLoader`, plus `yaml.unsafe_load`/`yaml.load_all`, HIGH HIGH, CWE-502; correctly skips `yaml.safe_load` and explicit `Loader=yaml.SafeLoader` via new `_is_safe_loader_expr` helper that handles both attribute and bare-name forms), `PY_WEAK_CRYPTO_PASSWORD` (hashlib.md5/sha1 + hashlib.new('md5'/'sha1', ...) when input subtree references a password-like identifier, HIGH MEDIUM, CWE-916, **category=secrets**), `PY_OPEN_REDIRECT` (redirect()/HttpResponseRedirect() called with `request.args/GET/POST/...` data via new `_references_request_input` helper, HIGH MEDIUM, CWE-601), `PY_SSRF` (requests.get/post/put/delete/head/patch/options/request with non-literal first arg; resolved-constant variables don't trigger via scope tracking, HIGH MEDIUM, CWE-918), `PY_AUTH_HEADER_TRUST` (`if request.headers.get(...)/['..']` patterns in `visit_If`, HIGH MEDIUM, CWE-290, **category=auth_bypass**). **Multi-step SQLi** closed via intra-function scope tracking: new `visit_FunctionDef`/`visit_AsyncFunctionDef` push/pop a `_scopes` stack of `dict[str, ast.AST]`; `visit_Assign` records single-target Name assignments; `_is_sql_injection` now resolves Name args by walking the scope chain — `sql = "..." + var; cursor.execute(sql)` is now flagged. **Helpers**: `_emit_finding` got a `category` parameter (default `injection` for back-compat). `_looks_like_password_id` uses substring match for long tokens (`password`/`passwd`/`passphrase`/`secret`) + whole-snake-case-token match for short abbreviations (`pw`/`pwd`) via `_TOKEN_SPLIT_RE`, avoiding false positives like `pw` matching `power`. `_REQUEST_NAMES` (`{"request", "req"}`) recognizes both global and Flask handler-arg forms. `_REQUEST_INPUT_ATTRS` covers Flask/Django/FastAPI body sources (`GET/POST/args/values/form/data/json/query_params/path_params/params/body/files`); `headers` deliberately excluded since it has its own dedicated trust check. **Fixtures**: extended `dangerous.py` with 13 new patterns (pickle, yaml.load, yaml.unsafe_load, MD5(password), SHA1(passwd), open redirect via assignment + inline, SSRF, auth via X-Admin + X-Role, multi-step SQLi via assignment, inline `+` SQLi, plus 5 safe negative-coverage cases). **Tests**: 16 new test methods across 7 new test classes (`TestPickleDeserialization`, `TestYamlUnsafeLoad`, `TestWeakCryptoForPasswords`, `TestOpenRedirect`, `TestSSRF`, `TestAuthHeaderTrust`, `TestSQLConcatViaAssignment`); each pattern gets at least one detect + one no-FP test; plus `pw`-abbrev detect, `power` no-FP, `req`-handler-arg detect, `request.session` no-FP, `yaml.safe_load` no-FP, `Loader=SafeLoader` no-FP, hashlib.new('md5', ...) detect. Test count 26 → 42 in test_ast_analyzer.py. **Real-world re-test on `/tmp/fendix-test/badcode/`**: scan went from 22 → 26 findings (+4 new — multi-step SQLi at handlers.py:16 was completely missed pre-fix; pickle.loads at handlers.py:50 missed; MD5(pw) at :38 missed because `pw` wasn't in pattern table; X-Admin trust at :61 missed because `req` wasn't recognized as request-arg). Python tests 150 → 174 (+24); Go race-clean across 5 packages; 6/6 e2e.
+- TASK-088: Findings deduplication. **New field**: `AffectedEndpoints []string` on `models.Finding` (json:`affected_endpoints,omitempty`). **New file**: `go/internal/engine/dedup.go` — `Deduplicate(findings)` keys on `(Title, Category, Severity)`, picks highest confidence in group, promotes source via `correlated > blackbox > whitebox`, unions references; primary kept = first-seen finding (preserves Evidence/Fix/relative ordering); `AffectedEndpoints` only populated when group size > 1 (singleton stays clean). **Orchestrator wiring**: new step 5.5 between Correlate (5) and Sort (6) — runs after correlation so `correlated` findings dedup against each other too. **HTML reporter**: `+N more` badge in finding header (`{{if gt (len .AffectedEndpoints) 1}}`), "Affected endpoints (N)" list in body; new `sub` template func; new `.affected-list` CSS. **SARIF reporter**: each `AffectedEndpoint` becomes its own `SARIFLocation` under the result (per SARIF 2.1.0 §3.27.12 "this issue applies to all of them" semantics); the line/whitebox path unchanged. **Tests**: 8 unit tests in `dedup_test.go` (groups identical, singleton has nil AffectedEndpoints, different severity not merged, references unioned + sorted, picks highest confidence, source promotion across 3 cases, preserves order, empty/single defensive); 2 reporter tests (`TestRenderHTML_AffectedEndpointsList`, `TestRenderHTML_SingletonHasNoAffectedSection`, `TestRenderSARIF_AffectedEndpointsAsMultipleLocations`); 1 e2e regression (`TestDedup_GroupsSameFindingAcrossEndpoints` declares 3 endpoints with identical handler, asserts `affected_endpoints` appears in JSON output). **Real-world re-test on `petstore3.swagger.io`**: scan went from 160 findings → **10 findings (16× reduction)**. 9 deduped findings collapsed 159 occurrences across 21 endpoints — top 5 (CORS allows any origin, Missing CSP, Missing HSTS, Missing X-Content-Type-Options, Missing X-Frame-Options) each cover all 21 endpoints. Whitebox `/tmp/fendix-test/badcode/`: 26 → 22 (3 `.env` lines collapsed, 2 Stripe overlaps collapsed, 2 SQLi-on-different-lines collapsed). Go race-clean (5 packages); Python 174/174; 7/7 e2e (6 prior + 1 new).
+
+### Pending tasks — Phase 11 (v0.4 batch — TASK-085 + TASK-086 already shipped to v0.3; TASK-087 + TASK-088 done)
+
 - TASK-089: Crawler — robots.txt + sitemap.xml + HTML link parsing, recursive depth, `--wordlist` flag, larger default list
 - TASK-090: Real CVE coverage — pip-audit + npm audit + govulncheck primary; hardcoded list as offline fallback
 - TASK-091: Correlator — debug instrumentation, loosen matching predicate, e2e test asserting >=1 correlated finding
@@ -439,7 +442,300 @@ Phase 11 — P1 Coverage Parity (v0.3 + v0.4). Not yet started; tracked in `task
 
 ## Last Session Summary
 
-**Date:** 2026-04-29 (afternoon — release-prep & ship)
+**Date:** 2026-04-29 (late night — TASK-088: findings deduplication)
+**Session goal:** Complete TASK-088 — collapse N findings of the same `(Title, Category, Severity)` into one finding with `AffectedEndpoints []string`. Surface the change end-to-end through the JSON, HTML, and SARIF reporters. This is the second task in the v0.4 batch (TASK-087..091).
+
+**Accomplished:**
+
+- **New `AffectedEndpoints []string` field** on `models.Finding` (`json:"affected_endpoints,omitempty"`). Singletons keep it nil so the JSON shape doesn't bloat for the common case. Documented intent in the struct's docstring so future contributors know it's a dedup output, not a contract field for engines to populate.
+- **New `engine.Deduplicate(findings)`** in `go/internal/engine/dedup.go`. Groups by `dedupKey = severity|category|title` (Source intentionally omitted so the "missing CSP" case dedups across hybrid scans where the same vuln gets both blackbox + whitebox sources before correlation). Group merge rules:
+  - Primary = first-seen finding in input order (preserves Evidence, Fix, ID position)
+  - `AffectedEndpoints` = sorted, deduped union of all endpoints (only set when > 1)
+  - References = sorted, deduped union of all references in the group
+  - Confidence = highest (`HIGH > MEDIUM > LOW`) — a finding confirmed at HIGH on at least one endpoint stays HIGH
+  - Source promotion via `mergeSource`: `correlated > blackbox > whitebox` (defensive — Correlator runs first, but mixed-source same-key groups can still occur)
+  - Output ordering preserves first-occurrence position via `firstIdx` to keep downstream `SEC-NNN` ID assignment deterministic
+- **Orchestrator wired** at new step 5.5 between Correlate (step 5) and Sort (step 6). Critical that dedup runs AFTER correlation so correlated findings dedup against each other; running before would produce wrong groupings on hybrid scans.
+- **HTML reporter** now renders dedup'd findings with a `+N more` badge in the finding header (`<em>` styled in amber to match the evidence color) and an "Affected endpoints (N)" `<ul>` in the body. New `sub` template func. New `.affected-list` CSS rule. Singletons render unchanged — no empty section, no badge, no visual noise.
+- **SARIF reporter** emits one `SARIFLocation` per `AffectedEndpoint` per result. Per SARIF 2.1.0 §3.27.12, multiple locations on a single result mean "this issue applies to all of them" — exactly the semantics we want. The whitebox/file:line path is unchanged (those rarely repeat). Refactored the location-building branch to use a single endpoint-list code path: when `AffectedEndpoints` is set, iterate it; otherwise fall back to a singleton `[Endpoint]`.
+- **8 new unit tests** in `dedup_test.go`:
+  - `TestDeduplicate_GroupsIdenticalFindings`: 4 endpoints same finding → 1 with 4 affected
+  - `TestDeduplicate_SingletonHasNoAffectedEndpoints`: nil for size-1 groups
+  - `TestDeduplicate_DifferentSeverityNotMerged`: same title+category but Medium vs High stay separate
+  - `TestDeduplicate_ReferencesUnioned`: CWE-89 + OWASP-A03 + CWE-20 → sorted union of all three
+  - `TestDeduplicate_PicksHighestConfidence`: M + H + L → H
+  - `TestDeduplicate_SourcePromotion`: 3 sub-cases (correlated wins, blackbox-over-whitebox, all-same)
+  - `TestDeduplicate_PreservesOrder`: A,B,A,C input → A,B,C output (A's position from first occurrence)
+  - `TestDeduplicate_EmptyAndSingle`: defensive — no panic on nil/empty/singleton
+- **3 new reporter tests**: `TestRenderHTML_AffectedEndpointsList` (verifies header badge "+2 more" + body list with all 3 endpoints), `TestRenderHTML_SingletonHasNoAffectedSection` (no "Affected endpoints" string for nil case), `TestRenderSARIF_AffectedEndpointsAsMultipleLocations` (exactly 3 SARIFLocation entries for 3 affected endpoints).
+- **1 new e2e regression**: `TestDedup_GroupsSameFindingAcrossEndpoints` — declares 3 endpoints in OAS spec, all served by the same handler with weak headers, asserts `affected_endpoints` appears in the JSON output.
+- **Real-world re-test on `petstore3.swagger.io`** (the original "21 endpoints, 160 findings" scenario from 2026-04-28): scan went from **160 findings → 10 findings (16× reduction)**. Top 5 collapsed findings each cover all 21 endpoints (CORS allows any origin, Missing CSP, Missing HSTS, Missing X-Content-Type-Options, Missing X-Frame-Options). 9 deduped findings collapsed 159 occurrences; 1 singleton finding remained.
+- **Real-world re-test on `/tmp/fendix-test/badcode/`** (whitebox-only): 26 findings → 22 (4 collapsed: 3 `.env` lines into 1 finding with 3 affected, 2 Stripe occurrences into 1 with 2 affected, 2 SQLi findings on different lines into 1 with 2 affected). Confirms whitebox file:line endpoints dedup correctly too.
+
+**Decisions made:**
+
+- **Dedup key is `(Title, Category, Severity)`, not `(Title, Category)`.** Same-title findings at different severities are different findings — e.g. a HIGH SQL Injection vs a MEDIUM one (boolean-based, less confidence) shouldn't collapse. Severity in the key is the cheap fix.
+- **Source NOT in dedup key.** This was deliberate: the same vuln found by both engines on the same endpoint should collapse, not stay as two separate entries. The Correlator already merges hybrid pairs before Dedup runs — but dedup must handle the residual case where Correlator's matching predicate misses (which it currently does — see TASK-091 backlog).
+- **`AffectedEndpoints` includes the primary endpoint when set.** Considered "only OTHER endpoints" but rejected — consumers iterating "all places this finding applies" would have to do `affected if affected else [endpoint]` everywhere. Inclusive list is friendlier and the duplication is one string field.
+- **`AffectedEndpoints` is `[]string`, not `[]Endpoint`.** The existing `Endpoint` field is already a string (`"GET /api/users"` for blackbox, `"file.py:42"` for whitebox), so a slice-of-strings matches the rest of the contract. Migrating to a richer struct would mean rewriting all reporters and the IPC contract — out of proportion for a v0.4 ergonomics fix.
+- **Dedup runs AFTER correlation, BEFORE sort.** Pre-correlation dedup would lose hybrid pairs (a `secrets` finding at file:line and a `data_exposure` finding at endpoint would never see each other). Post-sort dedup would scramble the deterministic SEC-NNN assignment. Step 5.5 is the right slot.
+- **Confidence merge is "highest wins", not "average" or "lowest wins".** A vuln confirmed at HIGH on one endpoint is a HIGH-confidence vuln overall, even if other endpoint instances are MEDIUM-confidence (e.g. boolean-based variant). Lowering the confidence would understate the user's risk.
+- **Source promotion ladder is fixed (`correlated > blackbox > whitebox`)**, matching the existing `SourceMult` weights in the severity scoring model. Predictable ranking; no need for tunables.
+- **No CHANGELOG fold or release tag this session.** The v0.3 batch (TASK-085+086) is still uncut from the prior session; v0.4 batch is now 2/5 done. Continuing to bank v0.4 progress and ship one batch later when more user-visible improvements have accumulated.
+
+**Files modified:**
+
+- `go/internal/models/finding.go` — added `AffectedEndpoints []string` with omitempty + docstring.
+- `go/internal/engine/dedup.go` — NEW file. Public `Deduplicate(findings) []models.Finding`; internal `dedupKey`, `confidenceRank`, `mergeSource`, `stringSet`, `sortedKeys`. Comments explain motivation, merge rules, and why each helper exists.
+- `go/internal/engine/dedup_test.go` — NEW file. 8 unit tests covering all behaviors.
+- `go/internal/engine/orchestrator.go` — added step 5.5 (`findings = Deduplicate(findings)`) between correlate and sort.
+- `go/internal/reporters/html.go` — added `+N more` badge in header, "Affected endpoints (N)" list in body, `.affected-list` CSS, `.finding-endpoint em` CSS for badge styling, `sub` template func.
+- `go/internal/reporters/html_test.go` — added `TestRenderHTML_AffectedEndpointsList` + `TestRenderHTML_SingletonHasNoAffectedSection`.
+- `go/internal/reporters/sarif.go` — refactored location-building to iterate over `AffectedEndpoints` (or fall back to singleton `Endpoint`), emitting one SARIFLocation per endpoint.
+- `go/internal/reporters/sarif_test.go` — added `TestRenderSARIF_AffectedEndpointsAsMultipleLocations`.
+- `go/internal/e2e/e2e_test.go` — added `TestDedup_GroupsSameFindingAcrossEndpoints`.
+- `CHANGELOG.md` — `[Unreleased]` Added: TASK-088 entry with petstore evidence (160 → 10).
+- `tasks/CURRENT_SPRINT.md` — TASK-088 marked ✅ with full implementation notes.
+- `tasks/MEMORY.md` (this file) — Phase 11 progress (3/7 → 4/7 done); TASK-088 entry; new Last Session Summary; "Next session" pointer reset to TASK-089.
+
+**Build state at session end:**
+
+- `make build` ✓
+- `make test` ✓ (Go race-clean across 5 packages; Python 174/174)
+- `make e2e` ✓ (7/7 e2e regression tests — 6 prior + 1 new TASK-088 regression)
+
+**Next session should start with:**
+
+1. **(Carry-over from prior session) Verify v0.2.0 release succeeded** — browser-load `https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/v0.2.0` and confirm linux/amd64, darwin/amd64, darwin/arm64 binaries with sha256 checksums.
+2. **(Carry-over) Cut v0.3.0** — both v0.3 batch tasks (TASK-085 + TASK-086) are done. Steps still apply: fold `[Unreleased]` `→ [0.3.0] - <today>`, conventional commit `feat: v0.3.0 — coverage parity (TASK-085 + TASK-086)`, annotated tag, push.
+3. **TASK-089 — Crawler upgrade.** Per `tasks/PHASES.md` Phase 11. Spec:
+   - **robots.txt parser** — fetch `/robots.txt`, extract `Disallow:` and `Allow:` paths, queue them for scanning. Disallowed paths are often hidden admin endpoints — high-value discovery surface.
+   - **sitemap.xml parser** — fetch `/sitemap.xml` (and any `Sitemap:` URLs from robots.txt), extract `<loc>` elements, queue them.
+   - **HTML link parsing** — already partly there via `apiPathRe`; extend to parse `<a href="...">` and `<form action="...">` from HTML responses to discover endpoints linked from the home page or any visited URL.
+   - **Recursive depth** — currently only the `--url` page gets HTML/JS scanning; add a `--crawl-depth` flag (default 2) so the crawler follows discovered URLs one or two hops out. Cap total endpoints at a budget (`--max-endpoints`, default 500?) to avoid runaway scans on large sites.
+   - **`--wordlist` flag** — currently the brute-force list is the hardcoded 50-path `CommonPaths`. Add `--wordlist /path/to/wordlist.txt` to override. Optionally bundle SecLists' `common.txt` (or a curated subset) as the new default.
+   - **e2e regression** — stand up a mock server that serves robots.txt with a `Disallow: /admin/secret` line, assert the scanner discovers and probes that path.
+4. After TASK-089, evaluate whether to ship v0.4.0 with the now-3-task batch (TASK-087+088+089) or continue to TASK-090+091 first.
+
+**Open questions:**
+
+- **Should `--max-endpoints` be a separate task or rolled into TASK-089?** Strongly related — recursive depth without a budget is dangerous on large sites (the GitHub spec parsed to 1145 endpoints). Recommend rolling it in, since the natural shape is "crawl with budget".
+- **Default crawl depth: 1, 2, or 3?** Depth 0 = just `--url`; 1 = follow links from base page (current behavior is partial); 2 = follow links from those pages too. Larger = more coverage but more risk of scanning unintended targets. Default of 2 seems right; user can lower with `--crawl-depth 0` for spec-only or single-page mode.
+- **SecLists wordlist licensing?** SecLists is MIT, so embedding a subset is fine, but it's ~few-thousand entries and would inflate the binary by some unknown amount. Check size before committing to embed; alternatively fetch on first run (slower UX, more failure modes). Defer decision to implementation time.
+
+---
+
+## Earlier Session (2026-04-29 night — TASK-087: static analyzer expansion, first v0.4 task)
+
+**Session goal:** Complete TASK-087 — extend `python/analyzers/ast_analyzer.py` with 6 new AST patterns (pickle, yaml.load, weak crypto for passwords, open redirect, SSRF, auth-header trust) plus closing the multi-step string-concat SQLi gap via intra-function scope tracking. This is the first task in the v0.4 batch (TASK-087..091).
+
+**Accomplished:**
+
+- **6 new AST pattern detectors** in `python/analyzers/ast_analyzer.py`:
+  - `PY_PICKLE_LOAD` — `pickle.load()` / `pickle.loads()` (plus `cPickle` and `_pickle` aliases). Always dangerous on untrusted data; no "safe variant" exists. CRITICAL HIGH, CWE-502.
+  - `PY_YAML_UNSAFE_LOAD` — `yaml.load()` without `Loader=SafeLoader`, plus `yaml.unsafe_load()`/`yaml.load_all()`. Correctly skips `yaml.safe_load()` and explicit `Loader=yaml.SafeLoader` via new `_is_safe_loader_expr` helper that handles both attribute (`yaml.SafeLoader`) and bare-name (`SafeLoader` after `from yaml import`) forms. HIGH HIGH, CWE-502.
+  - `PY_WEAK_CRYPTO_PASSWORD` — `hashlib.md5/sha1` and `hashlib.new('md5'/'sha1', data)` when the input subtree references a password-like identifier. HIGH MEDIUM, CWE-916, **category=secrets** (not injection).
+  - `PY_OPEN_REDIRECT` — `redirect()`/`HttpResponseRedirect()` called with `request.args/GET/POST/...` data. HIGH MEDIUM, CWE-601.
+  - `PY_SSRF` — `requests.<method>()` with non-literal first arg. Resolved-constant variables don't trigger (scope-tracking lookup). HIGH MEDIUM, CWE-918.
+  - `PY_AUTH_HEADER_TRUST` — `if request.headers.get('X-Admin')` / `if req.headers['X-Role']`. New `visit_If` hook. HIGH MEDIUM, CWE-290, **category=auth_bypass**.
+- **Multi-step SQL injection** closed via intra-function scope tracking. The `_PythonSecurityVisitor` now maintains a `_scopes: list[dict[str, ast.AST]]` stack: `visit_FunctionDef`/`visit_AsyncFunctionDef` push/pop scopes, `visit_Assign` records single-target Name assignments, and `_is_sql_injection` resolves Name args via the scope chain. Pattern that was missed pre-fix: `sql = "SELECT * FROM users WHERE id = " + uid; cursor.execute(sql)` — assignment recorded, Name resolved at execute() site.
+- **`_emit_finding` got a `category` parameter** (default `injection` for back-compat). Lets the new patterns route to `secrets` and `auth_bypass` categories so the severity-scoring impact bases apply correctly.
+- **Identifier-matching helpers refined** to keep noise low:
+  - `_looks_like_password_id` uses substring match for long tokens (`password`/`passwd`/`passphrase`/`secret`) + whole-snake-case-token match for short abbreviations (`pw`/`pwd`) via `_TOKEN_SPLIT_RE`. Avoids the obvious false positive of `pw` matching `power`/`pwn`/etc. but still catches `user_pw`, `pwd_hash`, `admin_password`.
+  - `_REQUEST_NAMES = {"request", "req"}` recognizes both the Django/FastAPI global and the Flask handler-arg abbreviation. Used by both `_references_request_input` (open redirect) and `_is_request_header_trust` (auth-header).
+  - `_REQUEST_INPUT_ATTRS` covers Flask/Django/FastAPI body sources (`GET/POST/args/values/form/data/json/query_params/path_params/params/body/files`); `headers` is deliberately excluded because it has its own dedicated trust check.
+- **Fixture extended** (`python/tests/fixtures/ast_target/dangerous.py`): added 13 new dangerous-pattern functions (pickle, yaml.load, yaml.unsafe_load, MD5(password), SHA1(passwd), open redirect via assignment + inline, SSRF, auth via X-Admin + X-Role, multi-step SQLi via assignment, inline `+` SQLi) plus 5 safe negative-coverage cases (yaml.load with SafeLoader, yaml.safe_load, MD5 of non-password file checksum, redirect to constant path, requests.get with constant URL, request.session check).
+- **16 new test methods** across 7 new test classes (`TestPickleDeserialization`, `TestYamlUnsafeLoad`, `TestWeakCryptoForPasswords`, `TestOpenRedirect`, `TestSSRF`, `TestAuthHeaderTrust`, `TestSQLConcatViaAssignment`). Each pattern: at least one detect + one no-FP test. Plus `pw`-abbrev detect, `power` no-FP, `req`-handler-arg detect. Test count 26 → 42 in test_ast_analyzer.py; full Python suite 150 → 174 (+24).
+- **Real-world re-test on `/tmp/fendix-test/badcode/`**: scan went from 22 findings → 26 findings (+4 new):
+  - CRITICAL multi-step SQLi @ handlers.py:16 — multi-step assignment now resolved through scope chain
+  - CRITICAL pickle.loads @ handlers.py:50 — was completely missed pre-fix
+  - HIGH MD5(pw) @ handlers.py:38 — was missed because `pw` wasn't in pattern table; now caught by whole-token snake_case match
+  - HIGH X-Admin trust @ handlers.py:61 — was missed because the handler arg is named `req`; now caught via `_REQUEST_NAMES`
+  - Open redirect at handlers.py:56-57 NOT flagged (correctly) — the badcode uses `f"Location: {target}"` not `redirect()`. Different attack pattern; not in TASK-087 scope.
+- **Required engine cache flush** between rebuilds. The Go binary embeds Python and extracts to `~/.fendix/engine/` keyed by version stamp. Since the build version `v0.2.0-1-gaff18ef` is unchanged, the binary won't re-extract — needed `rm -rf ~/.fendix/engine` to pick up the new ast_analyzer.py code in real-world testing. Worth noting for any future iterative dev cycle. Production users get fresh extraction on version bumps so this only bites local dev.
+
+**Decisions made:**
+
+- **Substring vs whole-token password matching is hybrid, not uniform.** Long tokens like `password` are unambiguous as substrings; short tokens like `pw` aren't (`power`, `pwn`). Two separate constants (`_PASSWORD_SUBSTR_TOKENS`, `_PASSWORD_WORD_TOKENS`) make the distinction explicit. The whole-token check splits on `[^a-z0-9]+` which handles snake_case, kebab-case, dotted, and mixed identifiers — `user_pw_hash` and `admin-pwd-storage` both match.
+- **`req` recognized as alternative to `request`.** Convention varies: Django and FastAPI use `request`; Flask is split (the global `request` vs handler-arg `req`). Both extracted into shared `_REQUEST_NAMES` constant for use by open-redirect and auth-header-trust detectors. Risk: any `req` variable named that way (e.g. for HTTP request data structures) could trigger false positives — judged acceptable because real-world Flask/aiohttp handlers use `req` extensively for the request object specifically.
+- **Auth-header trust is MEDIUM confidence, not HIGH.** The `if request.headers.get(...)` pattern is sometimes legitimate (CORS preflight handling, content negotiation). The pattern's strong signal is the *security decision* shape — the if-statement + header read together — but distinguishing security decisions from non-security decisions requires data-flow that's out of scope. MEDIUM confidence captures this uncertainty.
+- **Multi-step SQLi tracking is intra-function only.** Module-level globals or cross-function tracking would need a full data-flow analyzer; intra-function gets the most common pattern (the "Bobby Tables" case from the 2026-04-28 evaluation) without that complexity. Captured as a `_scopes` stack of `dict[str, ast.AST]` — module scope at the bottom, each function pushes/pops a scope on entry/exit. Re-assignment overwrites the prior value; this is correct (latest wins).
+- **`yaml.unsafe_load` and `yaml.load_all` always flagged**, regardless of args. There's no safe form of either. `yaml.load()` is gated on `Loader=` because `Loader=yaml.SafeLoader` is the documented safe usage.
+- **`hashlib.md5(file_data)` not flagged** — variable name has no password hint. MD5 for non-password use (file checksums, content-addressed storage) is fine, and flagging it would create false-positive noise. The narrow heuristic (require password-like identifier in arg subtree) keeps the signal high.
+- **No version bump or release tag this session.** v0.4 batch is TASK-087..091; only TASK-087 done. Cutting v0.4 with one task would force v0.4.1 within days. v0.3.0 batch (TASK-085+086) is also still uncut from prior session. Both pending, but I'm focusing on code progress per "after each phase do the next" instruction.
+
+**Files modified:**
+
+- `python/analyzers/ast_analyzer.py` — added 6 new pattern detectors (`_is_pickle_load`, `_is_unsafe_yaml_load`, `_is_weak_password_hash`, `_is_open_redirect`, `_is_ssrf`); added `visit_FunctionDef`/`visit_AsyncFunctionDef`/`visit_Assign`/`visit_If`; added `_scopes` stack to visitor `__init__`; added `category` parameter to `_emit_finding`; extended `_is_sql_injection` to resolve Name args via scope chain. Module-level helpers added: `_SAFE_LOADER_NAMES`, `_is_safe_loader_expr`, `_PASSWORD_SUBSTR_TOKENS`, `_PASSWORD_WORD_TOKENS`, `_TOKEN_SPLIT_RE`, `_looks_like_password_id`, `_arg_subtree_looks_like_password`, `_REQUEST_INPUT_ATTRS`, `_REQUEST_NAMES`, `_references_request_input`, `_is_request_header_trust`.
+- `python/tests/fixtures/ast_target/dangerous.py` — added 13 new dangerous pattern functions and 5 safe negative-coverage functions (replaced via Write rather than incremental edits since the rewrite was extensive).
+- `python/tests/test_ast_analyzer.py` — added 7 new test classes (16 new test methods) covering all new detectors + edge cases.
+- `CHANGELOG.md` — `[Unreleased]` Added section: 7 new bullets for TASK-087 (each new pattern + multi-step SQLi).
+- `tasks/CURRENT_SPRINT.md` — TASK-087 marked ✅ with full implementation notes.
+- `tasks/MEMORY.md` (this file) — Phase 11 progress (2/7 → 3/7 done); TASK-087 entry; new Last Session Summary; "Next session" pointer reset to TASK-088.
+
+**Build state at session end:**
+
+- `make build` ✓ (binary built with VERSION=v0.2.0-1-gaff18ef)
+- `make test` ✓ (Go race-clean across 5 packages; Python 174/174 — was 150)
+- `make e2e` ✓ (6/6 e2e regression tests, ~2s)
+
+**Next session should start with:**
+
+1. **(Carry-over from prior session) Verify v0.2.0 release succeeded** — browser-load `https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/v0.2.0` and confirm linux/amd64, darwin/amd64, darwin/arm64 binaries with sha256 checksums.
+2. **(Carry-over) Cut v0.3.0** — both v0.3 batch tasks (TASK-085 + TASK-086) are done. Steps still apply: fold `[Unreleased]` `→ [0.3.0] - <today>`, conventional commit `feat: v0.3.0 — coverage parity (TASK-085 + TASK-086)`, annotated tag, push.
+3. **TASK-088 — Findings deduplication via `AffectedEndpoints []Endpoint`.** Per `tasks/PHASES.md` Phase 11. Pattern: "Missing CSP header × 21 endpoints" → 1 finding with 21 endpoints. Implementation:
+   - Extend Go `models.Finding` with `AffectedEndpoints []Endpoint` (or just `[]string` of the existing `Endpoint` field shape — TBD).
+   - In `orchestrator.go` after correlation, walk findings and group those with identical (Title, Category) signatures, merging endpoints.
+   - Propagate to JSON reporter (single finding entry with array of endpoints), HTML reporter (single row, expandable list of endpoints), SARIF reporter (multiple `locations` per `result`).
+   - Add unit tests: 21 identical findings on different endpoints → 1 dedup'd finding with 21 endpoints; different (Title, Category) → not merged.
+4. After TASK-088, can either continue TASK-089 (crawler upgrade) or stop and ship v0.4.0.
+
+**Open questions:**
+
+- **Open redirect detection misses string-format patterns.** `f"Location: {request.args.get('next')}"` (the badcode pattern) builds a header value via f-string rather than calling `redirect()`. To catch: detect Response/HttpResponse construction with f-string body containing request data — would require new pattern. Defer; redirect()-call form is the dominant pattern in real Flask/Django code.
+- **YAML `Loader=yaml.UnsafeLoader` not flagged.** Currently we accept any non-`SafeLoader` Loader as unsafe (which is correct for `Loader=yaml.Loader` and `Loader=yaml.UnsafeLoader`), but we don't differentiate "non-safe loader explicitly chosen" from "no Loader argument given". Both go into the same finding. Could split into two patterns if real users want finer-grained signal. Defer.
+- **Engine cache invalidation during dev.** Anyone iterating on Python code locally needs to `rm -rf ~/.fendix/engine` between builds since the version stamp doesn't change. Two options: (a) document this in CONTRIBUTING.md; (b) make the version include a content hash in dev mode so rebuilds always re-extract; (c) add a `--reset-engine` CLI flag. Defer to a Phase 12 dev-experience task.
+
+---
+
+## Earlier Session (2026-04-29 late evening — TASK-086: active-scanner expansion)
+
+**Session goal:** Complete TASK-086 — body-param + header probing, error-based + boolean-based SQLi, SQLite/Oracle DB payloads, `--max-probes-per-endpoint` flag. Together with the morning's TASK-085, both v0.3.0 tasks are now done.
+
+**Accomplished:**
+
+- **Endpoint model extended** (`go/internal/scanner/scanner.go`): added `Headers []string` (in: header params with auth-headers filtered) and `BodyParams []string` (JSON body field names). The pre-existing `Params []string` continues to hold query/path params.
+- **Crawler header + body extraction** (`go/internal/scanner/crawler.go`): new `extractHeaderParamsList()` returns `in: header` names with standard auth headers filtered (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Apikey`, `Api-Key`, `Proxy-Authorization`); new `extractBodyParamNames()` reads OAS 3 `requestBody.content."application/json".schema.properties` and Swagger 2 `parameters[in:body].schema.properties`; both skip `$ref` schemas. Path-level + operation-level params merged the same way `Params` already was.
+- **Probe location infrastructure** (`go/internal/scanner/injection.go`): introduced `ProbeLocation` enum (`LocQuery`/`LocHeader`/`LocBody`); new `buildProbeRequest()` builds HTTP request with payload in the right place (body uses JSON with `"fendix"` placeholders for sibling fields so server validation doesn't 400 before vulnerable code runs; header strips CR/LF since net/http rejects malformed headers); new `targetsForEndpoint()` enumerates (param, location) pairs (body only on POST/PUT/PATCH; falls back to single `("id", query)` for fully-bare endpoints).
+- **SQLi expansion** — 3 → 5 time-based DB payloads (added SQLite `' AND CASE WHEN 1=1 THEN randomblob(99999999) ELSE 0 END--`, Oracle `' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--`); new `probeSQLiErrorBased()` (single `'"`-class payload, regex match against 5 DB-specific error signatures from sqlmap/OWASP, HIGH severity HIGH confidence); new `probeSQLiBoolean()` (true/false payload pair `' OR '1'='1` vs `' AND '1'='2`, finding on status flip OR length-delta > 5%, MEDIUM confidence to convey false-positive risk).
+- **Refactored existing probes** to take `ProbeLocation` parameter — `probeSQLi`, `probeCMDi` are now location-aware. `probeCRLF` is query-only by design (CR/LF gets stripped from header values upstream; body values don't reach response-header construction).
+- **`--max-probes-per-endpoint` flag**: added `cfg.MaxProbesPerEndpoint int` to `ScanConfig`; new CLI flag wired in `main.go`; new `effectiveMaxProbes(cfg)` helper treats 0 as "use the default" so safe zero-values keep working. Old `MaxProbesPerEndpoint = 20` constant kept as the default value for back-compat (existing test asserts on it directly).
+- **14 new unit tests** across `crawler_test.go` (4) and `injection_test.go` (10): header param extraction with auth-header filter, body param extraction OAS 3 + Swagger 2, $ref-schema skip, error-based detection MySQL + no-FP on generic error JSON, boolean-based detection length-flip + no-flip on static response, body-JSON serialization with placeholder siblings, CR/LF header stripping, body probing reaches target, header probing reaches target, max-probes override, max-probes default-on-zero, fallback `("id", query)`, body-only-for-body-methods.
+- **2 new e2e regressions** (`go/internal/e2e/e2e_test.go`):
+  - `TestActiveProbe_BodyParam_FindsErrorBasedSQLi`: POSTs to a vulnerable JSON endpoint that reflects MySQL syntax error on bare quotes; asserts the report contains `error-based` substring.
+  - `TestActiveProbe_HeaderParam_ProbesCustomHeader`: declares X-Trace-Id as `in: header`, counts incoming requests with X-Trace-Id set; asserts non-zero hits.
+- **Existing test signature updates**: 3 call sites for `probeSQLi`/`probeCMDi` updated for new `ProbeLocation` arg. `TestSqliPayloads` updated for 3 → 5 DB count. `TestIntegration_MultipleParams` got `MaxProbesPerEndpoint=200` because the per-endpoint probe budget is now realistic for 3 params × all probe types — exercises the new flag.
+- **Real-world re-test on `/tmp/fendix-test/vuln_server.py`**: full active scan now emits `SQL Injection (SQLite, error-based) @ GET /api/v1/users` (was completely missed pre-TASK-086 — vuln-server reflects SQLite `unrecognized token` on bare-quote payload, our regex matches) plus `SQL Injection (boolean-based) @ GET /api/v1/ping` (a known-acceptable false positive from CMDi-vulnerable shell-out endpoint where shell output differs by 1 char between `' OR '1'='1` and `' AND '1'='2` payloads — MEDIUM confidence conveys the right uncertainty). Scan total: 43 findings (3 critical + 3 high + 19 medium + 12 low + 6 info).
+
+**Decisions made:**
+
+- **Kept `MaxProbesPerEndpoint = 20` as a constant** rather than removing it. Existing tests reference it directly; preserving the symbol avoids unnecessary churn. The new `effectiveMaxProbes(cfg)` helper layers the config-driven override on top.
+- **Body-param probing is method-gated**: only POST/PUT/PATCH. Sending GET with a body is a footgun — most servers ignore or reject. Captured in `methodAcceptsBody()`.
+- **JSON body construction puts `"fendix"` in sibling fields, not empty strings** — empty strings often fail server-side validation (e.g. min-length-1 username) before reaching the vulnerable code. Non-empty placeholder maximizes the chance the payload field is the one that gets evaluated.
+- **Header values get CR/LF stripped via `strings.NewReplacer`** for non-CRLF probes. Go's net/http rejects requests with CR/LF in header values as malformed, and we'd lose detection of legitimate header-value injection in SQL/CMDi paths if we passed the raw payload through. CRLF probes still send the raw URL-encoded payload via the URL form (existing `probeCRLF` impl).
+- **Boolean-based SQLi is MEDIUM confidence, not HIGH** — length-delta detection is inherently noisy on dynamic responses (timestamps, random IDs). Status-flip is a stronger signal but folded into the same finding for simplicity. The 5% length threshold matches the spec; tightening to status-only would miss too many real cases.
+- **Error-based SQLi sends just `fendix'"`** rather than `fendix' OR 1=1--`. The 4-char payload is enough to trip parsing on virtually every SQL engine (single quote alone often suffices); shorter payload = lower chance of being filtered by middleware before reaching the DB.
+- **OAS 3 body-param extractor walks one level deep** (top-level properties only). Nested objects would multiply probe count without improving detection — most JSON-body SQLi surfaces in flat top-level fields.
+- **CRLF stays query-only** — extending to header probes would always be no-ops because Go's http client strips CR/LF from header values; extending to body probes would require parsing the response for reflected raw `\r\n` which is a different detection path entirely.
+- **No version bump or release tag this session.** Per the morning's plan, v0.3.0 = TASK-085 + TASK-086. Both are done; ready to ship next session pending CHANGELOG fold (`[Unreleased]` → `[0.3.0] - <date>`).
+
+**Files modified:**
+
+- `go/internal/scanner/scanner.go` — Endpoint extended with Headers + BodyParams.
+- `go/internal/scanner/crawler.go` — added `extractHeaderParamsList()`, `extractBodyParamNames()`, `schemaPropertyNames()`, `skippableHeaderNames` map; `fromSpec` populates new fields.
+- `go/internal/scanner/crawler_test.go` — 4 new tests for header/body param extraction + $ref skip.
+- `go/internal/scanner/injection.go` — major refactor: added `ProbeLocation`, `effectiveMaxProbes`, `methodAcceptsBody`, `probeTarget`, `targetsForEndpoint`, `buildProbeRequest`, `buildJSONBody`, `paramLabel`, `sqliErrorPayload`, `sqliErrorPatterns`, `sqliBooleanPayloads`, `sqliBooleanLengthThreshold`, `probeSQLiErrorBased`, `probeSQLiBoolean`, `sendBoolProbe`. `probeSQLi` + `probeCMDi` updated to take `ProbeLocation`. `probeCRLF` updated to use `effectiveMaxProbes`. `CheckInjectionWithAudit` rewritten to iterate over (param, location) pairs from `targetsForEndpoint`. `sqliPayloads` extended with SQLite + Oracle entries (3 → 5).
+- `go/internal/scanner/injection_test.go` — 10 new tests for new probe types + body/header probing + max-probes flag + `targetsForEndpoint` semantics; 3 existing call-site updates for new ProbeLocation arg; 2 assertion updates (sqliPayloads count, MultipleParams budget).
+- `go/internal/models/config.go` — added `MaxProbesPerEndpoint int`.
+- `go/cmd/fendix/main.go` — added `--max-probes-per-endpoint` flag wired to `cfg.MaxProbesPerEndpoint`.
+- `go/internal/e2e/e2e_test.go` — added 2 e2e regressions for body + header probing; added `bytes`, `fmt`, `io` imports.
+- `CHANGELOG.md` — `[Unreleased]` Added section: 6 new bullets for TASK-086 (body-param probing, header-param probing, error-based SQLi, boolean-based SQLi, SQLite + Oracle payloads, `--max-probes-per-endpoint` flag).
+- `tasks/CURRENT_SPRINT.md` — TASK-086 marked ✅ with full implementation notes.
+- `tasks/MEMORY.md` (this file) — Phase 11 progress (1/7 → 2/7 done); TASK-086 entry; new Last Session Summary; "Next session" pointer reset to "cut v0.3.0 or start TASK-087".
+
+**Build state at session end:**
+
+- `make build` ✓ (binary built with VERSION=v0.2.0-1-gaff18ef)
+- `make test` ✓ (Go race-clean across 5 packages; Python 150/150)
+- `make e2e` ✓ (6/6 — 4 prior + 2 new TASK-086 regressions)
+
+**Next session should start with:**
+
+1. **(Carry-over from prior session) Verify v0.2.0 release succeeded** — browser-load `https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/v0.2.0` and confirm linux/amd64, darwin/amd64, darwin/arm64 binaries with sha256 checksums.
+2. **Cut v0.3.0** — both v0.3 batch tasks (TASK-085 + TASK-086) are done. Steps:
+   - Fold `[Unreleased]` section in `CHANGELOG.md` into a `[0.3.0] - <today>` versioned section. Group: Added (provider secrets, `.env` scanning, body-param probing, header-param probing, error-based SQLi, boolean-based SQLi, SQLite + Oracle payloads, `--max-probes-per-endpoint`); Fixed (anti-overlap regex anchors).
+   - Conventional commit `feat: v0.3.0 — coverage parity (TASK-085 + TASK-086)`.
+   - Annotated tag `v0.3.0` and push to origin (release.yml triggers on `v*`).
+   - Real-world re-test on the same fixtures to confirm no regressions (the in-session test on vuln_server already showed positive deltas; one more pass on `/tmp/fendix-test/badcode/` for whitebox).
+3. **Begin TASK-087 — Static analyzer expansion (v0.4 batch).** Per `tasks/PHASES.md`: string-concat SQLi (the original Bobby Tables pattern, currently missed because we only catch f-strings), `pickle.loads`, `yaml.load(..., Loader=Loader)` without SafeLoader, MD5/SHA1 used for password hashing, open-redirect patterns (`response.redirect(request.GET.get('url'))`), SSRF (`requests.get(user_input)`), auth-header trust patterns (`if request.headers.get('X-Admin'): ...`). All AST-based in `python/analyzers/ast_analyzer.py`.
+
+**Open questions:**
+
+- **Boolean-based SQLi false positives on shell-injection endpoints** — confirmed in real-world re-test that `/api/v1/ping` (CMDi-vulnerable, not SQLi-vulnerable) produced a boolean-based finding because the shell output `pinging ' OR '1'='1` differs in length from `pinging ' AND '1'='2` by 4 bytes. This is technically a true positive in the sense that "user input affects response shape" — it's just attributed to the wrong vuln class. MEDIUM confidence partially compensates. If false-positive volume becomes a problem in real usage, options are: (a) require BOTH status flip AND length flip; (b) require length-flip ratio > 10% instead of 5%; (c) add a tiebreaker probe that should produce identical output if it's truly CMDi rather than SQLi. Defer until real users complain.
+- **Body-param probing budget** — current budget of 20 hits hard on POST endpoints with 3+ body fields × 3 probe types per location. Real users with rich request bodies will need to bump `--max-probes-per-endpoint`. The default keeps the v0.2 contract (no surprise probe explosion); the flag exists. Should the default rise in v0.4? Worth raising once we have feedback from someone running fendix against a real REST API.
+- **Body probes only target `application/json` content** — multipart, urlencoded, XML bodies are not yet covered. JSON is the dominant modern API contract so this is high-value-first; add other formats only if real users need them.
+- **OAS `$ref` deref still deferred** — body schemas defined via `$ref: '#/components/schemas/User'` produce zero body params. This is the same limitation as TASK-081 for parameter `$ref`s. Together they likely undercount endpoint coverage on real specs (Stripe, GitHub, etc. heavily use $ref). Would warrant its own task, possibly Phase 12.
+
+---
+
+## Earlier Session (2026-04-29 evening — TASK-085: secret-pattern coverage)
+
+**Session goal:** Begin Phase 11 with TASK-085 — expand secret patterns to industry-baseline coverage (gitleaks-comparable) and fix the `.env`-scanning gap.
+
+**Accomplished:**
+
+- **8 new provider patterns added** to `python/analyzers/secrets.py`: `GITHUB_TOKEN` (`gh[opusr]_` + 36, CRITICAL), `STRIPE_LIVE_KEY` (`sk_live_` + 20+, CRITICAL), `SLACK_TOKEN` (`xox[abprs]-` + 10+, HIGH), `GOOGLE_API_KEY` (`AIza` + exactly 35, HIGH), `ANTHROPIC_API_KEY` (`sk-ant-` + 20+, CRITICAL), `OPENAI_API_KEY` (`sk-(?:proj-|svcacct-)?` + 32+, CRITICAL), `NPM_TOKEN` (`npm_` + 36, HIGH), `GCP_SERVICE_ACCOUNT` (canonical JSON `"type": "service_account"`, CRITICAL). Total pattern count 7 → 15.
+- **`.env`-only pattern path** — new `_ENV_PATTERNS` list with `ENV_SECRET` regex matching unquoted `KEY=value` where the key suffix is credential-y (`KEY|TOKEN|SECRET|PASSWORD|...`). Gated by new `_is_env_file()` helper so the relaxed regex only fires on `.env*` files; this avoids false positives in regular code where unquoted assignment is normal syntax.
+- **Dotfile-walker bug fixed** — `.env` files have `Path.suffix == ""` and were silently skipped by the suffix-based file filter in `_walk()`. Walker now also yields env-files by name. This was a separate latent bug surfaced by the TASK-085 work (independent of the regex fix).
+- **3 new fixture files**: `provider_tokens.py` (8 provider tokens), `gcp_service_account.json` (canonical SA JSON), `.env` (4 unquoted-secret lines + 2 should-not-match lines for negative coverage).
+- **10 new test methods**: 8 per-provider `test_X_detected` + `test_env_unquoted_secret_detected` + `test_anti_overlap_openai_does_not_match_anthropic`. All 150 Python tests pass (was 140; +10).
+- **Real-world re-test on `/tmp/fendix-test/badcode/`**: full whitebox scan went from 16 findings (6 critical + 10 high) → 19 findings (8 critical + 11 high). Net delta: +2 critical (GitHub + Stripe), +1 high (the 3 ENV_SECRET findings minus existing overlaps with the new STRIPE pattern on the same `.env` line). Six new individual findings on the same fixture that pre-fix would have completely missed: 1 GitHub token, 2 Stripe keys, 3 unquoted `.env` secrets.
+- **All builds green**: `make test` 150/150 Python + Go race-clean across 5 packages; `make e2e` 4/4 (1.9s).
+
+**Decisions made:**
+
+- **Two-tier pattern table.** Considered putting the `.env` regex into the main `_PATTERNS` list with a much broader regex that handles both quoted and unquoted. Rejected — the unquoted variant has high false-positive rate in code (e.g. `LOG_LEVEL=debug`), so gating to `.env*` files is the correct tradeoff. Implementation: separate `_ENV_PATTERNS` list applied conditionally in `_scan_file`.
+- **Provider regex anchoring with `(?<![A-Za-z0-9])`/`(?![A-Za-z0-9])`** rather than `\b` — `\b` treats `_` and `-` as word chars in different ways across language tokens; the explicit lookbehind/ahead is unambiguous and matches our intent: the prefix must not be inside a longer alphanumeric run.
+- **OpenAI pattern length floor at 32 chars** — real OpenAI legacy keys are 48+, project keys 50+. `{32,}` is conservative enough to admit fixture/example values while rejecting random noise. Below ~16 chars the false-positive rate spikes (random `sk-` followed by hex IDs).
+- **Anti-overlap (OpenAI vs Anthropic) verified by construction**: after `sk-`, OpenAI's regex requires alnum body. `sk-ant-` has a `-` after `ant`, breaking the body match before reaching `{32,}`. Captured as a regression test.
+- **Google API key length set to exactly 35** (not `{35,}`). Real Google keys are uniformly 39 chars total (`AIza` + 35). Wider matches admit too many strings of the form `AIza...` in unrelated text.
+- **GCP service-account JSON detected by canonical signature line**, not the whole JSON structure. Multi-line regex would require buffering the file across lines (the analyzer is line-oriented) and would only catch the same files anyway. The signature line `"type": "service_account"` is the universally-present marker.
+- **No version bump or release tag this session.** TASK-085 is one of two intended v0.3.0 tasks (TASK-086 is the other). Cutting v0.3 with only secrets coverage but not the active-scanner expansion would force a v0.3.1 within days; better to bundle both.
+
+**Files modified:**
+
+- `python/analyzers/secrets.py` — module docstring updated; added 8 patterns to `_PATTERNS`; added `_ENV_PATTERNS` list and `_is_env_file()` helper; modified `_walk()` to yield env-files; modified `_scan_file()` to apply env patterns conditionally.
+- `python/tests/test_secrets.py` — 10 new test methods in `TestPatternDetection`.
+- `python/tests/fixtures/secrets_target/provider_tokens.py` — NEW (8 provider tokens with shape-valid fake values).
+- `python/tests/fixtures/secrets_target/gcp_service_account.json` — NEW (canonical SA JSON shape).
+- `python/tests/fixtures/secrets_target/.env` — NEW (unquoted KEY=value samples + comment + non-secret control).
+- `CHANGELOG.md` — `[Unreleased]` section added with `Added`/`Fixed` subsections.
+- `tasks/MEMORY.md` (this file) — Phase 11 progress; this Last Session Summary; "Next session" pointer reset to TASK-086.
+- `tasks/CURRENT_SPRINT.md` — TASK-085 marked ✅ with concrete delta numbers.
+
+**Build state at session end:**
+
+- `make build` ✓ (binary built with VERSION=v0.2.0-1-gaff18ef from latest commit)
+- `make test` ✓ (Go race-clean across 5 packages; Python 150/150 — was 140)
+- `make e2e` ✓ (4/4 e2e regression tests, 1.9s)
+
+**Release status carried over:**
+
+- v0.2.0 tag is on remote but the GitHub Releases API returns 404 to unauthenticated requests (private repo). **User should manually verify** in the browser that `release.yml` ran successfully and three platform binaries are attached. If the workflow failed, fix-forward and retag.
+- `gh` CLI still not installed locally. Not a v0.2 blocker.
+
+**Next session should start with:**
+
+1. **(Carry-over) Verify v0.2.0 release succeeded** — browser-load `https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/v0.2.0` and confirm linux/amd64, darwin/amd64, darwin/arm64 binaries with sha256. Or `brew install gh && gh release view v0.2.0`.
+2. **TASK-086 — Active scanner expansion (v0.3 batch with TASK-085).** Spec:
+   - **Body params + headers**: `crawler.go` currently extracts only `in: query` and `in: path` parameters (TASK-081). Extend to `in: header` (skip standard auth headers) and `requestBody` content schema (extract field names from JSON schema property objects). Wire into `injection.go` so probes target body fields too — for application/json bodies, inject into one field at a time while keeping the rest valid.
+   - **Error-based SQLi**: scan response body for DB error signatures (`syntax error at or near`, `ORA-00933`, `unclosed quotation mark`, `SQL syntax.*near`, etc.). Treat as HIGH confidence finding.
+   - **Boolean-based SQLi**: send a `' OR 1=1--` and a `' AND 1=2--` variant; compare response-body length and status. >5% length delta or status flip = finding.
+   - **SQLite + Oracle DB payloads**: add `randomblob(?)` time-based for SQLite, `dbms_pipe.receive_message` for Oracle. Existing 3 (MySQL/Postgres/MSSQL) → 5 DB types.
+   - **`--max-probes-per-endpoint` flag**: replace the hardcoded `MaxProbesPerEndpoint=20` constant with a CLI flag. Default 20.
+   - **e2e regression**: extend the vuln-server fixture to expose a JSON POST endpoint with a vulnerable body field; add an e2e test asserting body-param probing works.
+3. After TASK-086 completes, evaluate cutting v0.3.0. If the diff is small and clean, ship. If it grew or accumulated other risks, pause for review.
+
+**Open questions:**
+
+- **GENERIC_API_KEY vs new provider patterns**: there's overlap potential — e.g. a line like `STRIPE_KEY = "sk_live_..."` might match both `STRIPE_LIVE_KEY` (provider) AND `GENERIC_API_KEY` (since "STRIPE_KEY" contains the key suffix and the value is in quotes 20+ chars). Currently this would emit 2 findings on the same line. TASK-088 (findings dedup, v0.4) addresses this generally; consider whether to add per-line de-dup specifically in `secrets.py` sooner. Decision deferred to TASK-088.
+- **`OPENAI_API_KEY` regex breadth**: `sk-[A-Za-z0-9]{32,}` is intentionally loose to accept legacy keys, project keys (`sk-proj-`), and service-account keys (`sk-svcacct-`). It will *not* match Stripe `sk_live_...` (different separator) or Anthropic `sk-ant-...` (dash breaks alnum body). But it could conceivably hit unrelated `sk-` strings in user data. Worth considering tightening if false-positive reports come in from real codebases.
+- **CHANGELOG `[Unreleased]` section** is now growing — when v0.3.0 is cut, fold it into a versioned section. Convention for the project remains Keep a Changelog.
+
+---
+
+## Earlier Session (2026-04-29 afternoon — release-prep & ship v0.2.0)
+
 **Session goal:** Ship v0.2.0 — finish Phase 10 release prep, re-verify the 6 P0 bugs against the same 2026-04-28 fixtures, commit + tag + push.
 
 **Accomplished:**

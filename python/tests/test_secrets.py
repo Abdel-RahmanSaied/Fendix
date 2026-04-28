@@ -66,6 +66,71 @@ class TestPatternDetection:
         ids = _categories(findings)
         assert "SEC-DB_CONNECTION_STRING" in ids
 
+    # Provider-specific patterns added in TASK-085 for v0.3 coverage parity.
+
+    def test_github_token_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-GITHUB_TOKEN" in _categories(findings)
+
+    def test_stripe_live_key_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-STRIPE_LIVE_KEY" in _categories(findings)
+
+    def test_slack_token_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-SLACK_TOKEN" in _categories(findings)
+
+    def test_google_api_key_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-GOOGLE_API_KEY" in _categories(findings)
+
+    def test_anthropic_api_key_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-ANTHROPIC_API_KEY" in _categories(findings)
+
+    def test_openai_api_key_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-OPENAI_API_KEY" in _categories(findings)
+
+    def test_npm_token_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-NPM_TOKEN" in _categories(findings)
+
+    def test_gcp_service_account_detected(self) -> None:
+        findings = _collect(str(FIXTURES_DIR))
+        assert "SEC-GCP_SERVICE_ACCOUNT" in _categories(findings)
+
+    def test_env_unquoted_secret_detected(self) -> None:
+        """Regression for TASK-085: .env files use unquoted KEY=value, which the
+        generic HARDCODED_PASSWORD regex (requires quotes) misses entirely.
+        Also covers the related Path.suffix bug — files literally named .env
+        have suffix='' and were previously skipped by the file-extension walk."""
+        findings = _collect(str(FIXTURES_DIR))
+        env_findings = [
+            f for f in findings
+            if f["id"] == "SEC-ENV_SECRET" and ".env" in f["endpoint"]
+        ]
+        assert env_findings, (
+            f"expected SEC-ENV_SECRET findings on .env file, got "
+            f"ids={_categories(findings)}"
+        )
+
+    def test_anti_overlap_openai_does_not_match_anthropic(self) -> None:
+        """OpenAI's sk- prefix is broad; ensure it doesn't fire on Anthropic keys."""
+        findings = _collect(str(FIXTURES_DIR))
+        # Anthropic value in fixture is sk-ant-api03-...; the OpenAI regex must
+        # not also match it (would be a duplicate finding on the same line).
+        ant_endpoint_lines = [
+            f["endpoint"] for f in findings if f["id"] == "SEC-ANTHROPIC_API_KEY"
+        ]
+        openai_endpoints = {
+            f["endpoint"] for f in findings if f["id"] == "SEC-OPENAI_API_KEY"
+        }
+        for ep in ant_endpoint_lines:
+            assert ep not in openai_endpoints, (
+                f"OpenAI regex incorrectly matched an Anthropic key at {ep}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Finding structure tests

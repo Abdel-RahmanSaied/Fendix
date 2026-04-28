@@ -301,3 +301,55 @@ func TestRenderHTML_ContainsCategory(t *testing.T) {
 		t.Error("expected category in finding body")
 	}
 }
+
+// TestRenderHTML_AffectedEndpointsList covers TASK-088: a deduplicated
+// finding (multiple AffectedEndpoints) renders an "Affected endpoints (N)"
+// section listing each endpoint plus a "+N more" badge in the header.
+func TestRenderHTML_AffectedEndpointsList(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+	findings := []models.Finding{
+		{
+			ID:                "SEC-001",
+			Title:             "Missing CSP header",
+			Severity:          models.SeverityMedium,
+			Source:            models.SourceBlackbox,
+			Category:          "headers",
+			Endpoint:          "GET /api/users",
+			AffectedEndpoints: []string{"GET /api/users", "GET /api/posts", "GET /api/orders"},
+			References:        []string{},
+		},
+	}
+	if err := RenderHTML(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "Affected endpoints (3)") {
+		t.Errorf("expected affected-endpoints header with count 3, got:\n%s", html)
+	}
+	if !strings.Contains(html, "+2 more") {
+		t.Errorf("expected '+2 more' badge in header, got:\n%s", html)
+	}
+	for _, ep := range []string{"GET /api/users", "GET /api/posts", "GET /api/orders"} {
+		if !strings.Contains(html, ep) {
+			t.Errorf("expected endpoint %q in HTML, got:\n%s", ep, html)
+		}
+	}
+}
+
+// TestRenderHTML_SingletonHasNoAffectedSection: a finding without
+// AffectedEndpoints (the common case) must NOT render an empty
+// "Affected endpoints" block — that would just be visual noise.
+func TestRenderHTML_SingletonHasNoAffectedSection(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "Test", Severity: models.SeverityHigh, Source: models.SourceBlackbox, Endpoint: "/x"},
+	}
+	if err := RenderHTML(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	if strings.Contains(buf.String(), "Affected endpoints") {
+		t.Error("singleton finding should not render 'Affected endpoints' section")
+	}
+}

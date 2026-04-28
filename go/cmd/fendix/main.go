@@ -80,6 +80,7 @@ func newScanCmd() *cobra.Command {
 			baselineFlag, _ := flags.GetString("baseline")
 			saveBaselineFlag, _ := flags.GetString("save-baseline")
 			enableActive, _ := flags.GetBool("enable-active")
+			maxProbesPerEndpoint, _ := flags.GetInt("max-probes-per-endpoint")
 			workers, _ := flags.GetInt("workers")
 			timeout, _ := flags.GetInt("timeout")
 			delay, _ := flags.GetInt("delay")
@@ -95,6 +96,7 @@ func newScanCmd() *cobra.Command {
 				SpecPath:         specFlag,
 				CodePath:         codeFlag,
 				EnableActive:     enableActive,
+				MaxProbesPerEndpoint: maxProbesPerEndpoint,
 				Workers:          workers,
 				Timeout:          timeout,
 				DelayMs:          delay,
@@ -151,6 +153,7 @@ func newScanCmd() *cobra.Command {
 	flags.String("baseline", "", "Path to previous findings JSON for diff mode")
 	flags.String("save-baseline", "", "Save current findings to this path")
 	flags.Bool("enable-active", false, "Enable active injection probes (default: false)")
+	flags.Int("max-probes-per-endpoint", 20, "Max active probes per endpoint (only effective with --enable-active)")
 	flags.IntP("workers", "w", 10, "Concurrent HTTP workers")
 	flags.Int("timeout", 10, "HTTP timeout in seconds")
 	flags.Int("delay", 100, "Milliseconds between HTTP requests")

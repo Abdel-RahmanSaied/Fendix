@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,7 +146,7 @@ func TestProbeSQLi_DetectsDelayedResponse(t *testing.T) {
 	// Use a short-timeout client so baseline is very fast
 	// The mock adds 200ms delay for injection payloads
 	// We need to override the threshold check — for testing we use a custom approach
-	findings := probeSQLi(context.Background(), &http.Client{Timeout: 10 * time.Second}, cfg, ep, "id", auditLog)
+	findings := probeSQLi(context.Background(), &http.Client{Timeout: 10 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
 
 	// The mock delays 200ms which is less than baseline+4s, so no findings expected
 	// (Real SQLi detection needs 5+ second delays)
@@ -153,10 +154,10 @@ func TestProbeSQLi_DetectsDelayedResponse(t *testing.T) {
 		t.Logf("unexpected findings (delay too short to trigger): %d", len(findings))
 	}
 
-	// But audit records should exist (3 payloads × DB types)
+	// 5 DB payloads after TASK-086 (was 3 — MySQL/Postgres/MSSQL/SQLite/Oracle)
 	records := auditLog.Records()
-	if len(records) < 3 {
-		t.Errorf("expected at least 3 audit records for SQLi probes, got %d", len(records))
+	if len(records) < 5 {
+		t.Errorf("expected at least 5 audit records for SQLi probes (5 DB types), got %d", len(records))
 	}
 
 	for _, r := range records {
@@ -194,7 +195,7 @@ func TestProbeCMDi_DetectsCanary(t *testing.T) {
 	var buf bytes.Buffer
 	auditLog := NewProbeAuditLogWithWriter(&buf)
 
-	findings := probeCMDi(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "cmd", auditLog)
+	findings := probeCMDi(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "cmd", LocQuery, auditLog)
 
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 CMDi finding, got %d", len(findings))
@@ -236,7 +237,7 @@ func TestProbeCMDi_NoCanary(t *testing.T) {
 	var buf bytes.Buffer
 	auditLog := NewProbeAuditLogWithWriter(&buf)
 
-	findings := probeCMDi(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "cmd", auditLog)
+	findings := probeCMDi(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "cmd", LocQuery, auditLog)
 	if len(findings) != 0 {
 		t.Errorf("expected no findings for safe endpoint, got %d", len(findings))
 	}
@@ -480,8 +481,9 @@ func TestMedianDuration(t *testing.T) {
 
 func TestSqliPayloads(t *testing.T) {
 	payloads := sqliPayloads()
-	if len(payloads) != 3 {
-		t.Fatalf("expected 3 SQLi payloads, got %d", len(payloads))
+	// TASK-086: SQLite + Oracle added → 5 DBs total.
+	if len(payloads) != 5 {
+		t.Fatalf("expected 5 SQLi payloads (MySQL, Postgres, MSSQL, SQLite, Oracle), got %d", len(payloads))
 	}
 
 	dbs := map[string]bool{}
@@ -491,7 +493,7 @@ func TestSqliPayloads(t *testing.T) {
 			t.Errorf("expected 5s delay for %s, got %v", p.DB, p.Delay)
 		}
 	}
-	for _, db := range []string{"MySQL", "Postgres", "MSSQL"} {
+	for _, db := range []string{"MySQL", "Postgres", "MSSQL", "SQLite", "Oracle"} {
 		if !dbs[db] {
 			t.Errorf("missing payload for %s", db)
 		}
@@ -615,8 +617,10 @@ func TestIntegration_SafeServer_NoFindings(t *testing.T) {
 		}
 	}
 
-	// Should still have audit records for all attempted probes
-	// 2 params × (3 SQLi + 1 CMDi + 1 CRLF) = 10 probes
+	// Should still have audit records for all attempted probes.
+	// Per (param, location): 5 SQLi time-based (one per DB) + 1 SQLi error +
+	// 2 SQLi boolean + 1 CMDi + 1 CRLF = 10 probes. 2 params hits the default
+	// budget of 20 exactly.
 	records := auditLog.Records()
 	if len(records) < 10 {
 		t.Errorf("expected at least 10 audit records for 2 params, got %d", len(records))
@@ -639,7 +643,11 @@ func TestIntegration_MultipleParams(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	// TASK-086 added more probe types per (param, location), so the default
+	// max-probes budget (20) hits before all 3 params are exhausted. Bump the
+	// budget for this test — its job is to verify per-param finding emission,
+	// not budget enforcement (which has its own test).
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 200}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/api/exec",
@@ -720,6 +728,280 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 	// Should not panic or hang — should return gracefully
 	findings := CheckInjectionWithAudit(ctx, cfg, ep, auditLog)
 	_ = findings // May or may not have findings, but should not hang
+}
+
+// --- TASK-086 tests: body/header probing, error/boolean SQLi, --max-probes-per-endpoint ---
+
+// TestProbeSQLi_ErrorBased_DetectsMySQLError: when the server reflects a MySQL
+// error string in its response body, the error-based SQLi probe surfaces a
+// HIGH-confidence finding with the matched signature in the evidence.
+func TestProbeSQLi_ErrorBased_DetectsMySQLError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Naive vulnerable handler: any single quote in input → MySQL error.
+		if strings.Contains(r.URL.RawQuery, "%27") || strings.Contains(r.URL.RawQuery, "'") {
+			fmt.Fprintln(w, `{"error":"You have an error in your SQL syntax; check the manual"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/items", FullURL: ts.URL + "/api/items"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeSQLiErrorBased(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Confidence != models.ConfidenceHigh {
+		t.Errorf("expected HIGH confidence, got %s", findings[0].Confidence)
+	}
+	if !strings.Contains(findings[0].Title, "MySQL") {
+		t.Errorf("expected MySQL in title, got %q", findings[0].Title)
+	}
+	if !strings.Contains(findings[0].Evidence, "error in your SQL syntax") {
+		t.Errorf("expected matched error signature in evidence, got: %s", findings[0].Evidence)
+	}
+}
+
+// TestProbeSQLi_ErrorBased_NoFalsePositive: a server that returns generic JSON
+// without DB error signatures must not yield a finding. Defends against the
+// regex being too permissive.
+func TestProbeSQLi_ErrorBased_NoFalsePositive(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, `{"error":"invalid input","status":"bad request"}`)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/items", FullURL: ts.URL + "/api/items"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeSQLiErrorBased(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestProbeSQLi_Boolean_DetectsLengthFlip: a server whose response shrinks
+// substantially when given a false condition vs. a true one must trigger a
+// boolean-based SQLi finding.
+func TestProbeSQLi_Boolean_DetectsLengthFlip(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.RawQuery
+		// Simulated: '1'='1' → returns 200 records; '1'='2' → returns 0.
+		if strings.Contains(query, "1%27%3D%271") || strings.Contains(query, "1'='1") {
+			fmt.Fprintln(w, strings.Repeat(`{"id":1,"name":"row"},`, 50))
+			return
+		}
+		fmt.Fprintln(w, `[]`)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/items", FullURL: ts.URL + "/api/items"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeSQLiBoolean(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 boolean SQLi finding, got %d", len(findings))
+	}
+	if !strings.Contains(findings[0].Title, "boolean-based") {
+		t.Errorf("expected 'boolean-based' in title, got %q", findings[0].Title)
+	}
+}
+
+// TestProbeSQLi_Boolean_NoFlipNoFinding: if the response is identical for both
+// payloads, no finding. Test the negative path so future regex tweaks don't
+// lower the bar to noise.
+func TestProbeSQLi_Boolean_NoFlipNoFinding(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, `{"static":"response"}`)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/items", FullURL: ts.URL + "/api/items"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeSQLiBoolean(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for static response, got %d", len(findings))
+	}
+}
+
+// TestBuildProbeRequest_BodyJSON: body-location probes serialize a JSON body
+// where sibling fields get the placeholder "fendix" so the server's input
+// validation doesn't 400 the request before it reaches the vulnerable code.
+func TestBuildProbeRequest_BodyJSON(t *testing.T) {
+	ep := Endpoint{
+		Method:     "POST",
+		Path:       "/users",
+		FullURL:    "http://x/users",
+		BodyParams: []string{"username", "email"},
+	}
+	req, err := buildProbeRequest(context.Background(), ep, "username", "PAYLOAD", LocBody)
+	if err != nil {
+		t.Fatalf("buildProbeRequest: %v", err)
+	}
+	if req.Header.Get("Content-Type") != "application/json" {
+		t.Errorf("expected JSON Content-Type, got %q", req.Header.Get("Content-Type"))
+	}
+	body, _ := io.ReadAll(req.Body)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, `"username":"PAYLOAD"`) {
+		t.Errorf("expected target field carries payload, got body: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"email":"fendix"`) {
+		t.Errorf("expected sibling field gets placeholder, got body: %s", bodyStr)
+	}
+}
+
+// TestBuildProbeRequest_HeaderStripsCRLF: CR/LF in non-CRLF probe payloads
+// must be stripped before going into a header — Go's http client otherwise
+// rejects the request with a header-malformed error and we get no detection
+// at all.
+func TestBuildProbeRequest_HeaderStripsCRLF(t *testing.T) {
+	ep := Endpoint{Method: "GET", Path: "/x", FullURL: "http://x/x"}
+	req, err := buildProbeRequest(context.Background(), ep, "X-Trace-Id", "value\r\nInjected: bad", LocHeader)
+	if err != nil {
+		t.Fatalf("buildProbeRequest: %v", err)
+	}
+	got := req.Header.Get("X-Trace-Id")
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("expected CR/LF stripped from header value, got %q", got)
+	}
+}
+
+// TestCheckInjection_BodyProbing: a POST endpoint with declared body params
+// gets probed via JSON body. Verifies that body-location probes actually fire
+// (TASK-086 expansion of the active scanner surface).
+func TestCheckInjection_BodyProbing(t *testing.T) {
+	bodyHits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") == "application/json" {
+			body, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(body), "fendix") || strings.Contains(string(body), "'") || strings.Contains(string(body), "OR") {
+				bodyHits++
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 100}
+	ep := Endpoint{
+		Method:     "POST",
+		Path:       "/users",
+		FullURL:    ts.URL + "/users",
+		BodyParams: []string{"username"},
+	}
+	auditLog := NewProbeAuditLog()
+	CheckInjectionWithAudit(context.Background(), cfg, ep, auditLog)
+
+	if bodyHits == 0 {
+		t.Fatal("expected at least one JSON-body probe to reach the target")
+	}
+}
+
+// TestCheckInjection_HeaderProbing: a GET endpoint with declared header params
+// gets probed via header values. The mock counts incoming requests with
+// X-Trace-Id set; non-zero count means header probing fired.
+func TestCheckInjection_HeaderProbing(t *testing.T) {
+	headerHits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Trace-Id") != "" {
+			headerHits++
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 100}
+	ep := Endpoint{
+		Method:  "GET",
+		Path:    "/items",
+		FullURL: ts.URL + "/items",
+		Headers: []string{"X-Trace-Id"},
+	}
+	auditLog := NewProbeAuditLog()
+	CheckInjectionWithAudit(context.Background(), cfg, ep, auditLog)
+
+	if headerHits == 0 {
+		t.Fatal("expected at least one X-Trace-Id-bearing probe to reach the target")
+	}
+}
+
+// TestEffectiveMaxProbes_Override: cfg.MaxProbesPerEndpoint=N caps audit log
+// growth at N. Pre-TASK-086 the cap was hardcoded to MaxProbesPerEndpoint=20
+// with no override; this test guards against regressing the new flag.
+func TestEffectiveMaxProbes_Override(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 3}
+	ep := Endpoint{
+		Method:  "GET",
+		Path:    "/x",
+		FullURL: ts.URL + "/x",
+		Params:  []string{"a", "b", "c", "d"},
+	}
+	auditLog := NewProbeAuditLog()
+	CheckInjectionWithAudit(context.Background(), cfg, ep, auditLog)
+
+	count := auditLog.Count(ep.FullURL)
+	if count > 10 {
+		// Per-probe-function checks are eager but each call is gated by
+		// effectiveMaxProbes; a budget of 3 means the loop should stop very
+		// quickly. Allow some slack since a single SQLi-time-based call can
+		// emit 5 records before the next gate.
+		t.Errorf("expected probe count to be capped near MaxProbesPerEndpoint=3, got %d", count)
+	}
+}
+
+// TestEffectiveMaxProbes_DefaultWhenZero: MaxProbesPerEndpoint=0 falls back
+// to the default of 20, not "infinite" or "zero probes".
+func TestEffectiveMaxProbes_DefaultWhenZero(t *testing.T) {
+	cfg := &models.ScanConfig{MaxProbesPerEndpoint: 0}
+	if got := effectiveMaxProbes(cfg); got != MaxProbesPerEndpoint {
+		t.Errorf("expected default %d for zero, got %d", MaxProbesPerEndpoint, got)
+	}
+	if got := effectiveMaxProbes(nil); got != MaxProbesPerEndpoint {
+		t.Errorf("expected default %d for nil cfg, got %d", MaxProbesPerEndpoint, got)
+	}
+}
+
+// TestTargetsForEndpoint_FallbackId: an endpoint with no declared params,
+// headers, or body fields falls back to a single ("id", query) target —
+// preserves v0.2 behavior of "always try `id` so undocumented surface gets
+// some attention".
+func TestTargetsForEndpoint_FallbackId(t *testing.T) {
+	ep := Endpoint{Method: "GET", Path: "/x", FullURL: "http://x/x"}
+	got := targetsForEndpoint(ep)
+	if len(got) != 1 || got[0].Name != "id" || got[0].Location != LocQuery {
+		t.Errorf("expected single (id, query) fallback, got %+v", got)
+	}
+}
+
+// TestTargetsForEndpoint_BodyOnlyForBodyMethods: GET endpoints don't get body
+// probes even if BodyParams is set — sending a GET with a body is a footgun
+// most servers either ignore or reject.
+func TestTargetsForEndpoint_BodyOnlyForBodyMethods(t *testing.T) {
+	ep := Endpoint{
+		Method:     "GET",
+		Path:       "/x",
+		FullURL:    "http://x/x",
+		BodyParams: []string{"f1"},
+	}
+	got := targetsForEndpoint(ep)
+	for _, tg := range got {
+		if tg.Location == LocBody {
+			t.Errorf("GET should not produce body-location targets, got %+v", got)
+		}
+	}
 }
 
 func TestProbeAuditLog_ConcurrentAccess(t *testing.T) {
