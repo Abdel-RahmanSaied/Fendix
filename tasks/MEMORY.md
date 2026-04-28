@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 10 — P0 Flag Wiring (v0.2) ✅ Code Complete (TASK-079..084 all done; CHANGELOG entry + v0.2.0 tag still pending)
-**Overall progress:** Phases 0-9 + v0.1.0 release + Phase 10 code complete; ready to ship v0.2.0
+**Phase:** 11 — P1 Coverage Parity (v0.3 + v0.4) — 🔲 Not Started. Phase 10 ✅ Complete (v0.2.0 tagged + pushed 2026-04-29).
+**Overall progress:** Phases 0-10 complete; v0.1.0 + v0.2.0 released
 **Last updated:** 2026-04-29
 
 ### Completed tasks
@@ -378,7 +378,7 @@ packaging>=23.0               — Dependency version comparison
 
 ### In progress
 
-Phase 10 — P0 Flag Wiring (v0.2). All tasks not yet started; tracked in `tasks/CURRENT_SPRINT.md`.
+Phase 11 — P1 Coverage Parity (v0.3 + v0.4). Not yet started; tracked in `tasks/CURRENT_SPRINT.md`.
 
 ### Completed tasks — Phase 10 (P0 Flag Wiring, v0.2) ✅
 
@@ -394,12 +394,13 @@ Phase 10 — P0 Flag Wiring (v0.2). All tasks not yet started; tracked in `tasks
 - **e2e test infrastructure**: created `go/internal/e2e/e2e_test.go` gated behind `//go:build e2e` so normal `go test ./...` skips it. Added `make e2e` target which builds via `make build` first (so the embedded Python engine is bundled). 4 regression tests cover TASK-079/080/081/082; TASK-083/084 covered by unit tests.
 - This addresses the cross-cutting recommendation in the plan: every CLI flag should have a test that runs the binary and asserts observable effect. The `--save-baseline` bug had a passing unit test but a broken CLI — only an e2e test catches that class of bug.
 
-### Pending — Phase 10 release prep (carry into next session)
+### Phase 10 release — ✅ shipped 2026-04-29
 
-- [x] Add `[Unreleased] → [0.2.0] - 2026-04-29` entry to CHANGELOG.md describing all 6 fixes (done 2026-04-29; covers TASK-079..084 + the new e2e infrastructure; flags SARIF rule-ID change as breaking)
-- [x] Wire `make e2e` into `.github/workflows/ci.yml` as a new job that depends on `go` + `python` (done 2026-04-29; verified locally — `make e2e` builds + runs 4 e2e tests in 1.6s)
-- [ ] Tag `v0.2.0` and push (awaiting user confirmation — visible action)
-- [ ] Re-run the 2026-04-28 real-world test pass against the new build to verify all 6 bugs are gone (optional; do after tag)
+- [x] CHANGELOG `[0.2.0] - 2026-04-29` entry (TASK-079..084 + e2e infra; SARIF rule-ID change flagged as breaking)
+- [x] `make e2e` wired into `.github/workflows/ci.yml` as a third job depending on `go` + `python`
+- [x] Real-world re-test against same fixtures as 2026-04-28: all 6 bugs verified gone
+- [x] Commit `2ca82ce` ("feat: v0.2.0 — fix P0 CLI flag wiring (TASK-079..084)") pushed to `origin/main`
+- [x] Annotated tag `v0.2.0` (object `acd2f32`) pushed to `origin` — `release.yml` triggered for linux/amd64, darwin/amd64, darwin/arm64
 
 ### Pending tasks (Phase 11 — P1 Coverage Parity, v0.3 + v0.4)
 
@@ -438,8 +439,75 @@ Phase 10 — P0 Flag Wiring (v0.2). All tasks not yet started; tracked in `tasks
 
 ## Last Session Summary
 
-**Date:** 2026-04-29
-**Session goal:** Execute Phase 10 — fix all 6 P0 broken-flag bugs identified in the previous session's real-world test pass.
+**Date:** 2026-04-29 (afternoon — release-prep & ship)
+**Session goal:** Ship v0.2.0 — finish Phase 10 release prep, re-verify the 6 P0 bugs against the same 2026-04-28 fixtures, commit + tag + push.
+
+**Accomplished:**
+
+- **CHANGELOG `[0.2.0] - 2026-04-29` written** — Fixed (TASK-079/080/081/082/084), Changed (TASK-083 flagged as breaking for SARIF consumers), Added (e2e infrastructure).
+- **CI e2e job added** to `.github/workflows/ci.yml`: depends on `go` + `python` jobs, sets up both toolchains, runs `make e2e`. Verified locally (1.6s, 4/4 pass).
+- **Real-world re-test against 2026-04-28 fixtures** — all 6 P0 bugs confirmed gone:
+  1. TASK-079 `--save-baseline` → 3119-byte baseline.json with 7 findings written (httpbin.org).
+  2. TASK-080 `--code`-only → exit 0, 16 findings (6 critical + 10 high) from `/tmp/fendix-test/badcode/`. Pre-fix would have been exit 2.
+  3. TASK-081 spec params → probes hit `param="host"` on `/api/v1/ping` (CMDi finding=true) and `param="url"` on `/api/v1/redirect` (CRLF finding=true). Pre-fix only `id` was probed.
+  4. TASK-082 URL `--spec` → log `endpoints from spec count=5 spec=http://127.0.0.1:8765/openapi.json`.
+  5. TASK-083 SARIF dedup → 11 unique rules / 41 results, all IDs of form `fendix.<category>.<title-slug>`. Pre-fix was 1:1.
+  6. TASK-084 `make test` → 140/140 from repo root (verified at session start).
+- **Single release commit `2ca82ce`** — 15 files, +1546/-123. Includes all Phase 10 code (was uncommitted from prior session) + this session's CHANGELOG/CI/sprint updates + `plan.md` (full v0.1→v1.0 roadmap). Conventional Commits style per MEMORY engineering standards.
+- **Annotated tag `v0.2.0`** (object `acd2f32`, peels to `2ca82ce`) created locally, pushed to `origin` — `.github/workflows/release.yml` triggered automatically by the `v*` tag pattern.
+
+**Decisions made:**
+
+- **Single commit, not two.** Considered splitting "Phase 10 code" from "release prep", but the working tree mixed both kinds of edits in `tasks/MEMORY.md` (prior-session content + this-session content). One honest commit beat fragile interactive staging.
+- **Included `plan.md` in the commit.** It's referenced from MEMORY.md as the v0.1→v1.0 roadmap source and is more than just session scratch.
+- **Conventional Commits style preserved** — recent log mixes styles, but MEMORY.md mandates `feat:`/`fix:`/etc. The commit follows that.
+- **Tag v0.2.0 was pushed without first watching CI on the commit.** Reasoning: (a) CI was green locally across all suites, (b) the release workflow is independent of `ci.yml` (triggers on `v*`, not on push to main), (c) the release builds linux/darwin separately and includes a sha256 step that would surface any cross-compile breakage. If CI on `main` fails, that's a separate fix-forward, not a release blocker.
+- **`gh` CLI not installed locally** — couldn't watch the Actions runs from here. Verified via `git ls-remote --tags origin` that the tag landed; release artifacts will be visible at the GitHub Releases page when `release.yml` finishes.
+
+**Files modified this session (delta on top of 2ca82ce post-commit):**
+
+- `tasks/MEMORY.md` — Phase 10 release section closed out; this Last Session Summary; "Next session" pointer reset to TASK-085.
+- `tasks/CURRENT_SPRINT.md` — Phase 10 marked complete with shipped state; new Phase 11 sprint table starting with TASK-085.
+- `tasks/PHASES.md` — Phase 10 status `🟢 Code Complete` → `✅ Complete`; Phase 11 → `🔄 In Progress`.
+
+**Files committed in `2ca82ce`:**
+
+- `.github/workflows/ci.yml` — added `e2e` job
+- `CHANGELOG.md` — `[0.2.0] - 2026-04-29` entry
+- `Makefile`, `go/cmd/fendix/main.go`, `go/internal/engine/orchestrator.go`, `go/internal/reporters/sarif.go`, `go/internal/reporters/sarif_test.go`, `go/internal/scanner/crawler.go`, `go/internal/scanner/crawler_test.go`, `python/tests/test_self_audit.py` — Phase 10 code (TASK-079..084)
+- `go/internal/e2e/e2e_test.go` — NEW e2e infrastructure
+- `plan.md` — NEW v0.1→v1.0 roadmap (from 2026-04-28 session)
+- `tasks/MEMORY.md`, `tasks/CURRENT_SPRINT.md`, `tasks/PHASES.md` — sprint state
+
+**Build state at session end:**
+
+- `make build` ✓
+- `make test` ✓ (Go race-clean across 5 packages; Python 140/140)
+- `make e2e` ✓ (4/4 regression tests, 1.6s)
+- Local commit `2ca82ce` matches `origin/main`; tag `v0.2.0` matches `origin/v0.2.0`.
+
+**Next session should start with:**
+
+1. **Verify the v0.2.0 release succeeded** — load the GitHub Releases page (or `gh release view v0.2.0` once installed). Confirm linux/amd64, darwin/amd64, darwin/arm64 binaries published with sha256 checksums. If `release.yml` failed, fix-forward (likely cross-compile or embed-engine issue) and retag (`git tag -d v0.2.0 && git push origin :refs/tags/v0.2.0 && retag`). If it passed, consider sanity-testing one of the published binaries on the host platform (`darwin/arm64`).
+2. **Begin Phase 11 — TASK-085: expand secret patterns + fix `.env` unquoted-value scanning.** This is the single highest-visibility coverage gap. Spec:
+   - **Add patterns** to `python/analyzers/secrets.py`: GitHub PAT (`ghp_[A-Za-z0-9]{36}`), Stripe live (`sk_live_[A-Za-z0-9]{24,}`), Slack tokens (`xoxb-`/`xoxp-`/`xoxa-`), Google API key (`AIza[0-9A-Za-z\-_]{35}`), Anthropic (`sk-ant-`), OpenAI (`sk-[A-Za-z0-9]{48}`), npm (`npm_[A-Za-z0-9]{36}`), GCP service-account JSON (`"type":\s*"service_account"` near `"private_key"`).
+   - **Fix `.env` scanning** — the existing `HARDCODED_PASSWORD` regex requires quoted values; `.env` uses unquoted `KEY=value`. Either add a separate `.env`-specific pattern or relax the regex when filename ends in `.env*`.
+   - **Add fixtures** under `python/tests/fixtures/secrets/` — one file per pattern type, including obvious-fake values that match the regex but are clearly not real keys.
+   - **Tests** in `python/tests/test_secrets.py` — assert each new pattern fires on the corresponding fixture, plus a no-false-positive test on the existing benign fixtures.
+   - **Re-test against `/tmp/fendix-test/badcode/`** — the prior session's badcode fixture has 10 secret types; current build catches some but not all. After TASK-085, count should jump.
+3. After TASK-085, evaluate whether to ship v0.3.0 immediately or batch with TASK-086 (active-scanner expansion). Per `tasks/PHASES.md`: v0.3 = TASK-085+086, v0.4 = TASK-087..091.
+
+**Open questions:**
+
+- The release pipeline currently builds for linux/amd64 + darwin/amd64 + darwin/arm64 only. Should `linux/arm64` (common on cloud runners) be added in v0.3 or wait until TASK-099 (Phase 13 reproducible release pipeline)? Worth raising before publishing v0.3.
+- `gh` CLI is missing on this machine. Worth installing via Homebrew so future release-watch loops don't require browser context-switching. Not a v0.2 blocker.
+- The `release.yml` workflow uses `softprops/action-gh-release` — recent versions auto-generate release notes from commit messages. Should be fine since `2ca82ce`'s body is already release-note quality, but if the resulting GitHub Release page is poorly formatted, hand-edit it once after the workflow completes.
+
+---
+
+## Earlier Session (2026-04-29 — Phase 10 code)
+
+Kept for traceability. Goal was to fix all 6 P0 broken-flag bugs from the 2026-04-28 real-world test pass.
 
 **Accomplished:**
 

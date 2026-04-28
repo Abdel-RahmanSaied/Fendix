@@ -4,42 +4,66 @@
 
 ---
 
-## Active Phase: 10 — P0 Flag Wiring (v0.2) ✅ Code Complete
+## Active Phase: 11 — P1 Coverage Parity (v0.3 + v0.4) — 🔲 Not Started
 
-**Sprint goal:** Fix the user-facing flags and code paths that are documented but broken. After this sprint, every CLI flag does what its `--help` text claims.
+**Sprint goal:** Reach industry-baseline detection coverage. Stop being "noticeably worse than gitleaks/semgrep/ZAP" on the obvious checks.
 
-**Why now:** Real-world test pass on 2026-04-28 (commit `5a8e299`) revealed multiple silently-broken flags despite passing unit tests. Each is small in scope, but each is the first thing an external evaluator would try. See `tasks/MEMORY.md` "Last Session Summary" for the bug evidence behind each task.
+**Why now:** v0.2.0 shipped — every documented CLI flag now works. Next blocker for external evaluation is detection breadth. Reviewers compare against gitleaks (secrets), semgrep (SAST), and ZAP (DAST). Today fendix has 7 secret patterns vs. gitleaks' 100+, no string-concat SQLi, no body-param probing, and no correlated findings on hybrid runs. Each gap is a credibility hit.
 
 **Definition of Done:**
 
-- [x] All Phase 10 tasks below complete
-- [x] `go/internal/e2e/` directory exists with one e2e test per fixed CLI flag (runs the built binary, asserts observable effect) — gated behind `e2e` build tag, run via `make e2e`
-- [x] `make test` passes from a clean checkout, repo-root cwd (140 Python + Go race-clean)
-- [x] All Phase 0-9 tests still pass
-- [x] CHANGELOG `[0.2.0] - 2026-04-29` section lists each fix with the bug it closes
-- [x] `make e2e` wired into `.github/workflows/ci.yml` as a third job (needs both `go` + `python`); verified locally
-- [ ] Tag `v0.2.0` (awaiting user confirmation before push) and re-run the same real-world test pass that found these bugs — all green
+- [ ] Secrets analyzer covers GitHub, Stripe, Slack, Google, Anthropic, OpenAI, npm, GCP service-account JSON
+- [ ] `.env` files (unquoted `KEY=value`) correctly scanned
+- [ ] Static SAST: string-concat SQLi, pickle/yaml.load, weak crypto, open redirect, SSRF, auth-header-trust patterns
+- [ ] Active scanner probes body params + headers; SQLi covers SQLite/Oracle + error-based + boolean-based
+- [ ] Findings dedup: `AffectedEndpoints []Endpoint` for the "missing CSP × 21 endpoints" case
+- [ ] Crawler: robots.txt + sitemap.xml + HTML link parsing, `--wordlist` flag, larger default list
+- [ ] Real CVE coverage via pip-audit + npm audit + govulncheck (hardcoded list as offline fallback)
+- [ ] Correlator emits ≥1 `correlated` finding on hybrid scan against vuln-server fixture
+- [ ] All Phase 0-10 tests still pass
+- [ ] e2e regression tests added for any new CLI flags
 
 ---
 
-## This Sprint's Tasks (Phase 10)
+## Phase 10 — Shipped ✅ (v0.2.0 — 2026-04-29)
 
-| ID | Task | Status | Owner | Notes |
-| --- | --- | --- | --- | --- |
-| TASK-079 | Wire `--save-baseline` flag into `ScanConfig` | ✅ | claude | Added `flags.GetString("save-baseline")` and `SaveBaselinePath` to the config literal in `main.go`. Verified end-to-end: `bin/fendix scan --url https://httpbin.org --save-baseline /tmp/x.json` writes a 7-finding file with `INFO baseline saved` log. E2e regression: `TestSaveBaseline_WritesFile`. |
-| TASK-080 | Allow `--code`-only scans | ✅ | claude | Reordered the guard at `orchestrator.go:61` so it only fires when there are no endpoints AND no `CodePath` — code-only scans now reach the white-box branch. Black-box check pool with empty endpoints is a no-op (returns `[]`). E2e regression: `TestCodeOnlyScan_ProducesFindings` writes an AKIA fixture and asserts the report contains it. |
-| TASK-081 | Populate `Endpoint.Params` from spec query/body params | ✅ | claude | Added `extractParamsList` (filters to `in: query` / `in: path`, skips `$ref` and headers) and `mergeParams` helpers; `fromSpec` now layers URL-template params + path-level + operation-level. Body params deferred to TASK-086 per plan. 3 unit tests + e2e `TestActiveProbe_UsesSpecParam` that records every probe at the target and asserts at least one hit `?host=` (proving spec params reach injection.go). |
-| TASK-082 | Accept HTTP/HTTPS URL as `--spec` input | ✅ | claude | Refactored to `loadSpec`/`fetchSpec` with `http://` / `https://` prefix detection; format selected by URL suffix → Content-Type → first-byte sniff. 50 MB spec size cap. 4xx/5xx surface as errors instead of silent fallback. 3 unit tests (JSON URL, YAML URL via Content-Type, HTTP 404) + e2e `TestSpecURL_FetchedAndParsed`. |
-| TASK-083 | Fix SARIF: 1 rule per check type, not per finding | ✅ | claude | Dedup now keys on stable `ruleKeyFor(f) = "fendix.<category>.<title-slug>"` instead of per-finding `f.ID`. New `slug()` helper. `Result.RuleID` and `Rule.ID` both use the stable key; per-finding `SEC-NNN` stays in the JSON report (not SARIF). Unit test `TestRenderSARIF_RulesDedupedByCheckType` verifies 4 findings of 2 check types → 2 rules + 4 results. All existing SARIF tests still pass. |
-| TASK-084 | Fix `Makefile` `test-python` cwd bug | ✅ | claude | Two-pronged: dropped `cd $(PY_DIR) &&` in Makefile so pytest runs from repo root; ALSO hardened `test_self_audit.py` with `REPO_ROOT = Path(__file__).resolve().parents[2]` and `cwd=str(REPO_ROOT)` in subprocess calls — defensive, prevents recurrence if anyone runs pytest from another cwd. Verified 140/140 from repo root, `python/`, and via `make test`. |
-
-**Status:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
+| ID | Task | Status | Notes |
+| --- | --- | --- | --- |
+| TASK-079 | Wire `--save-baseline` flag into `ScanConfig` | ✅ | Verified via real httpbin.org scan: 3119-byte baseline.json with 7 findings. E2e: `TestSaveBaseline_WritesFile`. |
+| TASK-080 | Allow `--code`-only scans | ✅ | Verified on `/tmp/fendix-test/badcode/`: exit 0, 16 findings (6 critical + 10 high). E2e: `TestCodeOnlyScan_ProducesFindings`. |
+| TASK-081 | Populate `Endpoint.Params` from spec query/path params | ✅ | Verified on vuln_server: `host` + `url` probed (CMDi + CRLF found). E2e: `TestActiveProbe_UsesSpecParam`. Body params deferred to TASK-086. |
+| TASK-082 | Accept HTTP/HTTPS URL as `--spec` input | ✅ | Verified: log "endpoints from spec count=5 spec=http://...". E2e: `TestSpecURL_FetchedAndParsed`. |
+| TASK-083 | Fix SARIF: 1 rule per check type, not per finding | ✅ | Verified: 11 rules / 41 results, IDs of form `fendix.<category>.<title-slug>`. **Breaking change** for v0.1 SARIF consumers; called out in CHANGELOG. |
+| TASK-084 | Fix `Makefile` `test-python` cwd bug | ✅ | 140/140 from repo root, `python/`, and via `make test`. |
+| Release | v0.2.0 commit + tag + push | ✅ | Commit `2ca82ce` on `origin/main`; annotated tag `v0.2.0` (object `acd2f32`) on `origin`; `release.yml` triggered. |
 
 ---
 
-## Real-world test evidence (informs every task above)
+---
 
-The 2026-04-28 test pass:
+## This Sprint's Tasks (Phase 11 — v0.3 batch)
+
+Sprint plan: ship TASK-085 + TASK-086 as **v0.3.0**, then TASK-087..091 as **v0.4.0**. Splitting reduces release risk and gets the secrets-coverage win in front of evaluators sooner.
+
+| ID | Task | Target | Status | Owner | Notes |
+| --- | --- | --- | --- | --- | --- |
+| TASK-085 | Expand secret patterns + fix `.env` unquoted-value scanning | v0.3 | 🔲 Next | unassigned | Add: GitHub PAT (`ghp_`), Stripe (`sk_live_`), Slack (`xox[bpa]-`), Google (`AIza`), Anthropic (`sk-ant-`), OpenAI (`sk-…48`), npm (`npm_…36`), GCP service-account JSON. Fix `HARDCODED_PASSWORD` regex to handle unquoted `KEY=value` for `.env*` files. Add fixtures + tests; re-test `/tmp/fendix-test/badcode/` (should jump from 6 critical to ~10). |
+| TASK-086 | Active scanner: body params, headers, error/boolean SQLi, SQLite/Oracle, `--max-probes-per-endpoint` flag | v0.3 | 🔲 | unassigned | Builds on TASK-081 (params now flow through `Endpoint.Params`). Body-param extraction needed in `crawler.go` (was deferred from TASK-081). Error-based SQLi via response-body grep for DB error signatures. Boolean-based via response-length delta. |
+| TASK-087 | Static analyzer: string-concat SQLi, pickle/yaml.load, weak crypto for passwords, open redirect, SSRF, auth-header-trust | v0.4 | 🔲 | unassigned | All AST-based in `python/analyzers/ast_analyzer.py`. Closes the "f-string only" gap. |
+| TASK-088 | Findings deduplication via `AffectedEndpoints []Endpoint` | v0.4 | 🔲 | unassigned | "Missing CSP × 21 endpoints" → 1 finding with 21 endpoints. Propagate to JSON, HTML, SARIF (SARIF: multiple `locations` per result). |
+| TASK-089 | Crawler upgrade: robots.txt + sitemap.xml + HTML link parsing, `--wordlist` flag, larger default list | v0.4 | 🔲 | unassigned | httpbin.org showed only `/robots.txt` discovered with current 50-path wordlist. |
+| TASK-090 | Real CVE coverage: pip-audit + npm audit + govulncheck primary; hardcoded list as offline fallback | v0.4 | 🔲 | unassigned | Replace the 10-package fallback that's currently the primary code path on most machines. |
+| TASK-091 | Correlator: debug instrumentation, loosen matching predicate, e2e test asserting ≥1 correlated finding | v0.4 | 🔲 | unassigned | Petstore hybrid scan produced zero correlated findings despite both engines firing on the same endpoints. |
+
+**Status legend:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
+
+**Recommended order:** TASK-085 first (smallest, highest visibility, unlocks v0.3 ship). Then TASK-086 (depends on TASK-081 work that just shipped). After v0.3 cuts, TASK-088 (dedup) before TASK-087 (new SAST checks) so dedup is in place when N new check types arrive.
+
+---
+
+## Phase 10 (v0.2.0) — real-world test evidence
+
+The 2026-04-28 test pass that informed Phase 10:
 
 1. Built `bin/fendix` (commit `5a8e299`).
 2. Ran `make test` — 2 false failures from cwd bug → TASK-084.
@@ -57,19 +81,9 @@ Worked correctly: spec parser (handled GitHub's 12 MB spec → 1145 endpoints), 
 
 ---
 
-## Next sprint preview (Phase 11 — Coverage parity)
+## Next sprint preview (Phase 12 — Quality & Ops, v0.5)
 
-After Phase 10 ships v0.2, the next sprint targets the gaps where fendix is obviously behind industry baselines:
-
-- TASK-085: Expand secrets to GitHub/Stripe/Slack/Google/Anthropic/OpenAI patterns; fix `.env` unquoted-value scanning (currently scanned as a file but no values match the quoted-value regex)
-- TASK-086: Active scanner — body params + headers, error/boolean SQLi, SQLite/Oracle DBs, per-endpoint probe budget
-- TASK-087: Static analyzer — string-concat SQLi, pickle, weak crypto, open redirect, SSRF, auth-header-trust patterns (AST-based)
-- TASK-088: Findings deduplication — same check across N endpoints aggregates into one finding
-- TASK-089: Crawler — robots.txt + sitemap.xml + HTML link parsing, larger wordlist, `--wordlist` flag
-- TASK-090: Real CVE coverage via pip-audit + npm audit + govulncheck (current 10-package fallback list is too thin)
-- TASK-091: Correlator — debug instrumentation, loosen matching predicate, e2e assertion that `correlated` findings appear
-
-See `tasks/PHASES.md` Phase 11-13 for the full forward plan.
+After v0.4 ships (Phase 11 complete), Phase 12 targets the polish that turns a working scanner into one that fits production workflows: scan budgets (`--max-requests`, `--max-duration`), auth-profile e2e coverage, schema cleanup, logging hygiene, CI integration recipe. See `tasks/PHASES.md` Phase 12 for the full task list (TASK-092..098).
 
 ---
 
