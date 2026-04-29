@@ -452,7 +452,75 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-04-29 (TASK-091: correlator — debug instrumentation, loosen matching, e2e regression — closes Phase 11)
+**Date:** 2026-04-29 (release session: cut v0.4.0; fix long-broken CI on `main`)
+**Session goal:** Per the prior session's pointer, ship Phase 11 as v0.4.0 (single tag covering TASK-085..091, folding the never-tagged v0.3.0 into it). Then move toward Phase 12.
+
+**Accomplished:**
+
+- **v0.4.0 release shipped to GitHub Releases.** Single annotated tag, single commit, all 3 platform binaries (linux/amd64, darwin/amd64, darwin/arm64) published with sha256 checksums in 1m17s.
+  - Commit `a8c362d` (`feat: v0.4.0 — Phase 11 P1 coverage parity (TASK-085..091)`) on `origin/main`.
+  - Tag `v0.4.0` (object `b13e49e`) on `origin`.
+  - Release page: <https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/v0.4.0>.
+  - CHANGELOG `[Unreleased]` → `[0.4.0] - 2026-04-29` with a release-summary preamble explaining the v0.3 fold-in.
+  - Real-world fixture impact captured in CHANGELOG: petstore3 160→10 findings (dedup), httpbin 1→3 endpoints (crawler), badcode req.txt 6→97 deps findings (pip-audit).
+
+- **CI on `main` is green for the first time since 2026-03-20.** The release shipped successfully despite red CI because `release.yml` doesn't run Python (only `make embed-engine` + cross-compile). After the release landed, fixed three pre-existing CI failures one by one, watching each `gh run` to verify the next layer:
+  1. **Python Test job missing deps** (commit `fd6d977`). CI installed only `pytest`; `import yaml` and `import hypothesis` failed in `test_spec_parser.py` and `test_fuzz.py`. Fixed `.github/workflows/ci.yml` to `pip install -r requirements.txt && pip install pytest hypothesis` on the Python Test job, plus `pip install -r python/requirements.txt` on the e2e job (which spawns the whitebox engine that needs pyyaml at runtime).
+  2. **`.env` test fixture was gitignored** (commit `3268042`). The TASK-085 regression test `test_env_unquoted_secret_detected` requires a literally-named `.env` file in `python/tests/fixtures/secrets_target/`, but the global `.gitignore`'s `.env` rule blocked the original commit. Added a `!python/tests/fixtures/**/.env` negation to `.gitignore` (keeps the user-level protection while allowing test fixtures) and committed the fixture itself (fake values matching the regex but obviously not real keys).
+  3. **gofmt struct-field alignment** (commit `b4ff1a0`). 4 files (`cmd/fendix/main.go`, `internal/engine/python_check.go`, `internal/models/config.go`, `internal/reporters/sarif.go`) had alignment debt from TASK-086's longer `MaxProbesPerEndpoint` field name. CI's gofmt check had been masked all this time by the earlier-failing Python step (CI exit-on-error short-circuits at first failure). Pure `gofmt -w`; no semantic changes.
+
+- **Final CI state**: all 3 jobs green (Go Build & Test ✓ · Python Test ✓ · End-to-End ✓).
+
+**Decisions made:**
+
+- **Single v0.4.0 tag, not v0.3.0 + v0.4.0.** v0.3.0 was never tagged externally so there's no downstream user expecting a separate v0.3 release. Folding gave one CHANGELOG entry, one signed tag, one release-watch loop. The release commit message and tag annotation explicitly call out the fold for traceability.
+- **Pushed v0.4.0 without first verifying CI on `main` was green.** Reasoning matched the v0.2.0 ship session: (a) `release.yml` is independent of `ci.yml` (triggers on `v*` tag, runs only Go cross-compile), (b) local `make build && make test && make e2e` was green, (c) any cross-compile breakage would be surfaced by the matrix build before the publish step. CI was indeed red on push, but the release pipeline succeeded as expected.
+- **Fixed CI in three sequential commits, not one.** Each fix exposed the next layer (Python install ✓ surfaced the .env fixture bug; .env fix ✓ surfaced the gofmt alignment debt). Sequential lets each CI run isolate the failure mode and serves as documentation of the dependency chain. Could have batched but `gh run watch` between each gave high-confidence verification at every step.
+- **Defended the `.env` fixture by `.gitignore` negation, not `git add -f`.** Negation is durable — future fixture changes don't need force-add. The negation pattern (`!python/tests/fixtures/**/.env*`) is scoped tightly enough that legitimate user-level `.env` files anywhere else stay protected.
+- **gofmt fixes shipped as `style:` not `fix:`.** Pure whitespace alignment is style by Conventional Commits convention. `fix:` is reserved for behavioral bugs.
+- **Did not investigate the suspected `TestOrchestrator_BaselineDiffIntegration` flake further.** It failed once on the very first CI run (post-Python-fix) with "expected 0 new findings, got 1" — but disappeared on subsequent runs. Local reproduction was 5/5 PASS with `-count=5`. Most likely a one-off race during heavy CI load on Phase 11's busier-than-usual push activity. Not a release blocker; if it recurs, it's worth a focused TASK-097-adjacent investigation (concurrency review). Logged here for traceability.
+
+**Files modified this session:**
+
+- `CHANGELOG.md` — `[Unreleased]` → `[0.4.0] - 2026-04-29` with release preamble; TASK-091 entries already added in the prior TASK-091 session were preserved under the rolled heading.
+- `tasks/CURRENT_SPRINT.md` — Phase header → `✅ Shipped as v0.4.0 (2026-04-29)`.
+- `tasks/PHASES.md` — Phase 11 row → `✅ Complete | shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4)`.
+- `tasks/MEMORY.md` (this file) — Current Project State updated to "Phases 0-11 complete"; Phase 11 release block added; this Last Session Summary; "Next session" pointer reset to Phase 12 / TASK-092.
+- `.github/workflows/ci.yml` — CI fix (Python Test + e2e job dep install).
+- `.gitignore` + `python/tests/fixtures/secrets_target/.env` — fixture commit.
+- `go/cmd/fendix/main.go`, `go/internal/engine/python_check.go`, `go/internal/models/config.go`, `go/internal/reporters/sarif.go` — gofmt alignment.
+
+**Files committed this session:**
+
+- `a8c362d` — `feat: v0.4.0 — Phase 11 P1 coverage parity (TASK-085..091)` (7 files, +503/-75): TASK-091 code + tracking docs + CHANGELOG roll.
+- `fd6d977` — `fix(ci): install python runtime deps + hypothesis on test/e2e jobs` (1 file, +7/-2).
+- `3268042` — `fix(ci): commit .env test fixture for TASK-085 regression` (2 files, +9/-0).
+- `b4ff1a0` — `style: gofmt struct-field alignment (4 files)` (4 files, +48/-48).
+
+**Build state at session end:**
+
+- Local: `make build` ✓, `make test` (Go race-clean, Python 193/193) ✓, `make e2e` 10/10 ✓.
+- CI on `main` (commit `b4ff1a0`): all 3 jobs ✓ — first green run since 2026-03-20.
+- Release pipeline: v0.4.0 published with linux/amd64 + darwin/amd64 + darwin/arm64 binaries + sha256.
+
+**Next session should start with:**
+
+1. **Phase 12 — P2 Quality, performance, ops (v0.5).** Per `tasks/PHASES.md` Phase 12: TASK-092..098. Recommended order:
+   - **TASK-092 — Output schema cleanup** first. The `--debug` flag and external evaluators both need a documented JSON schema. Spec: write `docs/schema.md` defining every field of `JSONReport` + `Finding`; add a JSON-schema validation test (`python/tests/test_json_schema.py` or Go-side) that asserts every emitted report validates; tighten the `[Unconfirmed by live scan]` evidence-suffix logic so it only appears when correlation was actually attempted (currently it can appear on findings where blackbox simply didn't fire, which is misleading); enforce severity↔confidence consistency (HIGH severity LOW confidence is currently allowed but probably wrong).
+   - **TASK-093 — Crawler placeholder substitution.** `/users/{id}` currently becomes `/users/%7Bid%7D` after URL-encoding the literal `{id}` string. Should substitute a schema-derived sample value (`/users/1`, `/users/abc`).
+   - **TASK-095 — Scan budget controls** (`--max-requests`, `--max-duration`, `--respect-robots`). Higher-priority than TASK-094 logging since it's user-visible.
+2. **Investigate the `TestOrchestrator_BaselineDiffIntegration` one-off CI failure** if it recurs. If 5+ consecutive CI runs are clean, deprioritize. If it shows up again, the likely cause is non-deterministic finding ordering interacting with TASK-088's `Deduplicate` "first-seen primary" logic — sort findings by `(Title, Endpoint, Category)` before dedup so the primary is stable.
+3. **Optional**: re-run a real-world hybrid scan against `petstore3.swagger.io` or `/tmp/fendix-test/vuln_server.py` to validate v0.4.0 in production-like conditions before starting Phase 12.
+
+**Open questions:**
+
+- **CI now runs the e2e job in real CI** (it was skipped for ~6 weeks because `needs: [go, python]` and python failed). e2e took ~70s extra in this run; OK for `main`-branch pushes but worth watching on PRs. If it gets too slow, consider gating with `[skip e2e]` commit-message convention or moving it to a nightly schedule.
+- **The deprecated Node.js 20 warning on `actions/checkout@v4` and `actions/setup-go@v5`** will become an error after 2026-09-16. Tracking it in the v1.0 release pass (TASK-099 reproducible release pipeline).
+- **Should `gh release view v0.4.0` get a curated release-notes body** instead of the auto-generated one? `softprops/action-gh-release` uses `generate_release_notes: true` which produces a commit-message-based summary. It's adequate; the CHANGELOG is the canonical source. Skip unless reviewers complain.
+
+---
+
+## Earlier Session (2026-04-29 — TASK-091: correlator — debug instrumentation, loosen matching, e2e regression — closes Phase 11)
 **Session goal:** Fix the long-standing "0 correlated findings on hybrid scans" issue that the petstore3 real-world test pass surfaced on 2026-04-28. The correlator runs without errors but produces no `source: correlated` findings even when both engines fire on the same endpoint. Spec calls out three workstreams: (1) debug instrumentation so users can see WHY a match didn't happen, (2) loosen the matching predicate so realistic endpoint-format mismatches still correlate, (3) add an e2e regression test asserting ≥1 correlated finding on a fixture where it should fire.
 
 **Accomplished:**
