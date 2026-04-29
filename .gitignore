@@ -46,6 +46,9 @@ Thumbs.db
 .env.*
 *.pem
 *.key
+# Allow .env fixture files used by tests (TASK-085 .env-detection regression)
+!python/tests/fixtures/**/.env
+!python/tests/fixtures/**/.env.*
 
 # Archives
 *.zip
