@@ -86,6 +86,9 @@ func newScanCmd() *cobra.Command {
 			delay, _ := flags.GetInt("delay")
 			ignoreFlag, _ := flags.GetString("ignore")
 			verbose, _ := flags.GetBool("verbose")
+			wordlistFlag, _ := flags.GetString("wordlist")
+			crawlDepth, _ := flags.GetInt("crawl-depth")
+			maxEndpoints, _ := flags.GetInt("max-endpoints")
 
 			if urlFlag == "" && specFlag == "" && codeFlag == "" {
 				return fmt.Errorf("at least one of --url, --spec, or --code is required")
@@ -107,6 +110,9 @@ func newScanCmd() *cobra.Command {
 				OutputPath:       outputFlag,
 				Format:           formatFlag,
 				FailOn:           failOnFlag,
+				WordlistPath:     wordlistFlag,
+				CrawlDepth:       crawlDepth,
+				MaxEndpoints:     maxEndpoints,
 			}
 
 			var flagAuth *models.AuthContext
@@ -159,6 +165,9 @@ func newScanCmd() *cobra.Command {
 	flags.Int("delay", 100, "Milliseconds between HTTP requests")
 	flags.String("ignore", "", "Path to .fendix-ignore file")
 	flags.BoolP("verbose", "v", false, "Print all requests and raw findings")
+	flags.String("wordlist", "", "Path to brute-force wordlist (one path per line); overrides built-in CommonPaths")
+	flags.Int("crawl-depth", 1, "Recursive HTML link crawl depth (0 disables; 1 = home-page links only)")
+	flags.Int("max-endpoints", 500, "Cap total discovered endpoints (0 = no cap)")
 
 	return cmd
 }

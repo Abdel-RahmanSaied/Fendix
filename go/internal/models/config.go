@@ -31,4 +31,16 @@ type ScanConfig struct {
 	OutputPath       string
 	Format       string
 	FailOn       string
+	// WordlistPath overrides the built-in CommonPaths brute-force list.
+	// Plain text, one path per line; lines starting with `#` and blank lines
+	// are ignored; a leading `/` is added if missing.
+	WordlistPath string
+	// CrawlDepth controls recursive HTML link following from --url.
+	// 0 disables HTML crawl; 1 (default) follows links from the home page.
+	// Values >1 follow links from those pages too. Same-host only; visited
+	// set prevents loops; --max-endpoints caps total discovery.
+	CrawlDepth int
+	// MaxEndpoints caps the total endpoint count after dedupe. 0 means
+	// "no cap"; default is 500. Prevents runaway scans on large sites.
+	MaxEndpoints int
 }

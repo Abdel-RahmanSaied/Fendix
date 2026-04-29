@@ -876,6 +876,400 @@ func TestFromSpec_NoPaths(t *testing.T) {
 	}
 }
 
+// === TASK-089: crawler upgrade tests ===
+//
+// Coverage: robots.txt parser (Disallow/Allow/Sitemap), sitemap.xml parser
+// (urlset + sitemapindex), HTML link parser with recursive depth, wordlist
+// loader, --max-endpoints budget. Each new discovery mode gets at least one
+// happy-path test plus the tricky edge case (cross-host filtering, malformed
+// XML, etc.).
+
+func TestParseRobots_DisallowAllowAndSitemap(t *testing.T) {
+	body := []byte(`# A real robots.txt
+User-agent: *
+Disallow: /admin/
+Disallow: /private/
+Allow: /admin/public
+Disallow:
+Disallow: /search?q=*
+Sitemap: https://example.com/sitemap.xml
+Sitemap: https://example.com/sitemap-news.xml
+# trailing comment
+`)
+	paths, sitemaps := parseRobots(body)
+
+	wantPaths := map[string]bool{"/admin/": true, "/private/": true, "/admin/public": true, "/search?q=": true}
+	for _, p := range paths {
+		if !wantPaths[p] {
+			t.Errorf("unexpected path %q in %v", p, paths)
+		}
+		delete(wantPaths, p)
+	}
+	if len(wantPaths) != 0 {
+		t.Errorf("missing paths %v from %v", wantPaths, paths)
+	}
+
+	wantSitemaps := []string{"https://example.com/sitemap.xml", "https://example.com/sitemap-news.xml"}
+	if len(sitemaps) != len(wantSitemaps) {
+		t.Fatalf("expected %d sitemaps, got %d (%v)", len(wantSitemaps), len(sitemaps), sitemaps)
+	}
+	for i, s := range sitemaps {
+		if s != wantSitemaps[i] {
+			t.Errorf("sitemap[%d] = %q, want %q", i, s, wantSitemaps[i])
+		}
+	}
+}
+
+func TestParseRobots_IgnoresMalformedLines(t *testing.T) {
+	body := []byte(`Garbage line with no colon
+
+:::
+Disallow: not-a-path
+Disallow: /good
+`)
+	paths, _ := parseRobots(body)
+	if len(paths) != 1 || paths[0] != "/good" {
+		t.Errorf("expected single path /good, got %v", paths)
+	}
+}
+
+// TestFromRobots_DiscoversDisallowedPaths is the end-to-end happy path: a
+// mock site serves robots.txt with hidden admin paths; the crawler discovers
+// them as endpoints. This was the original fendix gap on httpbin.org —
+// /robots.txt was discovered but its Disallow content was thrown away.
+func TestFromRobots_DiscoversDisallowedPaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			w.WriteHeader(200)
+			fmt.Fprint(w, "User-agent: *\nDisallow: /admin/secret\nDisallow: /internal/api\nSitemap: "+r.Host+"/sitemap.xml\n")
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5})
+	res, err := crawler.fromRobots(context.Background())
+	if err != nil {
+		t.Fatalf("fromRobots: %v", err)
+	}
+	want := map[string]bool{"/admin/secret": true, "/internal/api": true}
+	for _, ep := range res.endpoints {
+		if !want[ep.Path] {
+			t.Errorf("unexpected path %q in robots-discovered endpoints", ep.Path)
+		}
+		delete(want, ep.Path)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing %v from robots-discovered endpoints", want)
+	}
+	if len(res.sitemapURLs) != 1 {
+		t.Errorf("expected 1 sitemap URL, got %v", res.sitemapURLs)
+	}
+}
+
+func TestFromRobots_MissingFileReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5})
+	_, err := crawler.fromRobots(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 404 robots.txt")
+	}
+}
+
+func TestParseSitemap_URLSet(t *testing.T) {
+	body := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/page1</loc></url>
+  <url><loc>https://example.com/admin/dashboard</loc></url>
+  <url><loc>https://example.com/api/v1/users</loc></url>
+</urlset>`)
+	pages, sitemaps := parseSitemap(body)
+	if len(pages) != 3 {
+		t.Errorf("expected 3 pages, got %v", pages)
+	}
+	if len(sitemaps) != 0 {
+		t.Errorf("urlset should produce no child sitemaps, got %v", sitemaps)
+	}
+}
+
+func TestParseSitemap_SitemapIndex(t *testing.T) {
+	body := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>https://example.com/sitemap-2.xml</loc></sitemap>
+</sitemapindex>`)
+	pages, sitemaps := parseSitemap(body)
+	if len(pages) != 0 {
+		t.Errorf("sitemapindex should produce no pages, got %v", pages)
+	}
+	if len(sitemaps) != 2 {
+		t.Errorf("expected 2 child sitemaps, got %v", sitemaps)
+	}
+}
+
+func TestParseSitemap_MalformedReturnsEmpty(t *testing.T) {
+	pages, sitemaps := parseSitemap([]byte(`<not really xml>`))
+	if pages != nil || sitemaps != nil {
+		t.Errorf("malformed sitemap should return nils, got pages=%v sitemaps=%v", pages, sitemaps)
+	}
+}
+
+// TestFromSitemap_FollowsIndexAndStripsCrossHost: verifies the sitemap-index
+// is followed one level deep, and that pages on a different host are
+// filtered out so we don't probe random external sites.
+func TestFromSitemap_FollowsIndexAndStripsCrossHost(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.URL.Path {
+		case "/sitemap.xml":
+			fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/sitemap-pages.xml</loc></sitemap></sitemapindex>`, srv.URL)
+		case "/sitemap-pages.xml":
+			fmt.Fprintf(w, `<urlset>
+				<url><loc>%s/api/v1/widgets</loc></url>
+				<url><loc>%s/admin/login</loc></url>
+				<url><loc>https://other-host.example/external</loc></url>
+			</urlset>`, srv.URL, srv.URL)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5})
+	endpoints, err := crawler.fromSitemap(context.Background(), []string{srv.URL + "/sitemap.xml"})
+	if err != nil {
+		t.Fatalf("fromSitemap: %v", err)
+	}
+
+	want := map[string]bool{"/api/v1/widgets": true, "/admin/login": true}
+	for _, ep := range endpoints {
+		if !want[ep.Path] {
+			t.Errorf("unexpected path %q (cross-host should be filtered)", ep.Path)
+		}
+		delete(want, ep.Path)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing %v from sitemap-discovered endpoints", want)
+	}
+}
+
+func TestExtractHTMLLinks_AnchorAndForm(t *testing.T) {
+	body := []byte(`<html>
+		<body>
+			<a href="/admin">admin</a>
+			<a href='/api/v1/users'>users</a>
+			<A HREF="/UPPERCASE">tag</A>
+			<form action="/login" method="post"></form>
+			<a href="#fragment">fragment-only ignored</a>
+			<a>no-href ignored</a>
+		</body>
+	</html>`)
+	links := extractHTMLLinks(body)
+	wantSubset := []string{"/admin", "/api/v1/users", "/UPPERCASE", "/login"}
+	got := map[string]bool{}
+	for _, l := range links {
+		got[l] = true
+	}
+	for _, w := range wantSubset {
+		if !got[w] {
+			t.Errorf("missing link %q in %v", w, links)
+		}
+	}
+	for _, l := range links {
+		if l == "#fragment" {
+			t.Errorf("fragment-only link should be filtered: %q", l)
+		}
+	}
+}
+
+// TestCrawlHTMLLinks_DepthAndSameHost ensures the BFS respects depth and
+// rejects cross-host links. Server has 3 pages at decreasing depth; with
+// depth=2 we should reach all 3, with depth=1 only the home page's links.
+func TestCrawlHTMLLinks_DepthAndSameHost(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprintf(w, `<html><a href="/level1">L1</a><a href="https://other.example/external">ext</a></html>`)
+		case "/level1":
+			fmt.Fprintf(w, `<html><a href="/level2">L2</a></html>`)
+		case "/level2":
+			fmt.Fprintf(w, `<html>leaf</html>`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	t.Run("depth=1 finds only home-page links", func(t *testing.T) {
+		crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5, CrawlDepth: 1})
+		endpoints, err := crawler.crawlHTMLLinks(context.Background(), 1)
+		if err != nil {
+			t.Fatalf("crawlHTMLLinks: %v", err)
+		}
+		paths := map[string]bool{}
+		for _, ep := range endpoints {
+			paths[ep.Path] = true
+		}
+		if !paths["/level1"] {
+			t.Errorf("expected /level1 at depth=1, got %v", paths)
+		}
+		if paths["/level2"] {
+			t.Errorf("/level2 should require depth>=2; got it at depth=1")
+		}
+		if paths["/external"] {
+			t.Errorf("cross-host link should be filtered, got %v", paths)
+		}
+	})
+
+	t.Run("depth=2 reaches /level2", func(t *testing.T) {
+		crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5, CrawlDepth: 2})
+		endpoints, err := crawler.crawlHTMLLinks(context.Background(), 2)
+		if err != nil {
+			t.Fatalf("crawlHTMLLinks: %v", err)
+		}
+		paths := map[string]bool{}
+		for _, ep := range endpoints {
+			paths[ep.Path] = true
+		}
+		for _, want := range []string{"/level1", "/level2"} {
+			if !paths[want] {
+				t.Errorf("missing %q at depth=2, got %v", want, paths)
+			}
+		}
+	})
+}
+
+// TestCrawlHTMLLinks_FiltersUnscannableSchemes is a real-world regression:
+// httpbin.org's home page has a mailto: contact link. Pre-fix the crawler
+// followed it as an endpoint and the scanner produced "unsupported protocol
+// scheme" warnings for every check. Now the link must be dropped at extraction.
+func TestCrawlHTMLLinks_FiltersUnscannableSchemes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			fmt.Fprint(w, `<html>
+				<a href="mailto:owner@example.com">contact</a>
+				<a href="tel:+1234">phone</a>
+				<a href="javascript:void(0)">js</a>
+				<a href="data:text/plain,hi">data</a>
+				<a href="/api/v1/legit">real</a>
+			</html>`)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5, CrawlDepth: 1})
+	endpoints, err := crawler.crawlHTMLLinks(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("crawlHTMLLinks: %v", err)
+	}
+	if len(endpoints) != 1 || endpoints[0].Path != "/api/v1/legit" {
+		t.Errorf("expected single /api/v1/legit endpoint, got %+v (mailto/tel/js/data should be filtered)", endpoints)
+	}
+}
+
+func TestCrawlHTMLLinks_DepthZeroIsNoop(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<a href="/never-fetched">x</a>`)
+	}))
+	defer srv.Close()
+	crawler := NewCrawler(&models.ScanConfig{URL: srv.URL, Timeout: 5, CrawlDepth: 0})
+	endpoints, err := crawler.crawlHTMLLinks(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("crawlHTMLLinks: %v", err)
+	}
+	if len(endpoints) != 0 {
+		t.Errorf("depth=0 should return no endpoints, got %v", endpoints)
+	}
+}
+
+// TestLoadWordlist_ReadsFile: --wordlist overrides CommonPaths, comment and
+// blank lines stripped, leading slash auto-added.
+func TestLoadWordlist_ReadsFile(t *testing.T) {
+	dir := t.TempDir()
+	wlPath := filepath.Join(dir, "wl.txt")
+	content := `# header comment
+/admin/api
+api/v9/secret
+
+/normal/path
+# trailing comment
+`
+	if err := os.WriteFile(wlPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	crawler := NewCrawler(&models.ScanConfig{WordlistPath: wlPath})
+	got, err := crawler.loadWordlist()
+	if err != nil {
+		t.Fatalf("loadWordlist: %v", err)
+	}
+	want := []string{"/admin/api", "/api/v9/secret", "/normal/path"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d entries, got %d (%v)", len(want), len(got), got)
+	}
+	for i, p := range got {
+		if p != want[i] {
+			t.Errorf("paths[%d] = %q, want %q", i, p, want[i])
+		}
+	}
+}
+
+func TestLoadWordlist_DefaultIsCommonPaths(t *testing.T) {
+	crawler := NewCrawler(&models.ScanConfig{})
+	got, err := crawler.loadWordlist()
+	if err != nil {
+		t.Fatalf("loadWordlist: %v", err)
+	}
+	if len(got) != len(CommonPaths) {
+		t.Errorf("expected %d default paths, got %d", len(CommonPaths), len(got))
+	}
+}
+
+func TestLoadWordlist_MissingFileReturnsError(t *testing.T) {
+	crawler := NewCrawler(&models.ScanConfig{WordlistPath: "/nonexistent/wordlist.txt"})
+	if _, err := crawler.loadWordlist(); err == nil {
+		t.Fatal("expected error for missing wordlist file")
+	}
+}
+
+// TestCrawlEndpoints_MaxEndpointsBudget asserts the cap kicks in after dedupe.
+// We seed a spec with 6 endpoints and cap to 3; the result must be exactly 3.
+func TestCrawlEndpoints_MaxEndpointsBudget(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+paths:
+  /a: {get: {summary: a}}
+  /b: {get: {summary: b}}
+  /c: {get: {summary: c}}
+  /d: {get: {summary: d}}
+  /e: {get: {summary: e}}
+  /f: {get: {summary: f}}
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+	crawler := NewCrawler(&models.ScanConfig{SpecPath: specPath, MaxEndpoints: 3, Timeout: 5})
+	endpoints, err := crawler.CrawlEndpoints(context.Background())
+	if err != nil {
+		t.Fatalf("CrawlEndpoints: %v", err)
+	}
+	if len(endpoints) != 3 {
+		t.Errorf("expected 3 endpoints after --max-endpoints=3 cap, got %d", len(endpoints))
+	}
+}
+
 func TestCrawlEndpoints_SpecOnly(t *testing.T) {
 	spec := `
 openapi: "3.0.0"

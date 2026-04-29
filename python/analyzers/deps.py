@@ -1,8 +1,15 @@
 """Dependency CVE checker — scans project dependencies for known vulnerabilities.
 
-Checks requirements.txt (PyPI) and package.json (npm) against
-known vulnerability databases using pip-audit and npm-audit when available,
-with fallback to a curated local known-vulnerable version list.
+Three primary paths, one offline fallback:
+
+  - PyPI (requirements.txt):  pip-audit primary; local hardcoded list as fallback
+  - npm (package.json):       npm audit primary;  local hardcoded list as fallback
+  - Go (go.mod):              govulncheck primary; no fallback (no curated Go list)
+
+Each primary tool runs only when its binary is on $PATH. When a primary tool
+runs but fails (subprocess error, malformed JSON, non-success exit code), the
+analyzer falls back to the curated list rather than swallowing the error and
+emitting zero findings — that was a real bug pre-TASK-090.
 """
 from __future__ import annotations
 
@@ -202,10 +209,12 @@ class DepsAnalyzer:
     """Checks project dependencies for known CVEs.
 
     Strategy:
-    1. Find requirements.txt and/or package.json in code_path.
-    2. If pip-audit is available, run it for PyPI packages.
-    3. If npm is available, run npm audit for JS packages.
-    4. Always run local known-vulnerable list check as an additional layer.
+      1. Find requirements.txt / package.json / go.mod under code_path.
+      2. For each manifest, try the corresponding primary tool first
+         (pip-audit / npm audit / govulncheck).
+      3. If the primary tool is missing OR fails at runtime, fall back to
+         the local hardcoded known-vuln list (PyPI + npm only — Go has no
+         curated fallback).
     """
 
     def __init__(self, code_path: str) -> None:
@@ -220,12 +229,16 @@ class DepsAnalyzer:
 
         req_file = root / "requirements.txt"
         pkg_file = root / "package.json"
+        go_mod = root / "go.mod"
 
         if req_file.exists():
             self._check_requirements(req_file, emit_fn)
 
         if pkg_file.exists():
             self._check_npm(pkg_file, emit_fn)
+
+        if go_mod.exists():
+            self._check_go_modules(go_mod, emit_fn)
 
     # ------------------------------------------------------------------
     # PyPI checks
@@ -234,52 +247,92 @@ class DepsAnalyzer:
     def _check_requirements(
         self, req_file: Path, emit_fn: Callable[[dict], None]
     ) -> None:
-        """Check requirements.txt with pip-audit + local known-vuln list."""
+        """Run pip-audit if installed; fall back to the curated local list.
+
+        Fallback fires when pip-audit is absent OR fails (timeout, non-success
+        exit, malformed JSON). Pre-TASK-090 a tool failure was swallowed and
+        no findings were emitted — that masked a regex-key bug for months
+        because no exception ever surfaced to the user.
+        """
         text = req_file.read_text(encoding="utf-8")
         packages = _parse_requirements(text)
 
-        # pip-audit (primary, network-enabled)
         if shutil.which("pip-audit"):
-            self._run_pip_audit(req_file, emit_fn)
-        else:
-            # Local fallback
-            self._local_pypi_check(packages, req_file, emit_fn)
+            if self._run_pip_audit(req_file, emit_fn):
+                return  # primary path succeeded — don't double-emit
+            # pip-audit failed; fall through to local list
+        self._local_pypi_check(packages, req_file, emit_fn)
 
-    def _run_pip_audit(self, req_file: Path, emit_fn: Callable[[dict], None]) -> None:
-        """Run pip-audit against requirements.txt and map results."""
+    def _run_pip_audit(
+        self, req_file: Path, emit_fn: Callable[[dict], None]
+    ) -> bool:
+        """Run pip-audit and emit findings. Return True iff the run was clean.
+
+        pip-audit exits 0 (no vulns) or 1 (vulns found) on success; any other
+        exit code is a tool error. Both 0 and 1 count as a successful run, so
+        a clean scan with zero findings doesn't trigger the local fallback.
+        """
         try:
             proc = subprocess.run(
-                ["pip-audit", "-r", str(req_file), "--format", "json", "--no-deps"],
-                capture_output=True, text=True, timeout=120,
+                ["pip-audit", "-r", str(req_file), "--format", "json"],
+                capture_output=True, text=True, timeout=120, check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
-            print(f"[fendix-engine] pip-audit failed: {exc}", file=sys.stderr)
-            return
+            print(
+                f"[fendix-engine] pip-audit failed, falling back to local list: {exc}",
+                file=sys.stderr,
+            )
+            return False
+
+        if proc.returncode not in (0, 1):
+            stderr_excerpt = (proc.stderr or "").strip().splitlines()[:3]
+            print(
+                "[fendix-engine] pip-audit exited "
+                f"{proc.returncode}, falling back to local list. "
+                f"stderr: {' | '.join(stderr_excerpt)[:200]}",
+                file=sys.stderr,
+            )
+            return False
 
         try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            return
+            data = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            print(
+                f"[fendix-engine] pip-audit produced invalid JSON, "
+                f"falling back to local list: {exc}",
+                file=sys.stderr,
+            )
+            return False
 
-        for vuln in data.get("vulnerabilities", []):
-            pkg = vuln.get("name", "unknown")
-            ver = vuln.get("version", "?")
-            for v in vuln.get("vulns", []):
+        # Modern pip-audit (>=2.x) emits "dependencies"; older builds used
+        # "vulnerabilities". Accept both — that mismatch was the silent bug
+        # this rewrite fixes.
+        entries = data.get("dependencies") or data.get("vulnerabilities") or []
+        for entry in entries:
+            pkg = entry.get("name", "unknown")
+            ver = entry.get("version", "?")
+            for v in entry.get("vulns", []) or []:
+                vid = v.get("id", "CVE-UNKNOWN")
+                fix_versions = v.get("fix_versions") or []
+                fix_text = (
+                    f"Upgrade to {pkg}=={fix_versions[0]} or later."
+                    if fix_versions
+                    else "Upgrade to a patched version (no fix listed by pip-audit)."
+                )
                 emit_fn({
-                    "id": f"SEC-DEPS-{v.get('id', 'CVE-UNKNOWN').replace('-', '_')}",
-                    "title": f"Vulnerable dependency: {pkg}=={ver} ({v.get('id', '?')})",
+                    "id": f"SEC-DEPS-{vid.replace('-', '_')}",
+                    "title": f"Vulnerable dependency: {pkg}=={ver} ({vid})",
                     "severity": "HIGH",
                     "source": "whitebox",
                     "category": "deps",
-                    "endpoint": str(req_file.name),
-                    "evidence": f"{pkg}=={ver}: {v.get('description', '')[:200]}",
-                    "fix": v.get("fix_versions", ["Upgrade to a patched version"])[0]
-                    if v.get("fix_versions")
-                    else "Upgrade to a patched version.",
-                    "references": [v.get("id", "")],
+                    "endpoint": req_file.name,
+                    "evidence": f"{pkg}=={ver}: {(v.get('description') or '')[:200]}",
+                    "fix": fix_text,
+                    "references": [vid] + ([v.get("aliases")[0]] if v.get("aliases") else []),
                     "confidence": "HIGH",
-                    "line": str(req_file.name),
+                    "line": req_file.name,
                 })
+        return True
 
     def _local_pypi_check(
         self,
@@ -334,55 +387,99 @@ class DepsAnalyzer:
     # ------------------------------------------------------------------
 
     def _check_npm(self, pkg_file: Path, emit_fn: Callable[[dict], None]) -> None:
-        """Check package.json with npm audit + local known-vuln list."""
+        """Run npm audit if installed; fall back to the curated local list.
+
+        npm audit needs a package-lock.json or node_modules/ alongside the
+        manifest — without one it errors out. Either case (missing tool or
+        missing lockfile) trips the fallback so users always get something.
+        """
         text = pkg_file.read_text(encoding="utf-8")
         packages = _parse_package_json(text)
 
-        if shutil.which("npm"):
-            self._run_npm_audit(pkg_file, emit_fn)
-
-        # Always run local list
+        if shutil.which("npm") and self._has_npm_lockfile(pkg_file.parent):
+            if self._run_npm_audit(pkg_file, emit_fn):
+                return  # primary path succeeded
         self._local_npm_check(packages, pkg_file, emit_fn)
+
+    @staticmethod
+    def _has_npm_lockfile(directory: Path) -> bool:
+        """Return True if npm audit can run from `directory`.
+
+        npm audit reads `package-lock.json`, `npm-shrinkwrap.json`, or the
+        installed `node_modules/` tree. With none of those it exits non-zero
+        and emits no JSON.
+        """
+        return (
+            (directory / "package-lock.json").exists()
+            or (directory / "npm-shrinkwrap.json").exists()
+            or (directory / "node_modules").is_dir()
+        )
 
     def _run_npm_audit(
         self, pkg_file: Path, emit_fn: Callable[[dict], None]
-    ) -> None:
-        """Run npm audit --json in the package.json directory."""
+    ) -> bool:
+        """Run `npm audit --json` and emit findings. Return True iff clean run.
+
+        npm audit exits 0 (no vulns) or 1 (vulns found) on success; any other
+        code (network failure, missing lockfile, bad cwd) is a tool error.
+        """
         try:
             proc = subprocess.run(
                 ["npm", "audit", "--json"],
                 cwd=str(pkg_file.parent),
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, timeout=60, check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
-            print(f"[fendix-engine] npm audit failed: {exc}", file=sys.stderr)
-            return
+            print(
+                f"[fendix-engine] npm audit failed, falling back to local list: {exc}",
+                file=sys.stderr,
+            )
+            return False
+
+        # npm audit returns 1 when vulns are found — that's a successful run.
+        if proc.returncode not in (0, 1):
+            stderr_excerpt = (proc.stderr or "").strip().splitlines()[:3]
+            print(
+                f"[fendix-engine] npm audit exited {proc.returncode}, "
+                f"falling back to local list. stderr: "
+                f"{' | '.join(stderr_excerpt)[:200]}",
+                file=sys.stderr,
+            )
+            return False
 
         try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            return
+            data = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            print(
+                f"[fendix-engine] npm audit produced invalid JSON, "
+                f"falling back to local list: {exc}",
+                file=sys.stderr,
+            )
+            return False
 
+        sev_map = {
+            "CRITICAL": "CRITICAL", "HIGH": "HIGH",
+            "MODERATE": "MEDIUM", "LOW": "LOW", "INFO": "INFO",
+        }
         # npm audit v2 format: {"vulnerabilities": {"pkg": {...}}}
         for pkg_name, info in (data.get("vulnerabilities") or {}).items():
-            severity = info.get("severity", "moderate").upper()
-            fendix_sev = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MODERATE": "MEDIUM",
-                          "LOW": "LOW"}.get(severity, "MEDIUM")
-            via = info.get("via", [])
+            severity = (info.get("severity") or "moderate").upper()
+            via = info.get("via") or []
             cves = [v.get("url", "") for v in via if isinstance(v, dict)]
             emit_fn({
                 "id": f"SEC-DEPS-NPM-{pkg_name.upper().replace('-', '_').replace('@', '')}",
                 "title": f"Vulnerable npm package: {pkg_name} (severity: {severity})",
-                "severity": fendix_sev,
+                "severity": sev_map.get(severity, "MEDIUM"),
                 "source": "whitebox",
                 "category": "deps",
                 "endpoint": pkg_file.name,
                 "evidence": f"npm audit found {severity} vulnerability in {pkg_name}",
                 "fix": f"Run 'npm audit fix' or update {pkg_name} manually.",
-                "references": cves[:3],
+                "references": [c for c in cves[:3] if c],
                 "confidence": "HIGH",
                 "line": pkg_file.name,
             })
+        return True
 
     def _local_npm_check(
         self,
@@ -414,3 +511,176 @@ class DepsAnalyzer:
                     "confidence": "HIGH",
                     "line": pkg_file.name,
                 })
+
+    # ------------------------------------------------------------------
+    # Go module checks (govulncheck)
+    # ------------------------------------------------------------------
+
+    def _check_go_modules(
+        self, go_mod: Path, emit_fn: Callable[[dict], None]
+    ) -> None:
+        """Run govulncheck against a Go module if the tool is installed.
+
+        No local fallback for Go: maintaining a curated Go vuln list would
+        duplicate the OSV database that govulncheck already consults. When
+        the tool is missing we log a stderr hint so the user knows what to
+        install; production CI will have it.
+        """
+        if not shutil.which("govulncheck"):
+            print(
+                "[fendix-engine] govulncheck not installed; skipping Go module "
+                "scan. Install via 'go install golang.org/x/vuln/cmd/govulncheck@latest'.",
+                file=sys.stderr,
+            )
+            return
+        self._run_govulncheck(go_mod, emit_fn)
+
+    def _run_govulncheck(
+        self, go_mod: Path, emit_fn: Callable[[dict], None]
+    ) -> bool:
+        """Run `govulncheck -json ./...` and emit findings. Return True iff clean.
+
+        govulncheck exits 0 (no vulns), 3 (vulns found in called code), or
+        anything else (tool error). Output is newline-delimited JSON: each
+        line is a single message with one of several types ("config",
+        "progress", "osv", "finding"). We parse "osv" entries (the
+        vulnerability records) and "finding" entries (specific call traces),
+        then emit one fendix finding per OSV that has at least one finding —
+        OSVs with no calls are vendored-but-uncalled and don't warrant a
+        scary report on their own.
+        """
+        try:
+            proc = subprocess.run(
+                ["govulncheck", "-json", "./..."],
+                cwd=str(go_mod.parent),
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            print(
+                f"[fendix-engine] govulncheck failed: {exc}",
+                file=sys.stderr,
+            )
+            return False
+
+        # 0 = no vulns, 3 = vulns found (per govulncheck docs); everything
+        # else is a tool error that should bubble up so users know.
+        if proc.returncode not in (0, 3):
+            stderr_excerpt = (proc.stderr or "").strip().splitlines()[:3]
+            print(
+                f"[fendix-engine] govulncheck exited {proc.returncode}. "
+                f"stderr: {' | '.join(stderr_excerpt)[:300]}",
+                file=sys.stderr,
+            )
+            return False
+
+        for finding in _parse_govulncheck_json(proc.stdout):
+            emit_fn({**finding, "endpoint": go_mod.name, "line": go_mod.name})
+        return True
+
+
+def _parse_govulncheck_json(stdout: str) -> list[dict]:
+    """Parse govulncheck JSON stdout and return a list of finding dicts.
+
+    govulncheck emits a stream of JSON objects, separated only by whitespace.
+    Real output is **pretty-printed multi-line** (each object spans many
+    lines), not single-line NDJSON, so a naive `for line in splitlines()`
+    parser misses everything past the first `{`. Use json.JSONDecoder's
+    `raw_decode` to consume one object at a time from a sliding offset.
+
+    We collect:
+      - "osv" messages (vulnerability records keyed by ID)
+      - "finding" messages (each ties an OSV ID to one or more call traces)
+
+    Then we emit one fendix finding per OSV that was actually called by the
+    target's code (the trace contains a frame with `function` set). Vendored
+    or transitively-imported-but-uncalled vulns are dropped — that's exactly
+    how govulncheck distinguishes real risk from supply-chain noise.
+
+    Pulled out as a module-level function so the unit tests can run it
+    against fixture stdout without standing up a fake subprocess.
+    """
+    osvs: dict[str, dict] = {}
+    called_ids: set[str] = set()
+
+    decoder = json.JSONDecoder()
+    pos = 0
+    n = len(stdout)
+    while pos < n:
+        # Skip whitespace separating objects (newlines + indent in
+        # pretty-printed mode; single newlines in NDJSON mode — both work).
+        while pos < n and stdout[pos].isspace():
+            pos += 1
+        if pos >= n:
+            break
+        try:
+            msg, end = decoder.raw_decode(stdout, pos)
+            pos = end
+        except json.JSONDecodeError:
+            # Best-effort recovery: drop to the next opening brace and retry.
+            nxt = stdout.find("{", pos + 1)
+            if nxt < 0:
+                break
+            pos = nxt
+            continue
+
+        if not isinstance(msg, dict):
+            continue
+        if "osv" in msg and isinstance(msg["osv"], dict):
+            osv = msg["osv"]
+            osv_id = osv.get("id")
+            if osv_id:
+                osvs[osv_id] = osv
+        elif "finding" in msg and isinstance(msg["finding"], dict):
+            f = msg["finding"]
+            osv_id = f.get("osv")
+            # The finding only counts as "called" when the trace reaches
+            # one of the user's own packages — govulncheck signals this by
+            # populating `trace[].function` for the called frame. Vendored-
+            # but-not-called findings have a one-element trace with only
+            # module+package set.
+            trace = f.get("trace") or []
+            has_call = any(
+                isinstance(t, dict) and t.get("function") for t in trace
+            )
+            if osv_id and has_call:
+                called_ids.add(osv_id)
+
+    findings: list[dict] = []
+    for osv_id in sorted(called_ids):
+        osv = osvs.get(osv_id, {})
+        summary = osv.get("summary") or osv_id
+        details = (osv.get("details") or "")[:200]
+        affected = osv.get("affected") or []
+        # First "ranges" entry's first "fixed" event is the canonical fix
+        # version per OSV schema (https://ossf.github.io/osv-schema/).
+        fix_version = ""
+        for a in affected:
+            ranges = a.get("ranges") or []
+            for r in ranges:
+                for ev in r.get("events") or []:
+                    if isinstance(ev, dict) and ev.get("fixed"):
+                        fix_version = ev["fixed"]
+                        break
+                if fix_version:
+                    break
+            if fix_version:
+                break
+        aliases = osv.get("aliases") or []
+        refs = [osv_id] + [a for a in aliases if a]
+
+        findings.append({
+            "id": f"SEC-DEPS-GO-{osv_id.replace('-', '_')}",
+            "title": f"Vulnerable Go module: {summary} ({osv_id})",
+            "severity": "HIGH",  # govulncheck reports a real call trace
+            "source": "whitebox",
+            "category": "deps",
+            "evidence": f"{osv_id}: {details}",
+            "fix": (
+                f"Upgrade to {fix_version} or later."
+                if fix_version
+                else "Upgrade to a patched version (no fix listed)."
+            ),
+            "references": refs,
+            "confidence": "HIGH",
+        })
+    return findings

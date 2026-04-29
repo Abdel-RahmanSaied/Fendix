@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,7 +20,10 @@ import (
 )
 
 // CommonPaths is a hardcoded list of frequently found API paths to brute-force.
+// Curated for high signal — admin surfaces, source-control leakage, common
+// dev tooling. Override with --wordlist for custom lists. ~100 entries.
 var CommonPaths = []string{
+	// REST API roots
 	"/api", "/api/v1", "/api/v2", "/api/v3",
 	"/api/health", "/api/status", "/api/ping",
 	"/api/v1/users", "/api/v1/user", "/api/v1/me",
@@ -29,15 +33,43 @@ var CommonPaths = []string{
 	"/api/v1/admin", "/api/v1/config", "/api/v1/settings",
 	"/api/v1/products", "/api/v1/orders", "/api/v1/items",
 	"/api/v1/search", "/api/v1/upload", "/api/v1/files",
+	"/api/v1/auth/login", "/api/v2/auth/login",
+	"/api/v1/users/me", "/api/me",
+	"/api/internal", "/api/private", "/api/admin",
+	// Health & readiness
 	"/health", "/healthz", "/ready", "/readyz",
 	"/status", "/ping", "/info", "/version",
-	"/swagger.json", "/swagger/", "/swagger-ui/",
-	"/openapi.json", "/openapi.yaml",
-	"/api-docs", "/docs", "/graphql",
+	// API spec / docs
+	"/swagger.json", "/swagger/", "/swagger-ui/", "/swagger-ui.html",
+	"/openapi.json", "/openapi.yaml", "/openapi",
+	"/api-docs", "/docs", "/redoc", "/graphql",
 	"/metrics", "/actuator", "/actuator/health",
+	"/.well-known/openapi.yaml", "/.well-known/openapi.json",
+	"/.well-known/security.txt",
+	// Bare versions / common public roots
 	"/v1", "/v2", "/v3",
 	"/users", "/admin", "/auth", "/login",
-	"/.well-known/openapi.yaml", "/.well-known/openapi.json",
+	"/logout", "/signin", "/signout", "/register", "/signup",
+	// Admin/dashboard surfaces
+	"/admin/login", "/admin/api", "/admin/dashboard", "/admin/users",
+	"/console", "/dashboard", "/manage", "/management",
+	// PHP-era admin tooling (still common on hosted apps)
+	"/wp-admin", "/wp-login.php", "/wp-json/wp/v2/users",
+	"/phpmyadmin", "/adminer", "/myadmin",
+	// DevOps tooling exposure
+	"/grafana", "/prometheus", "/kibana", "/jenkins",
+	"/server-status", "/server-info",
+	// Debug/profiling endpoints (Go pprof, Flask debug, etc.)
+	"/debug", "/debug/vars", "/debug/pprof", "/debug/pprof/heap",
+	// Source-control + config leakage (high-value misconfigurations)
+	"/.git/config", "/.git/HEAD", "/.git/index",
+	"/.svn/entries", "/.svn/wc.db",
+	"/.env", "/.env.local", "/.env.production",
+	"/.htaccess", "/.htpasswd", "/.DS_Store",
+	// Common static / private surfaces
+	"/internal", "/private", "/static", "/assets", "/public",
+	"/test", "/tests", "/tmp", "/temp",
+	// Crawler hints
 	"/robots.txt", "/sitemap.xml",
 }
 
@@ -55,10 +87,22 @@ type Crawler struct {
 }
 
 // NewCrawler creates a Crawler with an HTTP client configured from scan config.
+//
+// The transport raises MaxIdleConnsPerHost from Go's default of 2 to a value
+// large enough to keep the brute-force phase reusing one keep-alive connection
+// per host. With the default, ~115 sequential requests against the same host
+// would churn TCP setup/teardown, and on macOS that reliably exhausts
+// ephemeral ports when multiple httptest servers run in parallel — the e2e
+// suite was flaky at exactly that boundary before this fix.
 func NewCrawler(cfg *models.ScanConfig) *Crawler {
 	return &Crawler{
 		client: &http.Client{
 			Timeout: time.Duration(cfg.Timeout) * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        32,
+				MaxIdleConnsPerHost: 32,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 		cfg:  cfg,
 		seen: make(map[string]bool),
@@ -66,10 +110,14 @@ func NewCrawler(cfg *models.ScanConfig) *Crawler {
 }
 
 // CrawlEndpoints discovers endpoints using all available strategies in priority order:
-// 1. OpenAPI spec parsing (if --spec provided)
-// 2. JavaScript source analysis (if --url provided)
-// 3. Common path brute-force (if --url provided)
-// Returns a deduplicated, sorted list of endpoints.
+//  1. OpenAPI spec parsing (--spec)
+//  2. robots.txt parsing (--url) — Disallow/Allow + Sitemap directives
+//  3. sitemap.xml parsing (--url) — <loc> entries + sitemapindex recursion
+//  4. JavaScript source analysis (--url)
+//  5. HTML link parsing with recursive depth (--url, --crawl-depth)
+//  6. Common-path brute-force, optionally from --wordlist (--url)
+//
+// Result is deduplicated, sorted, and capped at --max-endpoints.
 func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	var endpoints []Endpoint
 
@@ -83,11 +131,45 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	}
 
 	if c.cfg.URL != "" {
+		// robots.txt — disallowed paths are often hidden admin endpoints.
+		// We capture them as discovery hints, not respect them as restrictions.
+		robotsResult, err := c.fromRobots(ctx)
+		if err != nil {
+			slog.Debug("robots.txt discovery failed", "error", err)
+		} else {
+			endpoints = append(endpoints, robotsResult.endpoints...)
+		}
+
+		// sitemap.xml — pull URLs declared in robots.txt first, fall back to
+		// the canonical /sitemap.xml location. Both forms are common.
+		sitemapURLs := robotsResult.sitemapURLs
+		if len(sitemapURLs) == 0 {
+			sitemapURLs = []string{strings.TrimRight(c.cfg.URL, "/") + "/sitemap.xml"}
+		}
+		smEndpoints, err := c.fromSitemap(ctx, sitemapURLs)
+		if err != nil {
+			slog.Debug("sitemap.xml discovery failed", "error", err)
+		} else {
+			endpoints = append(endpoints, smEndpoints...)
+		}
+
 		jsEndpoints, err := c.fromJS(ctx)
 		if err != nil {
 			slog.Debug("JS discovery failed", "error", err)
 		} else {
 			endpoints = append(endpoints, jsEndpoints...)
+		}
+
+		// Recursive HTML link crawl. Default depth 1 follows links from the
+		// home page; --crawl-depth 0 disables. Same-host only; visited set
+		// prevents loops; total cap enforced after dedupe via --max-endpoints.
+		if c.cfg.CrawlDepth > 0 {
+			htmlEndpoints, err := c.crawlHTMLLinks(ctx, c.cfg.CrawlDepth)
+			if err != nil {
+				slog.Debug("HTML link crawl failed", "error", err)
+			} else {
+				endpoints = append(endpoints, htmlEndpoints...)
+			}
 		}
 
 		bruteEndpoints, err := c.fromBruteForce(ctx)
@@ -105,6 +187,12 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 		}
 		return deduped[i].Method < deduped[j].Method
 	})
+
+	if cap := c.cfg.MaxEndpoints; cap > 0 && len(deduped) > cap {
+		slog.Warn("endpoint discovery hit --max-endpoints cap; truncating",
+			"discovered", len(deduped), "cap", cap)
+		deduped = deduped[:cap]
+	}
 
 	slog.Info("endpoint discovery complete", "total", len(deduped))
 	return deduped, nil
@@ -392,11 +480,17 @@ func (c *Crawler) extractPathsFromJS(ctx context.Context, jsURL string) ([]strin
 }
 
 // fromBruteForce tries common API paths against the target and returns those that respond.
+// The path list is c.cfg.WordlistPath when set, otherwise CommonPaths.
 func (c *Crawler) fromBruteForce(ctx context.Context) ([]Endpoint, error) {
 	baseURL := strings.TrimRight(c.cfg.URL, "/")
 	var endpoints []Endpoint
 
-	for _, path := range CommonPaths {
+	paths, err := c.loadWordlist()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, path := range paths {
 		select {
 		case <-ctx.Done():
 			return endpoints, ctx.Err()
@@ -416,6 +510,12 @@ func (c *Crawler) fromBruteForce(ctx context.Context) ([]Endpoint, error) {
 		if err != nil {
 			continue
 		}
+		// Drain the body before close so net/http can return the connection
+		// to the keep-alive pool. Without this, Go marks the connection
+		// "unfit for reuse" and tears down the TCP socket — which is fine for
+		// one or two probes but rapidly exhausts ephemeral source ports when
+		// hammering 117 paths against the same host.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
 		if resp.StatusCode < 404 {
@@ -431,8 +531,374 @@ func (c *Crawler) fromBruteForce(ctx context.Context) ([]Endpoint, error) {
 		}
 	}
 
-	slog.Info("endpoints from brute-force", "count", len(endpoints))
+	slog.Info("endpoints from brute-force", "count", len(endpoints), "wordlist_size", len(paths))
 	return endpoints, nil
+}
+
+// loadWordlist returns the brute-force path list. Reads c.cfg.WordlistPath
+// if set (one path per line, `#` comments + blank lines skipped, leading
+// `/` added if missing), otherwise returns CommonPaths.
+func (c *Crawler) loadWordlist() ([]string, error) {
+	if c.cfg.WordlistPath == "" {
+		return CommonPaths, nil
+	}
+	data, err := os.ReadFile(c.cfg.WordlistPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading wordlist %s: %w", c.cfg.WordlistPath, err)
+	}
+	var paths []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "/") {
+			line = "/" + line
+		}
+		paths = append(paths, line)
+	}
+	return paths, nil
+}
+
+// robotsDiscovery is the result of parsing a robots.txt file: discovered
+// endpoint paths (from Disallow/Allow directives) plus any Sitemap: URLs
+// declared in the file. We treat Disallow as a discovery hint, not a
+// restriction — disallowed paths are often the highest-value targets.
+type robotsDiscovery struct {
+	endpoints   []Endpoint
+	sitemapURLs []string
+}
+
+// fromRobots fetches /robots.txt and extracts both endpoint paths
+// (Disallow/Allow) and Sitemap: URLs. Missing or 4xx robots.txt is
+// not an error — many sites simply don't publish one.
+func (c *Crawler) fromRobots(ctx context.Context) (robotsDiscovery, error) {
+	baseURL := strings.TrimRight(c.cfg.URL, "/")
+	body, err := c.fetchBody(ctx, baseURL+"/robots.txt", 1<<20) // 1 MB cap
+	if err != nil {
+		return robotsDiscovery{}, err
+	}
+	paths, sitemaps := parseRobots(body)
+	res := robotsDiscovery{sitemapURLs: sitemaps}
+	for _, p := range paths {
+		res.endpoints = append(res.endpoints, Endpoint{
+			Method:  "GET",
+			Path:    p,
+			FullURL: baseURL + p,
+			Params:  extractPathParams(p),
+		})
+	}
+	slog.Info("endpoints from robots.txt", "count", len(res.endpoints), "sitemaps", len(sitemaps))
+	return res, nil
+}
+
+// parseRobots parses a robots.txt body. Returns the union of all Disallow
+// and Allow paths (de-duplicated, leading `/` only) plus all Sitemap: URLs.
+// User-agent grouping is intentionally ignored — discovery is path-level
+// regardless of which agent the rule targets.
+func parseRobots(body []byte) (paths, sitemapURLs []string) {
+	pathSeen, smSeen := map[string]bool{}, map[string]bool{}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		i := strings.Index(line, ":")
+		if i < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(line[:i]))
+		val := strings.TrimSpace(line[i+1:])
+		if val == "" {
+			continue
+		}
+		switch key {
+		case "disallow", "allow":
+			// Strip wildcard suffix (`/admin/*` → `/admin/`) and trailing `$`
+			// — those are pattern-match anchors, not literal characters.
+			cleaned := strings.TrimSuffix(val, "$")
+			cleaned = strings.TrimSuffix(cleaned, "*")
+			if !strings.HasPrefix(cleaned, "/") || pathSeen[cleaned] {
+				continue
+			}
+			pathSeen[cleaned] = true
+			paths = append(paths, cleaned)
+		case "sitemap":
+			if smSeen[val] {
+				continue
+			}
+			smSeen[val] = true
+			sitemapURLs = append(sitemapURLs, val)
+		}
+	}
+	return paths, sitemapURLs
+}
+
+// sitemapURLEntry / sitemapIndexEntry / sitemapDoc capture the two sitemap
+// XML formats: <urlset><url><loc>... for normal sitemaps and
+// <sitemapindex><sitemap><loc>... for sitemap-of-sitemaps. We parse a single
+// document tolerantly via a struct that admits both children.
+type sitemapEntry struct {
+	Loc string `xml:"loc"`
+}
+
+type sitemapDoc struct {
+	URLs     []sitemapEntry `xml:"url"`
+	Sitemaps []sitemapEntry `xml:"sitemap"`
+}
+
+// fromSitemap fetches one or more sitemap.xml URLs and returns the discovered
+// page endpoints. Sitemap-index files are followed one level deep (typical
+// real-world structure: index → child sitemaps → URL list).
+func (c *Crawler) fromSitemap(ctx context.Context, urls []string) ([]Endpoint, error) {
+	const maxSitemapBytes = 10 << 20 // 10 MB; large sitemaps are real
+	const maxIndexFollow = 16        // cap on child sitemaps to prevent runaway
+
+	visited := map[string]bool{}
+	var queue []string
+	queue = append(queue, urls...)
+	var pages []string
+
+	for len(queue) > 0 && len(visited) < maxIndexFollow {
+		u := queue[0]
+		queue = queue[1:]
+		if u == "" || visited[u] {
+			continue
+		}
+		visited[u] = true
+
+		body, err := c.fetchBody(ctx, u, maxSitemapBytes)
+		if err != nil {
+			slog.Debug("sitemap fetch failed", "url", u, "error", err)
+			continue
+		}
+		urlList, childSitemaps := parseSitemap(body)
+		pages = append(pages, urlList...)
+		queue = append(queue, childSitemaps...)
+	}
+
+	base, err := url.Parse(c.cfg.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --url for sitemap host filter: %w", err)
+	}
+	baseHost := strings.ToLower(base.Host)
+
+	var endpoints []Endpoint
+	pathSeen := map[string]bool{}
+	for _, raw := range pages {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		// Sitemap entries usually carry a host; if absent, treat as same-host.
+		if parsed.Host != "" && strings.ToLower(parsed.Host) != baseHost {
+			continue
+		}
+		path := parsed.Path
+		if path == "" {
+			path = "/"
+		}
+		if pathSeen[path] {
+			continue
+		}
+		pathSeen[path] = true
+		endpoints = append(endpoints, Endpoint{
+			Method:  "GET",
+			Path:    path,
+			FullURL: strings.TrimRight(c.cfg.URL, "/") + path,
+			Params:  extractPathParams(path),
+		})
+	}
+	slog.Info("endpoints from sitemap", "count", len(endpoints), "documents", len(visited))
+	return endpoints, nil
+}
+
+// parseSitemap returns (page URLs, child sitemap URLs) from a sitemap XML
+// document. Tolerant of malformed XML — returns empty lists rather than
+// erroring, since a broken sitemap shouldn't kill the whole scan.
+func parseSitemap(body []byte) (pages, childSitemaps []string) {
+	var doc sitemapDoc
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return nil, nil
+	}
+	for _, e := range doc.URLs {
+		if e.Loc != "" {
+			pages = append(pages, strings.TrimSpace(e.Loc))
+		}
+	}
+	for _, e := range doc.Sitemaps {
+		if e.Loc != "" {
+			childSitemaps = append(childSitemaps, strings.TrimSpace(e.Loc))
+		}
+	}
+	return pages, childSitemaps
+}
+
+// anchorHrefRe matches <a ... href="..."> and form actionRe matches
+// <form ... action="...">. Lower/upper-case tag names handled with
+// case-insensitive flag; quotes are required (bare-href HTML5 unquoted
+// attributes are rare on real sites and not worth the parser complexity).
+var (
+	anchorHrefRe = regexp.MustCompile(`(?i)<a\b[^>]*?\shref=["']([^"'#]+)["']`)
+	formActionRe = regexp.MustCompile(`(?i)<form\b[^>]*?\saction=["']([^"'#]+)["']`)
+)
+
+// crawlHTMLLinks performs a BFS crawl from --url, extracting <a href> and
+// <form action> targets and following same-host links up to the given depth.
+// depth=1 means "extract links from the home page only"; depth=2 also
+// follows those links and harvests their links; etc. A visited set prevents
+// loops, and --max-endpoints caps the result globally (applied after dedupe).
+func (c *Crawler) crawlHTMLLinks(ctx context.Context, depth int) ([]Endpoint, error) {
+	if depth <= 0 || c.cfg.URL == "" {
+		return nil, nil
+	}
+	base, err := url.Parse(c.cfg.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --url: %w", err)
+	}
+	baseHost := strings.ToLower(base.Host)
+
+	type queued struct {
+		url   string
+		depth int
+	}
+	visited := map[string]bool{c.cfg.URL: true}
+	queue := []queued{{c.cfg.URL, 0}}
+	var endpoints []Endpoint
+
+	const maxBytes = 5 * 1024 * 1024 // 5 MB per page
+	for len(queue) > 0 {
+		select {
+		case <-ctx.Done():
+			return endpoints, ctx.Err()
+		default:
+		}
+
+		cur := queue[0]
+		queue = queue[1:]
+
+		body, err := c.fetchBody(ctx, cur.url, maxBytes)
+		if err != nil {
+			slog.Debug("html-crawl fetch failed", "url", cur.url, "error", err)
+			continue
+		}
+
+		for _, raw := range extractHTMLLinks(body) {
+			// Drop non-http(s) schemes early: `mailto:`, `tel:`, `javascript:`,
+			// `data:` URLs are common in real HTML but not scannable as endpoints.
+			if hasUnscannableScheme(raw) {
+				continue
+			}
+			absolute := resolveURL(cur.url, raw)
+			parsed, err := url.Parse(absolute)
+			if err != nil {
+				continue
+			}
+			parsed.Fragment = ""
+			// After resolution, scheme should be http/https; reject anything else
+			// (defensive — resolveURL can preserve unexpected schemes).
+			if parsed.Scheme != "" && parsed.Scheme != "http" && parsed.Scheme != "https" {
+				continue
+			}
+			// Same-host only — the scanner shouldn't probe arbitrary external
+			// links it happens to find on the page. Cross-host CDN URLs etc.
+			// are noise here.
+			if parsed.Host != "" && strings.ToLower(parsed.Host) != baseHost {
+				continue
+			}
+			cleaned := parsed.String()
+			if visited[cleaned] {
+				continue
+			}
+			visited[cleaned] = true
+
+			path := parsed.Path
+			if path == "" {
+				path = "/"
+			}
+			endpoints = append(endpoints, Endpoint{
+				Method:  "GET",
+				Path:    path,
+				FullURL: cleaned,
+				Params:  extractPathParams(path),
+			})
+
+			if cur.depth+1 < depth {
+				queue = append(queue, queued{cleaned, cur.depth + 1})
+			}
+		}
+
+		if c.cfg.DelayMs > 0 {
+			time.Sleep(time.Duration(c.cfg.DelayMs) * time.Millisecond)
+		}
+	}
+
+	slog.Info("endpoints from HTML crawl", "count", len(endpoints), "depth", depth)
+	return endpoints, nil
+}
+
+// unscannableSchemes are URL schemes whose values are not HTTP endpoints.
+// Common in real HTML (mailto contact links, tel: links, javascript: handlers,
+// data: URIs); following them produces "unsupported protocol scheme" errors
+// downstream and noisy findings on phantom endpoints.
+var unscannableSchemes = []string{"mailto:", "tel:", "javascript:", "data:", "ftp:", "file:", "sms:"}
+
+// hasUnscannableScheme reports whether the raw href starts with a non-HTTP
+// scheme we can't probe. Comparison is case-insensitive — `MAILTO:` happens
+// in real HTML.
+func hasUnscannableScheme(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	for _, prefix := range unscannableSchemes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractHTMLLinks returns raw href/action values from anchor and form tags.
+// Fragment-only links (`#section`) are dropped at regex level so we don't
+// re-fetch the same page with no path change.
+func extractHTMLLinks(body []byte) []string {
+	var raw []string
+	for _, m := range anchorHrefRe.FindAllSubmatch(body, -1) {
+		raw = append(raw, string(m[1]))
+	}
+	for _, m := range formActionRe.FindAllSubmatch(body, -1) {
+		raw = append(raw, string(m[1]))
+	}
+	return raw
+}
+
+// fetchBody performs an authenticated GET against target with a body cap.
+// Used by robots.txt, sitemap.xml, and the HTML crawl.
+func (c *Crawler) fetchBody(ctx context.Context, target string, maxBytes int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request for %s: %w", target, err)
+	}
+	if c.cfg.Auth != nil {
+		req.Header.Set(c.cfg.Auth.Header, c.cfg.Auth.Value)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", target, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("fetching %s: HTTP %d", target, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s body: %w", target, err)
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("response from %s exceeds %d-byte cap", target, maxBytes)
+	}
+	return body, nil
 }
 
 // deduplicate removes duplicate endpoints by Method+Path key.

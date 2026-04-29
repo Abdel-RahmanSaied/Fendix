@@ -71,6 +71,22 @@ func fendixBinary(t *testing.T) string {
 	return buildPath
 }
 
+// tinyWordlist writes a 1-path wordlist into the test's tempdir and returns
+// its path. Use it via `--wordlist` to short-circuit brute-force discovery
+// in tests that don't care about it. Without this, every URL-based e2e test
+// pays for ~117 sequential HTTP connections to its mock target — which on
+// macOS reliably exhausts ephemeral ports across the suite (port-rotation
+// + TIME_WAIT accumulation). Tests that DO exercise brute-force opt in by
+// not calling this helper.
+func tinyWordlist(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "wordlist.txt")
+	if err := os.WriteFile(path, []byte("/fendix-e2e-probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // mockTarget returns an httptest server with one weak-headers endpoint.
 // Sufficient to produce non-zero findings so save-baseline has something to
 // write — we want to verify the file is created, not validate its contents
@@ -142,6 +158,7 @@ paths:
 		"--workers", "2",
 		"--delay", "0",
 		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
 		"--output", filepath.Join(dir, "report.json"),
 	)
 	out, err := cmd.CombinedOutput()
@@ -246,6 +263,7 @@ func TestSpecURL_FetchedAndParsed(t *testing.T) {
 		"--workers", "2",
 		"--delay", "0",
 		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
 	)
 	out, err := cmd.CombinedOutput()
 	// Accept exit 0 or 1 (findings vs. no findings); reject 2 (config/network error).
@@ -339,6 +357,7 @@ paths:
 		"--workers", "2",
 		"--delay", "0",
 		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
 		"--output", outputPath,
 	)
 	out, err := cmd.CombinedOutput()
@@ -406,6 +425,7 @@ paths:
 		"--workers", "2",
 		"--delay", "0",
 		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
 		"--output", filepath.Join(dir, "report.json"),
 	)
 	out, err := cmd.CombinedOutput()
@@ -469,6 +489,7 @@ paths:
 		"--workers", "2",
 		"--delay", "0",
 		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
 		"--output", outputPath,
 	)
 	out, err := cmd.CombinedOutput()
@@ -516,6 +537,7 @@ func TestSaveBaseline_WritesFile(t *testing.T) {
 		"--workers", "2",
 		"--delay", "0",
 		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
 	)
 	out, err := cmd.CombinedOutput()
 	// Exit code 1 is acceptable: --fail-on default may trigger when findings
@@ -534,5 +556,130 @@ func TestSaveBaseline_WritesFile(t *testing.T) {
 	info, err := os.Stat(baselinePath)
 	if err == nil && info.Size() == 0 {
 		t.Fatalf("baseline file is empty at %s\nfendix output:\n%s", baselinePath, out)
+	}
+}
+
+// TestCrawler_RobotsDisallowDiscovered is the TASK-089 regression test for
+// robots.txt discovery. The mock target hides /admin/secret behind a
+// Disallow directive and serves it with weak headers; pre-TASK-089 fendix
+// would only see /robots.txt itself (the path was in CommonPaths) and never
+// probe what robots.txt was actually advertising. After the fix the report
+// must contain a finding whose endpoint references /admin/secret.
+func TestCrawler_RobotsDisallowDiscovered(t *testing.T) {
+	bin := fendixBinary(t)
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("User-agent: *\nDisallow: /admin/secret\n"))
+		case "/admin/secret":
+			// Serve with weak headers so the headers check fires and the
+			// finding's endpoint metadata captures /admin/secret.
+			w.Header().Set("Server", "Apache/2.4.1")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"hidden":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(target.Close)
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", target.URL,
+		"--workers", "2",
+		"--delay", "0",
+		"--timeout", "5",
+		// Keep the wordlist out of the way — we want to prove robots.txt
+		// added /admin/secret, not that brute-force tripped over it.
+		"--crawl-depth", "0",
+		"--wordlist", tinyWordlist(t),
+		"--output", outputPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("fendix scan failed: %v\n%s", err, out)
+		}
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected report at %s: %v\noutput:\n%s", outputPath, err, out)
+	}
+	if !contains(string(report), "/admin/secret") {
+		t.Fatalf("expected /admin/secret to appear as an endpoint in report (TASK-089 robots.txt parsing regressed).\nReport:\n%s\nfendix output:\n%s",
+			report, out)
+	}
+}
+
+// TestDepsScan_VulnerableRequirements is the TASK-090 regression test.
+// We feed `fendix scan --code` a requirements.txt with several known-vulnerable
+// PyPI packages and assert dep findings show up in the report. This test
+// passes regardless of whether pip-audit is installed: when present, pip-audit
+// is the primary path; when absent, the local known-vuln list is the fallback.
+// Pre-TASK-090 a quirk in the pip-audit JSON key (`vulnerabilities` vs the real
+// `dependencies`) made the primary path produce zero findings without falling
+// back, and a tool failure (timeout, non-success exit) silently dropped the
+// scan. Now both the success and failure cases route to a non-empty report.
+func TestDepsScan_VulnerableRequirements(t *testing.T) {
+	bin := fendixBinary(t)
+
+	codeDir := t.TempDir()
+	// All six packages are in the local known-vuln list (deps.py
+	// _KNOWN_PYPI_VULNS), so the fallback path produces findings even when
+	// the test runs on a machine without pip-audit installed.
+	if err := os.WriteFile(
+		filepath.Join(codeDir, "requirements.txt"),
+		[]byte("Django==1.11.0\nFlask==0.12.0\nrequests==2.6.0\nPyYAML==3.12\nPillow==2.0.0\nurllib3==1.21.0\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--code", codeDir,
+		"--output", outputPath,
+		"--workers", "2",
+		"--timeout", "30",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("deps scan failed: %v\n%s", err, out)
+		}
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected report at %s: %v\noutput:\n%s", outputPath, err, out)
+	}
+
+	// The report must contain at least one CVE-tagged finding tied to a
+	// known-vulnerable package. We don't pin to a specific CVE because pip-audit
+	// (when installed) might emit GHSA IDs while the local fallback emits CVE
+	// IDs — either is acceptable as long as we got SOMETHING.
+	body := string(report)
+	if !contains(body, `"category":"deps"`) && !contains(body, `"category": "deps"`) {
+		t.Fatalf(
+			"expected at least one deps-category finding (TASK-090 dep scan regressed).\n"+
+				"Report:\n%s\nfendix output:\n%s",
+			body, out,
+		)
+	}
+	if !contains(body, "Django") && !contains(body, "django") {
+		t.Fatalf(
+			"expected Django to appear as a vulnerable dependency.\n"+
+				"Report:\n%s\nfendix output:\n%s",
+			body, out,
+		)
 	}
 }
