@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -20,24 +22,25 @@ const evilOrigin = "https://evil.example.com"
 //  3. Reflected arbitrary origin → HIGH
 //  4. Non-standard methods allowed → LOW
 func CheckCORS(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	client := &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second}
+	client := &http.Client{
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "OPTIONS", endpoint.FullURL, nil)
 	if err != nil {
-		slog.Warn("CORS check: failed to create request", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("cors", "CORS check: failed to create request", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 
 	req.Header.Set("Origin", evilOrigin)
 	req.Header.Set("Access-Control-Request-Method", "GET")
 
-	if cfg.Auth != nil {
-		req.Header.Set(cfg.Auth.Header, cfg.Auth.Value)
-	}
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Warn("CORS check: request failed", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("cors", "CORS check: request failed", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 	defer resp.Body.Close()

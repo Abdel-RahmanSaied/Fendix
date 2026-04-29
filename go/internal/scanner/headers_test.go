@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -239,5 +240,39 @@ func TestContainsVersion(t *testing.T) {
 				t.Errorf("containsVersion(%q) = %v, want %v", tt.value, result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestCheckHeaders_LogaggCapsTransientErrors is the regression test for
+// TASK-094 logging hygiene. Real-world scans against partially-unreachable
+// targets used to flood logs with one slog.Warn per failed request. Now
+// CheckHeaders routes its transient-error WARN through logagg, which caps
+// per-key emission at DefaultCap and downgrades the rest to slog.Debug.
+//
+// The fixture is a server that immediately closes every connection so the
+// request fails consistently. Calling CheckHeaders 10 times should produce
+// at most DefaultCap WARN-level emissions tracked under key="headers".
+func TestCheckHeaders_LogaggCapsTransientErrors(t *testing.T) {
+	logagg.Reset()
+	defer logagg.Reset()
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.Start()
+	server.Close() // close immediately so subsequent dials fail
+
+	cfg := &models.ScanConfig{Timeout: 1}
+	ep := Endpoint{Method: "GET", Path: "/", FullURL: server.URL + "/"}
+
+	const calls = 10
+	for i := 0; i < calls; i++ {
+		_ = CheckHeaders(context.Background(), cfg, ep)
+	}
+
+	warned, suppressed := logagg.Stats("headers")
+	if warned != logagg.DefaultCap {
+		t.Errorf("warned: got %d, want %d", warned, logagg.DefaultCap)
+	}
+	if warned+suppressed != calls {
+		t.Errorf("total events: warned=%d suppressed=%d sum=%d, want %d", warned, suppressed, warned+suppressed, calls)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -30,7 +31,10 @@ var rateLimitHeaders = []string{
 // CheckRateLimit sends multiple rapid requests to detect rate limiting.
 // If all requests succeed with no 429 or rate-limit headers, it reports a finding.
 func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	client := &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second}
+	client := &http.Client{
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
+	}
 
 	throttledCount := 0
 	rateLimitHeaderSeen := false
@@ -46,9 +50,7 @@ func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoi
 		if err != nil {
 			continue
 		}
-		if cfg.Auth != nil {
-			req.Header.Set(cfg.Auth.Header, cfg.Auth.Value)
-		}
+		cfg.Auth.ApplyToRequest(req)
 
 		resp, err := client.Do(req)
 		if err != nil {

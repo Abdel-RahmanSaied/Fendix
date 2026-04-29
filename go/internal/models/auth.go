@@ -9,14 +9,20 @@ import (
 const (
 	AuthTypeBearer = "bearer"
 	AuthTypeAPIKey = "apikey"
-	AuthTypeBasic  = "basic"
-	AuthTypeCookie = "cookie"
+	// AuthTypeAPIKeyQuery places the API key in a query-string parameter
+	// rather than a request header. Param name comes from AuthContext.Header
+	// (a small overload — Header doubles as the query-param name in this
+	// mode); defaults to "api_key" if unset.
+	AuthTypeAPIKeyQuery = "apikey-query"
+	AuthTypeBasic       = "basic"
+	AuthTypeCookie      = "cookie"
 
 	EnvAuth       = "FENDIX_AUTH"
 	EnvAuthType   = "FENDIX_AUTH_TYPE"
 	EnvAuthHeader = "FENDIX_AUTH_HEADER"
 
-	DefaultAuthHeader = "Authorization"
+	DefaultAuthHeader        = "Authorization"
+	DefaultAPIKeyQueryParam  = "api_key"
 )
 
 // ResolveAuth resolves authentication from multiple sources in priority order:
@@ -49,11 +55,15 @@ func ResolveAuth(flagAuth *AuthContext, profileLoader func() *AuthContext) *Auth
 }
 
 // NormalizeAuth fills in defaults: sets the header to Authorization if empty,
-// auto-detects auth type if not specified, and overrides header for cookie auth.
+// auto-detects auth type if not specified, and overrides header for cookie
+// (always "Cookie") and apikey-query (defaults to "api_key" unless user set
+// it explicitly). The apikey-query default is applied AFTER the empty-header
+// fallback so the user's explicit `--auth-header api_secret` wins.
 func NormalizeAuth(auth *AuthContext) *AuthContext {
 	if auth == nil {
 		return nil
 	}
+	headerExplicit := auth.Header != ""
 	if auth.Header == "" {
 		auth.Header = DefaultAuthHeader
 	}
@@ -62,6 +72,9 @@ func NormalizeAuth(auth *AuthContext) *AuthContext {
 	}
 	if auth.Type == AuthTypeCookie {
 		auth.Header = "Cookie"
+	}
+	if auth.Type == AuthTypeAPIKeyQuery && !headerExplicit {
+		auth.Header = DefaultAPIKeyQueryParam
 	}
 	return auth
 }
@@ -100,10 +113,20 @@ func (a *AuthContext) RedactedHeader() (string, string) {
 	return a.Header, "[REDACTED]"
 }
 
-// ApplyToRequest sets the authentication header on an HTTP request.
+// ApplyToRequest sets the authentication on an HTTP request — either as a
+// header (default) or as a query-string parameter (apikey-query mode).
 // Safe to call on a nil receiver.
 func (a *AuthContext) ApplyToRequest(req *http.Request) {
 	if a == nil || a.Value == "" {
+		return
+	}
+	if a.Type == AuthTypeAPIKeyQuery {
+		// Mutate the query string in place. url.Values.Set replaces an
+		// existing value (idempotent across multiple ApplyToRequest calls
+		// on the same request — defensive against accidental double-apply).
+		q := req.URL.Query()
+		q.Set(a.Header, a.Value)
+		req.URL.RawQuery = q.Encode()
 		return
 	}
 	req.Header.Set(a.Header, a.Value)

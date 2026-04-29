@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -353,13 +354,16 @@ func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoi
 		return nil
 	}
 
-	client := &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second}
+	client := &http.Client{
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
+	}
 	var findings []models.Finding
 	maxProbes := effectiveMaxProbes(cfg)
 
 	for _, t := range targetsForEndpoint(endpoint) {
 		if auditLog.Count(endpoint.FullURL) >= maxProbes {
-			slog.Warn("max probes reached for endpoint", "endpoint", endpoint.FullURL, "max", maxProbes)
+			logagg.Warn("injection", "max probes reached for endpoint", "endpoint", endpoint.FullURL, "max", maxProbes)
 			break
 		}
 
@@ -388,7 +392,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 
 	baseline, err := measureBaseline(ctx, client, endpoint.Method, endpoint.FullURL)
 	if err != nil {
-		slog.Warn("failed to measure baseline for sqli", "endpoint", endpoint.FullURL, "error", err)
+		logagg.Warn("injection", "failed to measure baseline for sqli", "endpoint", endpoint.FullURL, "error", err)
 		return nil
 	}
 
@@ -400,7 +404,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		start := time.Now()
 		req, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
 		if err != nil {
-			slog.Warn("failed to create sqli probe request", "error", err)
+			logagg.Warn("injection", "failed to create sqli probe request", "error", err)
 			continue
 		}
 		addAuth(req, cfg)
@@ -419,7 +423,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		}
 
 		if err != nil {
-			slog.Warn("sqli probe request failed", "endpoint", endpoint.FullURL, "db", p.DB, "error", err)
+			logagg.Warn("injection", "sqli probe request failed", "endpoint", endpoint.FullURL, "db", p.DB, "error", err)
 			record.Status = 0
 			record.Finding = false
 			auditLog.Record(record)
@@ -506,7 +510,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 	start := time.Now()
 	req, err := buildProbeRequest(ctx, endpoint, param, sqliErrorPayload, loc)
 	if err != nil {
-		slog.Warn("failed to create error-based sqli probe request", "error", err)
+		logagg.Warn("injection", "failed to create error-based sqli probe request", "error", err)
 		return nil
 	}
 	addAuth(req, cfg)
@@ -525,7 +529,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 	}
 
 	if err != nil {
-		slog.Warn("error-based sqli probe failed", "endpoint", endpoint.FullURL, "error", err)
+		logagg.Warn("injection", "error-based sqli probe failed", "endpoint", endpoint.FullURL, "error", err)
 		record.Status = 0
 		auditLog.Record(record)
 		return nil
@@ -619,7 +623,7 @@ func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanCon
 	start := time.Now()
 	req, err := buildProbeRequest(ctx, endpoint, param, payload, loc)
 	if err != nil {
-		slog.Warn("failed to create boolean sqli probe request", "error", err)
+		logagg.Warn("injection", "failed to create boolean sqli probe request", "error", err)
 		return 0, 0, false
 	}
 	addAuth(req, cfg)
@@ -638,7 +642,7 @@ func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanCon
 	}
 
 	if err != nil {
-		slog.Warn("boolean sqli probe failed", "endpoint", endpoint.FullURL, "error", err)
+		logagg.Warn("injection", "boolean sqli probe failed", "endpoint", endpoint.FullURL, "error", err)
 		auditLog.Record(record)
 		return 0, 0, false
 	}
@@ -661,7 +665,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	start := time.Now()
 	req, err := buildProbeRequest(ctx, endpoint, param, cmdiPayload, loc)
 	if err != nil {
-		slog.Warn("failed to create cmdi probe request", "error", err)
+		logagg.Warn("injection", "failed to create cmdi probe request", "error", err)
 		return nil
 	}
 	addAuth(req, cfg)
@@ -680,7 +684,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	}
 
 	if err != nil {
-		slog.Warn("cmdi probe request failed", "endpoint", endpoint.FullURL, "error", err)
+		logagg.Warn("injection", "cmdi probe request failed", "endpoint", endpoint.FullURL, "error", err)
 		record.Status = 0
 		record.Finding = false
 		auditLog.Record(record)
@@ -739,7 +743,7 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, endpoint.Method, probeURL, nil)
 	if err != nil {
-		slog.Warn("failed to create crlf probe request", "error", err)
+		logagg.Warn("injection", "failed to create crlf probe request", "error", err)
 		return nil
 	}
 	addAuth(req, cfg)
@@ -758,7 +762,7 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	}
 
 	if err != nil {
-		slog.Warn("crlf probe request failed", "endpoint", endpoint.FullURL, "error", err)
+		logagg.Warn("injection", "crlf probe request failed", "endpoint", endpoint.FullURL, "error", err)
 		record.Status = 0
 		record.Finding = false
 		auditLog.Record(record)
@@ -817,6 +821,13 @@ func addAuth(req *http.Request, cfg *models.ScanConfig) {
 		req.Header.Set(header, "Bearer "+cfg.Auth.Value)
 	case "apikey":
 		req.Header.Set(header, cfg.Auth.Value)
+	case "apikey-query":
+		// Mutate the URL query rather than a header — same logic as
+		// AuthContext.ApplyToRequest, repeated here because injection
+		// builds its own auth-bearing requests outside ApplyToRequest.
+		q := req.URL.Query()
+		q.Set(header, cfg.Auth.Value)
+		req.URL.RawQuery = q.Encode()
 	case "basic":
 		req.Header.Set(header, "Basic "+cfg.Auth.Value)
 	case "cookie":

@@ -2,6 +2,25 @@
 
 Fendix produces SARIF 2.1.0 output that integrates directly with GitHub Advanced Security, enabling PR annotations and the Security tab.
 
+## Quick start — copy this workflow
+
+A complete, ready-to-use reference workflow lives at
+[`examples/github-actions/fendix-scan.yml`](../examples/github-actions/fendix-scan.yml).
+Drop it into `.github/workflows/fendix-scan.yml` of your project and it
+will:
+
+- Scan on every PR and on push to `main`.
+- Upload SARIF to GitHub Code Scanning (inline annotations on the PR).
+- Persist the previous run's findings as a baseline (cached via
+  `actions/cache`) so a PR comment shows only the diff.
+- Post a summary comment on each PR with finding counts, top 5
+  findings, and links to the Security tab.
+- Fail the build if any HIGH or CRITICAL findings exist after baseline
+  filtering (`--fail-on HIGH`).
+
+The sections below show the individual building blocks if you'd rather
+assemble your own workflow.
+
 ## GitHub Actions — SARIF Upload
 
 This workflow runs Fendix on every pull request, uploads SARIF results to GitHub Code Scanning, and fails the build if any HIGH or CRITICAL findings are detected.

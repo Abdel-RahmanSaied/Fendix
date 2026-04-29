@@ -803,3 +803,275 @@ func TestReport_RejectsSARIFInput(t *testing.T) {
 	}
 }
 
+// TestPathParamSubstitution_HitsServerWithSampleValue is the regression for
+// TASK-093. Pre-fix, an OpenAPI spec declaring `/users/{id}` produced
+// HTTP requests to `/users/%7Bid%7D` because http.NewRequest URL-encodes
+// the literal `{` and `}` characters — every server returned 404 and every
+// black-box check observed nothing on the templated endpoint.
+//
+// This test stands up a server that 200s on `/users/1` (a concrete integer
+// matching the spec's `schema.example: 1`) and 404s everywhere else. The
+// scan should observe the 200 response and emit a finding tied to that
+// endpoint. We also assert the report never contains the raw `%7B` percent-
+// encoded brace, which would mean substitution failed somewhere.
+func TestPathParamSubstitution_HitsServerWithSampleValue(t *testing.T) {
+	bin := fendixBinary(t)
+
+	// Track which paths the server received — the test passes only if
+	// `/users/1` (substituted form) was hit, not `/users/%7Bid%7D` (raw).
+	var (
+		mu   sync.Mutex
+		hits []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.URL.Path)
+		mu.Unlock()
+		// Respond 200 only on the substituted form. The headers response is
+		// also intentionally weak (no CSP/HSTS/X-Frame-Options/etc) so the
+		// passive headers check has something to report — providing finding
+		// content in the report.
+		if r.URL.Path == "/users/1" {
+			w.Header().Set("Server", "test/1.0")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1,"name":"alice"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	specDir := t.TempDir()
+	specPath := filepath.Join(specDir, "openapi.yaml")
+	specBody := `openapi: 3.0.0
+info:
+  title: Test
+  version: 1.0.0
+servers:
+  - url: ` + srv.URL + `
+paths:
+  /users/{id}:
+    get:
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            example: 1
+      responses:
+        '200':
+          description: OK
+`
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", srv.URL,
+		"--spec", specPath,
+		"--output", outputPath,
+		"--workers", "2",
+		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
+		"--crawl-depth", "0",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("scan failed: %v\n%s", err, out)
+		}
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected report at %s: %v\noutput:\n%s", outputPath, err, out)
+	}
+	body := string(report)
+
+	// Server side: the substituted URL must have been hit.
+	mu.Lock()
+	hitsCopy := append([]string(nil), hits...)
+	mu.Unlock()
+	hitSubstituted := false
+	for _, h := range hitsCopy {
+		if h == "/users/1" {
+			hitSubstituted = true
+		}
+		if h == "/users/%7Bid%7D" || h == "/users/{id}" {
+			t.Errorf("server received un-substituted path %q (TASK-093 regression)", h)
+		}
+	}
+	if !hitSubstituted {
+		t.Fatalf("server never received /users/1.\nhits: %v\noutput:\n%s", hitsCopy, out)
+	}
+
+	// Report side: the report must not leak the raw percent-encoded brace
+	// anywhere — that would indicate substitution failed at some emission site.
+	if contains(body, "%7B") || contains(body, "%7b") {
+		t.Errorf("report contains raw %%7B placeholder leak (TASK-093 regression):\n%s", body)
+	}
+
+	// At least one finding should be present (proves the scan actually got
+	// observable response data — the headers check fires against a server
+	// missing CSP/HSTS/X-Frame-Options/etc.). Tolerant of pretty-printed
+	// vs compact JSON: an empty array is `[]` regardless of formatting.
+	if contains(body, `"findings": []`) || contains(body, `"findings":[]`) {
+		t.Errorf("expected at least one finding in report; got empty.\nReport:\n%s\nOutput:\n%s", body, out)
+	}
+
+	// And confirm at least one finding's endpoint references the templated
+	// `/users/{id}` form (Path is preserved on findings even though FullURL
+	// is substituted), so users see the spec-shaped path in reports.
+	if !contains(body, "/users/{id}") {
+		t.Errorf("expected templated path /users/{id} in finding endpoints (reports lose template form):\n%s", body)
+	}
+}
+
+// TestMaxRequests_SoftStopCapsTotalRequests is the regression test for
+// TASK-095 --max-requests. A 50-endpoint scan with 4 active checks would
+// normally fire ~200 requests; with --max-requests 20 the cap should be
+// honoured (allowing for the soft-stop overshoot of in-flight requests).
+// We measure server-side hit count rather than the budget summary string
+// so the test is robust against minor log-format changes.
+func TestMaxRequests_SoftStopCapsTotalRequests(t *testing.T) {
+	bin := fendixBinary(t)
+
+	var (
+		mu   sync.Mutex
+		hits int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	// Build a wordlist with 50 paths so the scanner has lots of work.
+	dir := t.TempDir()
+	wlPath := filepath.Join(dir, "wl.txt")
+	var wl bytes.Buffer
+	for i := 0; i < 50; i++ {
+		fmt.Fprintf(&wl, "/path%d\n", i)
+	}
+	if err := os.WriteFile(wlPath, wl.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", srv.URL,
+		"--output", outputPath,
+		"--workers", "4",
+		"--timeout", "5",
+		"--wordlist", wlPath,
+		"--crawl-depth", "0",
+		"--max-requests", "20",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("scan failed: %v\n%s", err, out)
+		}
+	}
+
+	// Soft-stop overshoot bound: at most workers (4) extra in-flight requests
+	// can sneak past the cap before the worker pool sees the ctx cancel.
+	// Use a generous upper bound (cap × 4) to keep the test resilient on
+	// CI machines with different scheduling. The pre-fix path would have
+	// fired ~200 requests (50 paths × 4 checks), so even the loose bound
+	// catches a regression.
+	mu.Lock()
+	finalHits := hits
+	mu.Unlock()
+	const cap = 20
+	const upperBound = cap * 4
+	if finalHits > upperBound {
+		t.Errorf("max-requests soft-cap not enforced: server saw %d hits, want <= %d (cap=%d)\noutput:\n%s",
+			finalHits, upperBound, cap, out)
+	}
+
+	// And the budget summary must appear in the log output, signalling the
+	// cap mechanism actually engaged.
+	if !contains(string(out), "budget summary") {
+		t.Errorf("expected 'budget summary' in fendix output, got:\n%s", out)
+	}
+}
+
+// TestRespectRobots_FiltersDisallowedFromEndpointList is the e2e regression
+// test for the --respect-robots half of TASK-095. The mock target's
+// robots.txt disallows /admin; the scan should not hit /admin even though
+// the wordlist would otherwise discover it via brute-force.
+func TestRespectRobots_FiltersDisallowedFromEndpointList(t *testing.T) {
+	bin := fendixBinary(t)
+
+	var (
+		mu       sync.Mutex
+		adminHit bool
+		apiHit   bool
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /admin\n"))
+	})
+	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		adminHit = true
+		mu.Unlock()
+		w.WriteHeader(200)
+	})
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		apiHit = true
+		mu.Unlock()
+		w.WriteHeader(200)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	wlPath := filepath.Join(dir, "wl.txt")
+	if err := os.WriteFile(wlPath, []byte("/admin\n/api\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", srv.URL,
+		"--output", outputPath,
+		"--workers", "2",
+		"--timeout", "5",
+		"--wordlist", wlPath,
+		"--crawl-depth", "0",
+		"--respect-robots",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("scan failed: %v\n%s", err, out)
+		}
+	}
+
+	mu.Lock()
+	a, b := adminHit, apiHit
+	mu.Unlock()
+
+	if a {
+		t.Errorf("--respect-robots regression: /admin was hit despite Disallow rule.\noutput:\n%s", out)
+	}
+	if !b {
+		t.Errorf("--respect-robots regression: /api was not hit (allowed path should still be scanned).\noutput:\n%s", out)
+	}
+}

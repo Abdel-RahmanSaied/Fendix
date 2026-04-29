@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -169,21 +171,22 @@ func containsVersion(value string) bool {
 
 // CheckHeaders sends a GET request and checks for missing/misconfigured security headers.
 func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	client := &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second}
+	client := &http.Client{
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.FullURL, nil)
 	if err != nil {
-		slog.Warn("headers check: failed to create request", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("headers", "headers check: failed to create request", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 
-	if cfg.Auth != nil {
-		req.Header.Set(cfg.Auth.Header, cfg.Auth.Value)
-	}
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Warn("headers check: request failed", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("headers", "headers check: request failed", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 	defer resp.Body.Close()

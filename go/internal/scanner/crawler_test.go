@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -896,17 +897,22 @@ Sitemap: https://example.com/sitemap.xml
 Sitemap: https://example.com/sitemap-news.xml
 # trailing comment
 `)
-	paths, sitemaps := parseRobots(body)
+	disallows, allows, sitemaps := parseRobots(body)
 
-	wantPaths := map[string]bool{"/admin/": true, "/private/": true, "/admin/public": true, "/search?q=": true}
-	for _, p := range paths {
-		if !wantPaths[p] {
-			t.Errorf("unexpected path %q in %v", p, paths)
+	// Disallow paths from this fixture: /admin/, /private/, /search?q=
+	// Allow paths: /admin/public
+	wantDisallows := map[string]bool{"/admin/": true, "/private/": true, "/search?q=": true}
+	for _, p := range disallows {
+		if !wantDisallows[p] {
+			t.Errorf("unexpected disallow path %q in %v", p, disallows)
 		}
-		delete(wantPaths, p)
+		delete(wantDisallows, p)
 	}
-	if len(wantPaths) != 0 {
-		t.Errorf("missing paths %v from %v", wantPaths, paths)
+	if len(wantDisallows) != 0 {
+		t.Errorf("missing disallow paths %v from %v", wantDisallows, disallows)
+	}
+	if len(allows) != 1 || allows[0] != "/admin/public" {
+		t.Errorf("expected single allow /admin/public, got %v", allows)
 	}
 
 	wantSitemaps := []string{"https://example.com/sitemap.xml", "https://example.com/sitemap-news.xml"}
@@ -927,9 +933,9 @@ func TestParseRobots_IgnoresMalformedLines(t *testing.T) {
 Disallow: not-a-path
 Disallow: /good
 `)
-	paths, _ := parseRobots(body)
-	if len(paths) != 1 || paths[0] != "/good" {
-		t.Errorf("expected single path /good, got %v", paths)
+	disallows, _, _ := parseRobots(body)
+	if len(disallows) != 1 || disallows[0] != "/good" {
+		t.Errorf("expected single disallow /good, got %v", disallows)
 	}
 }
 
@@ -1303,4 +1309,395 @@ paths:
 	if endpoints[0].Method != "GET" || endpoints[0].Path != "/users" {
 		t.Errorf("unexpected endpoint: %s %s", endpoints[0].Method, endpoints[0].Path)
 	}
+}
+
+func TestSubstitutePathPlaceholders_NoPlaceholders(t *testing.T) {
+	got := substitutePathPlaceholders("/users", nil)
+	if got != "/users" {
+		t.Errorf("paths without placeholders should pass through, got %q", got)
+	}
+	got = substitutePathPlaceholders("/", nil)
+	if got != "/" {
+		t.Errorf("root path should pass through, got %q", got)
+	}
+}
+
+func TestSubstitutePathPlaceholders_NameHeuristic(t *testing.T) {
+	tests := []struct {
+		template string
+		want     string
+	}{
+		{"/users/{id}", "/users/1"},
+		{"/orgs/{org_id}/repos", "/orgs/1/repos"},
+		{"/items/{userId}/x/{postId}", "/items/1/x/1"},
+		{"/files/{uuid}", "/files/00000000-0000-0000-0000-000000000000"},
+		{"/things/{name}", "/things/sample"},
+		{"/page/{count}/x", "/page/1/x"},
+		{"/p/{limit}/{offset}", "/p/1/1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.template, func(t *testing.T) {
+			got := substitutePathPlaceholders(tt.template, nil)
+			if got != tt.want {
+				t.Errorf("substitutePathPlaceholders(%q) = %q, want %q", tt.template, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubstitutePathPlaceholders_SchemaTypeDriven(t *testing.T) {
+	schemas := map[string]pathParamSchema{
+		"id":       {Type: "integer"},
+		"flag":     {Type: "boolean"},
+		"hash":     {Type: "string", Format: "uuid"},
+		"d":        {Type: "string", Format: "date"},
+		"dt":       {Type: "string", Format: "date-time"},
+		"contact":  {Type: "string", Format: "email"},
+		"category": {Type: "string"}, // no format → falls through to name-heuristic ("sample")
+	}
+	got := substitutePathPlaceholders("/a/{id}/b/{flag}/c/{hash}/d/{d}/e/{dt}/f/{contact}/g/{category}", schemas)
+	want := "/a/1/b/true/c/00000000-0000-0000-0000-000000000000/d/2024-01-01/e/2024-01-01T00:00:00Z/f/user@example.com/g/sample"
+	if got != want {
+		t.Errorf("schema-typed substitution mismatch:\n got  %q\n want %q", got, want)
+	}
+}
+
+func TestSubstitutePathPlaceholders_ExampleAndEnumWin(t *testing.T) {
+	schemas := map[string]pathParamSchema{
+		"id":     {Type: "integer", Example: 42},
+		"role":   {Type: "string", Enum: []interface{}{"admin", "user"}},
+		"weird":  {Type: "string", Example: "the/example"}, // verify URL-escape happens
+		"strict": {Type: "string", Example: "hello world"}, // space → %20
+	}
+	tests := []struct {
+		template string
+		want     string
+	}{
+		{"/users/{id}", "/users/42"},
+		{"/auth/{role}", "/auth/admin"},
+		{"/p/{weird}", "/p/the%2Fexample"},
+		{"/q/{strict}", "/q/hello%20world"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.template, func(t *testing.T) {
+			got := substitutePathPlaceholders(tt.template, schemas)
+			if got != tt.want {
+				t.Errorf("substitute(%q) = %q, want %q", tt.template, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubstitutePathPlaceholders_UnknownNameFallback(t *testing.T) {
+	// schemas map is non-nil but missing the placeholder name; should fall
+	// back to the name-heuristic path (so `{id}` still becomes "1").
+	schemas := map[string]pathParamSchema{
+		"unrelated": {Type: "integer"},
+	}
+	got := substitutePathPlaceholders("/users/{id}", schemas)
+	if got != "/users/1" {
+		t.Errorf("unknown-name fallback failed: got %q", got)
+	}
+}
+
+func TestSampleByName_LongerSuffixDoesNotFalseMatch(t *testing.T) {
+	// "valid" contains "id" as a substring but doesn't end with id; should
+	// fall through to "sample". This guards against a regression where
+	// `strings.Contains(name, "id")` would have spuriously matched.
+	if got := sampleByName("valid"); got != "sample" {
+		t.Errorf("sampleByName(\"valid\") = %q, want \"sample\"", got)
+	}
+	// But `userId` ends with "Id" so should hit the *id rule.
+	if got := sampleByName("userId"); got != "1" {
+		t.Errorf("sampleByName(\"userId\") = %q, want \"1\"", got)
+	}
+}
+
+func TestExtractPathParamSchemas_OAS3(t *testing.T) {
+	// OAS 3 nests schema under parameters[*].schema and supports an
+	// optional parameter-level `example` that overrides schema.example.
+	raw := []interface{}{
+		map[string]interface{}{
+			"name": "id",
+			"in":   "path",
+			"schema": map[string]interface{}{
+				"type":    "integer",
+				"example": 7,
+			},
+		},
+		map[string]interface{}{
+			"name": "kind",
+			"in":   "path",
+			"schema": map[string]interface{}{
+				"type": "string",
+				"enum": []interface{}{"a", "b"},
+			},
+			"example": "z", // parameter-level wins over schema.enum
+		},
+		map[string]interface{}{
+			// query params should be ignored — only `in: path` counts
+			"name":   "q",
+			"in":    "query",
+			"schema": map[string]interface{}{"type": "string"},
+		},
+		map[string]interface{}{
+			// $ref entries are skipped
+			"$ref": "#/components/parameters/Foo",
+		},
+	}
+	got := extractPathParamSchemas(raw)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 path-param schemas, got %d: %+v", len(got), got)
+	}
+	if got["id"].Type != "integer" || got["id"].Example != 7 {
+		t.Errorf("id schema mismatch: %+v", got["id"])
+	}
+	if got["kind"].Example != "z" {
+		t.Errorf("kind: parameter-level example should override schema-level: %+v", got["kind"])
+	}
+	if _, ok := got["q"]; ok {
+		t.Errorf("query param should not appear in path-schema map")
+	}
+}
+
+func TestExtractPathParamSchemas_Swagger2(t *testing.T) {
+	// Swagger 2 puts type/format/example/enum directly on the parameter.
+	raw := []interface{}{
+		map[string]interface{}{
+			"name":    "userId",
+			"in":      "path",
+			"type":    "integer",
+			"format":  "int64",
+			"example": 99,
+		},
+		map[string]interface{}{
+			"name": "status",
+			"in":   "path",
+			"type": "string",
+			"enum": []interface{}{"active", "archived"},
+		},
+	}
+	got := extractPathParamSchemas(raw)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 path-param schemas, got %d", len(got))
+	}
+	if got["userId"].Type != "integer" || got["userId"].Format != "int64" || got["userId"].Example != 99 {
+		t.Errorf("userId mismatch: %+v", got["userId"])
+	}
+	if len(got["status"].Enum) != 2 || got["status"].Enum[0] != "active" {
+		t.Errorf("status enum mismatch: %+v", got["status"])
+	}
+}
+
+func TestExtractPathParamSchemas_OpLevelOverridesPathLevel(t *testing.T) {
+	// When the same name appears at both layers, op-level wins.
+	pathLevel := []interface{}{
+		map[string]interface{}{
+			"name": "id", "in": "path",
+			"schema": map[string]interface{}{"type": "integer", "example": 1},
+		},
+	}
+	opLevel := []interface{}{
+		map[string]interface{}{
+			"name": "id", "in": "path",
+			"schema": map[string]interface{}{"type": "string", "example": "abc"},
+		},
+	}
+	got := extractPathParamSchemas(pathLevel, opLevel)
+	if got["id"].Type != "string" || got["id"].Example != "abc" {
+		t.Errorf("op-level override failed: %+v", got["id"])
+	}
+}
+
+func TestFromSpec_FullURLHasNoPlaceholders(t *testing.T) {
+	spec := `
+openapi: "3.0.0"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /users/{id}:
+    get:
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            example: 7
+  /items/{name}:
+    get:
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+  /no-schema/{id}:
+    get: {}
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCrawler(&models.ScanConfig{SpecPath: specPath, Timeout: 10})
+	endpoints, err := c.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec failed: %v", err)
+	}
+
+	byPath := map[string]Endpoint{}
+	for _, e := range endpoints {
+		byPath[e.Path] = e
+	}
+
+	got, ok := byPath["/users/{id}"]
+	if !ok {
+		t.Fatalf("missing endpoint /users/{id}")
+	}
+	if got.Path != "/users/{id}" {
+		t.Errorf("Path should preserve template form, got %q", got.Path)
+	}
+	if got.FullURL != "https://api.example.com/users/7" {
+		t.Errorf("FullURL should use schema example: got %q", got.FullURL)
+	}
+
+	got = byPath["/items/{name}"]
+	if got.FullURL != "https://api.example.com/items/sample" {
+		t.Errorf("FullURL should use string-name fallback: got %q", got.FullURL)
+	}
+
+	got = byPath["/no-schema/{id}"]
+	if got.FullURL != "https://api.example.com/no-schema/1" {
+		t.Errorf("FullURL should use name-heuristic when no spec params present: got %q", got.FullURL)
+	}
+
+	// Sanity: no FullURL contains the literal "{" placeholder leak — the
+	// failure mode this whole task fixes.
+	for _, e := range endpoints {
+		if strings.Contains(e.FullURL, "{") || strings.Contains(e.FullURL, "%7B") {
+			t.Errorf("FullURL still has placeholder leak: %q", e.FullURL)
+		}
+	}
+}
+
+// TestPathDisallowedByRobots is the unit-level coverage for the
+// --respect-robots prefix-match (TASK-095). Disallow rules in robots.txt
+// are conventionally prefix-matched: "Disallow: /admin" blocks any URL
+// path starting with /admin (including /admin/users, /admin/login, etc.).
+// `/` as a Disallow rule blocks everything per the robots-spec convention.
+func TestPathDisallowedByRobots(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		rules   []string
+		blocked bool
+	}{
+		{"empty rules", "/admin", nil, false},
+		{"exact prefix", "/admin", []string{"/admin"}, true},
+		{"deeper path under prefix", "/admin/login", []string{"/admin"}, true},
+		{"sibling path not under prefix", "/admins", []string{"/admin/"}, false},
+		{"unrelated path", "/api/users", []string{"/admin"}, false},
+		{"slash-only blocks everything", "/anywhere", []string{"/"}, true},
+		{"slash-only blocks root too", "/", []string{"/"}, true},
+		{"empty rule string is skipped", "/anywhere", []string{""}, false},
+		{"multi-rule any match wins", "/private/x", []string{"/admin", "/private"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pathDisallowedByRobots(tt.path, tt.rules)
+			if got != tt.blocked {
+				t.Errorf("pathDisallowedByRobots(%q, %v) = %v, want %v", tt.path, tt.rules, got, tt.blocked)
+			}
+		})
+	}
+}
+
+// TestCrawlEndpoints_RespectRobots_FiltersDisallowedAcrossSources is the
+// integration test for --respect-robots (TASK-095). With the flag set, a
+// disallowed path discovered via brute-force (and not just via robots.txt
+// itself) must be filtered out of the final endpoint list — that's the
+// polite-crawler convention this flag implements. Without the flag, the
+// existing default behaviour (queue Disallow paths as discovery hints)
+// is preserved.
+func TestCrawlEndpoints_RespectRobots_FiltersDisallowedAcrossSources(t *testing.T) {
+	// Mock target: serves a robots.txt with Disallow /admin, plus we'll
+	// use a wordlist that includes both /admin and /api so brute-force
+	// re-discovers /admin separately.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /admin\n"))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Wordlist: both /admin (which robots disallows) and /api (allowed).
+	dir := t.TempDir()
+	wlPath := filepath.Join(dir, "wl.txt")
+	if err := os.WriteFile(wlPath, []byte("/admin\n/api\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default (--respect-robots false): /admin appears in the endpoint list
+	// (queued from both robots.txt and brute-force). Verifying this first
+	// also locks in the existing behaviour against accidental regression.
+	cfg := &models.ScanConfig{
+		URL:          srv.URL,
+		Timeout:      5,
+		WordlistPath: wlPath,
+		CrawlDepth:   0,
+	}
+	c := NewCrawler(cfg)
+	got, err := c.CrawlEndpoints(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasPath(got, "/admin") {
+		t.Errorf("default mode: /admin should appear (Disallow → discovery hint), got %v", paths(got))
+	}
+
+	// With --respect-robots: /admin must be filtered out, /api must remain.
+	cfg2 := &models.ScanConfig{
+		URL:           srv.URL,
+		Timeout:       5,
+		WordlistPath:  wlPath,
+		CrawlDepth:    0,
+		RespectRobots: true,
+	}
+	c2 := NewCrawler(cfg2)
+	got2, err := c2.CrawlEndpoints(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasPath(got2, "/admin") {
+		t.Errorf("respect-robots mode: /admin should be filtered out, got %v", paths(got2))
+	}
+	if !hasPath(got2, "/api") {
+		t.Errorf("respect-robots mode: /api (allowed) should remain, got %v", paths(got2))
+	}
+}
+
+// hasPath reports whether any endpoint has the given Path.
+func hasPath(eps []Endpoint, p string) bool {
+	for _, e := range eps {
+		if e.Path == p {
+			return true
+		}
+	}
+	return false
+}
+
+// paths extracts the Path field from each Endpoint for diagnostic logging.
+func paths(eps []Endpoint) []string {
+	out := make([]string, len(eps))
+	for i, e := range eps {
+		out[i] = e.Path
+	}
+	return out
 }

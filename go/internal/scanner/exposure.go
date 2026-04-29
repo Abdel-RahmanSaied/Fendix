@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -77,28 +79,29 @@ var exposurePatterns = []exposurePattern{
 
 // CheckExposure scans response bodies for sensitive data patterns.
 func CheckExposure(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	client := &http.Client{Timeout: time.Duration(cfg.Timeout) * time.Second}
+	client := &http.Client{
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.FullURL, nil)
 	if err != nil {
-		slog.Warn("exposure check: failed to create request", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("exposure", "exposure check: failed to create request", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 
-	if cfg.Auth != nil {
-		req.Header.Set(cfg.Auth.Header, cfg.Auth.Value)
-	}
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Warn("exposure check: request failed", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("exposure", "exposure check: request failed", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 	if err != nil {
-		slog.Warn("exposure check: failed to read body", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("exposure", "exposure check: failed to read body", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 

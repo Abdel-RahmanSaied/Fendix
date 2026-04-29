@@ -1,4 +1,4 @@
-.PHONY: build test lint clean embed-engine e2e
+.PHONY: build test lint clean embed-engine e2e fuzz
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
 GO_DIR := go
@@ -44,6 +44,15 @@ test-go:
 e2e: build
 	@echo "→ Running e2e tests..."
 	cd $(GO_DIR) && go test -tags e2e -count=1 ./internal/e2e/...
+
+# fuzz runs the worker-pool cancellation fuzzer for FUZZTIME (default 30s).
+# Native go test fuzzing — no extra deps. The seed corpus is exercised on
+# every PR via `go test -race`; this target is for ad-hoc deeper runs.
+FUZZTIME ?= 30s
+fuzz:
+	@echo "→ Fuzzing worker-pool cancellation for $(FUZZTIME)..."
+	cd $(GO_DIR) && go test -race -fuzz FuzzWorkerPool_CancelTiming \
+		-fuzztime $(FUZZTIME) ./internal/engine/
 
 test-python:
 	@echo "→ Running Python tests..."

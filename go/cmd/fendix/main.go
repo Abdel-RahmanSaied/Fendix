@@ -93,6 +93,9 @@ func newScanCmd() *cobra.Command {
 			wordlistFlag, _ := flags.GetString("wordlist")
 			crawlDepth, _ := flags.GetInt("crawl-depth")
 			maxEndpoints, _ := flags.GetInt("max-endpoints")
+			maxRequests, _ := flags.GetInt64("max-requests")
+			maxDuration, _ := flags.GetDuration("max-duration")
+			respectRobots, _ := flags.GetBool("respect-robots")
 
 			if urlFlag == "" && specFlag == "" && codeFlag == "" {
 				return fmt.Errorf("at least one of --url, --spec, or --code is required")
@@ -117,6 +120,9 @@ func newScanCmd() *cobra.Command {
 				WordlistPath:         wordlistFlag,
 				CrawlDepth:           crawlDepth,
 				MaxEndpoints:         maxEndpoints,
+				MaxRequests:          maxRequests,
+				MaxDuration:          maxDuration,
+				RespectRobots:        respectRobots,
 			}
 
 			var flagAuth *models.AuthContext
@@ -172,6 +178,9 @@ func newScanCmd() *cobra.Command {
 	flags.String("wordlist", "", "Path to brute-force wordlist (one path per line); overrides built-in CommonPaths")
 	flags.Int("crawl-depth", 1, "Recursive HTML link crawl depth (0 disables; 1 = home-page links only)")
 	flags.Int("max-endpoints", 500, "Cap total discovered endpoints (0 = no cap)")
+	flags.Int64("max-requests", 0, "Soft-cap on total HTTP requests across all checks (0 = no cap)")
+	flags.Duration("max-duration", 0, "Soft-cap on total scan wall-clock time, e.g. 5m (0 = no cap)")
+	flags.Bool("respect-robots", false, "Treat robots.txt Disallow as a hard restriction (default: queue as discovery hints)")
 
 	return cmd
 }

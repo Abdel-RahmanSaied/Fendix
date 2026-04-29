@@ -297,3 +297,139 @@ func TestApplyToRequest_NoSideEffectOnNil(t *testing.T) {
 		t.Error("nil ApplyToRequest should not modify request headers")
 	}
 }
+
+// TestNormalizeAuth_APIKeyQueryDefaults covers the new apikey-query type
+// (TASK-096). Without an explicit --auth-header, the param name should
+// default to "api_key"; an explicit value must be preserved.
+func TestNormalizeAuth_APIKeyQueryDefaults(t *testing.T) {
+	t.Run("default param name when header unset", func(t *testing.T) {
+		auth := NormalizeAuth(&AuthContext{
+			Type:  AuthTypeAPIKeyQuery,
+			Value: "mykey",
+		})
+		if auth.Header != DefaultAPIKeyQueryParam {
+			t.Errorf("default Header: got %q, want %q", auth.Header, DefaultAPIKeyQueryParam)
+		}
+	})
+	t.Run("explicit param name preserved", func(t *testing.T) {
+		auth := NormalizeAuth(&AuthContext{
+			Type:   AuthTypeAPIKeyQuery,
+			Value:  "mykey",
+			Header: "api_secret",
+		})
+		if auth.Header != "api_secret" {
+			t.Errorf("explicit Header: got %q, want %q", auth.Header, "api_secret")
+		}
+	})
+}
+
+// TestApplyToRequest_APIKeyQueryMutatesURL is the wire-format regression
+// for apikey-query: the credential goes into the URL query string, NOT
+// into a request header. This is the single most important contract for
+// the new auth type.
+func TestApplyToRequest_APIKeyQueryMutatesURL(t *testing.T) {
+	t.Run("appends to empty query string", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/api/users", nil)
+		auth := &AuthContext{
+			Type:   AuthTypeAPIKeyQuery,
+			Value:  "secret-key-123",
+			Header: "api_key",
+		}
+		auth.ApplyToRequest(req)
+		if got := req.URL.Query().Get("api_key"); got != "secret-key-123" {
+			t.Errorf("query api_key: got %q, want secret-key-123", got)
+		}
+		// And the credential must NOT appear as a header.
+		if h := req.Header.Get("api_key"); h != "" {
+			t.Errorf("apikey-query must not set a header; got header api_key=%q", h)
+		}
+		if h := req.Header.Get("Authorization"); h != "" {
+			t.Errorf("apikey-query must not touch Authorization header; got %q", h)
+		}
+	})
+
+	t.Run("preserves existing query params", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/api/users?page=2", nil)
+		auth := &AuthContext{
+			Type:   AuthTypeAPIKeyQuery,
+			Value:  "abc",
+			Header: "key",
+		}
+		auth.ApplyToRequest(req)
+		q := req.URL.Query()
+		if got := q.Get("page"); got != "2" {
+			t.Errorf("existing page param lost: got %q, want 2", got)
+		}
+		if got := q.Get("key"); got != "abc" {
+			t.Errorf("auth param missing: got %q, want abc", got)
+		}
+	})
+
+	t.Run("idempotent on double-apply", func(t *testing.T) {
+		// Defensive: the same request might pass through ApplyToRequest
+		// multiple times if a wrapper retries. Result should still have
+		// exactly one auth param value.
+		req := httptest.NewRequest("GET", "http://example.com/api", nil)
+		auth := &AuthContext{
+			Type:   AuthTypeAPIKeyQuery,
+			Value:  "v1",
+			Header: "k",
+		}
+		auth.ApplyToRequest(req)
+		auth.ApplyToRequest(req)
+		params := req.URL.Query()["k"]
+		if len(params) != 1 || params[0] != "v1" {
+			t.Errorf("double-apply should be idempotent; got %v", params)
+		}
+	})
+}
+
+// TestApplyToRequest_HeaderTypesUnchanged verifies the refactor to
+// ApplyToRequest from direct Header.Set didn't break the wire format for
+// the original auth types (bearer/apikey-header/basic/cookie).
+func TestApplyToRequest_HeaderTypesUnchanged(t *testing.T) {
+	tests := []struct {
+		name       string
+		auth       *AuthContext
+		wantHeader string
+		wantValue  string
+	}{
+		{
+			name:       "bearer",
+			auth:       &AuthContext{Type: AuthTypeBearer, Header: "Authorization", Value: "Bearer xyz"},
+			wantHeader: "Authorization",
+			wantValue:  "Bearer xyz",
+		},
+		{
+			name:       "apikey-header",
+			auth:       &AuthContext{Type: AuthTypeAPIKey, Header: "X-API-Key", Value: "mykey"},
+			wantHeader: "X-API-Key",
+			wantValue:  "mykey",
+		},
+		{
+			name:       "basic",
+			auth:       &AuthContext{Type: AuthTypeBasic, Header: "Authorization", Value: "Basic dXNlcjpwYXNz"},
+			wantHeader: "Authorization",
+			wantValue:  "Basic dXNlcjpwYXNz",
+		},
+		{
+			name:       "cookie",
+			auth:       &AuthContext{Type: AuthTypeCookie, Header: "Cookie", Value: "session=abc"},
+			wantHeader: "Cookie",
+			wantValue:  "session=abc",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/", nil)
+			tt.auth.ApplyToRequest(req)
+			if got := req.Header.Get(tt.wantHeader); got != tt.wantValue {
+				t.Errorf("%s header: got %q, want %q", tt.wantHeader, got, tt.wantValue)
+			}
+			// And the URL must remain untouched for header-mode auth.
+			if req.URL.RawQuery != "" {
+				t.Errorf("%s should not mutate URL query; got %q", tt.name, req.URL.RawQuery)
+			}
+		})
+	}
+}

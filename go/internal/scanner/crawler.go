@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"gopkg.in/yaml.v3"
 )
@@ -84,6 +85,11 @@ type Crawler struct {
 	client *http.Client
 	cfg    *models.ScanConfig
 	seen   map[string]bool
+	// disallows is the deny list parsed from robots.txt during fromRobots,
+	// used by the other discovery sources (brute-force, HTML crawl) to
+	// avoid even a single fetch against disallowed paths when
+	// cfg.RespectRobots is true. Empty by default.
+	disallows []string
 }
 
 // NewCrawler creates a Crawler with an HTTP client configured from scan config.
@@ -98,11 +104,11 @@ func NewCrawler(cfg *models.ScanConfig) *Crawler {
 	return &Crawler{
 		client: &http.Client{
 			Timeout: time.Duration(cfg.Timeout) * time.Second,
-			Transport: &http.Transport{
+			Transport: budget.WrapTransport(&http.Transport{
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 32,
 				IdleConnTimeout:     90 * time.Second,
-			},
+			}),
 		},
 		cfg:  cfg,
 		seen: make(map[string]bool),
@@ -120,6 +126,7 @@ func NewCrawler(cfg *models.ScanConfig) *Crawler {
 // Result is deduplicated, sorted, and capped at --max-endpoints.
 func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	var endpoints []Endpoint
+	var disallows []string // populated by fromRobots when --respect-robots is set
 
 	if c.cfg.SpecPath != "" {
 		specEndpoints, err := c.fromSpec(ctx)
@@ -131,13 +138,15 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	}
 
 	if c.cfg.URL != "" {
-		// robots.txt — disallowed paths are often hidden admin endpoints.
-		// We capture them as discovery hints, not respect them as restrictions.
+		// robots.txt — by default we capture Disallow paths as endpoint hints
+		// (high-value targets); with --respect-robots we filter them out and
+		// also use them as a deny list for the other discovery sources below.
 		robotsResult, err := c.fromRobots(ctx)
 		if err != nil {
 			slog.Debug("robots.txt discovery failed", "error", err)
 		} else {
 			endpoints = append(endpoints, robotsResult.endpoints...)
+			disallows = robotsResult.disallows
 		}
 
 		// sitemap.xml — pull URLs declared in robots.txt first, fall back to
@@ -181,6 +190,32 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	}
 
 	deduped := c.deduplicate(endpoints)
+
+	// --respect-robots filter (TASK-095). Apply AFTER dedupe so we don't
+	// waste matching work on duplicates from multiple discovery sources.
+	// Filter against ALL discovery sources, not just robots.txt itself —
+	// the polite-crawler convention is "don't fetch anything the operator
+	// disallowed", regardless of how that path was discovered.
+	if c.cfg.RespectRobots && len(disallows) > 0 {
+		filtered := deduped[:0]
+		blocked := 0
+		for _, ep := range deduped {
+			if pathDisallowedByRobots(ep.Path, disallows) {
+				blocked++
+				continue
+			}
+			filtered = append(filtered, ep)
+		}
+		if blocked > 0 {
+			slog.Info("respect-robots filter applied",
+				"blocked", blocked,
+				"remaining", len(filtered),
+				"disallow_rules", len(disallows),
+			)
+		}
+		deduped = filtered
+	}
+
 	sort.Slice(deduped, func(i, j int) bool {
 		if deduped[i].Path != deduped[j].Path {
 			return deduped[i].Path < deduped[j].Path
@@ -262,10 +297,18 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 			opHeaders := extractHeaderParamsList(opMap["parameters"])
 			opBodyParams := extractBodyParamNames(opMap)
 
+			// Substitute path placeholders into the URL only — keep `Path` as
+			// the template form so reports still show "GET /users/{id}".
+			// http.NewRequest URL-encodes `{` and `}` to `%7B`/`%7D`, which
+			// every server returns 404 for, so without substitution every
+			// black-box check on a templated endpoint silently observes nothing.
+			schemas := extractPathParamSchemas(methodMap["parameters"], opMap["parameters"])
+			fullURL := baseURL + substitutePathPlaceholders(path, schemas)
+
 			ep := Endpoint{
 				Method:     strings.ToUpper(method),
 				Path:       path,
-				FullURL:    baseURL + path,
+				FullURL:    fullURL,
 				Params:     mergeParams(extractPathParams(path), pathLevelParams, opParams),
 				Headers:    mergeParams(pathLevelHeaders, opHeaders),
 				BodyParams: mergeParams(pathLevelBodyParams, opBodyParams),
@@ -420,13 +463,17 @@ func (c *Crawler) fromJS(ctx context.Context) ([]Endpoint, error) {
 	var endpoints []Endpoint
 	baseURL := strings.TrimRight(c.cfg.URL, "/")
 
-	// Extract paths directly from HTML/JSON response
+	// Extract paths directly from HTML/JSON response. JS-discovered paths can
+	// contain `{id}`-style placeholders (the apiPathRe regex includes braces),
+	// so apply name-heuristic substitution to FullURL — no schema is available
+	// from raw JS source, but `/users/{id}` → `/users/1` still beats the
+	// broken `/users/%7Bid%7D` request.
 	for _, match := range apiPathRe.FindAllSubmatch(body, -1) {
 		path := string(match[1])
 		endpoints = append(endpoints, Endpoint{
 			Method:  "GET",
 			Path:    path,
-			FullURL: baseURL + path,
+			FullURL: baseURL + substitutePathPlaceholders(path, nil),
 			Params:  extractPathParams(path),
 		})
 	}
@@ -444,7 +491,7 @@ func (c *Crawler) fromJS(ctx context.Context) ([]Endpoint, error) {
 			endpoints = append(endpoints, Endpoint{
 				Method:  "GET",
 				Path:    path,
-				FullURL: baseURL + path,
+				FullURL: baseURL + substitutePathPlaceholders(path, nil),
 				Params:  extractPathParams(path),
 			})
 		}
@@ -497,14 +544,21 @@ func (c *Crawler) fromBruteForce(ctx context.Context) ([]Endpoint, error) {
 		default:
 		}
 
+		// --respect-robots pre-filter: skip paths covered by a Disallow
+		// rule before sending even a discovery probe. Without this the
+		// brute-force loop would still GET /admin to check existence,
+		// breaking the "polite scanner never touches disallowed URLs"
+		// contract that the flag implies.
+		if c.cfg.RespectRobots && pathDisallowedByRobots(path, c.disallows) {
+			continue
+		}
+
 		fullURL := baseURL + path
 		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
 			continue
 		}
-		if c.cfg.Auth != nil {
-			req.Header.Set(c.cfg.Auth.Header, c.cfg.Auth.Value)
-		}
+		c.cfg.Auth.ApplyToRequest(req)
 
 		resp, err := c.client.Do(req)
 		if err != nil {
@@ -561,43 +615,78 @@ func (c *Crawler) loadWordlist() ([]string, error) {
 }
 
 // robotsDiscovery is the result of parsing a robots.txt file: discovered
-// endpoint paths (from Disallow/Allow directives) plus any Sitemap: URLs
-// declared in the file. We treat Disallow as a discovery hint, not a
-// restriction — disallowed paths are often the highest-value targets.
+// endpoint paths plus any Sitemap: URLs declared in the file, plus the
+// Disallow path list. Default: Disallow paths are treated as a discovery
+// hint (queued as endpoints) — those paths are exactly the URLs operators
+// don't want exposed, so they're high-value targets for a security tool.
+// With cfg.RespectRobots set: Disallow paths are filtered OUT of the
+// crawl entirely (polite-crawler convention for third-party scans), and
+// the Disallow list is propagated up so the caller can also filter
+// endpoints discovered via other strategies (sitemap, HTML crawl,
+// brute-force) that happen to fall under a disallowed prefix.
 type robotsDiscovery struct {
 	endpoints   []Endpoint
 	sitemapURLs []string
+	disallows   []string // populated only when cfg.RespectRobots is true
 }
 
-// fromRobots fetches /robots.txt and extracts both endpoint paths
-// (Disallow/Allow) and Sitemap: URLs. Missing or 4xx robots.txt is
-// not an error — many sites simply don't publish one.
+// fromRobots fetches /robots.txt and extracts endpoint paths, Sitemap URLs,
+// and Disallow patterns. Missing or 4xx robots.txt is not an error — many
+// sites simply don't publish one.
 func (c *Crawler) fromRobots(ctx context.Context) (robotsDiscovery, error) {
 	baseURL := strings.TrimRight(c.cfg.URL, "/")
 	body, err := c.fetchBody(ctx, baseURL+"/robots.txt", 1<<20) // 1 MB cap
 	if err != nil {
 		return robotsDiscovery{}, err
 	}
-	paths, sitemaps := parseRobots(body)
+	disallows, allows, sitemaps := parseRobots(body)
 	res := robotsDiscovery{sitemapURLs: sitemaps}
-	for _, p := range paths {
+
+	// Always queue Allow paths as discovery hints — they're publicly
+	// declared as scannable.
+	hints := allows
+	if !c.cfg.RespectRobots {
+		// Default behaviour: Disallow paths ARE the most interesting targets
+		// (admin panels, internal APIs that operators flag as off-limits to
+		// crawlers but leave un-secured), so queue them too.
+		hints = append(hints, disallows...)
+	} else {
+		// Polite mode: forward the Disallow list so CrawlEndpoints can
+		// filter every other discovery source against it. Also stash on
+		// the Crawler so brute-force / HTML crawl can pre-filter their
+		// candidate paths before sending a single request — that way the
+		// scan never even probes a disallowed URL during discovery.
+		res.disallows = disallows
+		c.disallows = disallows
+	}
+
+	for _, p := range hints {
 		res.endpoints = append(res.endpoints, Endpoint{
-			Method:  "GET",
-			Path:    p,
-			FullURL: baseURL + p,
+			Method: "GET",
+			Path:   p,
+			// Most robots.txt entries are concrete paths, but a few sites
+			// list templated patterns (e.g. `Disallow: /users/{id}/admin`).
+			// Apply name-heuristic substitution defensively.
+			FullURL: baseURL + substitutePathPlaceholders(p, nil),
 			Params:  extractPathParams(p),
 		})
 	}
-	slog.Info("endpoints from robots.txt", "count", len(res.endpoints), "sitemaps", len(sitemaps))
+	slog.Info("endpoints from robots.txt",
+		"count", len(res.endpoints),
+		"sitemaps", len(sitemaps),
+		"disallows_filtered", len(res.disallows),
+	)
 	return res, nil
 }
 
-// parseRobots parses a robots.txt body. Returns the union of all Disallow
-// and Allow paths (de-duplicated, leading `/` only) plus all Sitemap: URLs.
+// parseRobots parses a robots.txt body. Returns Disallow paths, Allow paths,
+// and Sitemap URLs separately so callers can decide how to treat each
+// (--respect-robots filters Disallows, default mode queues them as hints).
+// All paths are de-duplicated within their own list and have a leading `/`.
 // User-agent grouping is intentionally ignored — discovery is path-level
 // regardless of which agent the rule targets.
-func parseRobots(body []byte) (paths, sitemapURLs []string) {
-	pathSeen, smSeen := map[string]bool{}, map[string]bool{}
+func parseRobots(body []byte) (disallows, allows, sitemapURLs []string) {
+	disSeen, allowSeen, smSeen := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, line := range strings.Split(string(body), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -616,16 +705,24 @@ func parseRobots(body []byte) (paths, sitemapURLs []string) {
 			continue
 		}
 		switch key {
-		case "disallow", "allow":
+		case "disallow":
 			// Strip wildcard suffix (`/admin/*` → `/admin/`) and trailing `$`
 			// — those are pattern-match anchors, not literal characters.
 			cleaned := strings.TrimSuffix(val, "$")
 			cleaned = strings.TrimSuffix(cleaned, "*")
-			if !strings.HasPrefix(cleaned, "/") || pathSeen[cleaned] {
+			if !strings.HasPrefix(cleaned, "/") || disSeen[cleaned] {
 				continue
 			}
-			pathSeen[cleaned] = true
-			paths = append(paths, cleaned)
+			disSeen[cleaned] = true
+			disallows = append(disallows, cleaned)
+		case "allow":
+			cleaned := strings.TrimSuffix(val, "$")
+			cleaned = strings.TrimSuffix(cleaned, "*")
+			if !strings.HasPrefix(cleaned, "/") || allowSeen[cleaned] {
+				continue
+			}
+			allowSeen[cleaned] = true
+			allows = append(allows, cleaned)
 		case "sitemap":
 			if smSeen[val] {
 				continue
@@ -634,7 +731,26 @@ func parseRobots(body []byte) (paths, sitemapURLs []string) {
 			sitemapURLs = append(sitemapURLs, val)
 		}
 	}
-	return paths, sitemapURLs
+	return disallows, allows, sitemapURLs
+}
+
+// pathDisallowedByRobots reports whether `path` falls under any Disallow
+// rule, using prefix match (the standard robots.txt convention). An empty
+// rules list means "nothing is disallowed".
+func pathDisallowedByRobots(path string, rules []string) bool {
+	for _, r := range rules {
+		if r == "" {
+			continue
+		}
+		// `/` as a Disallow rule means "everything"; any non-root path matches.
+		if r == "/" {
+			return true
+		}
+		if strings.HasPrefix(path, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // sitemapURLEntry / sitemapIndexEntry / sitemapDoc capture the two sitemap
@@ -708,7 +824,7 @@ func (c *Crawler) fromSitemap(ctx context.Context, urls []string) ([]Endpoint, e
 		endpoints = append(endpoints, Endpoint{
 			Method:  "GET",
 			Path:    path,
-			FullURL: strings.TrimRight(c.cfg.URL, "/") + path,
+			FullURL: strings.TrimRight(c.cfg.URL, "/") + substitutePathPlaceholders(path, nil),
 			Params:  extractPathParams(path),
 		})
 	}
@@ -819,10 +935,17 @@ func (c *Crawler) crawlHTMLLinks(ctx context.Context, depth int) ([]Endpoint, er
 			if path == "" {
 				path = "/"
 			}
+			// Substitute path placeholders for sendable URL while keeping the
+			// template form on the Path field for human-readable reports.
+			fullURL := cleaned
+			if strings.Contains(path, "{") {
+				parsed.Path = substitutePathPlaceholders(path, nil)
+				fullURL = parsed.String()
+			}
 			endpoints = append(endpoints, Endpoint{
 				Method:  "GET",
 				Path:    path,
-				FullURL: cleaned,
+				FullURL: fullURL,
 				Params:  extractPathParams(path),
 			})
 
@@ -880,9 +1003,7 @@ func (c *Crawler) fetchBody(ctx context.Context, target string, maxBytes int64) 
 	if err != nil {
 		return nil, fmt.Errorf("building request for %s: %w", target, err)
 	}
-	if c.cfg.Auth != nil {
-		req.Header.Set(c.cfg.Auth.Header, c.cfg.Auth.Value)
-	}
+	c.cfg.Auth.ApplyToRequest(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", target, err)
@@ -923,6 +1044,168 @@ func extractPathParams(path string) []string {
 		params = append(params, m[1])
 	}
 	return params
+}
+
+// pathPlaceholderRe matches `{name}` placeholders in OpenAPI path templates.
+// Stops at `/` so chained placeholders like `/users/{id}/posts/{post_id}`
+// resolve placeholder-by-placeholder instead of as one greedy span.
+var pathPlaceholderRe = regexp.MustCompile(`\{([^/}]+)\}`)
+
+// pathParamSchema is the resolved schema info for one path parameter, used to
+// pick a concrete sample value when substituting `{name}` placeholders into
+// the URL we'll actually send. Only the fields we consult are kept.
+type pathParamSchema struct {
+	Type    string        // OpenAPI type: integer, number, string, boolean
+	Format  string        // e.g. uuid, date, date-time
+	Example interface{}   // schema.example or parameter-level example
+	Enum    []interface{} // first enum value used as fallback when example absent
+}
+
+// extractPathParamSchemas walks one or more OAS `parameters` lists and returns
+// a map name → schema info for entries with `in: path`. Path-level + op-level
+// lists can be passed in order; later entries overwrite earlier on duplicate
+// names (op-level overrides path-level, which matches OpenAPI semantics).
+//
+// Both OpenAPI 3 (schema nested under `parameters[*].schema`) and Swagger 2
+// (type/format/enum/example directly on the parameter) are accepted. $ref
+// entries are skipped — deref is out of scope, same convention as
+// extractParamsList / extractBodyParamNames.
+func extractPathParamSchemas(lists ...interface{}) map[string]pathParamSchema {
+	out := make(map[string]pathParamSchema)
+	for _, raw := range lists {
+		list, ok := raw.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, item := range list {
+			entry, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if _, hasRef := entry["$ref"]; hasRef {
+				continue
+			}
+			name, _ := entry["name"].(string)
+			in, _ := entry["in"].(string)
+			if name == "" || strings.ToLower(in) != "path" {
+				continue
+			}
+			ps := pathParamSchema{}
+			// OAS 3: schema is nested under parameters[*].schema
+			if schema, ok := entry["schema"].(map[string]interface{}); ok {
+				ps.Type, _ = schema["type"].(string)
+				ps.Format, _ = schema["format"].(string)
+				ps.Example = schema["example"]
+				if e, ok := schema["enum"].([]interface{}); ok {
+					ps.Enum = e
+				}
+			} else {
+				// Swagger 2: type/format/enum/example sit directly on the parameter
+				ps.Type, _ = entry["type"].(string)
+				ps.Format, _ = entry["format"].(string)
+				ps.Example = entry["example"]
+				if e, ok := entry["enum"].([]interface{}); ok {
+					ps.Enum = e
+				}
+			}
+			// Parameter-level example overrides schema-level when both present
+			// (OAS 3 lets authors set examples at either layer).
+			if px, ok := entry["example"]; ok && px != nil {
+				ps.Example = px
+			}
+			out[name] = ps
+		}
+	}
+	return out
+}
+
+// substitutePathPlaceholders replaces every `{name}` placeholder in a path
+// template with a concrete sample value. Returns the path unchanged if it
+// has no placeholders (fast path — most discovered paths are concrete).
+//
+// The motivation is that http.NewRequest URL-encodes `{` and `}` to `%7B`
+// and `%7D`, so an un-substituted `/users/{id}` becomes `/users/%7Bid%7D` on
+// the wire — every server returns 404 for that, and every black-box check
+// fires zero findings on that endpoint. Substitution makes the request hit
+// real handler code so checks (auth, headers, exposure, injection) actually
+// observe response behaviour.
+//
+// Sample-value selection order:
+//  1. schema.example (or parameter-level example, OAS 3 allows either)
+//  2. schema.enum[0]
+//  3. type-driven default (integer/number → "1", boolean → "true",
+//     string with format=uuid → all-zero UUID, etc.)
+//  4. parameter-name heuristic (`*id` → "1", `*name` → "sample", ...)
+//  5. plain "1"
+//
+// The result is run through url.PathEscape so values containing reserved
+// characters (e.g. an example like "abc/def") don't break the path.
+func substitutePathPlaceholders(template string, schemas map[string]pathParamSchema) string {
+	if !strings.Contains(template, "{") {
+		return template
+	}
+	return pathPlaceholderRe.ReplaceAllStringFunc(template, func(match string) string {
+		name := strings.TrimSuffix(strings.TrimPrefix(match, "{"), "}")
+		return url.PathEscape(samplePathValue(name, schemas[name]))
+	})
+}
+
+// samplePathValue picks a concrete sample for one path parameter.
+// See substitutePathPlaceholders for the order of resolution.
+func samplePathValue(name string, ps pathParamSchema) string {
+	if ps.Example != nil {
+		return fmt.Sprintf("%v", ps.Example)
+	}
+	if len(ps.Enum) > 0 && ps.Enum[0] != nil {
+		return fmt.Sprintf("%v", ps.Enum[0])
+	}
+	switch strings.ToLower(ps.Type) {
+	case "integer", "number":
+		return "1"
+	case "boolean":
+		return "true"
+	case "string":
+		switch strings.ToLower(ps.Format) {
+		case "uuid":
+			return "00000000-0000-0000-0000-000000000000"
+		case "date":
+			return "2024-01-01"
+		case "date-time":
+			return "2024-01-01T00:00:00Z"
+		case "email":
+			return "user@example.com"
+		}
+		return sampleByName(name)
+	}
+	return sampleByName(name)
+}
+
+// sampleByName picks a sample value based on substring hints in the parameter
+// name, used when the spec gives no schema info AND for non-spec discovery
+// sources (JS regex, sitemap, HTML crawl) where placeholder paths slip in.
+//
+// The heuristic is conservative: prefer numeric "1" for anything that looks
+// like an identifier (the common case for REST APIs), only fall back to a
+// string sample for clearly-non-numeric names. Word-boundary checks matter:
+// `HasSuffix("valid", "id")` is true even though "valid" is not an ID-typed
+// name, so we require either an exact match, a snake_case boundary, or a
+// camelCase boundary to count something as identifier-shaped.
+func sampleByName(name string) string {
+	lname := strings.ToLower(name)
+	switch {
+	case strings.Contains(lname, "uuid") || strings.Contains(lname, "guid"):
+		return "00000000-0000-0000-0000-000000000000"
+	case lname == "id" ||
+		strings.HasSuffix(name, "Id") || // camelCase: userId, postId
+		strings.HasSuffix(name, "ID") || // SCREAMING-ish: UserID
+		strings.HasSuffix(lname, "_id"): // snake_case: user_id
+		return "1"
+	case lname == "index" || lname == "page" || lname == "limit" ||
+		lname == "offset" || lname == "count":
+		return "1"
+	default:
+		return "sample"
+	}
 }
 
 // extractParamsList reads an OpenAPI/Swagger `parameters` array (raw decoded

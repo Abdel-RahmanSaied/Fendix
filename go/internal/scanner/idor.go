@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -24,7 +25,8 @@ func CheckIDOR(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 	}
 
 	client := &http.Client{
-		Timeout: time.Duration(cfg.Timeout) * time.Second,
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

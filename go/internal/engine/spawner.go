@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -165,13 +166,13 @@ func readFindings(r io.Reader) ([]models.Finding, int, error) {
 		// Parse as a Finding
 		var finding models.Finding
 		if err := json.Unmarshal([]byte(line), &finding); err != nil {
-			slog.Warn("skipping malformed finding JSON from python", "error", err, "line", line)
+			logagg.Warn("python_engine", "skipping malformed finding JSON from python", "error", err, "line", line)
 			continue
 		}
 
 		// Only accept findings with required fields
 		if finding.Title == "" || finding.Severity == "" {
-			slog.Warn("skipping finding with missing required fields", "line", line)
+			logagg.Warn("python_engine", "skipping finding with missing required fields", "line", line)
 			continue
 		}
 

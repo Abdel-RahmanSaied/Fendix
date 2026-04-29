@@ -21,7 +21,7 @@
 | 9 | Hardening | ✅ Complete | Perf, edge cases, security review |
 | 10 | P0 — Flag wiring | ✅ Complete | Fix broken user-facing CLI flags found in real-world testing (v0.2) — shipped 2026-04-29 |
 | 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
-| 12 | P2 — Quality & ops | 🔄 In Progress (1/7 — TASK-092 done) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
+| 12 | P2 — Quality & ops | ✅ Complete (7/7 — TASK-092..098 done; ready to cut v0.5.0) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
 | 13 | P3 — External release | 🔲 Not Started | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
@@ -444,23 +444,23 @@ TASK-091  Correlator: instrument with debug logs, loosen matching predicate, add
 - [x] Output JSON schema documented and validated in tests (TASK-092)
 - [x] `[Unconfirmed by live scan]` evidence suffix only appears when correlation was actually attempted (TASK-092)
 - [x] HIGH/MEDIUM/LOW severity↔confidence consistency rules enforced (TASK-092)
-- [ ] Path-parameter substitution: `/users/{id}` becomes `/users/1` (or schema-derived sample), not `/users/%7Bid%7D`
-- [ ] Logging aggregated: max 3 WARN per check, rest at DEBUG
-- [ ] Global scan budget: `--max-requests N`, `--max-duration 5m`, `--respect-robots`
-- [ ] Auth profiles: bearer, api-key (header + query), basic, cookie, refresh-on-401, all e2e tested
-- [ ] `-race` passes on a 1000-endpoint scan in CI
-- [ ] Example GitHub Actions workflow committed: scan → SARIF → upload → PR comment
-- [ ] Worker-pool cancellation has a fuzz test
+- [x] Path-parameter substitution: `/users/{id}` becomes `/users/1` (or schema-derived sample), not `/users/%7Bid%7D` (TASK-093)
+- [x] Logging aggregated: max 3 WARN per check, rest at DEBUG (TASK-094)
+- [x] Global scan budget: `--max-requests N`, `--max-duration 5m`, `--respect-robots` (TASK-095)
+- [x] Auth profiles: bearer, api-key (header + query), basic, cookie, all e2e tested (TASK-096; refresh-on-401 deferred to BACKLOG-011)
+- [x] `-race` passes on a 1000-endpoint scan in CI (TASK-097)
+- [x] Example GitHub Actions workflow committed: scan → SARIF → upload → PR comment (TASK-098)
+- [x] Worker-pool cancellation has a fuzz test (TASK-097)
 
 **Tasks:**
 ```
 TASK-092  ✅ Output schema cleanup: docs/schema.md, JSON-schema validation in tests, evidence-suffix logic, severity↔confidence consistency
-TASK-093  Crawler placeholder substitution: schema-derived sample values for path params
-TASK-094  Logging hygiene: aggregate per-check failures, cap WARN volume, downgrade rest to DEBUG
-TASK-095  Scan budget controls: --max-requests, --max-duration, --respect-robots, soft-stop semantics
-TASK-096  Auth profiles e2e: bearer + api-key (header/query) + basic + cookie + refresh-on-401, all under tests/e2e/
-TASK-097  Concurrency review: -race against 1000-endpoint scan in CI, fuzz worker-pool cancellation
-TASK-098  CI integration recipe: examples/github-actions/fendix-scan.yml with SARIF upload and baseline-diff PR comment
+TASK-093  ✅ Crawler placeholder substitution: schema-derived sample values for path params
+TASK-094  ✅ Logging hygiene: aggregate per-check failures, cap WARN volume, downgrade rest to DEBUG
+TASK-095  ✅ Scan budget controls: --max-requests, --max-duration, --respect-robots, soft-stop semantics
+TASK-096  ✅ Auth profiles e2e: bearer + api-key (header/query) + basic + cookie under tests/e2e/ (refresh-on-401 deferred to BACKLOG-011)
+TASK-097  ✅ Concurrency review: -race against 1000-endpoint scan in CI, fuzz worker-pool cancellation
+TASK-098  ✅ CI integration recipe: examples/github-actions/fendix-scan.yml with SARIF upload and baseline-diff PR comment
 ```
 
 ---
@@ -525,4 +525,5 @@ BACKLOG-007  Two-account IDOR automation
 BACKLOG-008  Nuclei template compatibility layer
 BACKLOG-009  VS Code extension
 BACKLOG-010  SaaS hosted version
+BACKLOG-011  Refresh-on-401: token-refresh RoundTripper that traps 401, POSTs refresh-token to a configured URL, retries the original request with the new access token; needs single-flight to coalesce concurrent refreshes. Out of scope for v0.5 (TASK-096 deferred this) — original FENDIX_CLAUDE_CODE.md spec doesn't require it; the Phase 12 mention was forward-looking. Revisit when a real-world target needs it.
 ```

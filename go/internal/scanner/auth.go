@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -24,7 +26,8 @@ func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 	}
 
 	client := &http.Client{
-		Timeout: time.Duration(cfg.Timeout) * time.Second,
+		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Transport: budget.Transport(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -50,13 +53,13 @@ func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 func checkUnauthenticated(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *models.Finding {
 	req, err := http.NewRequestWithContext(ctx, endpoint.Method, endpoint.FullURL, nil)
 	if err != nil {
-		slog.Warn("auth check: failed to create unauthenticated request", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("auth", "auth check: failed to create unauthenticated request", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Warn("auth check: unauthenticated request failed", "url", endpoint.FullURL, "error", err)
+		logagg.Warn("auth", "auth check: unauthenticated request failed", "url", endpoint.FullURL, "error", err)
 		return nil
 	}
 	defer resp.Body.Close()

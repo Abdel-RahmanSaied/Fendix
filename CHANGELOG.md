@@ -7,6 +7,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-30
+
+Phase 12 — Quality & Ops. Polish that turns a working scanner into one
+that fits production workflows: documented public JSON schema with
+validation tests, schema-aware path-parameter substitution (templated
+endpoints now actually get scanned), aggregated WARN log volume,
+global scan budgets (`--max-requests`, `--max-duration`,
+`--respect-robots`), apikey-query auth profile + e2e coverage of every
+auth type, race-clean concurrency proof at 1000 endpoints + worker-pool
+cancellation fuzzer, and a drop-in GitHub Actions workflow with SARIF
+upload and PR summary comments.
+
+### Added
+
+- **Reference GitHub Actions workflow** (TASK-098). New
+  `examples/github-actions/fendix-scan.yml` is a complete,
+  drop-in CI workflow: scans on every PR and push to main,
+  uploads SARIF to GitHub Code Scanning (inline annotations
+  on the PR), persists the previous run's baseline via
+  `actions/cache` (so PRs see only the diff), posts a PR
+  summary comment via `actions/github-script@v7` with
+  severity/source counts and the top 5 findings, and gates
+  merges on `--fail-on HIGH` while still uploading SARIF and
+  posting the comment when the gate fails. The comment
+  payload reads the public JSON schema (`summary`, `sources`,
+  `total`, `findings[].endpoint|line`) — same shape that
+  `docs/schema.md` documents — so it stays correct as long as
+  the schema is stable. `docs/ci-cd-integration.md` updated
+  to point at the canonical example as its quick-start.
+
+- **Concurrency review tests** (TASK-097). Two new tests in
+  `internal/engine/` cover the worker pool's concurrency surface:
+  - `TestWorkerPool_LargeConcurrentScan_RaceClean` — drives the pool with
+    1000 endpoints × 3 checks × 32 workers against a single httptest
+    server, asserts all 3000 invocations completed, server hit count
+    matches, and no goroutines leaked. Runs under `-race` in CI as part
+    of `go test ./...`, so any data race in the pool, scanner clients,
+    or shared findings collection is caught on every PR.
+  - `FuzzWorkerPool_CancelTiming` — native Go fuzzer that drives the
+    pool with randomized (worker count, endpoint count, cancel-delay,
+    busy-time) tuples and asserts no deadlock, no panic, and no
+    goroutine leak under any cancel timing. Seed corpus exercises
+    cancel-before-start, cancel-mid-flight, cancel-after-completion,
+    zero-endpoints, zero-workers (clamped), and the tight cancel race.
+    The seed corpus is exercised on every PR via `go test -race`.
+    New `make fuzz FUZZTIME=30s` target runs deeper ad-hoc fuzzing
+    (15s of `-race -fuzz` reaches 4400+ executions and 30+
+    new-interesting inputs locally with no failures).
+
+- **`--auth-type apikey-query`** (TASK-096). API-key authentication can
+  now be delivered via URL query string instead of a request header — the
+  common pattern for legacy or sensor-style APIs that prefer query
+  placement (sometimes to avoid logging Authorization-class headers).
+  CLI: `--auth-type apikey-query --auth-header api_key --auth my-key`
+  produces `?api_key=my-key` on every outbound request and never sets a
+  header. The param name comes from `--auth-header` (overloaded — same
+  flag doubles as query-param name in this mode); defaults to `api_key`
+  when unset. New constants `AuthTypeAPIKeyQuery` and
+  `DefaultAPIKeyQueryParam` in `internal/models/auth.go`. New branch in
+  `AuthContext.ApplyToRequest` mutates `req.URL.RawQuery` via
+  `url.Values.Set` (idempotent on double-apply, preserves existing query
+  params). Mirror branch in `injection.addAuth` for active-probe
+  requests. Verified end-to-end: server-side wire-format assertion
+  confirms the credential reaches the URL query and never a header.
+
+- **End-to-end auth-profile coverage** (TASK-096). New
+  `internal/e2e/auth_profiles_test.go` exercises every supported
+  auth-type via the actual fendix CLI: bearer, apikey-header,
+  apikey-query, basic, cookie. Each subtest spins up an httptest server
+  that records every incoming request, asserts the expected wire
+  format reaches it, and confirms the JSON report was written. This
+  closes a Phase 12 visibility gap — the auth scanner had unit
+  coverage since Phase 2 but no e2e proving the CLI flag-parsing,
+  ScanConfig population, and per-scanner `ApplyToRequest` calls all
+  worked as one integrated path.
+
+- **Scan budget controls** (TASK-095). Three new flags shape how much
+  work a scan does:
+  - `--max-requests N` — soft-cap on total HTTP requests sent during the
+    scan phase (discovery is exempt by design — a small cap shouldn't
+    starve discovery before any check runs). Implemented as an
+    `http.RoundTripper` wrapper in the new `internal/budget` package
+    that increments an atomic counter on every outbound request and
+    refuses further requests once the cap is hit. Cap-hit also fires a
+    one-shot `context.CancelFunc` so the worker pool stops scheduling
+    new jobs. Soft-stop semantics: in-flight requests finish, no new
+    ones start; per-worker overshoot is bounded by `--workers`.
+  - `--max-duration 5m` — wall-clock deadline. Wraps the run context
+    with `context.WithTimeout`; deadline expiry triggers the same
+    soft-stop path as the request cap. Accepts standard Go duration
+    strings (e.g. `90s`, `2m30s`).
+  - `--respect-robots` — when set, robots.txt `Disallow` paths are
+    treated as a hard restriction across every discovery source (spec,
+    sitemap, HTML crawl, brute-force). Brute-force pre-filters the
+    wordlist so disallowed URLs never receive even a discovery probe.
+    Default behaviour unchanged: Disallow paths are queued as endpoint
+    hints, since they're often the highest-value targets for a
+    security tool.
+  Orchestrator emits a single `INFO budget summary` line at scan end
+  with `requests_sent`, `requests_rejected`, `max_requests`, and
+  `max_duration` whenever any cap is set. Unit tests cover the
+  RoundTripper math under concurrent load (50-goroutine race test);
+  e2e regressions verify the CLI integration: a 50-path scan with
+  `--max-requests 20` is server-side capped, and `--respect-robots`
+  with a `Disallow: /admin` rule prevents `/admin` from being touched.
+
+- **Aggregated per-check WARN log volume** (TASK-094). New
+  `internal/logagg` package caps WARN-level emissions at 3 per check key
+  per scan (configurable via `SetCap`); subsequent events are downgraded
+  to DEBUG and tallied. The orchestrator emits a single
+  `INFO warning summary` line at scan end with per-key
+  `warned=N suppressed=M` attrs (alphabetically sorted, deterministic).
+  Eliminates terminal-flooding on partially-unreachable targets where
+  every check fires the same transient error per endpoint. Real-world
+  measure: a 10-endpoint scan against an unreachable target dropped from
+  30 WARN lines (1 per check per endpoint) to 9 WARN lines + 1 summary
+  (a 3× reduction). Goroutine-safe — worker pool calls into the
+  aggregator from N goroutines concurrently. Integrated into the 18
+  per-request WARN sites across auth, CORS, exposure, headers, injection
+  (sqli/error/boolean/cmdi/crlf, baseline measurement, request build),
+  and the Python engine spawner's malformed-JSON handler. Setup-time
+  errors that fire at most once per scan (spec parsing failure, ignore
+  file parsing, baseline save, python availability) keep their direct
+  `slog.Warn` / `slog.Error` calls — capping wouldn't help and would
+  hide important one-shot signals.
+
+- **Path-parameter substitution for templated endpoints** (TASK-093).
+  Discovered endpoints like `/users/{id}` previously produced HTTP
+  requests to `/users/%7Bid%7D` because `http.NewRequest` URL-encodes
+  the literal `{` and `}` characters. Every server returned 404 to that
+  request, so every black-box check (headers, CORS, exposure, auth,
+  rate-limit, injection) silently observed nothing on every templated
+  endpoint of every OpenAPI spec. The crawler now substitutes a concrete
+  sample value into the `FullURL` field at discovery time. The Path
+  field is preserved as the template form so reports still show
+  `GET /users/{id}` (not `GET /users/1`). Resolution order:
+  `schema.example` → `schema.enum[0]` → type-driven default
+  (integer/number → `1`, boolean → `true`, string + format=uuid → all-zero UUID,
+  format=date → `2024-01-01`, format=date-time → `2024-01-01T00:00:00Z`,
+  format=email → `user@example.com`) → parameter-name heuristic
+  (`*Id`/`*_id`/`id` → `1`, `*uuid*`/`*guid*` → all-zero UUID,
+  `count`/`page`/`limit`/`offset`/`index` → `1`, else `sample`) → `1`.
+  Substitution applies to all five discovery sources (spec, JS, robots.txt,
+  sitemap, HTML crawl); only the spec source has access to schema info,
+  the rest fall through to the name heuristic. Verified against a real
+  petstore3 spec scan: 4 templated paths (`/pet/{petId}`,
+  `/pet/{petId}/uploadImage`, `/store/order/{orderId}`,
+  `/user/{username}`) now produce non-zero black-box findings and zero
+  `%7B` leakage in the report.
+
 ## [0.4.2] - 2026-04-29
 
 Quality + UX patch. Two real-world bugs fixed (silent `fendix report` on

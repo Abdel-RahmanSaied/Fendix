@@ -9,6 +9,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
@@ -50,6 +52,30 @@ func NewOrchestratorWithSpawner(cfg *models.ScanConfig, spawner *PythonSpawner) 
 func (o *Orchestrator) Run(ctx context.Context) int {
 	startTime := time.Now()
 
+	// Reset per-check WARN aggregator. Real-world scans against unreliable
+	// hosts can emit thousands of "request failed" lines without this — one
+	// per endpoint per check. logagg caps the WARN volume per check and
+	// surfaces the suppressed count via a single Info line at scan end.
+	logagg.Reset()
+
+	// Apply scan budget controls (TASK-095). MaxDuration wraps the parent
+	// context with a deadline immediately so discovery is also bounded by
+	// it; MaxRequests is enforced by the budget package's RoundTripper +
+	// one-shot ctx cancel and is intentionally armed AFTER discovery so
+	// the cap reflects scan-phase requests only (otherwise a small cap
+	// like --max-requests 20 would be exhausted by brute-force discovery
+	// before any check ran). Both controls implement "soft-stop"
+	// semantics: in-flight requests finish, no new ones start.
+	budget.Reset()
+	if o.cfg.MaxDuration > 0 {
+		var cancelDeadline context.CancelFunc
+		ctx, cancelDeadline = context.WithTimeout(ctx, o.cfg.MaxDuration)
+		defer cancelDeadline()
+	}
+	ctx, cancelBudget := context.WithCancel(ctx)
+	defer cancelBudget()
+	defer budget.SetCancelFunc(nil) // unregister on Run return
+
 	// 1. Discover endpoints
 	crawler := scanner.NewCrawler(o.cfg)
 	endpoints, err := crawler.CrawlEndpoints(ctx)
@@ -57,6 +83,14 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		slog.Error("endpoint discovery failed — check --url is reachable and --spec is valid YAML/JSON", "error", err)
 		return 2
 	}
+
+	// Arm the request cap now that discovery is complete. Reset() the
+	// counters so the budget summary at scan end reflects scan-phase
+	// requests only — clearer semantics for the user, and independent of
+	// however many requests discovery happened to make.
+	budget.Reset()
+	budget.SetMaxRequests(o.cfg.MaxRequests)
+	budget.SetCancelFunc(cancelBudget)
 
 	// Only fail when there's nothing to scan in EITHER engine. Code-only scans
 	// (--code without --url/--spec) legitimately have zero endpoints and should
@@ -219,6 +253,27 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		"low", counts.Low,
 		"info", counts.Info,
 	)
+
+	// Surface aggregated WARN suppression counts so operators can tell at a
+	// glance how many transient errors were silenced (vs. the visible cap
+	// emissions). One Info line per scan; empty when no events occurred.
+	if attrs := logagg.Summary(); len(attrs) > 0 {
+		slog.Info("warning summary", attrs...)
+	}
+
+	// Surface scan-budget telemetry whenever a cap was set, regardless of
+	// whether it fired. This makes "did we run out of budget?" trivially
+	// auditable in CI and gives operators a feedback loop for tuning
+	// --max-requests / --max-duration to their target scan size.
+	if o.cfg.MaxRequests > 0 || o.cfg.MaxDuration > 0 {
+		sent, rejected := budget.Stats()
+		slog.Info("budget summary",
+			"requests_sent", sent,
+			"requests_rejected", rejected,
+			"max_requests", o.cfg.MaxRequests,
+			"max_duration", o.cfg.MaxDuration,
+		)
+	}
 
 	// 8. Check fail-on threshold
 	return o.checkFailOn(findings)

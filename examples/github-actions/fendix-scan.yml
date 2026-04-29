@@ -1,0 +1,186 @@
+# Fendix — reference GitHub Actions workflow.
+#
+# Drop this into `.github/workflows/fendix-scan.yml` of your project. It
+# scans your repo (and optional OpenAPI spec) on every PR and on push to
+# main, uploads SARIF to the GitHub Security tab, posts a summary comment
+# on the PR, and gates the merge on findings at or above HIGH severity.
+#
+# What it does on each event:
+#
+#   - pull_request: scans against the baseline saved by the most recent
+#     main run, posts a PR comment summarising findings (top 5 + counts),
+#     uploads SARIF for inline annotations, and fails the build when
+#     --fail-on triggers.
+#
+#   - push to main: scans, refreshes the baseline cache, uploads SARIF.
+#     PRs that merge after this run will compare against the new baseline
+#     so accepted-on-main findings stop showing up as PR diffs.
+#
+# Baseline storage: actions/cache (first-party). The cache is keyed by
+# run_id with a fallback restore-key, so any new run reads the most
+# recently saved baseline. PRs read; main writes (cache writes are
+# automatic on success).
+#
+# Required permissions:
+#   contents:        read     — checkout
+#   security-events: write    — SARIF upload via github/codeql-action
+#   pull-requests:   write    — PR comment via actions/github-script
+#
+# Required repository secrets: none for the public-source install path.
+# If your project's spec or staging URL needs auth, plumb a secret
+# through the `--auth` flag (see the Live API Scan section in
+# docs/ci-cd-integration.md).
+
+name: Fendix Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  fendix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Install Fendix from source. For pinned releases, swap this for
+      # the install.sh path (see docs/ci-cd-integration.md) once the
+      # binary release pipeline (Phase 13 / TASK-099) is generally
+      # available for your fork.
+      - name: Install Fendix
+        run: |
+          go install github.com/Abdel-RahmanSaied/Fendix/cmd/fendix@latest
+          fendix version
+
+      # Restore the most-recent baseline produced by main. On the first
+      # run (no cache yet) the scan runs without a baseline, which is
+      # the correct behaviour — every finding is "new".
+      - name: Restore Fendix baseline
+        id: baseline
+        uses: actions/cache@v4
+        with:
+          path: .fendix/baseline.json
+          key: fendix-baseline-${{ github.run_id }}
+          restore-keys: |
+            fendix-baseline-
+
+      - name: Run Fendix scan
+        id: scan
+        run: |
+          mkdir -p .fendix
+          baseline_flag=""
+          if [ -f .fendix/baseline.json ]; then
+            echo "Using baseline from previous run."
+            baseline_flag="--baseline .fendix/baseline.json"
+          fi
+          # `set +e` so we capture the exit code without aborting the
+          # job — we still want to upload SARIF + post the PR comment
+          # even when --fail-on triggers.
+          set +e
+          fendix scan \
+            --code ./ \
+            --format json \
+            --output findings.json \
+            --save-baseline .fendix/baseline.json \
+            $baseline_flag \
+            --fail-on HIGH
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      # Re-render the JSON report into SARIF for GitHub Code Scanning.
+      # Re-rendering (rather than running fendix twice) guarantees the
+      # SARIF and PR comment describe the exact same findings.
+      - name: Convert findings to SARIF
+        if: always() && hashFiles('findings.json') != ''
+        run: |
+          fendix report \
+            --input findings.json \
+            --format sarif \
+            --output results.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: fendix
+
+      # PR summary comment. Posts at most one new comment per push to
+      # the PR — the GitHub UI threads them by timestamp. If you'd
+      # rather edit a single sticky comment, see the "Sticky comment"
+      # snippet in docs/ci-cd-integration.md.
+      - name: Post PR summary comment
+        if: github.event_name == 'pull_request' && always() && hashFiles('findings.json') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('findings.json', 'utf8'));
+            const summary = report.summary || {};
+            const sources = report.sources || {};
+            const total = report.total ?? (report.findings || []).length;
+
+            const lines = [
+              `## Fendix scan: ${total} finding${total === 1 ? '' : 's'}`,
+              '',
+              `Mode: \`${(report.metadata || {}).mode || 'unknown'}\` · ` +
+                `Endpoints scanned: ${(report.metadata || {}).endpoints_scanned ?? 0} · ` +
+                `Duration: ${(report.metadata || {}).duration || 'n/a'}`,
+              '',
+              '| Severity | Count | Source | Count |',
+              '|---|---|---|---|',
+              `| Critical | ${summary.critical || 0} | Blackbox | ${sources.blackbox || 0} |`,
+              `| High | ${summary.high || 0} | Whitebox | ${sources.whitebox || 0} |`,
+              `| Medium | ${summary.medium || 0} | Correlated | ${sources.correlated || 0} |`,
+              `| Low | ${summary.low || 0} | _Total_ | **${total}** |`,
+              `| Info | ${summary.info || 0} | | |`,
+              '',
+            ];
+
+            if (total === 0) {
+              lines.push('_No new findings vs. baseline. ✅_');
+            } else {
+              const top = (report.findings || []).slice(0, 5).map(f => {
+                const where = f.endpoint || f.line || '';
+                return `- **[${f.severity}]** ${f.title} — \`${where}\``;
+              });
+              lines.push('### Top findings', ...top);
+              if (total > 5) lines.push('', `_…and ${total - 5} more in the SARIF report._`);
+            }
+
+            lines.push(
+              '',
+              '<sub>Open the **Security** tab for inline annotations. ' +
+                'Re-run this workflow to refresh.</sub>'
+            );
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: lines.join('\n'),
+            });
+
+      # Surface the scan exit code as the job result. We deferred
+      # failure until after SARIF upload + comment so that the
+      # PR author sees full output even when the gate fails.
+      - name: Enforce --fail-on gate
+        if: steps.scan.outputs.exit_code != '0'
+        run: |
+          echo "fendix scan exited ${{ steps.scan.outputs.exit_code }} (1=findings at gate, 2=scan error)"
+          exit ${{ steps.scan.outputs.exit_code }}
