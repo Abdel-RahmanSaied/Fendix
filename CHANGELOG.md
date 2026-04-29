@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-29
+
+This release ships **Phase 11 — P1 Coverage Parity**: secrets, static analysis,
+active scanning, deduplication, crawler discovery, real CVE lookups, and
+correlator finalization. The goal was to close the gap with industry-baseline
+detection (gitleaks / semgrep / ZAP) on the obvious checks. Folds the planned
+v0.3.0 batch (TASK-085 + TASK-086) into v0.4.0 since v0.3.0 was never tagged.
+
 ### Added
 - **Provider-specific secret patterns** — secrets analyzer now covers GitHub tokens (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`), Stripe live secret keys (`sk_live_`), Slack tokens (`xoxa-`/`xoxb-`/`xoxp-`/`xoxr-`/`xoxs-`), Google API keys (`AIza...`), Anthropic API keys (`sk-ant-`), OpenAI API keys (legacy `sk-`/`sk-proj-`/`sk-svcacct-`), npm registry tokens (`npm_`), and GCP service-account JSON files (matched on the canonical `"type": "service_account"` signature). Total pattern count: 7 → 15. (TASK-085)
 - **`.env` file scanning** — `.env`, `.env.local`, `.env.production` etc. are now properly walked and scanned with a dedicated unquoted-`KEY=value` pattern. Previously the file walker missed dotfiles whose `Path.suffix` is empty, and the generic `HARDCODED_PASSWORD` regex only matched quoted values, so `.env` files passed through silently. (TASK-085)
@@ -32,8 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Larger built-in `CommonPaths`** — wordlist expanded from ~50 to ~117 entries with admin/dashboard surfaces (`/admin/login`, `/console`, `/dashboard`), source-control leakage (`/.git/config`, `/.svn/entries`, `/.env`), DevOps tooling (`/grafana`, `/prometheus`, `/jenkins`, `/phpmyadmin`), debug endpoints (`/debug/vars`, `/debug/pprof`), and modern API conventions (`/api/v1/auth/login`, `/api/me`). (TASK-089)
 - **Real CVE coverage via primary tools (pip-audit / npm audit / govulncheck)** — the deps analyzer now invokes pip-audit for `requirements.txt`, npm audit for `package.json` (when a lockfile is present), and govulncheck for `go.mod` as primary detection paths. The hardcoded 14-package known-vuln list is now a true offline fallback that fires only when the primary tool is missing or fails. **Real-world impact**: scan of `/tmp/fendix-test/badcode/requirements.txt` produced **6 deps findings** with the offline fallback alone, **97 deps findings (16× coverage)** with pip-audit installed. govulncheck against a Go fixture using `golang.org/x/net@v0.10.0` produces 4 HIGH findings (XSS, infinite parsing loop, non-linear and quadratic parsing) — only the actually-called vulns; vendored-but-uncalled noise is dropped. (TASK-090)
 - **Go module support in deps analyzer** — `go.mod` files in `--code` are now scanned by govulncheck when installed. New `_check_go_modules` + `_run_govulncheck` methods; new module-level `_parse_govulncheck_json` parses govulncheck's pretty-printed multi-line JSON via `json.JSONDecoder.raw_decode` (the NDJSON assumption was wrong — caught during in-session live testing). Govulncheck `finding` messages with at least one `function` in their trace become "called" findings; vendored-but-uncalled vulns are skipped to avoid supply-chain noise. (TASK-090)
+- **Correlator: path-suffix matching** — when one normalized path is a `/`-bounded suffix of the other, the correlator merges blackbox + whitebox findings even with base-path skew. Closes the petstore-style case where the spec describes `/pet/findByStatus` and the live server hosts it under `/api/v3/pet/findByStatus` — pre-fix, no exact path match meant no correlation; now they merge. (TASK-091)
+- **Correlator: HTTP method-prefix stripping in endpoint normalization** — whitebox spec_parser emits endpoints as `"GET /pet/findByStatus"`. Pre-fix, the leading method dropped the value into the file-path branch and produced `"get /pet/findbystatus"`, blocking exact match against URL-derived blackbox endpoints. Method tokens (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/CONNECT/TRACE) are now stripped via regex before path parsing. (TASK-091)
+- **Correlator: debug instrumentation** — every match attempt (and every miss) is logged at DEBUG level with the normalized endpoints, related categories, and match kind. Successful matches log at INFO with `match_kind=exact|suffix|fuzzy` so users can trace which predicate fired in real-world hybrid scans. (TASK-091)
 
 ### Fixed
+
+- **Correlator: blackbox findings consumed at most once** — the previous index lookup didn't filter against the `bbCorrelated` set, so two different whitebox findings could both merge with the same blackbox, producing duplicate correlated findings. The new `findCorrelationMatch` honours a `taken` set across all three match passes. (TASK-091)
 - Pattern boundaries on provider-specific tokens (`(?<![A-Za-z0-9])` anchors) prevent the OpenAI `sk-` regex from matching Anthropic's `sk-ant-` keys or matching inside concatenated base64 strings. (TASK-085)
 - HTML crawler dropping `mailto:`, `tel:`, `javascript:`, `data:` scheme links surfaced as a real-world bug on `httpbin.org` where the home-page contact link was being followed and produced "unsupported protocol scheme" warnings on every check. (TASK-089)
 - **pip-audit JSON key mismatch** — the integration was reading `data.get("vulnerabilities")`, but modern pip-audit (≥2.x) emits findings under `data["dependencies"]`. The result: pip-audit "ran" silently and emitted zero findings, with no fallback to the local list. Fixed by accepting both keys, treating any non-success exit code as a tool error that triggers fallback, and parsing the `aliases` field in references. (TASK-090)

@@ -3,6 +3,7 @@ package engine
 import (
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -23,6 +24,11 @@ var categoryMap = map[string]string{
 	"auth":      "auth_bypass",
 }
 
+// methodPrefixRe strips a leading HTTP method token from an endpoint string.
+// Whitebox emitters such as the spec parser format endpoints as "GET /pet/findByStatus";
+// without stripping, the leading "GET " corrupts URL parsing and fuzzy-segment matching.
+var methodPrefixRe = regexp.MustCompile(`(?i)^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE)\s+`)
+
 // Correlate cross-references blackbox and whitebox findings.
 //
 // Rules:
@@ -33,6 +39,17 @@ var categoryMap = map[string]string{
 //     keep whitebox finding, confidence=MEDIUM, add "Unconfirmed by live scan" note.
 //   - If blackbox finds an issue but no whitebox counterpart:
 //     keep as-is.
+//
+// Match strategy (per whitebox finding, in order):
+//  1. Exact normalized endpoint + related category (fast path via index).
+//  2. Path-suffix match: one normalized path is a suffix of the other on a `/`
+//     boundary. Handles base-path skew (whitebox `/pet/findByStatus`
+//     matches blackbox `/api/v3/pet/findByStatus`).
+//  3. Fuzzy segment match: at least one non-noise path segment of length > 2 is
+//     shared. Handles file-path-vs-URL-path matches like `routes/users.py` vs
+//     `/api/v1/users`.
+//
+// Each blackbox finding can correlate with at most one whitebox finding.
 func Correlate(findings []models.Finding) []models.Finding {
 	var blackbox, whitebox []models.Finding
 	for _, f := range findings {
@@ -46,6 +63,11 @@ func Correlate(findings []models.Finding) []models.Finding {
 			blackbox = append(blackbox, f)
 		}
 	}
+
+	slog.Debug("correlator inputs",
+		"blackbox_count", len(blackbox),
+		"whitebox_count", len(whitebox),
+	)
 
 	if len(whitebox) == 0 || len(blackbox) == 0 {
 		// Nothing to correlate — return all findings as-is
@@ -62,81 +84,54 @@ func Correlate(findings []models.Finding) []models.Finding {
 		return result
 	}
 
-	// Build index of blackbox findings by normalized endpoint+category
+	// Pre-compute normalized blackbox endpoints once. The suffix and fuzzy
+	// passes walk all blackbox findings per whitebox finding, and re-running
+	// url.Parse on every iteration is the dominant allocator for large scans.
+	bbNorm := make([]string, len(blackbox))
 	bbIndex := make(map[correlationKey][]int)
 	for i, f := range blackbox {
-		key := correlationKey{
-			endpoint: normalizeEndpoint(f.Endpoint),
-			category: f.Category,
-		}
-		bbIndex[key] = append(bbIndex[key], i)
+		bbNorm[i] = normalizeEndpoint(f.Endpoint)
+		bbIndex[correlationKey{endpoint: bbNorm[i], category: f.Category}] = append(
+			bbIndex[correlationKey{endpoint: bbNorm[i], category: f.Category}], i,
+		)
 	}
 
-	// Track which blackbox findings were correlated
+	// Track which blackbox findings are already merged so we don't merge the
+	// same one twice with different whitebox findings.
 	bbCorrelated := make(map[int]bool)
 
 	var result []models.Finding
 
 	for _, wf := range whitebox {
-		matched := false
-
-		// Try to find a matching blackbox finding
 		wbNorm := normalizeEndpoint(wf.Endpoint)
+		relCats := relatedCategories(wf.Category)
 
-		// Check direct category match
-		for _, bbCat := range relatedCategories(wf.Category) {
-			key := correlationKey{endpoint: wbNorm, category: bbCat}
-			if indices, ok := bbIndex[key]; ok {
-				// Found a correlation — merge
-				bbIdx := indices[0]
-				bf := blackbox[bbIdx]
-				bbCorrelated[bbIdx] = true
-
-				merged := mergeFindings(bf, wf)
-				result = append(result, merged)
-				matched = true
-
-				slog.Info("correlated finding",
-					"endpoint", wbNorm,
-					"category", wf.Category,
-					"bb_title", bf.Title,
-					"wb_title", wf.Title,
-				)
-				break
-			}
+		bbIdx, matchKind := findCorrelationMatch(wbNorm, relCats, blackbox, bbNorm, bbIndex, bbCorrelated)
+		if bbIdx >= 0 {
+			bf := blackbox[bbIdx]
+			bbCorrelated[bbIdx] = true
+			merged := mergeFindings(bf, wf)
+			result = append(result, merged)
+			slog.Info("correlated finding",
+				"wb_endpoint", wf.Endpoint,
+				"bb_endpoint", bf.Endpoint,
+				"wb_category", wf.Category,
+				"bb_category", bf.Category,
+				"match_kind", matchKind,
+			)
+			continue
 		}
 
-		// Also try endpoint-agnostic category match (e.g. whitebox "auth" on route
-		// matches blackbox "auth_bypass" on same route with different normalization)
-		if !matched {
-			for _, bbCat := range relatedCategories(wf.Category) {
-				for i, bf := range blackbox {
-					if bf.Category == bbCat && endpointsRelated(wbNorm, normalizeEndpoint(bf.Endpoint)) {
-						bbCorrelated[i] = true
-						merged := mergeFindings(bf, wf)
-						result = append(result, merged)
-						matched = true
+		slog.Debug("correlator no blackbox match",
+			"wb_title", wf.Title,
+			"wb_endpoint_norm", wbNorm,
+			"wb_category", wf.Category,
+		)
 
-						slog.Info("correlated finding (fuzzy match)",
-							"wb_endpoint", wf.Endpoint,
-							"bb_endpoint", bf.Endpoint,
-							"category", wf.Category,
-						)
-						break
-					}
-				}
-				if matched {
-					break
-				}
-			}
-		}
-
-		if !matched {
-			// Unconfirmed whitebox finding
-			wf.Confidence = models.ConfidenceMedium
-			wf.Evidence += " [Unconfirmed by live scan]"
-			result = append(result, wf)
-		}
+		// Unconfirmed whitebox finding
+		wf.Confidence = models.ConfidenceMedium
+		wf.Evidence += " [Unconfirmed by live scan]"
+		result = append(result, wf)
 	}
 
 	// Add uncorrelated blackbox findings as-is
@@ -147,6 +142,71 @@ func Correlate(findings []models.Finding) []models.Finding {
 	}
 
 	return result
+}
+
+// findCorrelationMatch returns the index of a blackbox finding that matches
+// the whitebox finding identified by `wbNorm` + `relCats`, plus the match
+// kind ("exact", "suffix", or "fuzzy"). Returns (-1, "") if no match.
+//
+// `bbNorm` is the pre-computed normalized endpoint for each blackbox finding
+// (avoids re-running url.Parse per inner-loop iteration). The `taken` set
+// excludes blackbox findings already merged into another correlated finding
+// so each blackbox is consumed at most once.
+func findCorrelationMatch(
+	wbNorm string,
+	relCats []string,
+	blackbox []models.Finding,
+	bbNorm []string,
+	bbIndex map[correlationKey][]int,
+	taken map[int]bool,
+) (int, string) {
+	// 1. Exact match via index (fast path).
+	for _, cat := range relCats {
+		key := correlationKey{endpoint: wbNorm, category: cat}
+		for _, idx := range bbIndex[key] {
+			if !taken[idx] {
+				return idx, "exact"
+			}
+		}
+	}
+
+	// 2. Path-suffix match (handles base-path skew).
+	for i, bf := range blackbox {
+		if taken[i] {
+			continue
+		}
+		if !categoryRelated(relCats, bf.Category) {
+			continue
+		}
+		if pathSuffixMatch(wbNorm, bbNorm[i]) {
+			return i, "suffix"
+		}
+	}
+
+	// 3. Fuzzy segment match (handles file-path-vs-URL-path).
+	for i, bf := range blackbox {
+		if taken[i] {
+			continue
+		}
+		if !categoryRelated(relCats, bf.Category) {
+			continue
+		}
+		if endpointsRelated(wbNorm, bbNorm[i]) {
+			return i, "fuzzy"
+		}
+	}
+
+	return -1, ""
+}
+
+// categoryRelated reports whether `bbCat` is in the related-categories list.
+func categoryRelated(relCats []string, bbCat string) bool {
+	for _, c := range relCats {
+		if c == bbCat {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeFindings creates a correlated finding from matching blackbox and whitebox findings.
@@ -167,12 +227,17 @@ func mergeFindings(bb, wb models.Finding) models.Finding {
 	return merged
 }
 
-// normalizeEndpoint extracts just the path from an endpoint string,
-// stripping scheme, host, port, and query parameters.
+// normalizeEndpoint extracts a comparable path from an endpoint string,
+// stripping HTTP method prefixes, scheme, host, port, and query parameters.
 func normalizeEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return ""
 	}
+
+	// Strip a leading HTTP method token (e.g., "GET /pet" → "/pet").
+	// Whitebox emitters format endpoints as "<METHOD> <PATH>"; without this,
+	// the prefix corrupts both URL parsing and segment matching.
+	endpoint = methodPrefixRe.ReplaceAllString(endpoint, "")
 
 	// Handle file:line format (whitebox findings like "src/config.py:14")
 	if !strings.Contains(endpoint, "://") && !strings.HasPrefix(endpoint, "/") {
@@ -181,7 +246,8 @@ func normalizeEndpoint(endpoint string) string {
 		return strings.ToLower(parts[0])
 	}
 
-	// Handle URL format (blackbox findings)
+	// Handle URL or bare-path format (blackbox findings, or whitebox after
+	// method strip).
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return strings.ToLower(endpoint)
@@ -199,6 +265,35 @@ func normalizeEndpoint(endpoint string) string {
 	}
 
 	return strings.ToLower(path)
+}
+
+// pathSuffixMatch reports whether one normalized path is a suffix of the other
+// on a `/` boundary. Both inputs must be URL-style paths starting with `/`;
+// file paths and empty inputs return false.
+//
+// Example: pathSuffixMatch("/pet/findbystatus", "/api/v3/pet/findbystatus") = true.
+// Counter-example: pathSuffixMatch("/3/pet", "/api/v3/pet") = false (the suffix
+// boundary is mid-segment in `v3`).
+func pathSuffixMatch(a, b string) bool {
+	if !strings.HasPrefix(a, "/") || !strings.HasPrefix(b, "/") {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	// Reject the trivial root case — every path is a suffix of itself plus "/".
+	if a == "/" || b == "/" {
+		return false
+	}
+
+	short, long := a, b
+	if len(b) < len(a) {
+		short, long = b, a
+	}
+
+	// HasSuffix with a leading-`/` short pattern enforces a clean segment
+	// boundary because the literal `/` must align in `long`.
+	return strings.HasSuffix(long, short)
 }
 
 // endpointsRelated checks if two normalized endpoints refer to the same resource.
@@ -235,10 +330,14 @@ func pathSegments(path string) []string {
 		"api": true, "v1": true, "v2": true, "v3": true,
 		"src": true, "py": true, "js": true, "go": true, "ts": true,
 		"internal": true, "routes": true, "handlers": true,
+		// HTTP methods leak in when an endpoint format like "GET /pet" is
+		// normalized; filter them so they don't pollute fuzzy matching.
+		"get": true, "post": true, "put": true, "delete": true,
+		"patch": true, "head": true, "options": true,
 	}
 
 	for _, p := range parts {
-		p = strings.ToLower(p)
+		p = strings.ToLower(strings.TrimSpace(p))
 		if !noise[p] && len(p) > 1 {
 			segments = append(segments, p)
 		}

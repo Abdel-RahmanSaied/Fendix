@@ -20,7 +20,7 @@
 | 8 | Documentation | ✅ Complete | README, ADRs, contributing guide |
 | 9 | Hardening | ✅ Complete | Perf, edge cases, security review |
 | 10 | P0 — Flag wiring | ✅ Complete | Fix broken user-facing CLI flags found in real-world testing (v0.2) — shipped 2026-04-29 |
-| 11 | P1 — Coverage parity | 🔄 In Progress | Reach industry-baseline detection coverage (secrets, static, active, deps) (v0.3 + v0.4) |
+| 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
 | 12 | P2 — Quality & ops | 🔲 Not Started | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
 | 13 | P3 — External release | 🔲 Not Started | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
 

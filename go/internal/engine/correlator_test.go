@@ -274,6 +274,11 @@ func TestNormalizeEndpoint(t *testing.T) {
 		{"file path no line", "routes/users.py", "routes/users.py"},
 		{"bare path", "/api/v1/users", "/api/v1/users"},
 		{"empty", "", ""},
+		// TASK-091: spec-parser endpoints have a "<METHOD> <PATH>" prefix.
+		{"method prefix GET", "GET /pet/findByStatus", "/pet/findbystatus"},
+		{"method prefix POST", "POST /users", "/users"},
+		{"method prefix lowercase", "delete /api/v1/items/42", "/api/v1/items/42"},
+		{"method prefix with full URL", "GET http://example.com/pet", "/pet"},
 	}
 
 	for _, tc := range tests {
@@ -365,6 +370,152 @@ func TestMergeRefs(t *testing.T) {
 		if !expected[r] {
 			t.Errorf("unexpected ref: %s", r)
 		}
+	}
+}
+
+// TASK-091: Real-world petstore3 case — whitebox spec parser emits endpoint
+// "GET /pet/findByStatus", blackbox emits the full URL with the server's
+// /api/v3 base path. The pre-fix correlator returned 0 correlated findings
+// here. Now must merge via path-suffix match.
+func TestCorrelate_PathSuffixMatch_PetstoreStyle(t *testing.T) {
+	bb := models.Finding{
+		Title:      "No auth required",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceBlackbox,
+		Category:   "auth_bypass",
+		Endpoint:   "https://petstore3.swagger.io/api/v3/pet/findByStatus",
+		Evidence:   "200 without auth",
+		Fix:        "Add auth",
+		References: []string{"CWE-306"},
+		Confidence: models.ConfidenceHigh,
+	}
+
+	wb := models.Finding{
+		Title:      "Endpoint has no authentication requirement",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Category:   "auth",
+		Endpoint:   "GET /pet/findByStatus",
+		Evidence:   "GET /pet/findByStatus has no security defined.",
+		Fix:        "Add a security requirement.",
+		References: []string{"CWE-306"},
+		Confidence: models.ConfidenceMedium,
+	}
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding (suffix match), got %d", len(result))
+	}
+	if result[0].Source != models.SourceCorrelated {
+		t.Errorf("expected source correlated, got %s", result[0].Source)
+	}
+}
+
+// TASK-091: blackbox path /api/v1/users contains whitebox path /users on a
+// `/` boundary. Suffix match should fire even when there's no method prefix
+// in the whitebox finding.
+func TestCorrelate_PathSuffixMatch_BarePath(t *testing.T) {
+	bb := models.Finding{
+		Title:    "Sensitive data exposed",
+		Severity: models.SeverityHigh,
+		Source:   models.SourceBlackbox,
+		Category: "data_exposure",
+		Endpoint: "http://example.com/api/v1/users",
+	}
+
+	wb := models.Finding{
+		Title:    "Hardcoded API key",
+		Severity: models.SeverityHigh,
+		Source:   models.SourceWhitebox,
+		Category: "secrets",
+		Endpoint: "/users",
+		Evidence: "API_KEY = 'sk-...'",
+	}
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding via suffix, got %d", len(result))
+	}
+	if result[0].Source != models.SourceCorrelated {
+		t.Errorf("expected source correlated, got %s", result[0].Source)
+	}
+}
+
+// TASK-091: each blackbox finding can correlate with at most one whitebox
+// finding. Without the `taken` set, two different whitebox findings could
+// both merge with the same blackbox.
+func TestCorrelate_BlackboxConsumedAtMostOnce(t *testing.T) {
+	bb := models.Finding{
+		Title:    "No auth required",
+		Severity: models.SeverityHigh,
+		Source:   models.SourceBlackbox,
+		Category: "auth_bypass",
+		Endpoint: "http://example.com/api/v1/users",
+	}
+
+	wb1 := models.Finding{
+		Title:    "Missing auth decorator",
+		Severity: models.SeverityHigh,
+		Source:   models.SourceWhitebox,
+		Category: "auth",
+		Endpoint: "GET /users",
+	}
+
+	wb2 := models.Finding{
+		Title:    "Different auth bug",
+		Severity: models.SeverityHigh,
+		Source:   models.SourceWhitebox,
+		Category: "auth",
+		Endpoint: "POST /users",
+	}
+
+	result := Correlate([]models.Finding{bb, wb1, wb2})
+
+	correlatedCount := 0
+	unconfirmedCount := 0
+	for _, f := range result {
+		if f.Source == models.SourceCorrelated {
+			correlatedCount++
+		}
+		if f.Source == models.SourceWhitebox {
+			unconfirmedCount++
+		}
+	}
+
+	if correlatedCount != 1 {
+		t.Errorf("expected exactly 1 correlated finding (blackbox consumed once), got %d", correlatedCount)
+	}
+	if unconfirmedCount != 1 {
+		t.Errorf("expected 1 unconfirmed whitebox (the second wf had no available bb), got %d", unconfirmedCount)
+	}
+}
+
+func TestPathSuffixMatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		a, b     string
+		expected bool
+	}{
+		{"exact match", "/api/v1/users", "/api/v1/users", true},
+		{"suffix match", "/users", "/api/v1/users", true},
+		{"suffix match reversed args", "/api/v1/users", "/users", true},
+		{"deeper suffix", "/pet/findbystatus", "/api/v3/pet/findbystatus", true},
+		{"mid-segment boundary rejected", "/3/pet", "/api/v3/pet", false},
+		{"trivial root rejected", "/", "/api/v1/users", false},
+		{"non-path inputs rejected", "src/config.py", "/api/v1/users", false},
+		{"no shared suffix", "/items", "/api/v1/users", false},
+		{"empty inputs rejected", "", "/users", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pathSuffixMatch(tc.a, tc.b)
+			if got != tc.expected {
+				t.Errorf("pathSuffixMatch(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.expected)
+			}
+		})
 	}
 }
 

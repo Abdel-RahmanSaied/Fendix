@@ -626,6 +626,88 @@ func TestCrawler_RobotsDisallowDiscovered(t *testing.T) {
 // `dependencies`) made the primary path produce zero findings without falling
 // back, and a tool failure (timeout, non-success exit) silently dropped the
 // scan. Now both the success and failure cases route to a non-empty report.
+// TestCorrelator_HybridScanProducesCorrelatedFinding (TASK-091) is the
+// regression for the original Phase 11 motivation: hybrid scans must actually
+// emit `source: correlated` findings. Pre-fix, real-world petstore3 hybrid
+// scans found zero correlated findings even when both engines fired on the
+// same endpoint, because (a) the spec-parser emits endpoints in
+// "<METHOD> <PATH>" format which broke endpoint normalization, and (b) there
+// was no path-suffix match for base-path skew.
+//
+// Setup: mock target accepts GET /api/v1/admin without auth (200 OK). Spec
+// describes that same endpoint with no security requirement. Pass --auth so
+// the blackbox auth check fires.
+//
+// Expected: spec_parser whitebox finding (category=auth) correlates with
+// blackbox auth_bypass finding on the same endpoint → ≥1 finding with
+// source=correlated.
+func TestCorrelator_HybridScanProducesCorrelatedFinding(t *testing.T) {
+	bin := fendixBinary(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Always return 200 OK regardless of auth header — this is what
+		// triggers blackbox checkUnauthenticated (auth check sends a no-auth
+		// request and sees a 200).
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	// Minimal OpenAPI 3 spec — `/api/v1/admin` exists, no security defined.
+	// Spec parser will emit "Endpoint has no authentication requirement".
+	specDir := t.TempDir()
+	specPath := filepath.Join(specDir, "openapi.yaml")
+	specBody := `openapi: 3.0.0
+info:
+  title: Test
+  version: 1.0.0
+paths:
+  /api/v1/admin:
+    get:
+      responses:
+        '200':
+          description: OK
+`
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "report.json")
+
+	cmd := exec.Command(bin,
+		"scan",
+		"--url", srv.URL,
+		"--spec", specPath,
+		"--auth", "Bearer test-token",
+		"--output", outputPath,
+		"--workers", "2",
+		"--timeout", "5",
+		"--wordlist", tinyWordlist(t),
+		"--crawl-depth", "0",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
+			t.Fatalf("hybrid scan failed: %v\n%s", err, out)
+		}
+	}
+
+	report, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected report at %s: %v\noutput:\n%s", outputPath, err, out)
+	}
+
+	body := string(report)
+	if !contains(body, `"source":"correlated"`) && !contains(body, `"source": "correlated"`) {
+		t.Fatalf(
+			"expected at least one correlated finding (TASK-091 correlator regression).\n"+
+				"Report:\n%s\nfendix output:\n%s",
+			body, out,
+		)
+	}
+}
+
 func TestDepsScan_VulnerableRequirements(t *testing.T) {
 	bin := fendixBinary(t)
 
