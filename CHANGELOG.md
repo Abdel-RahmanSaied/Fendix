@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-29
+
+Build-infrastructure-only release. **No behavior changes vs v0.4.0** — all
+detection logic, CLI flags, and report output are identical. v0.4.0 users
+should upgrade to v0.4.1 only if they want to install via Homebrew or curl;
+the v0.4.0 binary itself remains correct.
+
+### Fixed
+
+- **Distribution: anonymous install paths now actually work.** v0.4.0's
+  release artifacts lived on a private repo, so every install path the
+  README claimed (`brew tap`, curl-pipe, `github.com/.../releases/...`)
+  returned 404 for any non-authenticated user. v0.4.1 routes all
+  user-facing distribution through a public mirror at
+  [`Abdel-RahmanSaied/homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix):
+  `brew tap Abdel-RahmanSaied/fendix && brew install fendix` and
+  `curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh`
+  both work end-to-end without auth.
+- **CI on `main` is green for the first time since 2026-03-20.** Three
+  long-standing pre-existing failures fixed: Python Test job was only
+  installing `pytest` (now installs `requirements.txt` + `hypothesis`);
+  TASK-085's `.env` test fixture was gitignored and never committed (now
+  tracked via a fixtures-scoped negation rule); TASK-086's longer field
+  name had left 4 files with stale gofmt alignment.
+
+### Added
+
+- **Docker image publishing** — `release.yml` now builds and pushes
+  `ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z` and `:latest` on every `v*`
+  tag (linux/amd64). Image visibility must be flipped to public via
+  GHCR package settings on first push.
+- **Public install mirror automation** — `release.yml` now has a `mirror`
+  job that auto-creates a matching release on the public mirror with
+  binaries+sha256s, and auto-regenerates `Formula/fendix.rb` in the
+  mirror's main branch with fresh SHA256 sums on every `v*` tag.
+  Idempotent (re-runs upload with `--clobber`).
+
+### Changed
+
+- **SARIF `tool.driver.informationUri`** now points at the public install
+  mirror (`https://github.com/Abdel-RahmanSaied/homebrew-fendix`) so
+  consumers reading SARIF reports don't 404 on a private repo URL.
+
 ## [0.4.0] - 2026-04-29
 
 This release ships **Phase 11 — P1 Coverage Parity**: secrets, static analysis,
