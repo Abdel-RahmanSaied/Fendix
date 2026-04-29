@@ -20,17 +20,17 @@ type ScanConfig struct {
 	// MaxProbesPerEndpoint caps the number of active probes sent to a single
 	// endpoint. Zero means "use the scanner's default" (currently 20).
 	MaxProbesPerEndpoint int
-	Workers      int
-	Timeout      int
-	DelayMs      int
-	Checks       []string
-	Verbose      bool
-	IgnorePath   string
-	BaselinePath     string
-	SaveBaselinePath string
-	OutputPath       string
-	Format       string
-	FailOn       string
+	Workers              int
+	Timeout              int
+	DelayMs              int
+	Checks               []string
+	Verbose              bool
+	IgnorePath           string
+	BaselinePath         string
+	SaveBaselinePath     string
+	OutputPath           string
+	Format               string
+	FailOn               string
 	// WordlistPath overrides the built-in CommonPaths brute-force list.
 	// Plain text, one path per line; lines starting with `#` and blank lines
 	// are ignored; a leading `/` is added if missing.

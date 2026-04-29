@@ -20,8 +20,8 @@ type SARIFLog struct {
 
 // SARIFRun represents a single analysis run.
 type SARIFRun struct {
-	Tool        SARIFTool        `json:"tool"`
-	Results     []SARIFResult    `json:"results"`
+	Tool        SARIFTool         `json:"tool"`
+	Results     []SARIFResult     `json:"results"`
 	Invocations []SARIFInvocation `json:"invocations,omitempty"`
 }
 
@@ -32,21 +32,21 @@ type SARIFTool struct {
 
 // SARIFDriver contains tool identity and rules.
 type SARIFDriver struct {
-	Name           string          `json:"name"`
-	Version        string          `json:"version"`
-	InformationURI string          `json:"informationUri"`
-	Rules          []SARIFRule     `json:"rules"`
+	Name           string      `json:"name"`
+	Version        string      `json:"version"`
+	InformationURI string      `json:"informationUri"`
+	Rules          []SARIFRule `json:"rules"`
 }
 
 // SARIFRule defines a rule (one per unique finding type).
 type SARIFRule struct {
-	ID               string           `json:"id"`
-	Name             string           `json:"name"`
-	ShortDescription SARIFMessage     `json:"shortDescription"`
-	Help             SARIFMessage     `json:"help"`
-	HelpURI          string           `json:"helpUri,omitempty"`
-	DefaultConfig    SARIFRuleConfig  `json:"defaultConfiguration"`
-	Properties       SARIFProperties  `json:"properties,omitempty"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	ShortDescription SARIFMessage    `json:"shortDescription"`
+	Help             SARIFMessage    `json:"help"`
+	HelpURI          string          `json:"helpUri,omitempty"`
+	DefaultConfig    SARIFRuleConfig `json:"defaultConfiguration"`
+	Properties       SARIFProperties `json:"properties,omitempty"`
 }
 
 // SARIFRuleConfig sets the default severity level for a rule.
@@ -61,11 +61,11 @@ type SARIFMessage struct {
 
 // SARIFResult is a single finding in SARIF format.
 type SARIFResult struct {
-	RuleID    string            `json:"ruleId"`
-	RuleIndex int               `json:"ruleIndex"`
-	Level     string            `json:"level"`
-	Message   SARIFMessage      `json:"message"`
-	Locations []SARIFLocation   `json:"locations,omitempty"`
+	RuleID    string          `json:"ruleId"`
+	RuleIndex int             `json:"ruleIndex"`
+	Level     string          `json:"level"`
+	Message   SARIFMessage    `json:"message"`
+	Locations []SARIFLocation `json:"locations,omitempty"`
 }
 
 // SARIFLocation describes where a finding was detected.

@@ -49,8 +49,8 @@ func CheckPython(pythonBin string) PythonStatus {
 // Python is needed for whitebox scanning.
 func PythonRequiredMessage() string {
 	return fmt.Sprintf(
-		"Python 3 is required for whitebox analysis (secrets, semgrep, AST checks).\n"+
-			"Install Python 3: https://www.python.org/downloads/\n"+
+		"Python 3 is required for whitebox analysis (secrets, semgrep, AST checks).\n" +
+			"Install Python 3: https://www.python.org/downloads/\n" +
 			"The scan will continue with blackbox checks only.",
 	)
 }
