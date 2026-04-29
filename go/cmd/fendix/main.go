@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +23,11 @@ var Version = "dev"
 func main() {
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
+		// Cobra's SilenceErrors=true on the root command suppresses its
+		// built-in error printing (which clutters scan output), so we print
+		// the error here ourselves before exiting. Without this, errors
+		// from any subcommand vanish silently.
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(2)
 	}
 }
@@ -192,9 +196,9 @@ func newReportCmd() *cobra.Command {
 				return fmt.Errorf("reading input file %s: %w", inputPath, err)
 			}
 
-			var report reporters.JSONReport
-			if err := json.Unmarshal(data, &report); err != nil {
-				return fmt.Errorf("parsing JSON report from %s — ensure it was produced by 'fendix scan --format json': %w", inputPath, err)
+			report, err := reporters.ParseJSONReport(data)
+			if err != nil {
+				return fmt.Errorf("loading %s: %w", inputPath, err)
 			}
 
 			var w io.Writer = os.Stdout

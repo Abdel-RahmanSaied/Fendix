@@ -765,3 +765,41 @@ func TestDepsScan_VulnerableRequirements(t *testing.T) {
 		)
 	}
 }
+
+// TestReport_RejectsSARIFInput is the regression for the silent-empty-report
+// bug surfaced in real-world usage: `fendix report --input results.sarif
+// --format html` previously deserialized the SARIF document into a
+// zero-value JSONReport and rendered an empty HTML page with "0 findings"
+// and a Go-zero-time timestamp — no error, no warning. ParseJSONReport now
+// detects SARIF and exits non-zero with an actionable message.
+func TestReport_RejectsSARIFInput(t *testing.T) {
+	bin := fendixBinary(t)
+
+	dir := t.TempDir()
+	sarifPath := filepath.Join(dir, "input.sarif")
+	if err := os.WriteFile(sarifPath, []byte(`{
+		"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+		"version": "2.1.0",
+		"runs": [{"tool": {"driver": {"name": "Fendix"}}, "results": []}]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin,
+		"report",
+		"--input", sarifPath,
+		"--format", "html",
+		"--output", filepath.Join(dir, "report.html"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit on SARIF input, got success.\noutput:\n%s", out)
+	}
+	if !contains(string(out), "SARIF") {
+		t.Fatalf("expected error message to mention SARIF, got:\n%s", out)
+	}
+	if !contains(string(out), "--format json") {
+		t.Fatalf("expected actionable hint with --format json, got:\n%s", out)
+	}
+}
+
