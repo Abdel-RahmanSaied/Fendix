@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-29
+
+Quality + UX patch. Two real-world bugs fixed (silent `fendix report` on
+SARIF input; silent `os.Exit(2)` on any subcommand error) and the first
+Phase 12 task lands (TASK-092 — output schema cleanup). No breaking
+changes; safe upgrade for all v0.4.x users.
+
+### Added
+
+- **Documented JSON output schema** (TASK-092). New `docs/schema.md` +
+  `docs/schema.json` (JSON Schema draft-07) act as the public, versioned
+  contract for `fendix scan --format json` output. Stable for the v0.x
+  line; additive changes only within minor releases. Schema-validation
+  test walks every emitted report and enforces required fields, types,
+  enums, the `SEC-NNN` id pattern, and the LOW-confidence severity cap.
+- **Severity↔confidence consistency enforcement** (TASK-092). LOW
+  confidence now caps severity at MEDIUM, MEDIUM caps at HIGH (derived
+  from the scoring formula's implicit max). New
+  `models.MaxSeverityForConfidence` + `EnforceSeverityConsistency`,
+  wired as orchestrator step 5.6 between Deduplicate and Sort.
+  Inconsistent findings get severity downgraded with an aggregated WARN
+  summary; per-finding violations logged at DEBUG.
+
+### Changed
+
+- **`RenderJSON` always emits `findings: []`** (never `null`) so
+  consumers can iterate without a null-check (TASK-092). Now part of
+  the documented schema contract.
+- **`[Unconfirmed by live scan]` evidence suffix tightened** (TASK-092).
+  Only added when the whitebox finding normalises to a URL/path
+  endpoint. File:line findings (e.g. a hardcoded secret in
+  `src/config.py:14`) can't be confirmed by a live HTTP scan, so the
+  suffix was misleading there. New `isURLEndpoint` helper gates both
+  call sites in the correlator.
+
+### Fixed
+
+- **`fendix report --input` now rejects non-Fendix-JSONReport input.**
+  Real-world bug: feeding a SARIF file to
+  `fendix report --input results.sarif --format html` silently
+  deserialized the SARIF document into a zero-value `JSONReport` and
+  rendered an empty HTML page (0 findings, zero-time timestamp, blank
+  version) — no error, no warning. New
+  `reporters.ParseJSONReport(data)` helper detects SARIF (via `$schema`
+  containing "sarif" OR top-level `runs` + `version` keys), random JSON
+  (missing `metadata.version` and `metadata.mode`), and malformed JSON,
+  and returns actionable error messages for each. SARIF-specific
+  message hints at `fendix scan --format json` to produce a valid
+  re-rendering input.
+- **Subcommand errors now print to stderr** instead of vanishing into a
+  silent `os.Exit(2)`. The root command had `SilenceErrors: true` to
+  avoid double-printing structured logs from `fendix scan`, but
+  `main()` never printed the error itself. Result: every
+  command-level failure (bad `--format`, missing `--input`, parse
+  errors, network errors) produced a bare exit 2 with no message.
+  Now prints `Error: <msg>` to stderr before exiting.
+
 ## [0.4.1] - 2026-04-29
 
 Build-infrastructure-only release. **No behavior changes vs v0.4.0** — all
