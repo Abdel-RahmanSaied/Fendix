@@ -213,3 +213,88 @@ func TestSeverityRankOrdering(t *testing.T) {
 		t.Error("LOW should rank higher than INFO")
 	}
 }
+
+func TestMaxSeverityForConfidence(t *testing.T) {
+	tests := []struct {
+		conf Confidence
+		want Severity
+	}{
+		{ConfidenceHigh, SeverityCritical},
+		{ConfidenceMedium, SeverityHigh},
+		{ConfidenceLow, SeverityMedium},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.conf), func(t *testing.T) {
+			if got := MaxSeverityForConfidence(tc.conf); got != tc.want {
+				t.Errorf("MaxSeverityForConfidence(%s) = %s, want %s", tc.conf, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnforceSeverityConsistency(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             Finding
+		wantSev        Severity
+		wantDowngraded bool
+	}{
+		{
+			name:           "LOW conf with HIGH sev downgrades to MEDIUM",
+			in:             Finding{Severity: SeverityHigh, Confidence: ConfidenceLow},
+			wantSev:        SeverityMedium,
+			wantDowngraded: true,
+		},
+		{
+			name:           "LOW conf with CRITICAL sev downgrades to MEDIUM",
+			in:             Finding{Severity: SeverityCritical, Confidence: ConfidenceLow},
+			wantSev:        SeverityMedium,
+			wantDowngraded: true,
+		},
+		{
+			name:           "LOW conf with MEDIUM sev unchanged",
+			in:             Finding{Severity: SeverityMedium, Confidence: ConfidenceLow},
+			wantSev:        SeverityMedium,
+			wantDowngraded: false,
+		},
+		{
+			name:           "MEDIUM conf with CRITICAL sev downgrades to HIGH",
+			in:             Finding{Severity: SeverityCritical, Confidence: ConfidenceMedium},
+			wantSev:        SeverityHigh,
+			wantDowngraded: true,
+		},
+		{
+			name:           "MEDIUM conf with HIGH sev unchanged",
+			in:             Finding{Severity: SeverityHigh, Confidence: ConfidenceMedium},
+			wantSev:        SeverityHigh,
+			wantDowngraded: false,
+		},
+		{
+			name:           "HIGH conf with CRITICAL sev unchanged",
+			in:             Finding{Severity: SeverityCritical, Confidence: ConfidenceHigh},
+			wantSev:        SeverityCritical,
+			wantDowngraded: false,
+		},
+		{
+			name:           "HIGH conf with INFO sev unchanged",
+			in:             Finding{Severity: SeverityInfo, Confidence: ConfidenceHigh},
+			wantSev:        SeverityInfo,
+			wantDowngraded: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, downgraded := EnforceSeverityConsistency(tc.in)
+			if got.Severity != tc.wantSev {
+				t.Errorf("severity = %s, want %s", got.Severity, tc.wantSev)
+			}
+			if downgraded != tc.wantDowngraded {
+				t.Errorf("downgraded = %v, want %v", downgraded, tc.wantDowngraded)
+			}
+			// Other fields must be untouched.
+			if got.Confidence != tc.in.Confidence {
+				t.Errorf("confidence mutated: got %s, want %s", got.Confidence, tc.in.Confidence)
+			}
+		})
+	}
+}

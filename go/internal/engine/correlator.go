@@ -35,8 +35,12 @@ var methodPrefixRe = regexp.MustCompile(`(?i)^(GET|POST|PUT|DELETE|PATCH|HEAD|OP
 //   - If both engines agree on a vulnerability (same normalized endpoint + related category):
 //     merge into a single correlated finding with source=correlated, confidence=HIGH,
 //     and severity escalated by one level.
-//   - If whitebox finds an issue but blackbox does NOT confirm:
+//   - If whitebox finds an issue at a URL endpoint but blackbox does NOT confirm:
 //     keep whitebox finding, confidence=MEDIUM, add "Unconfirmed by live scan" note.
+//     The note is only added when the whitebox endpoint normalises to a URL
+//     path (`/...`) — file:line findings such as a hardcoded secret in
+//     `src/config.py:14` cannot be confirmed by a live HTTP scan, so the
+//     suffix is misleading there and is skipped (TASK-092).
 //   - If blackbox finds an issue but no whitebox counterpart:
 //     keep as-is.
 //
@@ -70,12 +74,19 @@ func Correlate(findings []models.Finding) []models.Finding {
 	)
 
 	if len(whitebox) == 0 || len(blackbox) == 0 {
-		// Nothing to correlate — return all findings as-is
-		// But still downgrade unconfirmed whitebox findings if no blackbox data
+		// Nothing to correlate — return all findings as-is.
+		// When some live scan ran (blackbox findings exist) but didn't match
+		// a given whitebox finding, downgrade that finding's confidence and
+		// suffix its evidence. The suffix is only meaningful for whitebox
+		// findings tied to a URL endpoint; file-path findings (e.g. a
+		// hardcoded secret at src/config.py:14) cannot be confirmed by a
+		// live scan, so they keep their original evidence and confidence.
 		if len(blackbox) == 0 && len(whitebox) > 0 {
 			for i := range whitebox {
-				whitebox[i].Confidence = models.ConfidenceMedium
-				whitebox[i].Evidence += " [Unconfirmed by live scan]"
+				if isURLEndpoint(whitebox[i].Endpoint) {
+					whitebox[i].Confidence = models.ConfidenceMedium
+					whitebox[i].Evidence += " [Unconfirmed by live scan]"
+				}
 			}
 		}
 		result := make([]models.Finding, 0, len(blackbox)+len(whitebox))
@@ -128,9 +139,12 @@ func Correlate(findings []models.Finding) []models.Finding {
 			"wb_category", wf.Category,
 		)
 
-		// Unconfirmed whitebox finding
-		wf.Confidence = models.ConfidenceMedium
-		wf.Evidence += " [Unconfirmed by live scan]"
+		// Unconfirmed whitebox finding. Suffix only when the endpoint is a
+		// URL — file:line findings can't be confirmed by a live scan.
+		if isURLEndpoint(wf.Endpoint) {
+			wf.Confidence = models.ConfidenceMedium
+			wf.Evidence += " [Unconfirmed by live scan]"
+		}
 		result = append(result, wf)
 	}
 
@@ -265,6 +279,19 @@ func normalizeEndpoint(endpoint string) string {
 	}
 
 	return strings.ToLower(path)
+}
+
+// isURLEndpoint reports whether a Finding.Endpoint string points at an HTTP
+// endpoint (URL or bare path) rather than a source location like
+// "src/config.py:14". The suffix `[Unconfirmed by live scan]` is only
+// meaningful for the former — a live HTTP scan cannot confirm a finding
+// that lives in source code.
+func isURLEndpoint(endpoint string) bool {
+	if endpoint == "" {
+		return false
+	}
+	endpoint = methodPrefixRe.ReplaceAllString(endpoint, "")
+	return strings.HasPrefix(endpoint, "/") || strings.Contains(endpoint, "://")
 }
 
 // pathSuffixMatch reports whether one normalized path is a suffix of the other

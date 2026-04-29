@@ -83,7 +83,14 @@ func CountSources(findings []models.Finding) SourceCounts {
 }
 
 // RenderJSON writes a full JSON report to the writer.
+//
+// The `findings` field is always serialised as a JSON array (`[]` when the
+// input is nil or empty) — never `null` — so consumers can iterate without
+// a null-check. This is part of the public schema (docs/schema.md).
 func RenderJSON(w io.Writer, findings []models.Finding, meta ScanMetadata) error {
+	if findings == nil {
+		findings = []models.Finding{}
+	}
 	report := JSONReport{
 		Metadata: meta,
 		Summary:  CountSeverities(findings),

@@ -1,0 +1,157 @@
+# Fendix JSON Report Schema
+
+This document defines the public schema for `fendix scan --format json` output.
+A machine-readable JSON Schema (draft-07) lives alongside this file at
+[`schema.json`](./schema.json) and is used by Fendix's own test suite to
+validate every report produced.
+
+The schema is **stable** for the v0.x line within minor versions. Additive
+changes (new optional fields) are allowed in any release. Removals or type
+changes are reserved for major versions.
+
+---
+
+## Top-level shape
+
+```json
+{
+  "metadata":  { ... ScanMetadata ... },
+  "summary":   { "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0 },
+  "sources":   { "blackbox": 0, "whitebox": 0, "correlated": 0 },
+  "total":     0,
+  "findings":  [ { ... Finding ... }, ... ]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `metadata` | object | yes | Scan-level metadata (target, timing, mode). |
+| `summary` | object | yes | Severity counts. Sums to `total`. |
+| `sources` | object | yes | Source counts (blackbox / whitebox / correlated). Sums to `total`. |
+| `total` | integer | yes | Total findings in `findings`. |
+| `findings` | array of `Finding` | yes | Each finding produced by the scan, sorted deterministically. May be empty. |
+
+---
+
+## ScanMetadata
+
+```json
+{
+  "target":            "https://api.example.com",
+  "started_at":        "2026-04-29T10:00:00Z",
+  "duration":          "12.5s",
+  "version":           "0.4.0",
+  "mode":              "hybrid",
+  "endpoints_scanned": 21,
+  "active_probes":     false,
+  "checks_run":        ["headers", "cors", "exposure", "ratelimit", "secrets", "semgrep", "deps"]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `target` | string | yes | The `--url` value, or empty string for `--code`-only scans. |
+| `started_at` | string (RFC 3339 timestamp) | yes | When the scan started. |
+| `duration` | string (Go-formatted duration, e.g. `"12.5s"`) | yes | Wall-clock duration of the scan. |
+| `version` | string | yes | Fendix version, e.g. `"0.4.0"` or `"dev"`. |
+| `mode` | string enum | yes | One of `blackbox`, `whitebox`, `hybrid`. |
+| `endpoints_scanned` | integer | yes | Number of endpoints discovered and scanned. May be 0 for `--code`-only. |
+| `active_probes` | boolean | yes | Whether `--enable-active` was set. |
+| `checks_run` | array of string | no | Names of checks executed. Omitted when empty. |
+
+---
+
+## Finding
+
+```json
+{
+  "id":                  "SEC-001",
+  "title":               "Hardcoded API key detected",
+  "severity":            "CRITICAL",
+  "source":              "whitebox",
+  "category":            "secrets",
+  "endpoint":            "src/config.py:14",
+  "affected_endpoints":  ["src/config.py:14", "src/admin.py:22"],
+  "evidence":            "API_KEY = 'sk-live-abc... [REDACTED]'",
+  "fix":                 "Move to environment variable. Rotate the exposed key immediately.",
+  "references":          ["CWE-798"],
+  "confidence":          "HIGH",
+  "line":                "src/config.py:14"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string (`SEC-NNN`) | yes | Sequential ID assigned by the orchestrator. Stable for a single scan only. |
+| `title` | string | yes | Human-readable finding title. |
+| `severity` | string enum | yes | One of `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`. |
+| `source` | string enum | yes | One of `blackbox`, `whitebox`, `correlated`. |
+| `category` | string | yes | Taxonomy category (`auth_bypass`, `injection`, `secrets`, `idor`, `data_exposure`, `cors`, `headers`, `info_disclosure`, `auth`, ...). |
+| `endpoint` | string | yes | URL path or `file:line`. Primary endpoint for this finding. |
+| `affected_endpoints` | array of string | no | Populated only when dedup collapsed `N≥2` occurrences into one finding. Includes the primary `endpoint`. |
+| `evidence` | string | yes | Snippet showing what was detected. Credentials are masked as `[REDACTED]`. May end with the suffix `[Unconfirmed by live scan]` when correlation against a live scan ran but produced no match. |
+| `fix` | string | yes | Remediation guidance. |
+| `references` | array of string | yes | CWE / OWASP / RFC identifiers. May be empty array. |
+| `confidence` | string enum | yes | One of `HIGH`, `MEDIUM`, `LOW`. |
+| `line` | string \| null | yes | File and line for whitebox findings, e.g. `"src/config.py:14"`. Always serialised; `null` when not applicable. |
+
+### Severity ↔ confidence consistency
+
+The orchestrator enforces a consistency rule before reports are written: a
+finding with `confidence: "LOW"` cannot have `severity` higher than `MEDIUM`.
+This matches the implicit cap from the scoring formula (`base × 0.5` is
+≤ 5.0 for every category, which lands at MEDIUM or below). Findings that
+violate the rule have their severity downgraded; the original score is
+preserved in the scoring formula's intent.
+
+### `[Unconfirmed by live scan]` suffix semantics
+
+The suffix is appended to a whitebox finding's `evidence` only when:
+
+1. Both engines actually ran (the orchestrator only invokes correlation when
+   blackbox **and** whitebox findings exist), AND
+2. The whitebox finding's `endpoint` normalises to a URL path (e.g. `/users`
+   or `GET /users`) — i.e. live scanning could in principle have caught it.
+
+Source-only findings (e.g. a hardcoded secret at `src/config.py:14`) never
+receive the suffix because a live scan cannot observe source files.
+
+---
+
+## Severity values
+
+| Value | Numeric rank | Meaning |
+|---|---|---|
+| `CRITICAL` | 4 | Immediate exploit risk; e.g. unauth admin endpoint, exposed live API key. |
+| `HIGH` | 3 | High-impact bug requiring privileged access or specific conditions. |
+| `MEDIUM` | 2 | Defence-in-depth violation (missing security header, weak CORS). |
+| `LOW` | 1 | Informational with mild impact. |
+| `INFO` | 0 | Diagnostic only; no exploit path. |
+
+## Confidence values
+
+| Value | Meaning |
+|---|---|
+| `HIGH` | Detected by direct evidence (regex hit, error response, `correlated` finding). |
+| `MEDIUM` | Pattern match with potential false positives (boolean-based SQLi, semgrep MEDIUM). |
+| `LOW` | Heuristic or statistical signal. |
+
+## Source values
+
+| Value | Meaning |
+|---|---|
+| `blackbox` | Produced by the Go HTTP scanner against a live target. |
+| `whitebox` | Produced by the Python static analyser against source / spec. |
+| `correlated` | Produced by the correlator when both engines agree on the same endpoint + related category. Severity is escalated by one level; confidence is `HIGH`. |
+
+---
+
+## Stability guarantees
+
+- New optional fields may be added in minor releases.
+- Existing field types and enum values do **not** change in minor releases.
+- A field marked optional may become required only in a major release.
+- Removing a field is reserved for major releases.
+
+If you build tooling that consumes Fendix JSON, validate against
+[`schema.json`](./schema.json) and pin the schema version through your CI.

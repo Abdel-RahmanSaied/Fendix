@@ -21,7 +21,7 @@
 | 9 | Hardening | ✅ Complete | Perf, edge cases, security review |
 | 10 | P0 — Flag wiring | ✅ Complete | Fix broken user-facing CLI flags found in real-world testing (v0.2) — shipped 2026-04-29 |
 | 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
-| 12 | P2 — Quality & ops | 🔲 Not Started | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
+| 12 | P2 — Quality & ops | 🔄 In Progress (1/7 — TASK-092 done) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
 | 13 | P3 — External release | 🔲 Not Started | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
@@ -441,9 +441,9 @@ TASK-091  Correlator: instrument with debug logs, loosen matching predicate, add
 
 **Exit criteria:**
 
-- [ ] Output JSON schema documented and validated in tests
-- [ ] `[Unconfirmed by live scan]` evidence suffix only appears when correlation was actually attempted
-- [ ] HIGH/MEDIUM/LOW severity↔confidence consistency rules enforced
+- [x] Output JSON schema documented and validated in tests (TASK-092)
+- [x] `[Unconfirmed by live scan]` evidence suffix only appears when correlation was actually attempted (TASK-092)
+- [x] HIGH/MEDIUM/LOW severity↔confidence consistency rules enforced (TASK-092)
 - [ ] Path-parameter substitution: `/users/{id}` becomes `/users/1` (or schema-derived sample), not `/users/%7Bid%7D`
 - [ ] Logging aggregated: max 3 WARN per check, rest at DEBUG
 - [ ] Global scan budget: `--max-requests N`, `--max-duration 5m`, `--respect-robots`
@@ -454,7 +454,7 @@ TASK-091  Correlator: instrument with debug logs, loosen matching predicate, add
 
 **Tasks:**
 ```
-TASK-092  Output schema cleanup: docs/schema.md, JSON-schema validation in tests, evidence-suffix logic, severity↔confidence consistency
+TASK-092  ✅ Output schema cleanup: docs/schema.md, JSON-schema validation in tests, evidence-suffix logic, severity↔confidence consistency
 TASK-093  Crawler placeholder substitution: schema-derived sample values for path params
 TASK-094  Logging hygiene: aggregate per-check failures, cap WARN volume, downgrade rest to DEBUG
 TASK-095  Scan budget controls: --max-requests, --max-duration, --respect-robots, soft-stop semantics

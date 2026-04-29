@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Abdel-RahmanSaied/Fendix/blob/main/docs/schema.json",
+  "title": "FendixJSONReport",
+  "description": "Schema for Fendix scan output produced by `fendix scan --format json`. Version: stable for the v0.x line.",
+  "type": "object",
+  "required": ["metadata", "summary", "sources", "total", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "metadata": { "$ref": "#/definitions/ScanMetadata" },
+    "summary":  { "$ref": "#/definitions/SeverityCounts" },
+    "sources":  { "$ref": "#/definitions/SourceCounts" },
+    "total":    { "type": "integer", "minimum": 0 },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Finding" }
+    }
+  },
+  "definitions": {
+    "ScanMetadata": {
+      "type": "object",
+      "required": ["target", "started_at", "duration", "version", "mode", "endpoints_scanned", "active_probes"],
+      "additionalProperties": false,
+      "properties": {
+        "target":            { "type": "string" },
+        "started_at":        { "type": "string", "format": "date-time" },
+        "duration":          { "type": "string" },
+        "version":           { "type": "string" },
+        "mode":              { "type": "string", "enum": ["blackbox", "whitebox", "hybrid"] },
+        "endpoints_scanned": { "type": "integer", "minimum": 0 },
+        "active_probes":     { "type": "boolean" },
+        "checks_run":        { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "SeverityCounts": {
+      "type": "object",
+      "required": ["critical", "high", "medium", "low", "info"],
+      "additionalProperties": false,
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high":     { "type": "integer", "minimum": 0 },
+        "medium":   { "type": "integer", "minimum": 0 },
+        "low":      { "type": "integer", "minimum": 0 },
+        "info":     { "type": "integer", "minimum": 0 }
+      }
+    },
+    "SourceCounts": {
+      "type": "object",
+      "required": ["blackbox", "whitebox", "correlated"],
+      "additionalProperties": false,
+      "properties": {
+        "blackbox":   { "type": "integer", "minimum": 0 },
+        "whitebox":   { "type": "integer", "minimum": 0 },
+        "correlated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "Finding": {
+      "type": "object",
+      "required": ["id", "title", "severity", "source", "category", "endpoint", "evidence", "fix", "references", "confidence", "line"],
+      "additionalProperties": false,
+      "properties": {
+        "id":                 { "type": "string", "pattern": "^SEC-[0-9]+$" },
+        "title":              { "type": "string", "minLength": 1 },
+        "severity":           { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+        "source":             { "type": "string", "enum": ["blackbox", "whitebox", "correlated"] },
+        "category":           { "type": "string", "minLength": 1 },
+        "endpoint":           { "type": "string" },
+        "affected_endpoints": { "type": "array", "items": { "type": "string" } },
+        "evidence":           { "type": "string" },
+        "fix":                { "type": "string" },
+        "references":         { "type": "array", "items": { "type": "string" } },
+        "confidence":         { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "line":               { "type": ["string", "null"] }
+      },
+      "allOf": [
+        {
+          "description": "Severity-confidence consistency: LOW confidence caps severity at MEDIUM.",
+          "if":   { "properties": { "confidence": { "const": "LOW" } } },
+          "then": { "properties": { "severity":   { "enum": ["MEDIUM", "LOW", "INFO"] } } }
+        }
+      ]
+    }
+  }
+}

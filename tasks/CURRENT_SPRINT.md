@@ -4,24 +4,39 @@
 
 ---
 
-## Active Phase: 11 — P1 Coverage Parity (v0.3 + v0.4) — ✅ Shipped as v0.4.0 (2026-04-29)
+## Active Phase: 12 — P2 Quality, performance, ops (v0.5) — 🔄 In progress (1/7 done)
 
-**Sprint goal:** Reach industry-baseline detection coverage. Stop being "noticeably worse than gitleaks/semgrep/ZAP" on the obvious checks.
-
-**Why now:** v0.2.0 shipped — every documented CLI flag now works. Next blocker for external evaluation is detection breadth. Reviewers compare against gitleaks (secrets), semgrep (SAST), and ZAP (DAST). Today fendix has 7 secret patterns vs. gitleaks' 100+, no string-concat SQLi, no body-param probing, and no correlated findings on hybrid runs. Each gap is a credibility hit.
+**Sprint goal:** Polish that turns a working scanner into one that fits production workflows: documented JSON schema, tighter unconfirmed-suffix semantics, severity↔confidence consistency, scan budgets, auth profiles, CI integration recipe.
 
 **Definition of Done:**
 
-- [ ] Secrets analyzer covers GitHub, Stripe, Slack, Google, Anthropic, OpenAI, npm, GCP service-account JSON
-- [ ] `.env` files (unquoted `KEY=value`) correctly scanned
-- [ ] Static SAST: string-concat SQLi, pickle/yaml.load, weak crypto, open redirect, SSRF, auth-header-trust patterns
-- [ ] Active scanner probes body params + headers; SQLi covers SQLite/Oracle + error-based + boolean-based
-- [ ] Findings dedup: `AffectedEndpoints []Endpoint` for the "missing CSP × 21 endpoints" case
-- [ ] Crawler: robots.txt + sitemap.xml + HTML link parsing, `--wordlist` flag, larger default list
-- [ ] Real CVE coverage via pip-audit + npm audit + govulncheck (hardcoded list as offline fallback)
-- [ ] Correlator emits ≥1 `correlated` finding on hybrid scan against vuln-server fixture
-- [ ] All Phase 0-10 tests still pass
-- [ ] e2e regression tests added for any new CLI flags
+- [x] Output JSON schema documented and validated in tests (TASK-092)
+- [x] `[Unconfirmed by live scan]` evidence suffix only appears when correlation was actually attempted on a URL endpoint (TASK-092)
+- [x] HIGH/MEDIUM/LOW severity↔confidence consistency rules enforced (TASK-092)
+- [ ] Path-parameter substitution: `/users/{id}` becomes `/users/1` (TASK-093)
+- [ ] Logging aggregated: max 3 WARN per check, rest at DEBUG (TASK-094)
+- [ ] Global scan budget: `--max-requests N`, `--max-duration 5m`, `--respect-robots` (TASK-095)
+- [ ] Auth profiles: bearer, api-key (header + query), basic, cookie, refresh-on-401, all e2e tested (TASK-096)
+- [ ] `-race` passes on a 1000-endpoint scan in CI (TASK-097)
+- [ ] Example GitHub Actions workflow committed: scan → SARIF → upload → PR comment (TASK-098)
+
+| ID | Task | Status | Notes |
+| --- | --- | --- | --- |
+| TASK-092 | Output schema cleanup: `docs/schema.md`, JSON-schema validation in tests, evidence-suffix logic, severity↔confidence consistency | ✅ | New `docs/schema.md` + `docs/schema.json`; `RenderJSON` always emits `findings: []` (not `null`); `isURLEndpoint` gate on `[Unconfirmed by live scan]` suffix; `MaxSeverityForConfidence` + `EnforceSeverityConsistency` in models, wired as orchestrator step 5.6. 3 schema-validation tests + 8 model tests + 2 orchestrator helper tests. Pre-existing `TestCorrelate_UnconfirmedWhitebox` replaced with two more-specific tests. Real-world `--code` scan on badcode/: 22 findings, 0 misleading suffixes, 0 sev/conf violations. |
+| TASK-093 | Crawler placeholder substitution: schema-derived sample values for path params | 🔲 | Currently `/users/{id}` → `/users/%7Bid%7D`. Should pull `schema.example` / `schema.type` from OpenAPI to substitute `/users/1` / `/users/abc`. |
+| TASK-094 | Logging hygiene: aggregate per-check failures, cap WARN volume, downgrade rest to DEBUG | 🔲 | |
+| TASK-095 | Scan budget controls: `--max-requests`, `--max-duration`, `--respect-robots`, soft-stop semantics | 🔲 | Higher user-visibility than TASK-094 — could pull forward. |
+| TASK-096 | Auth profiles e2e: bearer + api-key (header/query) + basic + cookie + refresh-on-401, all under tests/e2e/ | 🔲 | |
+| TASK-097 | Concurrency review: `-race` against 1000-endpoint scan in CI, fuzz worker-pool cancellation | 🔲 | |
+| TASK-098 | CI integration recipe: `examples/github-actions/fendix-scan.yml` with SARIF upload + baseline-diff PR comment | 🔲 | |
+
+**Status legend:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
+
+---
+
+## Phase 11 — Shipped ✅ (v0.4.0 — 2026-04-29)
+
+All 7 tasks (TASK-085..091) shipped. Folded the never-tagged v0.3 batch (TASK-085 + TASK-086) into v0.4. Detail table preserved below under "This Sprint's Tasks (Phase 11 — v0.3 batch)".
 
 ---
 

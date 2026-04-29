@@ -50,3 +50,38 @@ func CalculateSeverity(category string, confidence Confidence, source Source) Se
 		return SeverityInfo
 	}
 }
+
+// MaxSeverityForConfidence returns the highest severity level that a finding
+// of the given confidence may carry. The cap is derived from the scoring
+// formula's implicit maximum:
+//
+//	confidence=LOW    → score ≤ base × 0.5 × 1.1 = 5.5  → MEDIUM cap
+//	confidence=MEDIUM → score ≤ base × 0.75 × 1.1 = 8.25 → HIGH cap (CRITICAL needs ≥ 9.0)
+//	confidence=HIGH   → no cap (any severity allowed)
+//
+// Findings that violate this contract are downgraded by the orchestrator's
+// EnforceSeverityConsistency step before reports are written, so consumers
+// of the JSON report can assume the cap holds.
+func MaxSeverityForConfidence(c Confidence) Severity {
+	switch c {
+	case ConfidenceLow:
+		return SeverityMedium
+	case ConfidenceMedium:
+		return SeverityHigh
+	default:
+		return SeverityCritical
+	}
+}
+
+// EnforceSeverityConsistency returns f with severity downgraded to
+// MaxSeverityForConfidence(f.Confidence) when the original severity exceeds
+// that cap. The boolean return indicates whether a downgrade happened, so
+// callers can log or count violations.
+func EnforceSeverityConsistency(f Finding) (Finding, bool) {
+	cap := MaxSeverityForConfidence(f.Confidence)
+	if SeverityRank(f.Severity) > SeverityRank(cap) {
+		f.Severity = cap
+		return f, true
+	}
+	return f, false
+}

@@ -120,6 +120,12 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// "Missing CSP × 21 endpoints" → 1 finding with AffectedEndpoints[21].
 	findings = Deduplicate(findings)
 
+	// 5.6. Enforce severity↔confidence consistency (TASK-092). LOW confidence
+	// caps severity at MEDIUM; MEDIUM confidence caps at HIGH. Mismatched
+	// findings get their severity downgraded so the public JSON schema's
+	// consistency rule holds for every emitted report.
+	findings = enforceConsistency(findings)
+
 	// 6. Sort findings deterministically by endpoint+category for stable ID assignment
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Endpoint != findings[j].Endpoint {
@@ -286,6 +292,34 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
 
 	slog.Info("whitebox scan complete", "findings", len(result.Findings))
 	return result.Findings
+}
+
+// enforceConsistency walks every finding through models.EnforceSeverityConsistency
+// and logs a single aggregated WARN summarising any downgrades. Cap rules are
+// owned by the models package; the orchestrator only orchestrates.
+func enforceConsistency(findings []models.Finding) []models.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	downgraded := 0
+	for i, f := range findings {
+		out, changed := models.EnforceSeverityConsistency(f)
+		if changed {
+			downgraded++
+			slog.Debug("severity downgraded for confidence consistency",
+				"id", f.ID,
+				"title", f.Title,
+				"confidence", f.Confidence,
+				"original_severity", f.Severity,
+				"new_severity", out.Severity,
+			)
+		}
+		findings[i] = out
+	}
+	if downgraded > 0 {
+		slog.Warn("severity↔confidence consistency: downgraded findings", "count", downgraded)
+	}
+	return findings
 }
 
 // hasWhitebox returns true if any finding has source=whitebox.

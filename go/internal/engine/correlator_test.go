@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -56,7 +57,10 @@ func TestCorrelate_MatchingFindings(t *testing.T) {
 	}
 }
 
-func TestCorrelate_UnconfirmedWhitebox(t *testing.T) {
+// TASK-092: a file:line whitebox finding cannot be confirmed by a live HTTP
+// scan, so the [Unconfirmed by live scan] suffix is misleading there. The
+// finding should pass through unchanged (confidence, evidence, source).
+func TestCorrelate_FilePathWhiteboxNotMarkedUnconfirmed(t *testing.T) {
 	wb := models.Finding{
 		Title:      "SQL injection pattern",
 		Severity:   models.SeverityHigh,
@@ -77,13 +81,44 @@ func TestCorrelate_UnconfirmedWhitebox(t *testing.T) {
 
 	f := result[0]
 	if f.Source != models.SourceWhitebox {
-		t.Errorf("expected source whitebox (unconfirmed), got %s", f.Source)
+		t.Errorf("expected source whitebox, got %s", f.Source)
 	}
+	if f.Confidence != models.ConfidenceHigh {
+		t.Errorf("expected confidence HIGH (file:line endpoint, no live-scan confirmation possible), got %s", f.Confidence)
+	}
+	if f.Evidence != "cursor.execute(f\"SELECT...\")" {
+		t.Errorf("expected unchanged evidence, got %q", f.Evidence)
+	}
+}
+
+// TASK-092: a URL-endpoint whitebox finding with no matching blackbox finding
+// (live scan ran clean for that endpoint) still gets the suffix and confidence
+// downgrade — that's the case the suffix is designed for.
+func TestCorrelate_URLWhiteboxMarkedUnconfirmed(t *testing.T) {
+	wb := models.Finding{
+		Title:      "Endpoint missing security",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Category:   "auth",
+		Endpoint:   "GET /api/v1/admin",
+		Evidence:   "No security defined in spec",
+		Fix:        "Add a security requirement",
+		References: []string{"CWE-306"},
+		Confidence: models.ConfidenceHigh,
+	}
+
+	result := Correlate([]models.Finding{wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result))
+	}
+
+	f := result[0]
 	if f.Confidence != models.ConfidenceMedium {
-		t.Errorf("expected confidence MEDIUM (downgraded), got %s", f.Confidence)
+		t.Errorf("expected confidence MEDIUM (URL endpoint, downgraded), got %s", f.Confidence)
 	}
-	if f.Evidence == "cursor.execute(f\"SELECT...\")" {
-		t.Error("expected evidence to include unconfirmed note")
+	if !strings.Contains(f.Evidence, "[Unconfirmed by live scan]") {
+		t.Errorf("expected unconfirmed suffix on URL-endpoint finding, got %q", f.Evidence)
 	}
 }
 

@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 11 — P1 Coverage Parity — ✅ Complete (shipped as v0.4.0 on 2026-04-29). Folds the planned v0.3 batch (TASK-085 + TASK-086) into v0.4 since v0.3 was never tagged. Phase 12 (P2 Quality & Ops, v0.5) is the next active phase.
-**Overall progress:** Phases 0-11 complete; v0.1.0, v0.2.0, v0.4.0 released; v0.5.0 (Phase 12) not yet started.
+**Phase:** 12 — P2 Quality & Ops (v0.5) — 🔄 In progress (1/7 tasks done: TASK-092). Phases 0-11 complete (v0.4.0 shipped 2026-04-29).
+**Overall progress:** Phases 0-11 complete; v0.1.0, v0.2.0, v0.4.0 released; v0.5.0 (Phase 12) in progress.
 **Last updated:** 2026-04-29
 
 ### Completed tasks
@@ -425,9 +425,12 @@ packaging>=23.0               — Dependency version comparison
 - [x] Build state: `make build` ✓, `make test` (Go race-clean across 5 packages, Python 193/193) ✓, `make e2e` 10/10 ✓
 - [x] Single release commit + annotated tag `v0.4.0` (release commit pending push at session end — see "Last Session Summary")
 
+### Completed tasks — Phase 12 (P2 Quality & Ops, v0.5)
+
+- TASK-092: Output schema cleanup. **New `docs/schema.md`** documents every field of `JSONReport`, `ScanMetadata`, `SeverityCounts`, `SourceCounts`, and `Finding` with types, required/optional flags, allowed enums, examples, plus stability guarantees (no breaking changes within v0.x minor releases). **New `docs/schema.json`** is a draft-07 JSON Schema with `additionalProperties:false`, enum constraints on severity/source/confidence/mode, an `id` pattern of `^SEC-[0-9]+$`, and a conditional `if/then` block enforcing the LOW-confidence cap. **JSON output guarantee**: `RenderJSON` now serialises `findings` as `[]` instead of `null` when there are no findings — consumers can iterate without a null-check (added at top of `RenderJSON` in `go/internal/reporters/json.go`). **New schema validation test** `go/internal/reporters/schema_test.go` (3 tests + ~12 helpers): hand-rolled structural validator that mirrors `docs/schema.json`'s constraints, walks every emitted report, asserts required fields / type / enum membership / pattern match / severity↔confidence consistency. Sample input exercises every enum value (CRITICAL/HIGH/MEDIUM/LOW/INFO × blackbox/whitebox/correlated × HIGH/MEDIUM/LOW). Avoided pulling in a JSON-Schema dependency for the test by writing a focused validator; `docs/schema.json` remains the source of truth for external consumers. **Tightened `[Unconfirmed by live scan]` suffix logic** in `go/internal/engine/correlator.go`: new `isURLEndpoint(endpoint string) bool` helper strips a leading HTTP method prefix and reports whether the endpoint is a URL/path (`/...` or `://`); the suffix is now only added for URL-endpoint whitebox findings, not file:line ones (a hardcoded secret at `src/config.py:14` cannot be confirmed by a live HTTP scan, so the suffix was misleading). Both call sites updated (the `len(blackbox)==0` test-only branch + the per-finding no-match branch). Pre-existing `TestCorrelate_UnconfirmedWhitebox` was asserting the *old* misleading behaviour — replaced with two tests: `TestCorrelate_FilePathWhiteboxNotMarkedUnconfirmed` (file:line stays clean) and `TestCorrelate_URLWhiteboxMarkedUnconfirmed` (URL endpoint still gets suffix + MEDIUM confidence). **Severity↔confidence consistency**: new `MaxSeverityForConfidence(c) Severity` + `EnforceSeverityConsistency(f) (Finding, bool)` in `go/internal/models/scoring.go`. Cap rules derived from the scoring formula's implicit max (`base × ConfidenceMult × SourceMult`): LOW caps at MEDIUM (max 5.5 < 7.0 HIGH threshold), MEDIUM caps at HIGH (max 8.25 < 9.0 CRITICAL threshold), HIGH no cap. **Wired into orchestrator** as new step 5.6 (between Deduplicate and Sort): new `enforceConsistency(findings)` walks every finding, downgrades violators, logs a single aggregated `WARN` summarising the count plus per-finding `DEBUG` lines so engineers can trace scanner-side bugs. **Tests**: 8 cases for `MaxSeverityForConfidence` + `EnforceSeverityConsistency` (LOW+CRITICAL→MEDIUM, LOW+HIGH→MEDIUM, LOW+MEDIUM unchanged, MEDIUM+CRITICAL→HIGH, MEDIUM+HIGH unchanged, HIGH+CRITICAL unchanged, HIGH+INFO unchanged, plus confidence-not-mutated assertion). 2 tests for the orchestrator-level `enforceConsistency` helper. **Real-world re-test on `/tmp/fendix-test/badcode/`** (whitebox-only): 22 findings, 0 unconfirmed-suffixes (correctly — no live scan), 0 sev↔conf violations. Build state: `make build` ✓, `make test` (Go race-clean across 5 packages, Python 193/193) ✓, `make e2e` 10/10 ✓.
+
 ### Pending tasks (Phase 12 — P2 Quality & Ops, v0.5)
 
-- TASK-092: Output schema cleanup — `docs/schema.md`, JSON-schema validation in tests, evidence-suffix logic, severity↔confidence consistency
 - TASK-093: Crawler placeholder substitution — schema-derived sample values for path params
 - TASK-094: Logging hygiene — aggregate per-check failures, cap WARN volume, downgrade rest to DEBUG
 - TASK-095: Scan budget controls — `--max-requests`, `--max-duration`, `--respect-robots`
@@ -452,7 +455,76 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-04-29 (release session: cut v0.4.0; fix long-broken CI on `main`)
+**Date:** 2026-04-29 (TASK-092 — output schema cleanup, first Phase 12 task)
+**Session goal:** Per the prior session's pointer, start Phase 12 with TASK-092 — write `docs/schema.md`, add JSON-schema validation test, fix the `[Unconfirmed by live scan]` evidence-suffix logic, and enforce severity↔confidence consistency.
+
+**Accomplished:**
+
+- **`docs/schema.md` + `docs/schema.json` published.** The schema is now the public, versioned contract for `fendix scan --format json` output. Markdown form has tables for every field of `JSONReport`/`ScanMetadata`/`Finding`/`SourceCounts`/`SeverityCounts` with types, required/optional, allowed enums, plus prose sections explaining the unconfirmed-suffix semantics, severity-confidence consistency rule, severity ranks, and stability guarantees. JSON-Schema form is draft-07 with `additionalProperties:false`, regex on `id`, enums on severity/source/confidence/mode, and an `if/then` block encoding the LOW-confidence cap. Stability promise: additive changes only within v0.x minor releases.
+
+- **`RenderJSON` always emits `findings: []` instead of `null`.** Caught while writing the schema validator: `RenderJSON(nil, ...)` produced `"findings": null`, breaking the array-typed schema constraint and forcing every consumer to null-check. One-line fix at top of `RenderJSON`. Now part of the documented contract.
+
+- **`[Unconfirmed by live scan]` suffix tightened.** Old behaviour suffixed every whitebox finding without a blackbox match — including findings tied to source-file lines (`src/config.py:14`), where the live HTTP scan literally cannot observe the source. New `isURLEndpoint` helper in `correlator.go` strips an optional method prefix and tests for URL/path-style endpoints; the suffix is added only when that returns true. Both correlator call sites updated. Pre-existing `TestCorrelate_UnconfirmedWhitebox` (which asserted the misleading behaviour) was replaced with two tests covering both branches: file:line endpoints stay clean, URL endpoints still get the suffix.
+
+- **Severity↔confidence consistency enforced at orchestrator level.** Two new functions in `models/scoring.go`: `MaxSeverityForConfidence(c)` (LOW→MEDIUM, MEDIUM→HIGH, HIGH→CRITICAL) — caps derived from the scoring formula's implicit max (`base × ConfidenceMult × SourceMult` ≤ 5.5 / 8.25 / 13.0); and `EnforceSeverityConsistency(f)` which downgrades severity to the cap when violated and returns the changed flag. Wired into orchestrator as new step 5.6 (between Deduplicate and Sort) via local `enforceConsistency` helper that aggregates downgrades into a single WARN line plus per-finding DEBUG. Eight unit tests on the model functions + two on the orchestrator helper.
+
+- **Validation**: 3 schema-validation tests in `reporters/schema_test.go` (full sample with every enum, empty findings, negative test that the validator catches HIGH+LOW). The validator is hand-rolled — chose this over pulling in a JSON-Schema library for a single test file — but `docs/schema.json` is the durable external contract.
+
+- **Real-world sanity check** on `/tmp/fendix-test/badcode/` (whitebox-only): 22 findings, 0 unconfirmed suffixes (correct: no live scan), 0 severity↔confidence violations.
+
+**Decisions made:**
+
+- **Hand-rolled schema validator over a third-party library.** Adding `github.com/santhosh-tekuri/jsonschema` (or similar) for a single test felt disproportionate. The hand-rolled validator covers required fields, types, enums, the `id` regex, and the LOW-conf cap — i.e., everything the JSON Schema actually constrains. `docs/schema.json` remains the canonical document for *external* consumers; the test enforces the same rules from the inside.
+
+- **`findings: null` → `findings: []` is a documented part of the contract.** This is not just a defensive nicety — it's how the schema constrains the field's type. Documented in the prose of `docs/schema.md` and enforced by the schema validator.
+
+- **Severity-cap policy is conservative.** The MEMORY.md hint was "HIGH severity LOW confidence is currently allowed but probably wrong". The clean derivation: with LOW confidence (`×0.5`), no category × source combination exceeds score 5.5, which is MEDIUM. So LOW caps at MEDIUM. Same logic for MEDIUM (`×0.75`, max 8.25 → HIGH). HIGH conf has no cap. The correlator already sets confidence=HIGH explicitly when correlating, so its severity-escalation isn't penalised.
+
+- **Cap is applied as a downgrade, not a hard error.** Scanners that emit inconsistent severity/confidence pairs are real bugs — but they shouldn't break the run. The orchestrator logs a WARN with the count + DEBUG with details so the bug is visible without blocking the scan.
+
+- **Pre-existing `TestCorrelate_UnconfirmedWhitebox` was replaced, not amended.** Its assertion encoded the old misleading behaviour. Renaming + splitting into the two new tests makes the contract explicit (file:line skipped, URL kept) and prevents future regressions in either direction.
+
+- **Did not change scanners to use `CalculateSeverity` directly.** The "right" architecture would be: every scanner calls `CalculateSeverity(category, confidence, source)` and never sets severity literals. That's a bigger refactor (every scanner file), and the current direct-assignment + orchestrator-enforced-cap approach is correct in output and minimally disruptive. Worth revisiting later if scanners' literal severities drift further.
+
+**Files modified this session:**
+
+- `docs/schema.md` — NEW. Public schema documentation.
+- `docs/schema.json` — NEW. Draft-07 JSON Schema for external consumers.
+- `go/internal/reporters/json.go` — `RenderJSON` always emits `findings: []` instead of `null`.
+- `go/internal/reporters/schema_test.go` — NEW. 3 tests + ~12 helpers for schema validation.
+- `go/internal/engine/correlator.go` — new `isURLEndpoint` helper; both `[Unconfirmed by live scan]` call sites now gated on URL-endpoint check.
+- `go/internal/engine/correlator_test.go` — replaced `TestCorrelate_UnconfirmedWhitebox` with `TestCorrelate_FilePathWhiteboxNotMarkedUnconfirmed` + `TestCorrelate_URLWhiteboxMarkedUnconfirmed`; added `strings` import.
+- `go/internal/models/scoring.go` — new `MaxSeverityForConfidence` + `EnforceSeverityConsistency`.
+- `go/internal/models/scoring_test.go` — `TestMaxSeverityForConfidence` (3 cases) + `TestEnforceSeverityConsistency` (7 cases).
+- `go/internal/engine/orchestrator.go` — new step 5.6 calling `enforceConsistency`; new helper at end of file.
+- `go/internal/engine/consistency_test.go` — NEW. 2 tests for orchestrator helper.
+- `tasks/MEMORY.md` (this file) — Phase 12 Current Project State; new Last Session Summary; "Next session" pointer reset to TASK-093.
+- `tasks/CURRENT_SPRINT.md` — updated active phase to Phase 12 + TASK-092 row.
+- `tasks/PHASES.md` — Phase 12 progress 0/7 → 1/7.
+
+**Build state at session end:**
+
+- `make build` ✓
+- `make test` ✓ (Go race-clean across 5 packages; Python 193/193)
+- `make e2e` ✓ (10/10)
+- Real-world `--code` scan on `/tmp/fendix-test/badcode/`: 22 findings, 0 misleading suffixes, 0 sev/conf violations.
+
+**Next session should start with:**
+
+- **TASK-093 — Crawler placeholder substitution.** Currently `/users/{id}` becomes `/users/%7Bid%7D` after URL-encoding the literal `{id}` string. Should substitute a schema-derived sample value (`/users/1`, `/users/abc`). Touches `go/internal/scanner/crawler.go` (path templating) + spec parser to surface schema info from OpenAPI `parameters[*].schema.example` / `schema.type`. Add e2e regression: scan a server expecting numeric IDs, assert no 4xx-on-bad-template noise.
+- Optional: **TASK-095 — Scan budget controls** (`--max-requests`, `--max-duration`, `--respect-robots`) is higher user-visibility than TASK-094 logging. Could pull TASK-095 forward.
+- **Cut v0.5.0** after Phase 12 completes (TASK-092..098). No interim release expected for individual tasks.
+
+**Open questions:**
+
+- The new schema validator is hand-rolled to avoid a JSON-Schema dep. If future tasks need richer validation (e.g., baseline file schema, suppression file schema), revisit by adding `github.com/santhosh-tekuri/jsonschema` and unifying the validators.
+- Should the orchestrator's `enforceConsistency` WARN summary include enough detail to find the offending scanner without needing DEBUG? Probably fine as-is — most production runs won't trigger it now that the rule is enforced. Revisit if WARN counts climb.
+- Whitebox findings from Python emit some categories (e.g., `secrets` from a `.env` file at line N) that have no URL endpoint but a logical "src/.env:5" form. They correctly skip the suffix now; their `endpoint` field still says `src/.env:5` which the schema accepts. No change needed.
+
+---
+
+## Earlier Session (2026-04-29 — release session: cut v0.4.0; fix long-broken CI on `main`)
+
 **Session goal:** Per the prior session's pointer, ship Phase 11 as v0.4.0 (single tag covering TASK-085..091, folding the never-tagged v0.3.0 into it). Then move toward Phase 12.
 
 **Accomplished:**
