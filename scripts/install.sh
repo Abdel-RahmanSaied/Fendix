@@ -1,16 +1,18 @@
 #!/bin/sh
 # Fendix installer — downloads the latest release binary for your platform.
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/fendix/fendix/main/scripts/install.sh | sh
+# This script is mirrored to the public install repo on every release. The
+# canonical user-facing URL is:
+#   curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
 #
 # Options (environment variables):
 #   FENDIX_VERSION  — specific version to install (default: latest)
 #   FENDIX_DIR      — install directory (default: /usr/local/bin)
+#   FENDIX_REPO     — override source repo (default: Abdel-RahmanSaied/homebrew-fendix)
 
 set -e
 
-REPO="fendix/fendix"
+REPO="${FENDIX_REPO:-Abdel-RahmanSaied/homebrew-fendix}"
 INSTALL_DIR="${FENDIX_DIR:-/usr/local/bin}"
 
 # Colors (if terminal supports them)

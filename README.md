@@ -9,8 +9,8 @@ Fendix is a hybrid API and code security scanner that combines black-box HTTP pr
 ## Quick Start
 
 ```bash
-# 1. Install
-curl -fsSL https://get.fendix.dev | sh
+# 1. Install (downloads the latest release binary for your platform)
+curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
 
 # 2. Run your first scan
 fendix scan --url https://api.example.com --format html --output report.html
@@ -25,29 +25,43 @@ That's it. Fendix scans the API for missing security headers, CORS misconfigurat
 
 ## Installation
 
+> Engine source lives in this private repo; install artifacts (binaries, Homebrew formula, install script) are published to the public mirror at [`Abdel-RahmanSaied/homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix). All install paths below pull from the mirror.
+
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap fendix/tap
+brew tap Abdel-RahmanSaied/fendix
 brew install fendix
 ```
 
 ### curl (macOS / Linux)
 
 ```bash
-curl -fsSL https://get.fendix.dev | sh
+curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
 ```
 
-This downloads the latest release binary to `/usr/local/bin/fendix`.
+Downloads the latest release binary, verifies its sha256 checksum, and installs to `/usr/local/bin/fendix`. Override the install directory with `FENDIX_DIR=$HOME/.local/bin` and the version with `FENDIX_VERSION=v0.4.0`.
+
+A short-URL installer at `https://get.fendix.dev` is planned for v1.0 (see Phase 13 / TASK-100).
 
 ### Docker
 
 ```bash
-docker pull ghcr.io/fendix/fendix:latest
-docker run --rm ghcr.io/fendix/fendix scan --url https://api.example.com
+docker pull ghcr.io/abdel-rahmansaied/fendix:latest
+docker run --rm ghcr.io/abdel-rahmansaied/fendix scan --url https://api.example.com
 ```
 
-The Docker image includes Python and all static analysis dependencies, so hybrid mode works out of the box.
+The Docker image includes Python and all static analysis dependencies, so hybrid mode works out of the box. Available from **v0.4.1 onwards** (the v0.4.0 release predates the Docker publish workflow).
+
+### Manual binary download
+
+Pick a binary for your platform from the [latest release](https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/latest) (linux/amd64, darwin/amd64, darwin/arm64), verify the matching `.sha256` file, and place it on your PATH:
+
+```bash
+curl -fsSL -o fendix https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/v0.4.0/fendix-v0.4.0-darwin-arm64
+shasum -a 256 fendix  # compare against the .sha256 alongside the binary
+chmod +x fendix && sudo mv fendix /usr/local/bin/fendix
+```
 
 ### Build from Source
 
@@ -55,7 +69,7 @@ Requires Go 1.21+ and Python 3.9+.
 
 ```bash
 git clone https://github.com/Abdel-RahmanSaied/Fendix.git
-cd fendix
+cd Fendix
 make build
 ./bin/fendix version
 ```
@@ -302,7 +316,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Fendix
-        run: curl -fsSL https://get.fendix.dev | sh
+        run: curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/Fendix/main/scripts/install.sh | sh
 
       - name: Run scan
         run: |

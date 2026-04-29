@@ -27,7 +27,7 @@ jobs:
 
       - name: Install Fendix
         run: |
-          curl -fsSL https://get.fendix.dev | sh
+          curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
           # Or build from source:
           # go build -o fendix ./go/cmd/fendix/
 
