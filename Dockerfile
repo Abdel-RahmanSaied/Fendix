@@ -7,7 +7,7 @@
 # ---- Stage 1: Build the Go binary ----
 FROM golang:1.21-alpine AS go-builder
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git make
 
 WORKDIR /build
 

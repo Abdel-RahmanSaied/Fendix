@@ -126,9 +126,13 @@ jobs:
       - name: Checkout engine repo (for templates)
         uses: actions/checkout@v4
 
-      - name: Download all release artifacts
+      - name: Download release-binary artifacts
         uses: actions/download-artifact@v4
         with:
+          # Filter to just the binary artifacts. The Docker job uploads its
+          # own *.dockerbuild artifact which is unrelated to mirror release
+          # contents and was triggering "download all" failures.
+          pattern: fendix-*
           path: dist/
           merge-multiple: true
 
