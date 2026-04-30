@@ -3,8 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fendix — install</title>
-<meta name="description" content="Fendix runs DAST + SAST in one PR check and fails the build only when both engines confirm a vulnerability. Install on macOS or Linux in one command.">
+<title>Fendix — DAST + SAST in one PR check</title>
+<meta name="description" content="Fendix runs DAST + SAST in one PR check and fails the build only when both engines confirm a vulnerability. Single binary, signed releases (cosign keyless), no telemetry. Install on macOS or Linux in one command.">
+
+<!-- OpenGraph + Twitter Card for shared previews -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://get.fendix.dev/">
+<meta property="og:title" content="Fendix — DAST + SAST in one PR check">
+<meta property="og:description" content="Fails the build only when both engines confirm. Single binary, signed releases, no telemetry.">
+<meta property="og:site_name" content="Fendix">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Fendix — DAST + SAST in one PR check">
+<meta name="twitter:description" content="Fails the build only when both engines confirm. Single binary, signed releases, no telemetry.">
+
+<link rel="canonical" href="https://get.fendix.dev/">
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -58,7 +70,7 @@
 <ul class="points">
   <li><strong>Confirmed findings.</strong> The runtime probe and static analysis must agree before fendix fails your build. False-positive flood, gone.</li>
   <li><strong>Single binary.</strong> Drop into CI in 30 seconds. Active probes off by default; enable with one flag when you mean it.</li>
-  <li><strong>No telemetry.</strong> Default outbound: only HTTP requests to your scan target. Verify with <code>tcpdump</code>.</li>
+  <li><strong>Signed &amp; silent.</strong> Releases signed with <a href="#verify-the-binary">cosign</a> (keyless via Sigstore). No telemetry — default outbound is only HTTP requests to your scan target. Verify with <code>tcpdump</code>.</li>
 </ul>
 
 <h2>Install (macOS &amp; Linux)</h2>
@@ -71,6 +83,39 @@
 open report.html</code></pre>
 
 <p>Detects missing security headers, CORS misconfig, auth bypasses, sensitive data exposure, and rate-limiting gaps — without sending destructive payloads.</p>
+
+<h2>In your CI</h2>
+<p>Drop this into <code>.github/workflows/security.yml</code> for a PR-gated DAST + SAST check that uploads SARIF to the Security tab:</p>
+<pre><code>- name: Install Fendix
+  run: curl -fsSL https://get.fendix.dev/install.sh | sh
+
+- name: Scan
+  run: fendix scan --code ./ --format sarif --output fendix.sarif --fail-on HIGH
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: fendix.sarif
+    category: fendix</code></pre>
+<p>Full reference workflow with PR-comment integration:
+<a href="https://github.com/Abdel-RahmanSaied/Fendix/blob/main/examples/github-actions/fendix-scan.yml">examples/github-actions/fendix-scan.yml</a>.</p>
+
+<h2 id="verify-the-binary">Verify the binary (cosign)</h2>
+<p>Releases are signed with <a href="https://docs.sigstore.dev/cosign/overview/">cosign</a> using keyless (Sigstore Fulcio) — no static public key to distribute. Verify any release artifact against the GitHub Actions OIDC identity that built it:</p>
+<pre><code>VERSION=v0.6.0
+ASSET=fendix-${VERSION}-linux-amd64
+
+curl -fsSL -o "$ASSET"      "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/${ASSET}"
+curl -fsSL -o "$ASSET.crt"  "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/${ASSET}.crt"
+curl -fsSL -o "$ASSET.sig"  "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/${ASSET}.sig"
+
+cosign verify-blob \
+  --certificate "$ASSET.crt" \
+  --signature   "$ASSET.sig" \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer     "https://token.actions.githubusercontent.com" \
+  "$ASSET"</code></pre>
+<p><small>Same pattern verifies <code>.deb</code>, <code>.rpm</code>, and Docker images. Releases cut before cosign was enabled fall back to <code>.sha256</code>.</small></p>
 
 <h2>Inspect before piping</h2>
 <p>Sane practice for any <code>curl | sh</code> installer:</p>
