@@ -1,8 +1,28 @@
 # Fendix
 
-**Find vulnerabilities before attackers do.**
+**DAST + SAST in one PR check. Fails only when both engines confirm.**
 
-Fendix is a hybrid API and code security scanner that combines black-box HTTP probing with white-box static analysis to produce high-confidence security findings with evidence. When both engines agree on a vulnerability, it becomes a *correlated* finding — fewer false positives, more actionable results.
+Fendix runs a runtime probe and a static analyzer on every scan. Only findings where both engines independently flag the same vulnerability at the same endpoint become `correlated` — high-confidence results that earn a build-failing exit code. Everything else is downgraded so your triage queue stays small and every alert means something.
+
+- **Confirmed findings.** Both engines must agree on category and endpoint before the build fails.
+- **Single binary.** Drop into CI in 30 seconds. Active probes off by default; opt in with `--enable-active`.
+- **Signed and silent.** Releases signed via [cosign keyless](#verifying-signed-releases) (Sigstore Fulcio). [No telemetry](#what-fendix-sends-to-the-network) — verify with `tcpdump`.
+
+---
+
+## What Fendix sends to the network
+
+The trust statement, before anything else.
+
+| When | Outbound traffic |
+|---|---|
+| **Default scan** (`fendix scan --url ...`) | Only HTTP requests to the URL you passed. Nothing to `fendix.dev`, nothing to a vendor. |
+| **Active probing** (`--enable-active`) | Probe payloads to the same target, only. Audit-logged. Off by default. |
+| **`fendix scan --code ...` (white-box only)** | Zero outbound. Reads source from disk. |
+| **`fendix scan` with no flags** | Errors out — there's no work to do. Zero outbound. |
+| **Telemetry / phone-home / usage stats** | None. There is no telemetry code. Verify with `tcpdump`, or read [`go/internal/`](go/internal/) — there's nothing to find. |
+
+If a future release adds anything that talks to a non-target host, it'll be opt-in, documented in this section, and named in the CHANGELOG. That's the contract.
 
 ---
 
@@ -110,6 +130,42 @@ For white-box analysis, install Python dependencies:
 ```bash
 pip install -r python/requirements.txt
 ```
+
+---
+
+## Verifying signed releases
+
+Every release artifact (binary, `.deb`, `.rpm`, multi-arch Docker manifest) ships with a `.crt` + `.sig` sidecar produced by [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signing — Sigstore Fulcio anchors the signature to the GitHub Actions OIDC identity that built the release. No static public key, no rotation surface, no key-loss recovery story to maintain.
+
+Verify a binary:
+
+```bash
+VERSION=v0.6.0
+ASSET=fendix-${VERSION}-linux-amd64
+BASE="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}"
+
+curl -fsSL -o "$ASSET"     "$BASE/$ASSET"
+curl -fsSL -o "$ASSET.crt" "$BASE/$ASSET.crt"
+curl -fsSL -o "$ASSET.sig" "$BASE/$ASSET.sig"
+
+cosign verify-blob \
+  --certificate "$ASSET.crt" \
+  --signature   "$ASSET.sig" \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer     "https://token.actions.githubusercontent.com" \
+  "$ASSET"
+# → Verified OK
+```
+
+Same pattern verifies a `.deb`, `.rpm`, or Docker image — swap the asset name. For Docker, use `cosign verify` (not `verify-blob`) against the image reference:
+
+```bash
+cosign verify ghcr.io/abdel-rahmansaied/fendix:v0.6.0 \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer     "https://token.actions.githubusercontent.com"
+```
+
+Releases cut before cosign signing was activated (any tag earlier than `v0.6.0-rc2`) won't have sidecar files — fall back to the `.sha256` companion in those cases. See [`SECURITY.md`](SECURITY.md) for the broader artifact-trust policy and supported-versions table.
 
 ---
 

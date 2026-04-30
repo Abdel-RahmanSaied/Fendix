@@ -43,8 +43,8 @@
 | ID | Task | Phase | Strategic value |
 | --- | --- | --- | --- |
 | TASK-112 | Open-source the engine (license + repo split + ADR) | 15 → pull forward | Single highest-leverage decision. Closed-source posture protects nothing right now and costs everything (trust, contributions, hiring leverage). All other strategic tasks gain leverage once this lands. |
-| TASK-110 | README repositioning: lead with "DAST + SAST as one PR check, fails only when both engines confirm" | 14 | Current "hybrid" framing buries the wedge. Repositioning is a 1-day edit with multi-month payoff. |
-| TASK-111 | Telemetry statement at top of README | 14 | "Fendix sends nothing to the network by default" is verifiable and rare. AppSec buyers' first question; current README is silent. |
+| TASK-110 | README repositioning: lead with "DAST + SAST as one PR check, fails only when both engines confirm" | 14 | ✅ Shipped 2026-05-01 — README hero rewritten, 3-bullet trust block matches `https://get.fendix.dev/`, architecture moved out of the lede into the Architecture section. |
+| TASK-111 | Telemetry statement at top of README | 14 | ✅ Shipped 2026-05-01 — new "What Fendix sends to the network" 5-row table at the very top of README (above Quick Start), explicit "no telemetry code; verify with tcpdump" + future contract that any non-target outbound goes through opt-in + CHANGELOG. Plus new "Verifying signed releases" section with the cosign keyless verify recipe. |
 | TASK-106 | Vulnerable-app benchmark suite in CI (juice-shop + vampi + crapi) | 14 | Without numbers, coverage claims are unprovable. "Detects 14 of 16 known juice-shop bugs in 18s vs ZAP-baseline's 9" is a marketing weapon. |
 | TASK-105 | `fendix init` zero-config workflow generator | 14 | Closes the manual-CI-setup gap that filters ~80% of first-time users. ~2 days. |
 | TASK-109 | `.fendix.yaml` repo-committed policy | 14 | AppSec engineers cannot adopt without committable policy. CLI-flags-only is dead-on-arrival for teams. |

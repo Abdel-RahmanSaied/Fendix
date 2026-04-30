@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README repositioned around the wedge (TASK-110).** Hero rewritten
+  from "Find vulnerabilities before attackers do." (generic, every
+  scanner says this) to "DAST + SAST in one PR check. Fails only when
+  both engines confirm." Three-bullet trust block under the hero
+  matches the landing page at `https://get.fendix.dev/` (confirmed
+  findings, single binary, signed and silent). Architecture
+  description ("hybrid API and code security scanner that combines
+  black-box HTTP probing with white-box static analysis") moved out of
+  the lede; lede now leads with the *outcome* (small triage queue,
+  every alert means something), architecture appears later in the
+  Architecture section where readers expect it.
+
+### Added
+
+- **"What Fendix sends to the network" section at top of README
+  (TASK-111).** Five-row table covering default scan, active probing,
+  white-box mode, no-flags-passed, and telemetry — explicit "there is
+  no telemetry code; verify with tcpdump or read go/internal/, there's
+  nothing to find." First-question-an-AppSec-buyer-asks made
+  unmissable. Future contract: any non-target outbound traffic added
+  in a future release will be opt-in, named in this section, and
+  called out in the CHANGELOG.
+
+- **"Verifying signed releases" section in README.** Full cosign
+  keyless verify recipe (Sigstore Fulcio + GitHub Actions OIDC
+  identity-regexp anchor) for binaries, `.deb`, `.rpm`, and Docker
+  images. Notes the cutoff: releases earlier than v0.6.0-rc2 don't
+  have sidecars (cosign was opt-in via `COSIGN_ENABLED` until then).
+  Cross-links to SECURITY.md for supported-versions and the broader
+  artifact-trust policy.
+
 ## [0.6.0] - 2026-04-30
 
 **Phase 13 — P3 External Release readiness — ✅ complete.**

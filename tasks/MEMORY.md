@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 13 — P3 External Release (v1.0) — ✅ Complete 2026-04-30. All 6 tasks shipped (TASK-099..104). `v0.6.0` final shipped after `v0.6.0-rc2` validated the cosign signing pipeline end-to-end (every binary, `.deb`, `.rpm`, Docker manifest signed via Sigstore Fulcio + GitHub Actions OIDC; real `cosign verify-blob` against a signed binary returned `Verified OK`). Phases 0-13 complete. **Phases 14-16 added 2026-04-30 from strategic-advisor session** (external wedge → open & extensible → architecture v2). Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-13 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release)** all released 2026-04-30; v1.0+ scoped via Phases 14-16.
+**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress (TASK-110 + TASK-111 shipped 2026-05-01; remaining: TASK-105..109 + 106 benchmarks + 107 GH App + 108 demo). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session** (external wedge → open & extensible → architecture v2). Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-13 complete; Phase 14 started 2026-05-01 with README reposition + telemetry statement + cosign-verify section. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
 **Last updated:** 2026-04-30
 
 ### Completed tasks
