@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
@@ -21,6 +22,7 @@ import (
 type Orchestrator struct {
 	cfg     *models.ScanConfig
 	spawner *PythonSpawner
+	version string
 }
 
 // NewOrchestrator creates an orchestrator from scan config.
@@ -36,6 +38,7 @@ func NewOrchestrator(cfg *models.ScanConfig, version string) *Orchestrator {
 	return &Orchestrator{
 		cfg:     cfg,
 		spawner: NewPythonSpawner("", engineDir),
+		version: version,
 	}
 }
 
@@ -57,6 +60,37 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// per endpoint per check. logagg caps the WARN volume per check and
 	// surfaces the suppressed count via a single Info line at scan end.
 	logagg.Reset()
+
+	// Reset the scan-wide active-probe audit log so this run's records
+	// don't include leftovers from a previous run in the same process
+	// (long-running tests, future server mode).
+	scanner.ResetGlobalAuditLog()
+
+	// --debug-bundle wiring (TASK-102). Setup is a no-op when disabled.
+	// When enabled, install a slog tee that captures DEBUG-and-above
+	// records into the bundle's buffer alongside a fresh stderr text
+	// handler. We restore the previous default before the function
+	// returns so subsequent code outside Run sees the original handler.
+	//
+	// We deliberately install a fresh stderr handler instead of wrapping
+	// slog.Default().Handler(). main() installs a concrete TextHandler at
+	// process startup, but tests and embedders may construct an
+	// Orchestrator directly without that prelude — in which case the
+	// stdlib's uninstalled default (*slog.defaultHandler) bridges through
+	// log.Default() back to slog.Default(), so wrapping it builds an
+	// infinite loop on every log call and deadlocks the log mutex.
+	// A fresh text handler is unconditionally safe.
+	bundle := diagnostic.New(o.cfg.DebugBundlePath, o.cfg)
+	if bundle.Enabled() {
+		prevDefault := slog.Default()
+		stderrLevel := slog.LevelInfo
+		if o.cfg.Verbose {
+			stderrLevel = slog.LevelDebug
+		}
+		stderrHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: stderrLevel})
+		slog.SetDefault(slog.New(bundle.LogHandler(stderrHandler)))
+		defer slog.SetDefault(prevDefault)
+	}
 
 	// Apply scan budget controls (TASK-095). MaxDuration wraps the parent
 	// context with a deadline immediately so discovery is also bounded by
@@ -139,6 +173,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			fmt.Fprintln(os.Stderr, "fendix: "+PythonRequiredMessage())
 		} else {
 			slog.Info("python available", "version", pyStatus.Version, "binary", pyStatus.Binary)
+			bundle.SetPythonVersion(pyStatus.Version)
 			wbFindings := o.runWhiteboxScan(ctx)
 			findings = append(findings, wbFindings...)
 		}
@@ -273,6 +308,23 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			"max_requests", o.cfg.MaxRequests,
 			"max_duration", o.cfg.MaxDuration,
 		)
+	}
+
+	// Write the diagnostic tarball before the fail-on check so that even a
+	// non-zero exit produces the bundle (a CI failure is exactly when an
+	// operator wants to attach a bug-report bundle).
+	if bundle.Enabled() {
+		bundle.SetFindings(findings)
+		bundle.SetMetadata(meta)
+		bundle.SetProbes(scanner.GlobalAuditRecords())
+		if err := bundle.Write(o.version); err != nil {
+			slog.Error("failed to write debug bundle — check that the path is writable",
+				"path", o.cfg.DebugBundlePath,
+				"error", err,
+			)
+		} else {
+			slog.Info("debug bundle written", "path", o.cfg.DebugBundlePath)
+		}
 	}
 
 	// 8. Check fail-on threshold

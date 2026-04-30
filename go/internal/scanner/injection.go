@@ -340,8 +340,10 @@ func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoi
 		return nil
 	}
 
-	auditLog := NewProbeAuditLog()
-	return CheckInjectionWithAudit(ctx, cfg, endpoint, auditLog)
+	// Use the package-level audit log so probe records from every endpoint
+	// in this scan accumulate in one place. The orchestrator reads them
+	// post-scan via scanner.GlobalAuditRecords (e.g. --debug-bundle).
+	return CheckInjectionWithAudit(ctx, cfg, endpoint, currentAuditLog())
 }
 
 // CheckInjectionWithAudit runs active injection probes with a provided audit log.

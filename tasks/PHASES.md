@@ -481,10 +481,10 @@ TASK-098  ✅ CI integration recipe: examples/github-actions/fendix-scan.yml wit
 - [x] `.deb` and `.rpm` packages produced via nfpm
 - [ ] One-line installer at `get.fendix.dev` works on macOS + Linux
 - [x] Docs: 5-minute juice-shop walkthrough, CI integration (GH Actions + GitLab + CircleCI), Semgrep rule guide, triage workflow, JSON schema reference
-- [ ] `--debug` flag bundles a redacted diagnostic tarball
-- [ ] `SECURITY.md` with disclosure policy
-- [ ] Active-scanner safety threat model documented
-- [ ] Performance benchmarks published in README (scan time vs endpoint count, memory, goroutine count)
+- [x] `--debug` flag bundles a redacted diagnostic tarball
+- [x] `SECURITY.md` with disclosure policy
+- [x] Active-scanner safety threat model documented
+- [x] Performance benchmarks published in README (scan time vs endpoint count, memory, goroutine count)
 
 **Tasks:**
 ```

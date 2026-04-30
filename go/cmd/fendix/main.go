@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
@@ -21,6 +22,17 @@ import (
 var Version = "dev"
 
 func main() {
+	// Install a real slog default at startup. Without this,
+	// `slog.Default()` returns the stdlib's *defaultHandler, which routes
+	// through log.Default() → back to slog.Default(). Any code that wraps
+	// the existing default (the --debug-bundle slog tee) would create
+	// infinite recursion on every log call and deadlock on the log
+	// package's mutex. Installing a concrete TextHandler here makes the
+	// default a real, wrappable handler for every subcommand.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
 		// Cobra's SilenceErrors=true on the root command suppresses its
@@ -96,6 +108,7 @@ func newScanCmd() *cobra.Command {
 			maxRequests, _ := flags.GetInt64("max-requests")
 			maxDuration, _ := flags.GetDuration("max-duration")
 			respectRobots, _ := flags.GetBool("respect-robots")
+			debugBundleFlag, _ := flags.GetString("debug-bundle")
 
 			if urlFlag == "" && specFlag == "" && codeFlag == "" {
 				return fmt.Errorf("at least one of --url, --spec, or --code is required")
@@ -123,6 +136,7 @@ func newScanCmd() *cobra.Command {
 				MaxRequests:          maxRequests,
 				MaxDuration:          maxDuration,
 				RespectRobots:        respectRobots,
+				DebugBundlePath:      debugBundleFlag,
 			}
 
 			var flagAuth *models.AuthContext
@@ -181,6 +195,7 @@ func newScanCmd() *cobra.Command {
 	flags.Int64("max-requests", 0, "Soft-cap on total HTTP requests across all checks (0 = no cap)")
 	flags.Duration("max-duration", 0, "Soft-cap on total scan wall-clock time, e.g. 5m (0 = no cap)")
 	flags.Bool("respect-robots", false, "Treat robots.txt Disallow as a hard restriction (default: queue as discovery hints)")
+	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
 
 	return cmd
 }

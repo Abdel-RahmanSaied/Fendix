@@ -65,4 +65,9 @@ type ScanConfig struct {
 	// polite-crawler convention required for scanning third-party
 	// production targets.
 	RespectRobots bool
+	// DebugBundlePath, when set, writes a redacted .tar.gz at scan end
+	// containing the scan config (auth values masked), environment
+	// versions, probe audit log, buffered DEBUG slog stream, and findings.
+	// Empty disables the bundle. See internal/diagnostic.
+	DebugBundlePath string
 }
