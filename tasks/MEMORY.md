@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress (TASK-110 + TASK-111 shipped 2026-05-01; remaining: TASK-105..109 + 106 benchmarks + 107 GH App + 108 demo). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session** (external wedge → open & extensible → architecture v2). Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-13 complete; Phase 14 started 2026-05-01 with README reposition + telemetry statement + cosign-verify section. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
+**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress. Shipped 2026-05-01: TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section). Scaffolded 2026-05-01: TASK-106 (benchmark runner + Makefile target + workflow_dispatch CI + docs/benchmarks.md — real numbers land after first CI run). Remaining: TASK-105 (`fendix init`), TASK-106 numbers capture, TASK-107 (GH App), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml`). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-13 complete; Phase 14 started 2026-05-01 with README reposition + telemetry statement + cosign-verify section + benchmark scaffold. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
 **Last updated:** 2026-04-30
 
 ### Completed tasks
@@ -463,7 +463,65 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-04-30 (Strategic-advisor session — positioning, moat, Phase 14-16 scoping)
+**Date:** 2026-05-01 (Phase 14 execution — TASK-110 + TASK-111 + TASK-106 scaffold)
+**Session goal:** Continue Phase 14 work after v0.6.0 ship. The README + landing page were repositioned around the wedge in earlier session work; this session ships the first-class README rewrite (TASK-110 + TASK-111) and scaffolds the vulnerable-app benchmark suite (TASK-106) so the "DAST + SAST in one PR check, fails only when both engines confirm" claim can be backed by real numbers.
+
+**Accomplished:**
+
+- **TASK-110 — README repositioning ✅.** Hero rewritten from "Find vulnerabilities before attackers do." (generic) to "DAST + SAST in one PR check. Fails only when both engines confirm." Three-bullet trust block under the lede matches `https://get.fendix.dev/` (confirmed findings, single binary, signed and silent). Architecture description moved out of the lede into the Architecture section where readers expect it.
+
+- **TASK-111 — Telemetry statement at top of README ✅.** New "What Fendix sends to the network" section between the hero and Quick Start — 5-row table covering default scan / active probing / white-box / no-flags / telemetry, with explicit "no telemetry code; verify with tcpdump or read go/internal/" claim and a forward-looking contract that any non-target outbound traffic added in a future release goes through opt-in + named in this section + called out in CHANGELOG.
+
+- **Bonus README addition: "Verifying signed releases" section.** Full cosign keyless verify recipe (Sigstore Fulcio + GitHub Actions OIDC identity-regexp anchor) for binaries, .deb, .rpm, and Docker images. Cross-linked from the hero's "signed and silent" bullet (closing the broken-link warning the linter caught when the hero anchor was added before the section existed). Notes the v0.6.0-rc2 cutoff for sidecar availability.
+
+- **TASK-106 — Vulnerable-app benchmark scaffold 🔄 (numbers pending).** New `scripts/benchmark/run-juice-shop.sh` spins up `bkimminich/juice-shop:v17.1.1` in Docker, runs `fendix scan --url http://localhost:3000 --format json`, captures findings + duration into `bench-results/juice-shop/<UTC-timestamp>/{findings.json, summary.json, scan.stderr}`. Container force-cleaned via bash `trap`. New `make benchmark` Makefile target. New `.github/workflows/benchmark.yml` (workflow_dispatch only — manual against published release tags, not on every push) installs Fendix via `https://get.fendix.dev/install.sh` (so the workflow doubles as install-pipe smoke test), uploads `findings.json` + `summary.json` + `scan.stderr` as a build artifact, and posts the summary JSON to `$GITHUB_STEP_SUMMARY`. New `docs/benchmarks.md` documents the recipe, targets table, methodology (what counts as `correlated` vs `blackbox` vs `whitebox`), and caveats. Real numbers land in a follow-up commit after the first manual CI run captures them. vAPI + crapi fixtures intentionally deferred — one fixture is enough to start; pattern is copy-paste for new targets.
+
+**Files modified this session:**
+
+- `README.md` (hero + new "What Fendix sends to the network" + new "Verifying signed releases" sections)
+- `CHANGELOG.md` ([Unreleased] entries for TASK-110, TASK-111, TASK-106 partial)
+- `Makefile` (new `benchmark:` target)
+- `scripts/benchmark/run-juice-shop.sh` (NEW, executable)
+- `docs/benchmarks.md` (NEW)
+- `.github/workflows/benchmark.yml` (NEW)
+- `.gitignore` (added `bench-results/`)
+- `tasks/CURRENT_SPRINT.md` (TASK-110, TASK-111 ✅; TASK-106 status note)
+- `tasks/MEMORY.md` (this entry; phase header bumped from 13 → 14)
+
+**Build state at session end:**
+
+- `make build` ✓ (Go 9 packages compile clean; ldflags carry `v0.6.0-1-g86aa9fe`)
+- `make test` ✓ (Python 193/193; Go race-clean)
+- benchmark.yml YAML parses ✓
+- `bash -n scripts/benchmark/run-juice-shop.sh` syntax ✓
+- No new Go or Python source touched this session — docs + scripts + workflow only.
+
+**Decisions made:**
+
+- **Make-target name `benchmark:` (not `bench:`).** Existing `bench:` already runs Go-internal microbenchmarks (function-level perf, used to populate the README "Performance" section). Keeping that target intact and adding a new `benchmark:` for end-to-end real-target scans avoids breaking the existing ldflags-pinned numbers.
+- **Pin juice-shop to `v17.1.1`.** Reproducibility matters for benchmarks across releases. `:latest` would silently shift numbers between runs.
+- **`workflow_dispatch` only, not on push/PR.** Benchmark run is ~2 min of runner time; running it on every push adds cost without catching regressions that aren't already caught by the existing Go bench tests. Manual triggering against published release tags is the right cadence.
+- **Install Fendix in CI via `get.fendix.dev/install.sh` (not `actions/setup-go` + `go install`).** The benchmark doubles as a smoke test of the published install pipe — every benchmark run validates that DNS + Pages + Let's Encrypt + cosign-signed binary are still healthy.
+- **One fixture, not three, in this scaffold commit.** Juice-shop is the OWASP-default and best-known. vAPI and crapi are the same pattern (`scripts/benchmark/run-<target>.sh` + a row in the workflow); shipping them simultaneously triples the scope without tripling the value. Add them when juice-shop numbers reveal what the second fixture should test.
+- **Numbers don't land in this commit.** The scaffold is shippable on its own; the actual numbers require a manual CI workflow_dispatch run by the operator (or a local `make benchmark` run if Docker is up). Splitting infra from data keeps this commit small, CI-green, easy to revert.
+- **`bench-results/` gitignored, not committed.** Per-run timestamped dirs would bloat the repo. Numbers go into `docs/benchmarks.md` by hand from CI artifacts.
+
+**Open questions / followups:**
+
+- **Capture first benchmark numbers.** Trigger the workflow manually against `v0.6.0`, paste the resulting `summary.json` into the "Latest results" table in `docs/benchmarks.md`, commit + push.
+- **vAPI + crapi runners.** Phase 14 follow-up — copy-paste pattern from `run-juice-shop.sh`, pin images, add a row each to the workflow's matrix.
+- **ZAP-baseline + Semgrep CI comparison runs.** Phase 14 follow-up — same juice-shop fixture, run ZAP-baseline and Semgrep CI in parallel, compare finding count, scan time, FP rate. Apples-to-apples comparison is the marketing-strongest output of this whole task.
+
+**Next session should start with:**
+
+- **Capture the first juice-shop benchmark numbers.** Trigger `.github/workflows/benchmark.yml` manually via `gh workflow run benchmark.yml -R Abdel-RahmanSaied/Fendix --field fendix_version=v0.6.0`, wait for completion (~2 min), download the artifact, and paste the `summary.json` numbers into the "Latest results" table in `docs/benchmarks.md`. Single commit. Then the wedge claim has actual numbers behind it.
+- **Alternative if Docker is up locally**: run `make benchmark` directly, inspect `bench-results/juice-shop/<latest>/summary.json`, paste into the docs.
+- **After numbers land**: TASK-105 (`fendix init` zero-config workflow generator) is the next-highest-leverage Phase 14 task. ~2 days of work; closes the manual-CI-setup gap that filters ~80% of first-time users.
+
+---
+
+## Earlier Session (2026-04-30 — Strategic-advisor session — positioning, moat, Phase 14-16 scoping)
+
 **Session goal:** Operator asked for a Principal-Security-Engineer / DevTools-founder critique of Fendix as a *product*, not a codebase. Plan the strategic next 12 months on top of v1.0; persist the analysis as durable phases/tasks instead of letting it decay into chat history.
 
 **Accomplished:**

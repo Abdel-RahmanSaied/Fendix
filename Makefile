@@ -64,6 +64,15 @@ bench:
 	cd $(GO_DIR) && go test -run '^$$' -bench BenchmarkScan -benchmem \
 		-benchtime $(BENCHTIME) ./internal/engine/
 
+# benchmark — end-to-end scan against a deliberately-vulnerable target
+# app running in Docker. Captures findings + scan duration into a
+# timestamped results dir under bench-results/. Numbers in
+# docs/benchmarks.md come from this target. Requires Docker, jq, curl,
+# and fendix on PATH (or set FENDIX_BIN). See scripts/benchmark/.
+benchmark:
+	@echo "→ Running juice-shop benchmark..."
+	@bash scripts/benchmark/run-juice-shop.sh
+
 test-python:
 	@echo "→ Running Python tests..."
 	$(PYTHON) -m pytest $(PY_DIR)/tests/ -v

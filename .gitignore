@@ -41,6 +41,9 @@ Thumbs.db
 # Fendix runtime
 .fendix/
 
+# Benchmark run artifacts (per-run timestamped dirs)
+bench-results/
+
 # Environment / secrets
 .env
 .env.*

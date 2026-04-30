@@ -1,0 +1,84 @@
+name: Benchmark
+
+# Manually-triggered benchmark run against deliberately-vulnerable
+# target apps. Not on push/PR by design — spinning up juice-shop costs
+# ~2 min of runner time, and the numbers are most useful when captured
+# against published release tags rather than on every commit.
+#
+# To run:
+#   gh workflow run benchmark.yml -R <repo>
+# or via the Actions tab → Benchmark → Run workflow.
+#
+# Artifacts uploaded:
+#   - findings.json   (full fendix scan output)
+#   - summary.json    (parsed metrics — duration, severity counts, sources)
+#   - scan.stderr     (fendix stderr for diagnosis if anything fails)
+#
+# Numbers from each run are tracked in docs/benchmarks.md by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fendix_version:
+        description: "Fendix version to benchmark (e.g. v0.6.0, or 'latest' for the most recent published release)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+jobs:
+  juice-shop:
+    name: Juice Shop benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (for the runner script)
+        uses: actions/checkout@v4
+
+      - name: Install jq (already present on ubuntu-latest, defensive)
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          fi
+
+      - name: Install Fendix from get.fendix.dev
+        env:
+          FENDIX_VERSION: ${{ github.event.inputs.fendix_version }}
+        run: |
+          set -euo pipefail
+          # The install.sh script honours FENDIX_VERSION when set; "latest"
+          # is its default when the env var is unset.
+          if [ "$FENDIX_VERSION" = "latest" ] || [ -z "$FENDIX_VERSION" ]; then
+            curl -fsSL https://get.fendix.dev/install.sh | FENDIX_DIR="$HOME/.local/bin" sh
+          else
+            curl -fsSL https://get.fendix.dev/install.sh | FENDIX_DIR="$HOME/.local/bin" FENDIX_VERSION="$FENDIX_VERSION" sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify install
+        run: fendix version
+
+      - name: Run juice-shop benchmark
+        run: bash scripts/benchmark/run-juice-shop.sh bench-results/juice-shop/run
+
+      - name: Print summary to step output
+        if: always()
+        run: |
+          if [ -f bench-results/juice-shop/run/summary.json ]; then
+            {
+              echo "## Juice Shop benchmark — \`${{ github.event.inputs.fendix_version }}\`"
+              echo
+              echo '```json'
+              cat bench-results/juice-shop/run/summary.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: juice-shop-benchmark-${{ github.run_id }}
+          path: bench-results/juice-shop/run/
+          retention-days: 30

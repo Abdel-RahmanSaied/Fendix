@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Vulnerable-app benchmark scaffold (TASK-106, partial).** New
+  `scripts/benchmark/run-juice-shop.sh` spins up
+  `bkimminich/juice-shop:v17.1.1` in Docker, runs `fendix scan` against
+  it, and captures findings + scan duration into a structured
+  `bench-results/juice-shop/<UTC-timestamp>/` directory (gitignored).
+  Outputs: `findings.json` (raw fendix output), `summary.json` (parsed
+  metrics — duration, severity counts, source counts, endpoints
+  scanned, fendix version), and a human-readable terminal summary.
+  Container is force-cleaned on script exit (success or failure) via
+  bash `trap`. New `make benchmark` Makefile target wraps the script.
+  New `.github/workflows/benchmark.yml` (workflow_dispatch only —
+  manual runs against published release tags, not on every push)
+  installs Fendix via `https://get.fendix.dev/install.sh`, runs the
+  juice-shop scan, uploads `findings.json`/`summary.json`/`scan.stderr`
+  as a build artifact, and posts the summary JSON to the workflow
+  step-summary. **vAPI + crapi fixtures intentionally deferred** to a
+  follow-up commit (one fixture is enough to start producing numbers;
+  the infra is a copy-paste pattern). New `docs/benchmarks.md`
+  documents the recipe, the targets table, the methodology (what
+  counts as `correlated` vs `blackbox` vs `whitebox`), and the
+  caveats (single-run variance, stock-config-only, no ZAP/Semgrep
+  comparison yet). The "Latest results" table is currently
+  `_pending_` — actual numbers land in a follow-up commit after CI
+  runs the workflow against `v0.6.0`. The CI workflow doubles as a
+  smoke test of the published install pipe (cosign-signed binary
+  pulled via `get.fendix.dev/install.sh`).
+
 ### Changed
 
 - **README repositioned around the wedge (TASK-110).** Hero rewritten
