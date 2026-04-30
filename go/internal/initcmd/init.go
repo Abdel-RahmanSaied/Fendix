@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed templates/workflow.yml templates/fendix-ignore.txt
+//go:embed templates/workflow.yml templates/fendix-ignore.txt templates/fendix-yaml.txt
 var templates embed.FS
 
 // Options controls Run's behavior. Zero-value defaults are sensible.
@@ -104,7 +104,7 @@ func Run(opts Options) error {
 
 	fmt.Fprintln(opts.Out)
 	fmt.Fprintln(opts.Out, "Next steps:")
-	fmt.Fprintln(opts.Out, "  git add .github/workflows/fendix.yml .fendix-ignore")
+	fmt.Fprintln(opts.Out, "  git add .github/workflows/fendix.yml .fendix.yaml .fendix-ignore")
 	fmt.Fprintln(opts.Out, "  git commit -m \"Add Fendix security scanning\"")
 	fmt.Fprintln(opts.Out)
 	fmt.Fprintln(opts.Out, "Run a scan now:")
@@ -118,12 +118,17 @@ func planFiles() ([]File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded workflow template: %w", err)
 	}
+	policy, err := templates.ReadFile("templates/fendix-yaml.txt")
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded policy template: %w", err)
+	}
 	ignore, err := templates.ReadFile("templates/fendix-ignore.txt")
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded ignore template: %w", err)
 	}
 	return []File{
 		{Path: ".github/workflows/fendix.yml", Content: workflow},
+		{Path: ".fendix.yaml", Content: policy},
 		{Path: ".fendix-ignore", Content: ignore},
 	}, nil
 }

@@ -48,6 +48,7 @@ func TestInit_WritesFilesInProjectDir(t *testing.T) {
 		"✓ Detected: Python",
 		"api/openapi.yaml",
 		"✓ Wrote .github/workflows/fendix.yml",
+		"✓ Wrote .fendix.yaml",
 		"✓ Wrote .fendix-ignore",
 		"Next steps:",
 	} {
@@ -56,8 +57,8 @@ func TestInit_WritesFilesInProjectDir(t *testing.T) {
 		}
 	}
 
-	// The two files must exist on disk after init returns.
-	for _, rel := range []string{".github/workflows/fendix.yml", ".fendix-ignore"} {
+	// All three files must exist on disk after init returns.
+	for _, rel := range []string{".github/workflows/fendix.yml", ".fendix.yaml", ".fendix-ignore"} {
 		info, err := os.Stat(filepath.Join(tmp, rel))
 		if err != nil {
 			t.Errorf("%s not on disk after init: %v", rel, err)
@@ -117,9 +118,13 @@ func TestInit_RefusesToClobber(t *testing.T) {
 		t.Errorf("user's workflow was modified despite refuse-to-clobber:\ngot:  %q\nwant: %q", gotFile, original)
 	}
 
-	// And no .fendix-ignore should exist either (atomicity in spirit).
+	// And no .fendix-ignore or .fendix.yaml should exist either
+	// (atomicity in spirit).
 	if _, err := os.Stat(filepath.Join(tmp, ".fendix-ignore")); err == nil {
 		t.Errorf(".fendix-ignore was written despite init aborting on conflict")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".fendix.yaml")); err == nil {
+		t.Errorf(".fendix.yaml was written despite init aborting on conflict")
 	}
 }
 
@@ -139,6 +144,7 @@ func TestInit_PrintFlagDryRuns(t *testing.T) {
 	got := string(out)
 	for _, want := range []string{
 		"──── .github/workflows/fendix.yml ────",
+		"──── .fendix.yaml ────",
 		"──── .fendix-ignore ────",
 	} {
 		if !strings.Contains(got, want) {
@@ -151,5 +157,8 @@ func TestInit_PrintFlagDryRuns(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".fendix-ignore")); err == nil {
 		t.Errorf("--print wrote .fendix-ignore to disk")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".fendix.yaml")); err == nil {
+		t.Errorf("--print wrote .fendix.yaml to disk")
 	}
 }

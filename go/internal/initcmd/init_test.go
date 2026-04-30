@@ -17,7 +17,7 @@ func TestRun_WritesBothFiles(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	for _, rel := range []string{".github/workflows/fendix.yml", ".fendix-ignore"} {
+	for _, rel := range []string{".github/workflows/fendix.yml", ".fendix.yaml", ".fendix-ignore"} {
 		abs := filepath.Join(dir, rel)
 		info, err := os.Stat(abs)
 		if err != nil {
@@ -33,9 +33,10 @@ func TestRun_WritesBothFiles(t *testing.T) {
 	for _, want := range []string{
 		"✓ Detected:",
 		"✓ Wrote .github/workflows/fendix.yml",
+		"✓ Wrote .fendix.yaml",
 		"✓ Wrote .fendix-ignore",
 		"Next steps:",
-		"git add .github/workflows/fendix.yml .fendix-ignore",
+		"git add .github/workflows/fendix.yml .fendix.yaml .fendix-ignore",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\nfull output:\n%s", want, got)
@@ -82,6 +83,9 @@ func TestRun_RefusesToClobber(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, ".fendix-ignore")); err == nil {
 		t.Errorf(".fendix-ignore was written despite Run aborting on conflict")
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".fendix.yaml")); err == nil {
+		t.Errorf(".fendix.yaml was written despite Run aborting on conflict")
+	}
 }
 
 func TestRun_ForceOverwrites(t *testing.T) {
@@ -124,10 +128,14 @@ func TestRun_PrintDoesNotWriteFiles(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, ".fendix-ignore")); err == nil {
 		t.Errorf("--print wrote .fendix-ignore to disk")
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".fendix.yaml")); err == nil {
+		t.Errorf("--print wrote .fendix.yaml to disk")
+	}
 
 	got := out.String()
 	for _, want := range []string{
 		"──── .github/workflows/fendix.yml ────",
+		"──── .fendix.yaml ────",
 		"──── .fendix-ignore ────",
 		"Fendix",
 	} {

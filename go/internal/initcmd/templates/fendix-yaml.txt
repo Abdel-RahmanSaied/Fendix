@@ -1,0 +1,42 @@
+# .fendix.yaml — repo-committed policy for `fendix scan`.
+#
+# Schema reference: docs/fendix-yaml.md
+# Suppressions live in .fendix-ignore alongside this file.
+#
+# Precedence: cobra defaults < .fendix.yaml values < explicit CLI flags.
+# So you can set a team-wide default here and override on the CLI for
+# one-off scans without touching the repo state.
+
+version: 1
+
+# Severity threshold for the scan to fail. Matches the --fail-on flag.
+# Comment out or set to "" to disable the gate (warn-only mode).
+fail_on: HIGH
+
+# Path to the suppressions file (matches --ignore). Relative to repo root.
+ignore_path: .fendix-ignore
+
+scan:
+  # enable_active: true runs SQL/CMDi/CRLF probes against discovered
+  # endpoints. OFF by default; turn on only for repos where you control
+  # the target. See docs/checks/injection.md for the safety model.
+  enable_active: false
+  # workers: 10            # uncomment to override CLI default
+  # timeout: 10            # HTTP timeout in seconds
+  # delay_ms: 100          # ms between requests
+  # format: json           # json | html | sarif
+
+crawler:
+  # crawl_depth: 1         # 0 disables HTML link following
+  # max_endpoints: 500     # 0 = no cap
+  # wordlist_path: ""      # empty = use built-in CommonPaths
+  # respect_robots: false  # true = treat Disallow as a hard restriction
+
+budgets:
+  # max_requests: 0        # 0 = no cap; cap is a soft-stop
+  # max_duration: 0s       # e.g. 5m
+
+# auth.profile points at ~/.fendix/profiles/<name>.yaml. The actual
+# credentials live there (and stay out of source control).
+# auth:
+#   profile: production

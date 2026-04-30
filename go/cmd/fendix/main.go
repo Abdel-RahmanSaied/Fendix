@@ -11,13 +11,16 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/democmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/policy"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // Version is set at build time via ldflags.
@@ -188,6 +191,27 @@ func newScanCmd() *cobra.Command {
 			maxDuration, _ := flags.GetDuration("max-duration")
 			respectRobots, _ := flags.GetBool("respect-robots")
 			debugBundleFlag, _ := flags.GetString("debug-bundle")
+			configFlag, _ := flags.GetString("config")
+
+			// Resolve --config: explicit path takes precedence; if
+			// absent and a .fendix.yaml exists in the cwd, pick it up
+			// silently. Missing files are not errors — user might just
+			// be running fendix without a policy.
+			policyPath := configFlag
+			if policyPath == "" {
+				if _, err := os.Stat(policy.DefaultPath); err == nil {
+					policyPath = policy.DefaultPath
+				}
+			}
+			pol, err := policy.Load(policyPath)
+			if err != nil {
+				return fmt.Errorf("loading policy %s: %w", policyPath, err)
+			}
+			if configFlag != "" && pol == nil {
+				// User explicitly pointed at a config file that doesn't
+				// exist — refuse to silently fall back to flag-only.
+				return fmt.Errorf("policy file not found: %s", configFlag)
+			}
 
 			if urlFlag == "" && specFlag == "" && codeFlag == "" {
 				return fmt.Errorf("at least one of --url, --spec, or --code is required")
@@ -216,6 +240,36 @@ func newScanCmd() *cobra.Command {
 				MaxDuration:          maxDuration,
 				RespectRobots:        respectRobots,
 				DebugBundlePath:      debugBundleFlag,
+			}
+
+			// Apply policy file values to cfg for fields the user did
+			// NOT pass on the CLI. Precedence: cobra-default → policy
+			// file → explicit CLI flag (CLI wins). The CLISet captures
+			// which flags cobra observed as explicitly changed.
+			if pol != nil {
+				cli := policy.CLISet{}
+				flags.Visit(func(f *pflag.Flag) { cli[f.Name] = true })
+				appliedProfile := profileFlag
+				applied := policy.ApplyTo{
+					SetFailOn:        func(v string) { cfg.FailOn = v },
+					SetEnableActive:  func(v bool) { cfg.EnableActive = v },
+					SetWorkers:       func(v int) { cfg.Workers = v },
+					SetTimeoutSec:    func(v int) { cfg.Timeout = v },
+					SetDelayMs:       func(v int) { cfg.DelayMs = v },
+					SetFormat:        func(v string) { cfg.Format = v },
+					SetCrawlDepth:    func(v int) { cfg.CrawlDepth = v },
+					SetMaxEndpoints:  func(v int) { cfg.MaxEndpoints = v },
+					SetWordlistPath:  func(v string) { cfg.WordlistPath = v },
+					SetRespectRobots: func(v bool) { cfg.RespectRobots = v },
+					SetMaxRequests:   func(v int64) { cfg.MaxRequests = v },
+					SetMaxDuration:   func(v time.Duration) { cfg.MaxDuration = v },
+					SetIgnorePath:    func(v string) { cfg.IgnorePath = v },
+					SetAuthProfile:   func(v string) { appliedProfile = v },
+				}.Run(pol, cli)
+				if applied > 0 {
+					slog.Info("policy applied", "path", policyPath, "fields", applied)
+				}
+				profileFlag = appliedProfile
 			}
 
 			var flagAuth *models.AuthContext
@@ -275,6 +329,7 @@ func newScanCmd() *cobra.Command {
 	flags.Duration("max-duration", 0, "Soft-cap on total scan wall-clock time, e.g. 5m (0 = no cap)")
 	flags.Bool("respect-robots", false, "Treat robots.txt Disallow as a hard restriction (default: queue as discovery hints)")
 	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
+	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
 
 	return cmd
 }

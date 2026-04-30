@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`.fendix.yaml` repo-committed policy file (TASK-109).** New
+  `internal/policy` package + new `--config <path>` flag on
+  `fendix scan`. Teams can now commit a `.fendix.yaml` at repo
+  root encoding their scan posture (severity threshold, scan
+  budgets, auth profile reference, crawler defaults, format) and
+  invoke `fendix scan` with one CLI flag (`--url X` or `--code X`)
+  instead of the prior six-flag-and-growing wall of text.
+  **Precedence** matches `git config`: cobra defaults < `.fendix.yaml`
+  values < explicit CLI flags. CLI always wins when explicitly
+  passed; `.fendix.yaml` is a default, not a lock. Auto-pickup:
+  no `--config`, no policy applied; `--config <path>`, policy
+  required (missing file is a hard error, not silent fallback);
+  `.fendix.yaml` exists in cwd, picked up silently. **Strict
+  parsing:** `yaml.KnownFields(true)` rejects typos like
+  `fial_on:` with a clear error rather than silently dropping the
+  field. Schema is versioned (`version: 1` required); future fendix
+  builds will reject files declaring a higher version with a
+  clear upgrade message. **Tests:** 14 unit tests covering schema
+  parsing (full schema, missing version, future version, invalid
+  fail_on, unknown field, malformed YAML) + ApplyTo precedence
+  (nil policy no-op, full apply with no CLI overrides, CLI
+  overrides specific fields, nil-setter skips field, nil CLISet
+  semantics). 3 e2e tests covering --config-points-at-missing-file,
+  unknown-field-rejection, and fail_on-from-policy-fires-the-gate.
+  **Reference:** `docs/fendix-yaml.md` documents the full schema,
+  precedence model, what's intentionally NOT in the schema (per-
+  invocation flags like --baseline, --debug-bundle, credential
+  values), worked examples, and a migration table from CLI-only
+  to policy-driven scans.
+
+- **`fendix init` now writes `.fendix.yaml` (TASK-109).** The init
+  command's contract grew from 2 files to 3: it now generates a
+  starter `.fendix.yaml` alongside `.github/workflows/fendix.yml`
+  and `.fendix-ignore`. The policy template is heavily commented
+  with each section's purpose so future contributors don't need
+  to consult the docs to understand a knob. Refuse-to-clobber and
+  `--force` semantics extend to the new file (pre-flight check
+  still atomic — either everything writes or nothing does).
+
 - **`fendix demo` command (TASK-108).** New `fendix demo` cobra
   subcommand spins up `bkimminich/juice-shop:v17.1.1` in Docker,
   runs a stock fendix scan against `http://localhost:3000`, renders
