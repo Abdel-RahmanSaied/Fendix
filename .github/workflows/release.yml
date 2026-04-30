@@ -171,12 +171,6 @@ jobs:
     name: Build & Push Docker Image
     needs: release
     runs-on: ubuntu-latest
-    env:
-      # Mirror DOCKERHUB_USERNAME secret presence into a job-level env var so
-      # `if:` conditions can gate on it. GitHub Actions doesn't allow direct
-      # access to `secrets.*` from `if:` expressions; copying through env is
-      # the standard workaround.
-      HAVE_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -195,48 +189,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Optional: dual-publish to Docker Hub for discoverability (hub.docker.com
-      # search). Gated on the DOCKERHUB_USERNAME repo secret so the workflow
-      # works whether or not Docker Hub publishing is set up. To enable:
-      #   1. Create a Docker Hub access token at hub.docker.com/settings/security
-      #   2. Add repo secrets DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
-      #   3. (Optional) Add repo variable DOCKERHUB_NAMESPACE if your image
-      #      should live under a different namespace than your username (e.g.
-      #      a Docker Hub org). Defaults to DOCKERHUB_USERNAME.
-      - name: Log in to Docker Hub
-        if: env.HAVE_DOCKERHUB == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Compute image tags
         id: tags
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
         run: |
           REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          REPO_NAME_LC="$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')"
           # Docker tag keeps the leading `v` so it matches the Git tag and
           # the binary filename convention (fendix-vX.Y.Z-...). The OCI
           # version label uses the bare semver without `v` per the OCI
           # image-spec convention for org.opencontainers.image.version.
           TAG="${GITHUB_REF_NAME}"
           VERSION="${GITHUB_REF_NAME#v}"
-          GHCR_IMAGE="ghcr.io/${REPO_LC}"
-          # Compose Docker Hub ref only when a username is configured.
-          # Namespace defaults to username; override via DOCKERHUB_NAMESPACE
-          # repo variable for org-owned images.
-          DH_NS="${DOCKERHUB_NAMESPACE:-$DOCKERHUB_USERNAME}"
-          if [ -n "${DOCKERHUB_USERNAME}" ]; then
-            DH_IMAGE="docker.io/${DH_NS}/${REPO_NAME_LC}"
-          else
-            DH_IMAGE=""
-          fi
           {
-            echo "image=${GHCR_IMAGE}"
-            echo "dockerhub_image=${DH_IMAGE}"
+            echo "image=ghcr.io/${REPO_LC}"
             echo "tag=${TAG}"
             echo "version=${VERSION}"
           } >> "$GITHUB_OUTPUT"
@@ -248,32 +212,21 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          # Pushes to GHCR always; pushes to Docker Hub only when the
-          # dockerhub_image output is non-empty (= DOCKERHUB_USERNAME secret
-          # is configured). Empty lines in `tags:` are ignored by the action.
           tags: |
             ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.tag }}
             ${{ steps.tags.outputs.image }}:latest
-            ${{ steps.tags.outputs.dockerhub_image && format('{0}:{1}', steps.tags.outputs.dockerhub_image, steps.tags.outputs.tag) || '' }}
-            ${{ steps.tags.outputs.dockerhub_image && format('{0}:latest', steps.tags.outputs.dockerhub_image) || '' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.tags.outputs.version }}
             org.opencontainers.image.licenses=MIT
 
       # Cosign keyless signing for the Docker image. Signs the multi-arch
-      # manifest list digest per registry (cosign signatures live alongside
-      # the image in each registry, so dual-publishing requires dual-signing).
-      # The --recursive flag fans out to each platform-specific image.
-      # Verify after release with:
+      # manifest list digest (the recursive --recursive flag fans out to each
+      # platform-specific image). Verify after release with:
       #
-      #   # GHCR:
       #   cosign verify ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z \
-      #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
-      #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
-      #
-      #   # Docker Hub (when DOCKERHUB_USERNAME is configured):
-      #   cosign verify docker.io/<namespace>/fendix:vX.Y.Z \
+      #     # tag matches the Git tag including the `v` prefix; alternatively
+      #     # use a digest from the release notes for content-addressable verify
       #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
       #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
       #
@@ -286,7 +239,7 @@ jobs:
         with:
           cosign-release: "v2.4.1"
 
-      - name: Sign GHCR image (cosign keyless)
+      - name: Sign Docker image (cosign keyless)
         if: vars.COSIGN_ENABLED == 'true'
         env:
           COSIGN_YES: "true"
@@ -296,20 +249,6 @@ jobs:
           set -eu
           # Sign by digest (immutable) rather than by tag (mutable) — best
           # practice per Sigstore docs.
-          cosign sign --recursive "${IMAGE}@${DIGEST}"
-
-      - name: Sign Docker Hub image (cosign keyless)
-        if: vars.COSIGN_ENABLED == 'true' && env.HAVE_DOCKERHUB == 'true'
-        env:
-          COSIGN_YES: "true"
-          DIGEST: ${{ steps.build.outputs.digest }}
-          IMAGE: ${{ steps.tags.outputs.dockerhub_image }}
-        run: |
-          set -eu
-          # Same digest as the GHCR push (build-push-action emits one
-          # digest per build, and the same image is pushed to both
-          # registries). Signing per-registry is required because
-          # signatures are stored alongside the image in each registry.
           cosign sign --recursive "${IMAGE}@${DIGEST}"
 
   mirror:
