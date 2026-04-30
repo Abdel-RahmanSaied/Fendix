@@ -463,7 +463,84 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-01 (Phase 14 closeout — multi-agent orchestration session — TASK-106 numbers + TASK-107 scaffold + TASK-108 + TASK-109 + v0.6.1 patch release)
+**Date:** 2026-05-01 (frontend sync — absorbing v0.6.1 + Phase 14 closeout into `fendix_frontend`)
+**Session goal:** Sync the frontend's user-visible surfaces with the v0.6.1 release + the four post-v0.6.1 Phase 14 commits (TASK-106 numbers, TASK-107 GH App scaffold, TASK-108 `fendix demo`, TASK-109 `.fendix.yaml` policy). Per the `SYNC_FRONTEND_BACKEND.md` runbook in the frontend repo. Backend was inventoried but not modified — the v0.6.1 deltas didn't add any per-scan orchestration knobs (only the `--config` host-filesystem flag, which follows the same not-exposed rationale as `--debug-bundle` from the v0.6.0 sync).
+
+**Accomplished:**
+
+- **Engine state inventoried.** Read `CHANGELOG.md` `[Unreleased]` + `[0.6.1]` blocks, `tasks/MEMORY.md` "Current Project State" (this file), the frontend's `SYNC_FRONTEND_BACKEND.md` runbook. Engine at v0.6.1 + 4 Phase-14 commits (5300561, 3570d53, 3ba98e0, 31b9785). Verified build green pre-work: Go 13 packages compile + race-clean; Python 193/193.
+
+- **Backend not modified — explicit decision.** Inventoried every new flag/command/binary against `fendix-backend/backend/scanning/serializers.py::LaunchScanSerializer` + `services.py::build_command`. Decisions:
+  - `--config <path>` (TASK-109) — host-filesystem flag pointing at a `.fendix.yaml` on the user's filesystem. The backend container can't see the user's filesystem; the API already accepts every policy field directly (fail_on, max_requests, max_duration, etc.). Adding a `config` field would create a confusing dual policy surface. Same rationale as `--debug-bundle` from v0.6.0 sync.
+  - `fendix init` (TASK-105 + TASK-109 extension) — separate cobra subcommand, one-shot bootstrap; not a per-scan knob.
+  - `fendix demo` (TASK-108) — separate cobra subcommand requiring Docker on the host; not a per-scan knob.
+  - `fendix-app` (TASK-107) — separate deployable binary on the GitHub-event side of the pipeline, not the API side.
+  - Documented all four decisions in the frontend `memory.md` "Backend CLI flags" block so future sync agents don't re-debate.
+
+- **Frontend version-display surfaces bumped (v0.6.0 → v0.6.1).** `app/components/StatsBar.tsx` (Latest-release badge), `app/components/LandingFooter.tsx` (footer version), `app/page.tsx` (landing-page hero pre-link from "v0.6.0 — first stable signed release" → "v0.6.1 — install.sh fix + Phase 14 partial"), `app/lib/releases.ts` (3 JSDoc filename examples), `tests/components/StatsBar.test.tsx` (literal assertion).
+
+- **Frontend changelog page rewritten.** Replaced the prior single "Unreleased — External Wedge (Phase 14, in progress)" entry with two entries on `app/changelog/page.tsx`:
+  - New `v0.6.1` entry: install.sh `mkdir -p` fix (the patch trigger) + folded TASK-105 / TASK-106 partial / TASK-110 / TASK-111.
+  - New "Unreleased — Phase 14 closeout (post-v0.6.1)" entry: TASK-106 numbers (juice-shop v17.1.1: 97 endpoints / 7 deduped findings / 41.5s / 0 correlated — passive-only run) + TASK-107 GH App scaffold (with the explicit "TASK-107b is the follow-up that wires clone+scan+comment+SARIF" callout) + TASK-108 fendix demo + TASK-109 .fendix.yaml policy + the explicit "backend not extended for --config" decision callout.
+
+- **Frontend cli-reference page extended.** `app/cli-reference/page.tsx`:
+  - Commands list: added `fendix demo` with v0.6.1+ tag.
+  - Init Flags description: updated to call out the new 3-file output (workflow + .fendix.yaml + .fendix-ignore) since TASK-109 extended init.
+  - Scan Flags: added `--config` with the precedence-model summary (cobra default < .fendix.yaml < explicit CLI flag).
+  - New "Demo Flags" section: `--open`, `--port`, `--output`, `--image` with the Docker spin-up + cleanup-on-exit explanation.
+
+- **Frontend memory.md extended.** Bumped phase status to "Phase 14 engine code COMPLETE (TASK-107b is the only follow-up)" + 114 tasks shipped + Go 13 packages. Added v0.6.1 to releases-shipped list. Added FOUR new "Phase 14 additions (post-v0.6.1)" sub-blocks under "Backend CLI flags" documenting `fendix demo` / `--config` / `fendix-app` / extended `fendix init` with their respective NOT-exposed rationales — mirrors the existing `--debug-bundle` pattern. Added a "Frontend sync (2026-05-01, this session)" entry capturing exactly which surfaces moved.
+
+- **Engine binary cross-compiled.** `make embed-engine` (re-bundles Python engine into `go/internal/embedded/engine/`) + `cd go && GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=v0.6.1-phase14" -o ../bin/fendix-linux-arm64 ./cmd/fendix/`. Resulting 9.0 MB ARM64 ELF at `bin/fendix-linux-arm64` is what `fendix-backend/docker-compose.dev.yml` bind-mounts into both `django` and `celery` services on `:ro`. Backend dev compose picks it up automatically on next `up --build` cycle. The new binary carries `fendix init` (extended) + `fendix demo` + `--config` + the new `fendix-app` binary even though the backend doesn't expose any of them — operators using `docker compose exec celery fendix demo` against a mounted Docker socket would work; `fendix init` and `fendix-app` are obviously not appropriate for the backend container but a developer running CLI inside the container can still reach them.
+
+**Files modified this session:**
+
+- `fendix_frontend/app/components/StatsBar.tsx` (1-line version literal)
+- `fendix_frontend/app/components/LandingFooter.tsx` (1-line version literal)
+- `fendix_frontend/app/page.tsx` (1-line hero pre-link copy)
+- `fendix_frontend/app/lib/releases.ts` (3 JSDoc filename examples)
+- `fendix_frontend/app/changelog/page.tsx` (Unreleased split + new v0.6.1 entry)
+- `fendix_frontend/app/cli-reference/page.tsx` (added demo command + --config flag + Demo Flags section + Init Flags description tweak)
+- `fendix_frontend/tests/components/StatsBar.test.tsx` (1-line literal assertion)
+- `fendix_frontend/memory.md` (phase status + releases list + 4 new not-exposed sub-blocks + sync session entry)
+- `fendix-engine/bin/fendix-linux-arm64` (rebuilt; 9.0 MB; linux/arm64 ELF; not committed — gitignored binary artifact for the backend bind mount)
+- `fendix-engine/tasks/MEMORY.md` (this entry)
+
+**Commit this session (frontend only — engine read-only per SYNC runbook hard rule, backend serializer/services unchanged because no new orchestration knobs):**
+
+- `b1f54a7` `feat: sync frontend with engine v0.6.1 + Phase 14 closeout`
+
+**Build state at session end:**
+
+- Engine: `go build ./...` ✓ (Go 13 packages); `python -m pytest python/tests/` ✓ (193/193); engine binary cross-compiled clean (9.0 MB linux/arm64).
+- Frontend: `npx vitest run` ✓ (26 files, 173 tests, all green; 4.12s); `npm run build` ✓ (29 routes prerendered cleanly; no TS errors, no lint errors).
+- Backend: `python3.13 -m py_compile scanning/serializers.py scanning/services.py` ✓ (no changes; defensive syntax check). The dev-compose bind mount auto-picks the new arm64 binary on next restart.
+
+**Decisions made:**
+
+- **Backend is intentionally NOT extended for any of the v0.6.1+post-v0.6.1 deltas.** Recorded as four explicit not-exposed entries in the frontend memory.md "Backend CLI flags" block, mirroring the existing `--debug-bundle` pattern. Each entry names the engine surface, the rationale, and the alternative (cli-reference docs for direct CLI users).
+
+- **Frontend changelog SPLIT not REWRITE.** The prior "Unreleased — Phase 14 in progress" entry was about half of what's now released. Splitting it into a v0.6.1 release entry (covering what shipped in the tag) plus a new Unreleased entry (covering what's on `main` post-tag) preserves the historical accuracy of what each tag contained and matches the engine's CHANGELOG.md structure exactly.
+
+- **TASK-107 changelog framing emphasizes scaffold + TASK-107b follow-up.** The GitHub App is partially shipped — the credentials/auth plumbing is real and tested, but the actual scan-and-comment workflow is stubbed pending TASK-107b. The changelog entry says this explicitly so users who try to use the App today don't think it's broken — they'll see "scaffold" framing and know to wait for TASK-107b before deploying.
+
+- **Engine binary ldflags pinned to `v0.6.1-phase14` (not `v0.6.1`).** Distinguishes the dev-compose binary (which carries the post-v0.6.1 main HEAD with TASK-107/108/109) from the tagged v0.6.1 release binary that ships via `get.fendix.dev/install.sh`. The pinned version surfaces in `fendix version` output so an operator running it inside the container sees obviously-not-tagged-release behavior.
+
+**Open questions / followups:**
+
+- **TASK-107b** is still the next engine task. Wire the GitHub App's `internal/ghapp/handler.go::HandlePullRequest` stub to actually clone the repo + run `fendix scan` + post a PR comment + upload SARIF to the Code Scanning API. Plus `Dockerfile.app` + reference Kubernetes manifest. Plus operator-side: register the App on github.com via `app/manifest.yml`, deploy fendix-app somewhere, submit Marketplace listing.
+
+- **Frontend dashboard could surface a "Latest scan via CLI" callout** mentioning `fendix demo` for first-time evaluators. Right now `fendix demo` is documented in `/cli-reference` but not advertised on the dashboard. Defer to a marketing-surface session — it's a UI placement decision, not a sync-driven one.
+
+- **vAPI + crapi benchmark fixtures** still deferred per `docs/benchmarks.md`. One fixture (juice-shop) is enough to start producing numbers; pattern is copy-paste for new targets. ZAP-baseline + Semgrep-CI comparison runs against juice-shop are the marketing-strongest output of the whole TASK-106 line.
+
+**Next session should start with:**
+
+- **TASK-107b** — wire the GitHub App's clone + scan + comment + SARIF upload on top of the credentials/auth scaffold. Concretely: in `internal/ghapp/handler.go::HandlePullRequest`, replace `stubScanRunner` and `stubCommentBackend` with real implementations. Reuse the github-script PR-comment template from `examples/github-actions/fendix-scan.yml` so users see the same output regardless of installation path. Ship `Dockerfile.app` + a reference Kubernetes Deployment manifest in the same commit so operators can deploy without writing their own.
+
+---
+
+## Earlier Session (2026-05-01 — Phase 14 closeout — multi-agent orchestration — TASK-106 numbers + TASK-107 scaffold + TASK-108 + TASK-109 + v0.6.1 patch release)
 **Session goal:** Execute the remaining Phase 14 tasks in order — TASK-106 numbers capture, TASK-107 GitHub App, TASK-108 `fendix demo`, TASK-109 `.fendix.yaml` policy. Run as Orchestrator Agent per the multi-agent runbook in `resume-engine-work.md`.
 
 **Accomplished:**
