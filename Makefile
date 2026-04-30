@@ -1,4 +1,4 @@
-.PHONY: build test lint clean embed-engine e2e fuzz
+.PHONY: build test lint clean embed-engine e2e fuzz bench
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
 GO_DIR := go
@@ -53,6 +53,16 @@ fuzz:
 	@echo "→ Fuzzing worker-pool cancellation for $(FUZZTIME)..."
 	cd $(GO_DIR) && go test -race -fuzz FuzzWorkerPool_CancelTiming \
 		-fuzztime $(FUZZTIME) ./internal/engine/
+
+# bench runs the published performance benchmark suite — scan time, memory,
+# and peak goroutine count as a function of endpoint count. Numbers in
+# README.md "Performance" come from this target on an Apple M1 (8 cores).
+# Override BENCHTIME for a longer (more stable) run.
+BENCHTIME ?= 5x
+bench:
+	@echo "→ Running scan benchmarks (BENCHTIME=$(BENCHTIME))..."
+	cd $(GO_DIR) && go test -run '^$$' -bench BenchmarkScan -benchmem \
+		-benchtime $(BENCHTIME) ./internal/engine/
 
 test-python:
 	@echo "→ Running Python tests..."

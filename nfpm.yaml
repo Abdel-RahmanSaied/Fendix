@@ -1,0 +1,76 @@
+# nfpm config — produces .deb (Debian/Ubuntu) and .rpm (RHEL/Fedora) packages.
+#
+# Driven by environment variables so the same config covers both architectures:
+#   PKG_VERSION  — version string without leading "v" (e.g. "0.6.0")
+#   PKG_ARCH     — Go-style arch ("amd64" or "arm64"); nfpm translates to
+#                  x86_64/aarch64 for rpm automatically
+#
+# Build with:
+#   PKG_VERSION=0.6.0 PKG_ARCH=amd64 \
+#     nfpm package --config nfpm.yaml --packager deb --target dist/fendix.deb
+#
+# The release.yml workflow wires this into every linux build of the matrix.
+
+name: fendix
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+version_schema: semver
+section: utils
+priority: optional
+maintainer: Fendix maintainers <noreply@github.com>
+description: |
+  Hybrid API and code security scanner.
+  Combines black-box HTTP probing with white-box static analysis to produce
+  high-confidence security findings with evidence. When both engines agree
+  on a vulnerability, it becomes a correlated finding — fewer false
+  positives, more actionable results.
+vendor: Fendix
+homepage: https://github.com/Abdel-RahmanSaied/Fendix
+license: MIT
+
+contents:
+  # The fendix binary. The release.yml step copies the architecture-specific
+  # binary to ./fendix-binary before invoking nfpm so this path is constant.
+  - src: ./fendix-binary
+    dst: /usr/bin/fendix
+    file_info:
+      mode: 0755
+
+  # License + docs. Debian and RPM put licenses in different canonical
+  # locations, so mark them per-packager.
+  - src: ./LICENSE
+    dst: /usr/share/doc/fendix/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/licenses/fendix/LICENSE
+    packager: rpm
+    file_info:
+      mode: 0644
+
+  - src: ./README.md
+    dst: /usr/share/doc/fendix/README.md
+    file_info:
+      mode: 0644
+  - src: ./CHANGELOG.md
+    dst: /usr/share/doc/fendix/CHANGELOG.md
+    file_info:
+      mode: 0644
+
+# Per-packager dependency overrides. python3 is required (white-box engine
+# is embedded but runs under the system Python). semgrep is recommended for
+# deeper static-analysis coverage but optional — the AST analyzer + secrets
+# scanner work without it.
+overrides:
+  deb:
+    depends:
+      - python3
+    recommends:
+      - semgrep
+  rpm:
+    depends:
+      - python3
+    recommends:
+      - semgrep

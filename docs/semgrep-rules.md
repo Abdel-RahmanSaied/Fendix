@@ -1,0 +1,289 @@
+# Semgrep Rule Guide
+
+Fendix's white-box engine bundles a small set of Semgrep rules and runs any
+additional rules you place in `python/rules/`. This guide explains the
+metadata Fendix expects, how rules are mapped into the Finding model, and
+the conventions to follow when writing project-specific rules.
+
+For an introduction to Semgrep itself, see the upstream
+[Semgrep docs](https://semgrep.dev/docs/).
+
+---
+
+## How Fendix runs Semgrep
+
+The Semgrep runner lives at
+[`python/analyzers/semgrep_runner.py`](../python/analyzers/semgrep_runner.py).
+At scan time it:
+
+1. Calls `shutil.which("semgrep")`. If Semgrep isn't on `$PATH`, the runner
+   logs a warning and emits zero findings — the rest of the white-box scan
+   continues.
+2. Invokes `semgrep --config <rules_dir> --json --quiet <code_path>` with
+   a 120-second timeout.
+3. Parses the JSON output and maps each result to a Fendix `Finding` via
+   the helpers `_semgrep_severity`, `_semgrep_confidence`,
+   `_semgrep_category`, `_semgrep_cwe`.
+
+`<rules_dir>` is `python/rules/` by default; every `.yaml` file in that
+directory is loaded.
+
+> **Install Semgrep for full coverage.** Without it, only the
+> [AST analyzer](./checks/ast-analyzer.md) and
+> [secrets scanner](./checks/secrets.md) run on the white-box side.
+> Install with `pip install semgrep`.
+
+---
+
+## Rule shape
+
+Every rule is a YAML object inside the top-level `rules:` array of a file
+in `python/rules/`. Below is the canonical shape Fendix expects:
+
+```yaml
+rules:
+  - id: my-organisation-flask-no-csrf
+    patterns:
+      - pattern: |
+          @$APP.route(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @csrf_protect
+          def $FUNC(...):
+              ...
+    message: >
+      Flask route '$FUNC' is missing CSRF protection.
+      Wrap it with @csrf_protect or use Flask-WTF's CSRFProtect.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: auth
+      cwe: CWE-352
+      confidence: HIGH
+      fendix_severity: HIGH
+```
+
+The mandatory keys are the standard Semgrep ones: `id`, `patterns` (or
+`pattern`), `message`, `languages`, `severity`. The `metadata` block is
+where Fendix-specific information lives.
+
+### `metadata` keys Fendix reads
+
+| Key | Type | Required | Used to populate |
+|---|---|---|---|
+| `category` | string | recommended | `Finding.category` (taxonomy bucket — see below). Defaults to `whitebox` when unset. |
+| `cwe` | string or list | recommended | `Finding.references` (e.g. `"CWE-89"`). Multiple CWEs may be passed as a list. |
+| `confidence` | string enum | recommended | `Finding.confidence` (`HIGH` / `MEDIUM` / `LOW`). Defaults to `MEDIUM`. |
+| `fendix_severity` | string enum | recommended | `Finding.severity` (`CRITICAL` / `HIGH` / `MEDIUM` / `LOW` / `INFO`). When unset, Fendix falls back to mapping Semgrep's own `severity` (`ERROR`→`HIGH`, `WARNING`→`MEDIUM`, `INFO`→`LOW`). |
+
+### Why `fendix_severity` exists separately from `severity`
+
+Semgrep's `severity` (`ERROR`/`WARNING`/`INFO`) describes how the rule
+behaves in Semgrep's own UI — it's primarily a CI-failure signal. Fendix's
+severity scale has five buckets and is tied to a numeric scoring formula
+(see [`docs/adr/ADR-003-severity-scoring.md`](./adr/ADR-003-severity-scoring.md)).
+The two scales don't map cleanly. `fendix_severity` lets a rule say "I'm
+a Semgrep `ERROR` for CI gating, but in Fendix's vocabulary I'm a
+`CRITICAL`" — JWT bypass is the canonical example.
+
+---
+
+## Categories
+
+Pick the closest category from this list. Mapping to a known category
+ensures the finding is grouped correctly in the report and counted in the
+right summary bucket.
+
+| Category | Use for |
+|----------|---------|
+| `auth_bypass` | Missing or bypassable authentication, `verify=False` JWT, `alg:none`. |
+| `injection` | SQL, command, LDAP, XPath injection patterns. |
+| `secrets` | Hardcoded credentials, API keys, certificates, weak crypto for password storage. |
+| `idor` | Direct object references that don't enforce ownership. |
+| `data_exposure` | Sensitive data in responses, logs, error messages. |
+| `cors` | Permissive `Access-Control-Allow-Origin`, credential leakage. |
+| `headers` | Missing or weak security headers. |
+| `info_disclosure` | Stack traces, version banners, internal paths. |
+| `auth` | Auth-related findings that aren't full bypasses (missing decorator, weak session config). |
+
+Unrecognised categories pass through unchanged but won't be counted in the
+sources/severity summary correctly.
+
+---
+
+## Severity guidance
+
+Use `fendix_severity` consistently with the project's scoring model:
+
+- **`CRITICAL`** — directly exploitable on its own. Hardcoded production
+  credential. JWT signature verification disabled. SQL injection in a
+  string-format query. Reserve for "fix this before lunch."
+- **`HIGH`** — exploitable with a precondition or access. SSRF on a
+  non-public endpoint. Missing auth on a sensitive route.
+- **`MEDIUM`** — defence-in-depth violation, or a heuristic with real
+  false-positive risk. Open-redirect candidates. Permissive CORS without
+  credentials. Pattern-only matches that need eyeballs.
+- **`LOW`** — informational with mild impact. Non-secret hardcoded
+  identifier. Out-of-date dependency without a known CVE.
+- **`INFO`** — diagnostic only. Reserve for rules you want in the report
+  but never want a `--fail-on` to fire on.
+
+Fendix enforces a consistency rule: a finding with `confidence: LOW`
+cannot have `severity` higher than `MEDIUM`. The orchestrator will
+downgrade and warn. Tune `confidence` to match the rule's true precision —
+don't over-claim `HIGH` for pattern matches that have known false positives.
+
+---
+
+## Worked examples
+
+### Auth — JWT decoded without signature verification
+
+Source: [`python/rules/auth.yaml`](../python/rules/auth.yaml)
+
+```yaml
+- id: python-jwt-decode-no-verification
+  patterns:
+    - pattern: jwt.decode($TOKEN, options={"verify_signature": False, ...}, ...)
+    - pattern: jwt.decode($TOKEN, algorithms=["none"], ...)
+  message: >
+    JWT decoded with signature verification disabled.
+    This allows an attacker to forge tokens.
+    Remove options={"verify_signature": False} and specify a strong algorithm.
+  languages: [python]
+  severity: ERROR
+  metadata:
+    category: auth
+    cwe: CWE-347
+    confidence: HIGH
+    fendix_severity: CRITICAL
+```
+
+Why it's CRITICAL: a rule that triggers means an attacker can forge any
+token. There's no second precondition.
+
+### Injection — SQL via string formatting
+
+Source: [`python/rules/injection.yaml`](../python/rules/injection.yaml)
+
+```yaml
+- id: python-sql-injection-string-format
+  patterns:
+    - pattern: |
+        $CURSOR.execute("..." % ...)
+    - pattern: |
+        $CURSOR.execute("..." + ...)
+    - pattern: |
+        $CURSOR.execute(f"...{$VAR}...")
+  message: >
+    SQL query built via string formatting — SQL injection risk.
+    Use parameterized queries: cursor.execute("SELECT ... WHERE x = %s", (value,))
+  languages: [python]
+  severity: ERROR
+  metadata:
+    category: injection
+    cwe: CWE-89
+    confidence: HIGH
+    fendix_severity: CRITICAL
+```
+
+### Secrets — hardcoded password / key assignment
+
+Source: [`python/rules/secrets.yaml`](../python/rules/secrets.yaml)
+
+```yaml
+- id: python-hardcoded-secret-assignment
+  patterns:
+    - pattern: $KEY = "$VALUE"
+    - metavariable-regex:
+        metavariable: $KEY
+        regex: (?i)(password|passwd|pwd|secret|api_key|apikey|auth_token|access_token|client_secret|private_key)
+    - metavariable-regex:
+        metavariable: $VALUE
+        regex: .{6,}
+  pattern-not: $KEY = ""
+  message: >
+    Hardcoded secret found in assignment to '$KEY'.
+    Move secrets to environment variables or a secrets manager.
+    Rotate the exposed credential immediately.
+  languages: [python]
+  severity: ERROR
+  metadata:
+    category: secrets
+    cwe: CWE-798
+    confidence: HIGH
+    fendix_severity: CRITICAL
+```
+
+`pattern-not: $KEY = ""` excludes the empty-string idiom that often
+appears in placeholder code. Use `pattern-not` aggressively — false
+positives erode trust faster than missed findings.
+
+---
+
+## Writing your own rule
+
+1. **Find the smallest pattern that matches your concern.** A two-line
+   pattern is easier to maintain than a 20-line one.
+2. **Add `pattern-not` for known-good idioms.** Skim a real codebase for
+   the patterns you'd never want to flag, then add a `pattern-not` for
+   each.
+3. **Pick `confidence` honestly.** If your rule's pattern matches more
+   than the actual issue, downgrade to `MEDIUM` or `LOW`.
+4. **Test with a fixture.** Add a Python file to
+   [`python/tests/fixtures/`](../python/tests/fixtures/) with one
+   true-positive and at least one true-negative case. Add a test to
+   `python/tests/test_semgrep_runner.py` that runs Semgrep against the
+   fixture and asserts the rule fires (and doesn't, on the negative case).
+5. **Run the suite locally.**
+
+   ```bash
+   make test          # full suite
+   pytest python/tests/test_semgrep_runner.py -v   # just Semgrep
+   ```
+
+6. **Verify the rule resolves cleanly.** Semgrep itself will warn on
+   pattern syntax errors:
+
+   ```bash
+   semgrep --config python/rules/ --validate
+   ```
+
+### Project-local rule files
+
+The Fendix engine runs Semgrep against the rules directory bundled inside
+the binary. To use project-specific rules today, layer them in by either
+(a) running Semgrep directly alongside Fendix and folding the JSON results
+into your CI report, or (b) building Fendix from source with your rule
+files added to `python/rules/`.
+
+A `--semgrep-rules` flag for layering external rule directories at scan
+time is on the backlog — track progress in the GitHub issue tracker.
+
+---
+
+## Mapping reference (cheat sheet)
+
+| Semgrep result | → | Fendix Finding field |
+|---|---|---|
+| `metadata.category` | → | `category` |
+| `metadata.cwe` | → | `references[]` |
+| `metadata.confidence` | → | `confidence` |
+| `metadata.fendix_severity` | → | `severity` |
+| `extra.severity` (fallback) | → | `severity` (mapped: ERROR→HIGH, WARNING→MEDIUM, INFO→LOW) |
+| `check_id` | → | `title` |
+| `extra.message` | → | `evidence` (truncated to 200 chars) |
+| `path` + `start.line` | → | `endpoint`, `line` ("path:line") |
+
+See [`python/analyzers/semgrep_runner.py`](../python/analyzers/semgrep_runner.py)
+for the implementation.
+
+---
+
+## Further reading
+
+- [Semgrep pattern syntax](https://semgrep.dev/docs/writing-rules/pattern-syntax)
+- [Semgrep metavariables](https://semgrep.dev/docs/writing-rules/pattern-syntax#metavariables)
+- [Fendix scoring model — ADR-003](./adr/ADR-003-severity-scoring.md)
+- [Fendix Semgrep check overview](./checks/semgrep.md)

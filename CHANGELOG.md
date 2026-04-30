@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Linux `.deb` and `.rpm` packages** (TASK-100). Each release now ships
+  Debian and RPM packages alongside the bare binaries: `fendix-vX.Y.Z-linux-amd64.deb`,
+  `fendix-vX.Y.Z-linux-arm64.deb`, `fendix-vX.Y.Z-linux-amd64.rpm`,
+  `fendix-vX.Y.Z-linux-arm64.rpm`, each with a matching `.sha256` sidecar
+  (and `.sig` + `.crt` once `COSIGN_ENABLED=true` rolls out). Built with
+  [nfpm](https://github.com/goreleaser/nfpm) from a single repo-root
+  [`nfpm.yaml`](nfpm.yaml) covering both packagers. Dependencies declared
+  on `python3` (required) and `semgrep` (recommended). Files install to
+  `/usr/bin/fendix` plus docs under `/usr/share/doc/fendix/`. Install via
+  `sudo dpkg -i fendix-*.deb && sudo apt-get install -f` on Debian/Ubuntu
+  or `sudo dnf install ./fendix-*.rpm` on RHEL/Fedora — see new
+  [`docs/install.md`](docs/install.md) for the canonical reference.
+- **`docs/install.md` install reference** (TASK-100). Single-page guide
+  covering every install path (Homebrew, install.sh, .deb, .rpm, Docker,
+  manual binary, source), cosign verification one-liners for each asset
+  type, the `get.fendix.dev` rollout status (operator-action: domain
+  registration + GitHub Pages CNAME), and a troubleshooting section for
+  the common install failures. Linked from the README's Documentation
+  index. README install section gained `.deb` / `.rpm` quick-start
+  blocks alongside the existing Homebrew and Docker entries.
+- **Documentation pass for external evaluators** (TASK-101). Four new
+  reference docs under `docs/`: [`walkthrough-juice-shop.md`](docs/walkthrough-juice-shop.md)
+  takes a first-time user from `docker run` to opened HTML report in
+  under 5 minutes against OWASP Juice Shop;
+  [`semgrep-rules.md`](docs/semgrep-rules.md) is the rule-author guide
+  covering Fendix's metadata expectations (`fendix_severity`, `category`,
+  `confidence`), the Semgrep-result-to-Finding mapping, and worked
+  examples for each bundled rule;
+  [`triage-workflow.md`](docs/triage-workflow.md) is the operator guide
+  for going from a fresh report to closed work items, covering the
+  triage funnel, baseline diffs, suppression model + anti-patterns, and
+  `jq` recipes for the JSON output. Plus a top-level "Documentation"
+  index in [README.md](README.md) linking the walkthrough, CI integration
+  page, triage workflow, JSON schema reference, Semgrep guide, per-check
+  reference, ADRs, and security policy. Closes the docs-pass exit
+  criterion for Phase 13.
+- **Performance benchmark suite + published numbers** (TASK-104). Three new
+  benchmarks in `go/internal/engine/scan_benchmark_test.go` measure
+  end-to-end scan cost as a function of endpoint count: `BenchmarkScan_Throughput`
+  (wall time + B/op + allocs/op), `BenchmarkScan_Goroutines` (peak goroutine
+  count via a 2 ms ticker probe + atomic CAS), `BenchmarkScan_Memory` (allocation
+  profile at scale). Each runs at sizes 10/100/500/1000 endpoints × 3 checks
+  per endpoint × 32 workers against a local `httptest` server with a
+  pool-friendly transport (`MaxIdleConnsPerHost: 64`) and silenced slog. New
+  `make bench` Makefile target with `BENCHTIME ?= 5x` override. Reference
+  numbers published in [README.md "Performance"](README.md#performance):
+  Apple M1, Go 1.21 — 1000 endpoints in 31.7 ms / 24.7 MB / 166 peak goroutines.
+- **`SECURITY.md` + active-scanner threat model** (TASK-103). New
+  top-level [`SECURITY.md`](SECURITY.md) documents the vulnerability
+  reporting channels (private GitHub Security Advisory + email),
+  supported-versions policy, scope/out-of-scope for security reports,
+  artifact-verification instructions (`cosign verify-blob` for binaries,
+  `cosign verify` for the Docker image), disclosure timeline (72h ack,
+  7d triage, 14d publication target), and an explicit policy for
+  active-scanner misuse reports. New companion [`docs/threat-model.md`](docs/threat-model.md)
+  is the reference for the active scanner's safety envelope: 7 threats
+  (T1 destructive payload, T2 DoS, T3 auth/credential leakage, T4 safe-payload
+  side effects, T5 cross-target contamination, T6 supply-chain compromise,
+  T7 report XSS) each documented with scenario, Fendix-side mitigations,
+  and operator-side residual risk; the explicit 5-property safety envelope
+  any active probe must maintain (no write verbs without opt-in, no
+  state-mutating payloads, no out-of-band callbacks, no cross-host
+  crawl, all probes auditable); and an operator-responsibilities section
+  delineating what Fendix owns vs. what the human running it owns.
+- **Linux arm64 release binary** (TASK-099, partial). The release matrix now
+  builds `fendix-vX.Y.Z-linux-arm64` alongside the existing
+  `linux-amd64`/`darwin-amd64`/`darwin-arm64` artifacts. The Homebrew tap
+  formula's `on_linux` block now branches on `Hardware::CPU.arm?` to download
+  the arm64 build automatically; `scripts/install.sh` has matched arm64
+  detection since v0.4.x. arm64 server users (Graviton, Ampere, Raspberry Pi
+  4/5, ARM Linux laptops) can now `brew install fendix` or use
+  `curl -fsSL …/install.sh | sh` and get a native binary.
+- **Multi-arch Docker images** (TASK-099, partial). The Docker image at
+  `ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z` is now a multi-arch manifest
+  list covering both `linux/amd64` and `linux/arm64`. `docker pull` picks the
+  right arch automatically per host. QEMU is wired into the release workflow
+  so cross-arch builds run on the standard `ubuntu-latest` runner.
+- **Cosign keyless signing — opt-in via repo variable** (TASK-099, partial).
+  Both release binaries and the Docker image can be signed with cosign in
+  keyless mode (Sigstore Fulcio + GitHub Actions OIDC — no static keys, no
+  secrets to manage). Disabled by default; enable by setting the repo
+  variable `COSIGN_ENABLED=true` (Settings → Secrets and variables →
+  Actions → Variables tab). When enabled, every binary ships with `.sig` +
+  `.crt` sidecar files; verify with:
+
+  ```sh
+  cosign verify-blob \
+    --certificate fendix-vX.Y.Z-linux-amd64.crt \
+    --signature   fendix-vX.Y.Z-linux-amd64.sig \
+    --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    fendix-vX.Y.Z-linux-amd64
+  ```
+
+  Docker image verification:
+
+  ```sh
+  cosign verify ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z \
+    --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+  ```
+
 ## [0.5.0] - 2026-04-30
 
 Phase 12 — Quality & Ops. Polish that turns a working scanner into one

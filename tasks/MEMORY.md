@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 12 — P2 Quality & Ops (v0.5) — ✅ Complete (7/7 tasks done: TASK-092..098). Phases 0-11 complete (v0.4.0 shipped 2026-04-29). v0.5.0 ready to cut.
-**Overall progress:** Phases 0-11 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.2 released; v0.5.0 (Phase 12) in progress.
+**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (0/6 tasks). Phases 0-12 complete; v0.5.0 shipped 2026-04-29.
+**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0 released; v1.0.0 (Phase 13) in progress.
 **Last updated:** 2026-04-30
 
 ### Completed tasks
@@ -437,16 +437,23 @@ packaging>=23.0               — Dependency version comparison
 
 ### Pending tasks (Phase 12 — P2 Quality & Ops, v0.5)
 
-*(none — Phase 12 complete; v0.5.0 ready to cut)*
+*(none — Phase 12 complete; v0.5.0 shipped 2026-04-29)*
+
+### Phase 12 release — ✅ shipped 2026-04-29 (v0.5.0)
+
+- [x] CHANGELOG `[Unreleased]` rolled to `[0.5.0] - 2026-04-30` with release-summary preamble
+- [x] All 7 Phase 12 tasks (TASK-092..098) included; commit `9943622 feat: v0.5.0 — Phase 12 quality & ops (TASK-093..098)` + earlier `b53296a feat: TASK-092 — output schema cleanup (Phase 12 #1)` on `origin/main`
+- [x] Build state at ship: `make build` ✓, `make test` (Go race-clean across 7 packages, Python 193/193) ✓, `make e2e` 16/16 ✓
+- [x] Annotated tag `v0.5.0` (object `5f98fdc`, commit `9943622`) pushed to `origin` — `release.yml` ran 2026-04-29T23:31:44Z, published darwin/amd64, darwin/arm64, linux/amd64 binaries + sha256s on the GitHub Release page
 
 ### Pending tasks (Phase 13 — P3 External Release, v1.0)
 
-- TASK-099: Reproducible release pipeline — linux/arm64, cosign signing, Homebrew auto-update, signed Docker
-- TASK-100: Distribution artifacts — `.deb` + `.rpm` via nfpm, `get.fendix.dev` one-line installer
-- TASK-101: Documentation pass — 5-min juice-shop walkthrough, CI integration page, Semgrep rule guide, triage workflow, JSON schema ref
+- TASK-099: Reproducible release pipeline — linux/arm64 ✅ shipped 2026-04-30 (partial); cosign signing wired but COSIGN_ENABLED toggle pending first signed release validation
+- TASK-100: Distribution artifacts — `.deb` + `.rpm` via nfpm ✅ shipped 2026-04-30 (smoke-tested locally); `get.fendix.dev` one-line installer documented and waiting on operator DNS action
+- ~~TASK-101: Documentation pass~~ ✅ shipped 2026-04-30 — `docs/walkthrough-juice-shop.md`, `docs/semgrep-rules.md`, `docs/triage-workflow.md` new; `docs/schema.md` + `docs/ci-cd-integration.md` audited and cross-linked; new "Documentation" index in README
 - TASK-102: `--debug` bundle — redacted config + OS + Python version + probe audit + slog-debug into a tarball
-- TASK-103: SECURITY.md + active-scanner threat model + signed commits/releases
-- TASK-104: Performance benchmark suite — scan time vs endpoint count, memory peak, goroutine count, published in README
+- TASK-103: SECURITY.md ✅ shipped 2026-04-30; signed commits/releases pending COSIGN_ENABLED rollout
+- ~~TASK-104: Performance benchmark suite~~ ✅ shipped 2026-04-30 — scan time vs endpoint count, memory peak, goroutine count, published in README
 
 ### Blocked
 
@@ -455,6 +462,186 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-04-30 (TASK-100 — Distribution artifacts: .deb + .rpm via nfpm + get.fendix.dev rollout plan)
+**Session goal:** Per the prior session's pointer, ship TASK-100. Two workstreams: (a) wire nfpm into the release pipeline so each `v*` tag produces `.deb` + `.rpm` packages alongside the bare binaries; (b) document the `get.fendix.dev` rollout as a clear operator action (domain registration + GitHub Pages CNAME — not a code change).
+
+**Accomplished:**
+
+- **`nfpm.yaml` (NEW)** at repo root. Single config covers both packagers via env vars (`PKG_VERSION`, `PKG_ARCH`). nfpm internally translates `arch: amd64`/`arm64` to the rpm-side `x86_64`/`aarch64` for rpm metadata while keeping the canonical Go names in filenames. Contents: `/usr/bin/fendix` (mode 0755), license (per-packager paths — `/usr/share/doc/fendix/copyright` for deb, `/usr/share/licenses/fendix/LICENSE` for rpm), README + CHANGELOG under `/usr/share/doc/fendix/`. `overrides` block declares `python3` as required dependency and `semgrep` as recommended on both deb and rpm.
+
+- **`.github/workflows/release.yml` wired**: 3 new steps in the per-arch release job, gated on `matrix.goos == 'linux'` so darwin runs don't try to build packages. (i) `Install nfpm` via `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.40.0` — pinned version, installed straight from the toolchain that's already set up; (ii) `Build .deb and .rpm packages` — copies the just-built linux binary to `./fendix-binary` (the fixed source path nfpm.yaml references), exports `PKG_VERSION` (without leading "v") + `PKG_ARCH`, runs nfpm twice (one packager each), writes packages as `dist/fendix-${VERSION}-linux-${ARCH}.{deb,rpm}` so they match the existing mirror upload glob `dist/fendix-${VERSION}-*`, generates `.sha256` sidecars; (iii) `Sign .deb and .rpm (cosign keyless)` — same pattern as the existing binary-signing step, gated on both `vars.COSIGN_ENABLED == 'true'` AND `matrix.goos == 'linux'`. Release-job step count: 8 → 10. Mirror job needed zero changes — its existing `dist/fendix-${VERSION}-*` upload glob already matches `.deb` / `.rpm` / `.sha256` / `.sig` / `.crt` filenames.
+
+- **`docs/install.md` (NEW)** — single-page canonical install reference with: (a) "Choose a path" decision table mapping use-cases to install methods; (b) per-method recipes (Homebrew, install.sh, .deb, .rpm, Docker, manual binary, source); (c) cosign verification one-liners for each asset type (binaries, .deb, .rpm, Docker image), including the rpm-arch-naming caveat (filename uses `amd64`/`arm64` while rpm metadata reports `x86_64`/`aarch64` — `dnf` matches on metadata so it Just Works); (d) `get.fendix.dev` rollout status section — explicitly documents that the short-URL is gated on three operator actions (domain registration, GitHub Pages enablement on the homebrew-fendix mirror, DNS CNAME + repo `CNAME` file) and none of them require code changes; (e) troubleshooting section for the four most likely first-install failures (PATH, proxy, missing python3, cosign signature mismatch).
+
+- **README.md install section enhanced**: new "Debian / Ubuntu (.deb)" and "RHEL / Fedora / CentOS (.rpm)" subsections sit between curl and Docker, each with a 3–4-line copy-paste install recipe. Existing "A short-URL installer at https://get.fendix.dev is planned for v1.0" sentence updated to point at the new docs/install.md rollout-status section. New "Documentation" index gained a top-level link to docs/install.md before the walkthrough.
+
+- **CHANGELOG.md `[Unreleased]`**: 2 new `### Added` entries at the top (one for the .deb/.rpm packaging + cosign integration, one for the new docs/install.md page + README install enhancements) above the existing TASK-101 entry. Ready to roll into v0.6.0 / v1.0.0.
+
+- **Local smoke-test of nfpm.yaml**: installed nfpm v2.40.0 via `go install`, ran `nfpm package --packager deb` + `--packager rpm` against a fake binary in the engine repo, verified both packages built (`/tmp/fendix-test.deb` 25.8 KB; `/tmp/fendix-test.rpm` 27.5 KB). `dpkg-deb --extract control` confirmed the deb metadata: `Package: fendix`, `Architecture: amd64`, `Depends: python3`, `Recommends: semgrep`, full multi-line description. nfpm version-normalises `0.6.0-test` → `0.6.0~test` per Debian version-spec rules (irrelevant for real semver tags `v0.6.0`). RPM inspection deferred — `rpm` command isn't on macOS by default, but the deb structural smoke test catches the same class of nfpm-yaml-malformed bugs.
+
+- **YAML parse smoke-tests**: `release.yml` parses cleanly via PyYAML (10 steps in release job, 4 jobs total: release + publish + docker + mirror); `nfpm.yaml` parses cleanly (5 contents entries, name=fendix, arch=`${PKG_ARCH}` template).
+
+**Files modified this session:**
+
+- `nfpm.yaml` (NEW)
+- `.github/workflows/release.yml` (3 new steps in release job: Install nfpm, Build .deb and .rpm packages, Sign .deb and .rpm)
+- `docs/install.md` (NEW)
+- `README.md` (new .deb + .rpm install subsections; updated get.fendix.dev sentence; new docs/install.md link in Documentation index)
+- `CHANGELOG.md` (2 new `### Added` entries at top of `[Unreleased]`)
+- `tasks/CURRENT_SPRINT.md` (TASK-100 row → 🔄 with notes)
+- `tasks/PHASES.md` (Phase 13 .deb/.rpm exit-criterion ticked)
+- `tasks/MEMORY.md` (this entry; pending-tasks list updated)
+
+**Build state at session end:**
+
+- `make build` ✓ (Go 7 packages compile clean)
+- `make test` ✓ (Go race-clean across 7 packages, Python 193/193)
+- nfpm smoke test ✓ (.deb + .rpm both build; deb metadata verified)
+- YAML parse ✓ (release.yml + nfpm.yaml)
+- No new e2e tests needed — release pipeline / docs / packaging only; no source code paths touched.
+
+**Decisions made:**
+
+- **nfpm pinned to v2.40.0**, not `@latest`. Pin matches the cosign-installer pinning convention earlier in the workflow (`v2.4.1`). Workflow stability beats automatic version bumps; revisit at v1.0.
+- **Single `nfpm.yaml`, env-var driven**, not separate per-arch configs. nfpm's `${PKG_ARCH}` substitution in `arch:` field is well-supported; one config × two `nfpm package` invocations × two architectures is cleaner than four config files. Keeps the dependency overrides + content lists in one place.
+- **Package filename uses Go-style arch (`amd64`/`arm64`), not deb-style/rpm-style canonical names.** Two reasons: (a) it matches the existing binary filename convention so the mirror upload glob `dist/fendix-${VERSION}-*` works unchanged; (b) it makes the asset list on the GitHub release page predictable for users — every linux artifact reads `linux-amd64.{deb,rpm,sha256}`. nfpm's metadata-side translation handles the `dnf install` case correctly.
+- **`get.fendix.dev` rollout deferred to operator action, not stubbed in CI.** Three reasons: (a) DNS + domain registration aren't reproducible from a workflow file; (b) GitHub Pages on the homebrew-fendix mirror is one click + a CNAME file commit, not a code change; (c) the existing `install.sh` URL on raw.githubusercontent.com works perfectly today — the short URL is a UX improvement, not a feature. Documenting the three steps in `docs/install.md` lets the user execute the rollout at their pace without code drift.
+- **`.deb` package recommends `semgrep`, doesn't require it.** Fendix's white-box engine runs the AST analyzer + secrets scanner without semgrep; semgrep is a coverage upgrade, not a hard requirement. `Recommends:` (deb) / `Recommends:` (rpm) lets `apt-get install fendix` pull it by default while `--no-install-recommends` skips it for minimal installs. A hard `Depends:` would have made offline / air-gapped installs harder.
+- **Skipped writing a `.deb`-install e2e test.** The smoke test (run `nfpm package`, inspect metadata) is the right gate for nfpm.yaml correctness; an end-to-end test would need a Linux container in CI, install via `dpkg`, run `fendix version` — disproportionate effort for a release-pipeline change. The first signed release will be the validation point; if it fails, fixing forward is straightforward.
+- **README install section: `.deb` and `.rpm` go before Docker, not after.** Most evaluators reading top-to-bottom will pick the first install path that matches their environment. Linux ops shops shouldn't have to scroll past Docker to find the apt/dnf path.
+
+**Open questions / followups:**
+
+- **First-release validation**: nfpm pipeline is wired but unfired. The next `v*` tag will produce the first .deb + .rpm. If anything's wrong with the per-arch matrix wiring, that release page will tell. Worth tagging a `v0.5.1` no-op release (or a release-candidate `v0.6.0-rc1`) before committing to v1.0.
+- **`get.fendix.dev` rollout**: still requires the three operator actions documented in `docs/install.md`. Once domain + Pages + CNAME are live, README + docs/install.md swap the install URL to `https://get.fendix.dev` in a single PR.
+- **TASK-102 (`--debug` bundle)**: only Phase 13 task remaining. Likely shape: new `--debug-bundle <path>` flag that tars together (a) redacted scan config (auth values masked), (b) OS + Python + Go versions, (c) probe audit log when `--enable-active` was set, (d) buffered slog-debug stream, (e) findings.json. Suggested implementation in `internal/diagnostic/bundle.go` with a `WriteBundle(path, ScanConfig, ...)` API; orchestrator captures the data into a struct as it runs and only serialises if the flag is set. Separate session.
+- **CHANGELOG release tag**: `[Unreleased]` now has 5 batched `### Added` entries (TASK-099 partial + TASK-100 packaging + TASK-100 docs + TASK-101 + TASK-103 + TASK-104). The package + cosign rollout is enough for a v0.6.0 cut even without TASK-102 if the user wants to validate the new release pipeline before adding more surface.
+
+**Next session should start with:**
+
+- **TASK-102 — `--debug` bundle**: the only Phase 13 task with no shipped work. Per `tasks/PHASES.md`: redacted config + OS + Python version + probe audit + slog-debug rolled into a tarball. Likely shape (per the open-questions above): new `internal/diagnostic/` package with `BundleWriter` that streams to a `tar.gz`, new `--debug-bundle <path>` CLI flag, orchestrator captures the inputs as it runs, redactor strips `cfg.Auth.Value` + any `[REDACTED]`-eligible patterns + secret-shaped strings before writing. Pure additive — no breaking changes; e2e regression that asserts (a) the tarball exists, (b) it contains the expected entries, (c) the auth value never appears in cleartext anywhere inside it. After TASK-102 lands, only TASK-099 + TASK-100 + TASK-103's COSIGN_ENABLED rollout is left for v1.0.0; everything else is shipped.
+
+---
+
+## Earlier Session (2026-04-30 — TASK-101 — Documentation pass for Phase 13)
+
+**Session goal:** Per the prior session's "Open questions" pointer, ship TASK-101 (Phase 13 docs pass). Highest-impact item for external evaluators is the 5-min juice-shop walkthrough; other deliverables are the Semgrep rule guide, triage workflow, and confirming the JSON schema ref + CI integration page are current and cross-linked. Pure docs work — no Go or Python source touched.
+
+**Accomplished:**
+
+- **`docs/walkthrough-juice-shop.md` (NEW)**: hands-on 5-minute walkthrough that takes a first-time user from `docker run bkimminich/juice-shop` to opened HTML report. Six numbered steps: (1) stand up Juice Shop on port 3000, (2) shallow-clone the source, (3) hybrid scan with `--url` + `--code` + `--crawl-depth 2 --max-requests 1000 --max-duration 3m` (concrete flag table explaining each), (4) open the HTML report (lists representative findings by severity tier), (5) interpret the output (90-second triage walkthrough — sort by severity, prefer correlated source, note dedup-collapsed findings), (6) tear down. Plus baseline-saving callout + "Where to next" links to CI integration / triage / Semgrep / schema docs + troubleshooting section (3 common issues with concrete fixes). Designed for evaluators who want to verify Fendix actually finds something real before reading further.
+
+- **`docs/semgrep-rules.md` (NEW)**: rule-author guide. Covers (a) how Fendix runs Semgrep — `shutil.which` lookup, 120s timeout, graceful-degradation when not installed, file paths into `python/analyzers/semgrep_runner.py`; (b) the canonical rule shape with the four `metadata` keys Fendix reads (`category`, `cwe`, `confidence`, `fendix_severity`) — explains *why* `fendix_severity` exists separately from Semgrep's own `severity` (different scoring scales); (c) category taxonomy (8 categories with examples); (d) severity guidance tied to the scoring formula plus the consistency rule (`LOW` confidence caps at `MEDIUM` severity); (e) three worked examples lifted from the existing rule files (jwt-decode-no-verification, sql-injection-string-format, hardcoded-secret-assignment) with paragraphs explaining the design choices in each; (f) 6-step "writing your own rule" recipe with test-fixture conventions; (g) project-local rule files note (deferred to a future flag, NOT claimed as available — verified via grep of `main.go` that `--semgrep-rules` doesn't exist); (h) Semgrep-result→Finding mapping cheat sheet table.
+
+- **`docs/triage-workflow.md` (NEW)**: operator guide for going from a fresh report to closed work items. Sections: (a) the triage funnel (6-line ASCII order — critical+correlated first, info last); (b) per-finding decision tree (4 questions, in order); (c) reducing report volume (set baseline + dedup-aware reading + suppress test fixtures); (d) suppression model — five YAML examples covering id/endpoint/category/glob/until, "when not to suppress" anti-patterns, quarterly suppression review; (e) `jq` recipes for the JSON output (4 useful one-liners — filter by severity, group by category, correlated-only, IDs to bulk-suppress); (f) closing-the-loop checklist + two anti-patterns to avoid. Designed to answer "I have 50 findings, what now?" without forcing the reader to invent a process from scratch.
+
+- **`docs/schema.md` audit**: read in full — already comprehensive and current (covers ScanMetadata + Finding + severity↔confidence consistency rule + `[Unconfirmed by live scan]` semantics + stability guarantees). No edits needed; verified it's now linked from README + CI page + walkthrough + triage doc.
+
+- **`docs/ci-cd-integration.md` polish**: added "See also" footer with cross-links to schema, triage workflow, and the new walkthrough. The "Quick start — copy this workflow" intro from TASK-098 already covers the main use case; this session's edit makes the docs feel like a connected set rather than a disconnected list.
+
+- **README.md "Documentation" index (NEW)**: 8-item bullet list inserted just before "Responsible Use" linking the walkthrough, CI integration, triage workflow, schema reference, Semgrep guide, per-check reference, ADRs, and security/threat-model. This is the single discoverability anchor — every new doc surfaces from this list.
+
+- **CHANGELOG.md `[Unreleased]`**: new top entry (`### Added`) summarising TASK-101's three new docs + index, sitting above TASK-104's existing entry. Ready to roll into the next minor.
+
+**Files modified this session:**
+
+- `docs/walkthrough-juice-shop.md` (NEW)
+- `docs/semgrep-rules.md` (NEW)
+- `docs/triage-workflow.md` (NEW)
+- `docs/ci-cd-integration.md` (added "See also" footer + suppression cross-link)
+- `README.md` (new "Documentation" section before Responsible Use)
+- `CHANGELOG.md` (new TASK-101 entry at top of `[Unreleased]`)
+- `tasks/CURRENT_SPRINT.md` (TASK-101 → ✅; TASK-104 → ✅; TASK-103 split into shipped + COSIGN-pending)
+- `tasks/PHASES.md` (Phase 13 docs exit-criterion ticked)
+- `tasks/MEMORY.md` (this entry; pending-tasks list updated)
+
+**Build state at session end:**
+
+- `make build` ✓ (Go 7 packages compile clean)
+- `make test` ✓ (Go race-clean across 7 packages, Python 193/193)
+- No new e2e tests needed — pure docs work, no source code paths touched.
+
+**Decisions made:**
+
+- **Juice Shop, not DVWA or Mutillidae, for the walkthrough.** Three reasons: (a) Juice Shop is actively maintained (last commit within weeks; DVWA's last release was 2021), (b) it ships as a single docker image with no DB setup, (c) it's the de-facto OWASP demonstration target — evaluators recognise it instantly. The 5-minute promise depends on Juice Shop's `docker run` being a one-liner.
+- **Walkthrough uses HTML output, not JSON.** First-time readers want to see a report, not parse one. The triage doc covers JSON; the walkthrough's "open the report" step is the payoff for the prior 4 minutes of setup.
+- **Triage doc separates "reduce report volume" from "per-finding decision tree".** Volume-reduction tactics (baseline, dedup awareness, test-fixture suppression) are project-level setup; the decision tree is per-finding work. Conflating them encouraged readers to suppress as soon as a finding showed up rather than pause to ask "is this a true positive?".
+- **Semgrep doc explicitly does NOT claim a `--semgrep-rules` flag.** Verified by grep — the flag doesn't exist. Documenting it would set expectations the code doesn't meet. Wrote a "today this needs source rebuild; the flag is on the backlog" paragraph instead.
+- **No new tests.** TASK-101 is pure documentation; no production code paths touched. Verified `make build` + `make test` still green; skipped `make e2e` because none of the e2e fixtures depend on doc files.
+- **Did NOT polish pre-existing markdown-lint warnings on tables/lists.** The IDE flagged compact-pipe table style on existing tables in CI page + PHASES.md + my new docs. Fixing them all would be a 50+-line whitespace diff across files I shouldn't touch in a TASK-101 session. The existing convention (compact pipes) is consistent with `docs/schema.md` which has been in the repo since TASK-092. Moving to spaced pipes would be a separate housekeeping commit.
+
+**Open questions / followups:**
+
+- **TASK-100 (.deb / .rpm via nfpm + get.fendix.dev installer)** is the natural next task. Lower-impact than TASK-101 for evaluators (most users will `brew install` or `go install`), but unblocks `apt-get install fendix` for ops shops. nfpm is straightforward; the DNS + hosted installer is the time sink.
+- **TASK-102 (`--debug` bundle)** still pending. Now well-positioned — TASK-101's docs reference the redacted-bundle pattern from `SECURITY.md`, so the implementation can be straightforward "tar these files, redact these patterns, dump to file".
+- **CHANGELOG release tag**: `[Unreleased]` now contains TASK-099 partial + TASK-103 + TASK-104 + TASK-101 — four bullets. Could ship as v0.6.0 or hold for v1.0.0 with TASK-100/102. Current bias: hold for v1.0.0 since the cosign + nfpm story isn't yet operator-ready (cosign behind opt-in flag, no `.deb`/`.rpm` yet).
+- **`make e2e` not re-run** since no source code paths changed. If a follow-up session edits anything in `go/internal/`, run `make e2e` first to confirm the prior 16/16 hold.
+
+**Next session should start with:**
+
+- **TASK-100 — Distribution artifacts (.deb + .rpm via nfpm + `get.fendix.dev` one-line installer).** Per `tasks/PHASES.md` Phase 13. Two workstreams: (a) wire nfpm into the release pipeline so each release ships `fendix-vX.Y.Z.deb` + `fendix-vX.Y.Z.rpm` alongside the existing tarballs; nfpm config goes in `nfpm.yaml` at repo root, GH Actions step runs `nfpm package --config nfpm.yaml --target dist/`; (b) host an `install.sh` at `get.fendix.dev` (Cloudflare Pages or GitHub Pages on the homebrew-fendix mirror is the cheapest path; DNS + custom domain). The existing `scripts/install.sh` is already correct — `get.fendix.dev` should just `curl` it. Likely shape: new `nfpm.yaml`, new release workflow step, DNS+CNAME setup. After TASK-100, only TASK-102 (`--debug` bundle) remains for v1.0.0; TASK-099 + TASK-103 are gated on the user toggling `COSIGN_ENABLED=true` and verifying.
+
+---
+
+## Earlier Session (2026-04-30 — Phase 13 opened — v0.5.0 housekeeping + TASK-099 partial + TASK-103 + TASK-104)
+
+**Session goal:** Close out v0.5.0 (already shipped 2026-04-29 — fix the stale "Next session" pointer in MEMORY.md), then open Phase 13 with three pure-no-secrets tasks: TASK-099 partial (linux/arm64 + secret-gated stubs), TASK-103 (SECURITY.md + active-scanner threat model), TASK-104 (benchmark suite + README publish).
+
+**Accomplished:**
+
+- **Housekeeping (v0.5.0)**: discovered v0.5.0 commit + tag + GitHub release were all already in place from 2026-04-29 (commit `9943622 feat: v0.5.0 — Phase 12 quality & ops`, annotated tag `v0.5.0` object `5f98fdc`, GitHub Release published 2026-04-29T23:31:44Z with darwin/amd64+arm64, linux/amd64 binaries + sha256s). MEMORY.md "Next session" pointer was stale — updated to reflect Phase 12 closed and Phase 13 in-flight. PHASES.md row 12 → ✅ Complete with ship date; row 13 → 🔄 In Progress. CURRENT_SPRINT.md active phase swapped from 12 → 13 with the full Phase 13 DoD checklist + task table; old Phase 12 detail preserved under "Phase 12 — historical detail".
+
+- **TASK-099 (partial)**: `release.yml` build matrix gained `linux/arm64` (4 entries, was 3). Mirror job's `read_sha` block reads `linux-arm64` checksum; the auto-regenerated Homebrew formula's `on_linux do` block now branches on `Hardware::CPU.arm?` (mirrors the `on_macos` branching). Docker job gained `setup-qemu-action@v3` and the `platforms:` line bumped from `linux/amd64` to `linux/amd64,linux/arm64` — multi-arch manifest list published to `ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z` on next release. **Cosign keyless signing wired but disabled by default**: `id-token: write` permission added at workflow level; both the per-platform binary build step and the Docker job got conditional `cosign-installer@v3` + `cosign sign-blob` / `cosign sign --recursive` steps gated on `vars.COSIGN_ENABLED == 'true'`. Toggle on via repo Settings → Secrets and variables → Actions → Variables tab → set `COSIGN_ENABLED=true`. No static secrets needed — uses Sigstore Fulcio + GitHub Actions OIDC. The two IDE warnings about `Context access might be invalid: COSIGN_ENABLED` are expected (variable is dormant until the user opts in). `scripts/install.sh` already detected `arm64`/`aarch64` so no change needed there. **Homebrew tap auto-update is already in place** (mirror job in v0.4.x); the "no `PLACEHOLDER_*`" exit criterion was met before this session — TASK-099 just adds the linux/arm64 row.
+
+- **TASK-103**: New top-level [`SECURITY.md`](SECURITY.md) covers private vulnerability reporting (GitHub Security Advisory + email), supported-versions policy (0.5.x active, 0.4.x critical-only, <0.4 EOL), in-scope/out-of-scope, artifact verification (cosign verify-blob + cosign verify), 72h ack / 7d triage / 14d publication target, and active-scanner-misuse policy. New companion [`docs/threat-model.md`](docs/threat-model.md) is the active-scanner reference: 7 threats (T1 destructive payload, T2 DoS, T3 auth/credential leakage, T4 safe-payload side effects, T5 cross-target contamination, T6 supply-chain compromise, T7 report XSS) each with scenario + mitigations + residual risk; explicit 5-property safety envelope (no write verbs without opt-in, no state-mutating payloads, no out-of-band callbacks, no cross-host crawl, all probes auditable); operator-responsibilities section. Both link bidirectionally.
+
+- **TASK-104**: Three new benchmarks in `go/internal/engine/scan_benchmark_test.go` — `BenchmarkScan_Throughput` (wall time + allocs), `BenchmarkScan_Goroutines` (peak via 2ms ticker probe + atomic CAS, reported as a `b.ReportMetric("peak-goroutines")` custom metric), `BenchmarkScan_Memory` (allocation profile). Run at sizes 10/100/500/1000 endpoints × 3 checks × 32 workers against an httptest server. Two crucial fixture tweaks: `quietSlog(b)` raises slog level to Error (Info-per-iteration was skewing both timing and stderr noise); custom `http.Transport` with `MaxIdleConnsPerHost: 64` (default 2 was the real bottleneck — under 32 workers it created connection-pool churn that made the numbers unstable, with some iterations showing `findings=0` due to connection-refused). New `make bench` Makefile target with `BENCHTIME ?= 5x`. Numbers published in README under new "Performance" section between "Security Checks" and "How to Add a Check": Apple M1 / Go 1.21 / Go 1.21 — 1000 endpoints in 31.7 ms / 24.7 MB / 166 peak goroutines. README explains methodology and notes that real-world scans are network-bound (not Fendix-bound).
+
+- **CHANGELOG.md** `[Unreleased]` block has 3 new `### Added` entries summarising TASK-099 partial / TASK-103 / TASK-104. The entries are batched at the top of [Unreleased], ready to be rolled into the next minor (likely v0.6.0 or v1.0.0 depending on whether TASK-100 + 101 + 102 land first).
+
+**Files modified this session:**
+
+- `tasks/MEMORY.md` — Current Project State Phase 12 → 13; new Phase 12 release block; new Last Session Summary; "Next session" pointer reset to Phase 13 continuation.
+- `tasks/PHASES.md` — Phase 12 row marked ✅ shipped; Phase 13 row 🔲 → 🔄.
+- `tasks/CURRENT_SPRINT.md` — Active phase 12 → 13 with new DoD checklist + task table; Phase 12 detail moved to "Phase 12 — historical detail".
+- `.github/workflows/release.yml` — linux/arm64 build matrix entry; QEMU + multi-arch Docker; cosign keyless install + sign steps (binary + image) gated on `vars.COSIGN_ENABLED`; mirror job linux_arm64 SHA + Homebrew formula `on_linux` arm branching; `id-token: write` permission.
+- `SECURITY.md` (NEW) — disclosure policy.
+- `docs/threat-model.md` (NEW) — active-scanner threat model.
+- `go/internal/engine/scan_benchmark_test.go` (NEW) — 3 benchmarks (Throughput / Goroutines / Memory) × 4 sizes (10/100/500/1000), shared `benchScanFixture` helper, `quietSlog` helper.
+- `Makefile` — new `bench` target with `BENCHTIME ?= 5x` override; added to `.PHONY`.
+- `README.md` — new "Performance" section between Security Checks and How to Add a Check, with published numbers + methodology + reproduce-locally instructions.
+- `CHANGELOG.md` — 3 new `### Added` entries under `[Unreleased]` for TASK-099 partial / TASK-103 / TASK-104.
+
+**Build state at session end:**
+
+- `make build` ✓ (linux/arm64 entry verified at YAML parse level — multi-arch matrix has 4 entries; full release.yml + examples/github-actions/fendix-scan.yml parse via PyYAML)
+- `make test` ✓ (Go race-clean across 7 packages — engine tests with new benchmark file: 3.808s; Python 193/193)
+- `make e2e` ✓ (16/16 — unchanged, no source code paths touched by TASK-099/103/104)
+- `make bench` ✓ (12 sub-benchmarks run in 1.4s; numbers reproducible across multiple runs after the connection-pool tuning)
+
+**Decisions made:**
+
+- **Cosign keyless mode (Sigstore Fulcio + GitHub OIDC), not key-based.** No static keys to leak, no `COSIGN_PRIVATE_KEY` repo secret to manage, no key rotation policy. Identity is bound to the GitHub Actions identity that produced the signature — the long tail of supply-chain attacks (key exfiltration, lost-then-rotated keys) doesn't apply. The trade-off is that verifiers need cosign installed; we document it in SECURITY.md.
+- **Cosign disabled by default via repo variable.** Two reasons: (a) opt-in lets the user verify the keyless flow works for their account / OIDC setup before depending on it; (b) `cosign sign-blob` failures must not break otherwise-clean releases — gating on a variable means a malformed cosign installer step can't take down v0.6.0. Trade-off: first-release-after-enable will have cosign assets that earlier releases don't, so the install verification path becomes "pre-cosign uses .sha256 only, post-cosign uses .sig + .crt".
+- **Multi-arch Docker via QEMU on `ubuntu-latest`, not native arm64 runners.** GitHub-hosted arm64 runners are still in beta and cost more; QEMU on x86_64 is slower at build time but free and stable. For Fendix's small Go binary the build time delta is minutes, not hours.
+- **TASK-103 separates SECURITY.md (process) from threat-model.md (technical).** Considered putting them in one file; threat-model is verbose enough (~7 threats × scenario + mitigations + residual risk) that it would dominate the more-frequently-read SECURITY.md. Two files lets the disclosure-policy reader find the channel quickly without scrolling past a 200-line threat model.
+- **TASK-104 benchmarks measure wall time at 32 workers, not "the user's --workers".** The published number is a property of Fendix's *coordination cost*, not the user's chosen parallelism. A higher --workers will go faster on a CPU-rich machine; a lower one will be slower. Documenting one canonical configuration makes the numbers comparable across runs and across releases.
+- **Custom `http.Transport` with `MaxIdleConnsPerHost: 64` in the benchmark fixture.** Default 2 was the bottleneck — connection-pool churn dominated the timing. Bumping to 64 gives the 32-worker pool headroom on each side. Real-world fendix scans use the scanner package's own transports, which already tune this.
+- **README "Performance" section deliberately understates with "scanner overhead well under the network latency floor" framing.** The real-world bottleneck for any scan against a remote target is network RTT, not Fendix's pool. Leading with that framing prevents the inevitable "but a real scan is slower than 31 ms" confusion.
+
+**Open questions / followups:**
+
+- **Cosign rollout**: when the user toggles `COSIGN_ENABLED=true`, the next release will publish `.sig` + `.crt` sidecars. SECURITY.md's "verifying release artifacts" section assumes those files exist; until rollout day, the section is accurate-but-aspirational. Suggest cutting v0.6.0 with cosign on as a release-candidate before v1.0.
+- **Homebrew tap linux/arm64**: the formula now references `fendix-v#{version}-linux-arm64` which won't exist on the mirror until the next release builds it. The mirror release-create step uploads everything matching `dist/fendix-${VERSION}-*`, which now includes linux-arm64. First-release-after-this-change will be the validation point.
+- **Benchmark stability under CI**: published numbers are from a local M1; CI runners (ubuntu-latest, x86_64) will report different numbers. Considered adding a CI step that runs `make bench` and stores the numbers as build artifacts; deferred — the README numbers are a published claim, not a regression gate.
+- **TASK-100 (.deb/.rpm + get.fendix.dev installer)**: not started this session. nfpm is the tool of choice (referenced in PHASES.md). `get.fendix.dev` needs DNS + a hosted `install.sh` — likely a static-site solution (Cloudflare Pages, GitHub Pages on `Abdel-RahmanSaied/homebrew-fendix`).
+- **TASK-101 (docs pass)**: 5-min juice-shop walkthrough is the highest-impact item for evaluators. CI integration page is mostly there (`docs/ci-cd-integration.md` from TASK-098). Triage workflow + Semgrep rule guide are net-new.
+- **TASK-102 (`--debug` bundle)**: blocked by nothing; would benefit from TASK-101's diagnostic-bundle workflow doc landing first so users know what to send.
+
+---
+
+## Earlier Session (2026-04-30 — TASK-098)
 
 **Date:** 2026-04-30 (TASK-098 — CI integration recipe, seventh and final Phase 12 task; closes Phase 12)
 **Session goal:** Per the prior session's pointer, ship the last Phase 12 task — commit a complete reference GitHub Actions workflow demonstrating fendix in CI: scan → SARIF upload → baseline-diff → PR summary comment. Pure docs/config; no Go or Python code touched.
@@ -509,8 +696,9 @@ packaging>=23.0               — Dependency version comparison
 
 **Next session should start with:**
 
-- **Cut v0.5.0 release** per `docs/ship.md` runbook. The release commit should bundle TASK-092..098 — the full Phase 12 batch (schema cleanup + path-param substitution + logging hygiene + scan budgets + auth profiles e2e + concurrency review + CI integration recipe). All work since the `9d95777 chore(release): roll CHANGELOG to v0.4.2` commit is in this batch. Then push the annotated `v0.5.0` tag — `release.yml` builds linux/amd64, darwin/amd64, darwin/arm64.
-- **Phase 13 (P3 — External release readiness, v1.0)** opens after v0.5.0 ships. TASK-099..104 cover reproducible signed builds (cosign + linux/arm64 + signed Docker), distribution artifacts (.deb/.rpm via nfpm + `get.fendix.dev` installer), docs pass (5-min juice-shop walkthrough + CI page + Semgrep guide + JSON schema ref), `--debug` diagnostic bundle, SECURITY.md + threat model, and benchmarks published in README. Recommended TASK-099 first (signed releases unblock everything else), then TASK-103 (SECURITY.md is a docs-pass dependency), then the rest in any order.
+- **Continue Phase 13 (P3 — External release readiness, v1.0).** v0.5.0 already shipped 2026-04-29 — closing-out housekeeping done in this session. Phase 13 work in flight: see "Last Session Summary" below for what landed in TASK-099 (partial — linux/arm64 added, cosign + ghcr + Homebrew-tap-push stubbed pending secrets), TASK-103 (SECURITY.md + active-scanner threat model), TASK-104 (benchmark suite + README publish).
+- **Remaining Phase 13 tasks**: TASK-099 finalisation (cosign signing wired up once `COSIGN_*` secrets are set; ghcr.io publish once token confirmed; Homebrew tap auto-update once `HOMEBREW_TAP_TOKEN` confirmed) — TODO comments in `release.yml` mark each gated step. TASK-100 (.deb/.rpm via nfpm + `get.fendix.dev` one-line installer). TASK-101 (5-min juice-shop walkthrough + CI page + Semgrep rule guide + JSON schema ref + triage workflow). TASK-102 (`--debug` diagnostic bundle).
+- **Recommended order**: TASK-099 finalisation (after secrets configured) → TASK-100 → TASK-101 → TASK-102. Prefer to keep TASK-103 + TASK-104 deltas merged in this session.
 
 **Open questions:**
 

@@ -21,8 +21,8 @@
 | 9 | Hardening | ✅ Complete | Perf, edge cases, security review |
 | 10 | P0 — Flag wiring | ✅ Complete | Fix broken user-facing CLI flags found in real-world testing (v0.2) — shipped 2026-04-29 |
 | 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
-| 12 | P2 — Quality & ops | ✅ Complete (7/7 — TASK-092..098 done; ready to cut v0.5.0) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
-| 13 | P3 — External release | 🔲 Not Started | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
+| 12 | P2 — Quality & ops | ✅ Complete (7/7 — TASK-092..098; v0.5.0 shipped 2026-04-29) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
+| 13 | P3 — External release | 🔄 In Progress | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
 
@@ -478,9 +478,9 @@ TASK-098  ✅ CI integration recipe: examples/github-actions/fendix-scan.yml wit
 - [ ] Release pipeline builds linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 — all signed with cosign
 - [ ] Homebrew formula auto-updates SHA256 per release (no `PLACEHOLDER_*`)
 - [ ] Docker image published to ghcr.io, signed
-- [ ] `.deb` and `.rpm` packages produced via nfpm
+- [x] `.deb` and `.rpm` packages produced via nfpm
 - [ ] One-line installer at `get.fendix.dev` works on macOS + Linux
-- [ ] Docs: 5-minute juice-shop walkthrough, CI integration (GH Actions + GitLab + CircleCI), Semgrep rule guide, triage workflow, JSON schema reference
+- [x] Docs: 5-minute juice-shop walkthrough, CI integration (GH Actions + GitLab + CircleCI), Semgrep rule guide, triage workflow, JSON schema reference
 - [ ] `--debug` flag bundles a redacted diagnostic tarball
 - [ ] `SECURITY.md` with disclosure policy
 - [ ] Active-scanner safety threat model documented

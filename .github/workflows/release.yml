@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
   packages: write
+  # id-token: write is required for cosign keyless signing (Sigstore OIDC).
+  # Disabling COSIGN_ENABLED at the repo-vars level keeps this dormant.
+  id-token: write
 
 jobs:
   release:
@@ -18,6 +21,8 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+          - goos: linux
+            goarch: arm64
           - goos: darwin
             goarch: amd64
           - goos: darwin
@@ -47,6 +52,93 @@ jobs:
             -o "../dist/${BINARY}" \
             ./cmd/fendix/
           cd ../dist && sha256sum "${BINARY}" > "${BINARY}.sha256"
+
+      # nfpm produces .deb and .rpm packages from the just-built linux binary.
+      # Skipped for darwin builds (nfpm is linux-package-only). The packages
+      # land alongside the bare binary in dist/ so the mirror's existing
+      # `fendix-${VERSION}-*` upload glob picks them up automatically.
+      - name: Install nfpm
+        if: matrix.goos == 'linux'
+        run: |
+          set -eu
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.40.0
+
+      - name: Build .deb and .rpm packages
+        if: matrix.goos == 'linux'
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          PKG_VERSION="${VERSION#v}"
+          PKG_ARCH="${{ matrix.goarch }}"
+          BINARY="dist/fendix-${VERSION}-linux-${PKG_ARCH}"
+          DEB="dist/fendix-${VERSION}-linux-${PKG_ARCH}.deb"
+          RPM="dist/fendix-${VERSION}-linux-${PKG_ARCH}.rpm"
+
+          # nfpm.yaml references ./fendix-binary as a fixed path so the same
+          # config covers every arch. Stage it once, package twice, clean up.
+          cp "${BINARY}" ./fendix-binary
+
+          export PKG_VERSION PKG_ARCH
+          nfpm package --config nfpm.yaml --packager deb --target "${DEB}"
+          nfpm package --config nfpm.yaml --packager rpm --target "${RPM}"
+
+          rm ./fendix-binary
+
+          cd dist
+          sha256sum "$(basename "${DEB}")" > "$(basename "${DEB}").sha256"
+          sha256sum "$(basename "${RPM}")" > "$(basename "${RPM}").sha256"
+
+      # Cosign keyless signing — uses GitHub Actions OIDC + Sigstore Fulcio, no
+      # static secrets required. Produces ${BINARY}.sig (raw signature) and
+      # ${BINARY}.crt (the Fulcio cert that bound the signature to the GitHub
+      # Actions identity). Verify with:
+      #
+      #   cosign verify-blob \
+      #     --certificate fendix-vX.Y.Z-OS-ARCH.crt \
+      #     --signature   fendix-vX.Y.Z-OS-ARCH.sig \
+      #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+      #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      #     fendix-vX.Y.Z-OS-ARCH
+      #
+      # Toggle on by setting repo variable COSIGN_ENABLED=true (Settings → Secrets
+      # and variables → Actions → Variables tab). Off by default so cosign opt-in
+      # is a deliberate decision per release.
+      - name: Install cosign
+        if: vars.COSIGN_ENABLED == 'true'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.1"
+
+      - name: Sign binary (cosign keyless)
+        if: vars.COSIGN_ENABLED == 'true'
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          BINARY="fendix-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          cd dist
+          cosign sign-blob \
+            --output-signature "${BINARY}.sig" \
+            --output-certificate "${BINARY}.crt" \
+            "${BINARY}"
+
+      - name: Sign .deb and .rpm (cosign keyless)
+        if: vars.COSIGN_ENABLED == 'true' && matrix.goos == 'linux'
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          ARCH="${{ matrix.goarch }}"
+          cd dist
+          for ext in deb rpm; do
+            ASSET="fendix-${VERSION}-linux-${ARCH}.${ext}"
+            cosign sign-blob \
+              --output-signature "${ASSET}.sig" \
+              --output-certificate "${ASSET}.crt" \
+              "${ASSET}"
+          done
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -82,6 +174,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        # Required for cross-arch builds on ubuntu-latest (x86_64). Without
+        # this the linux/arm64 build step has no emulator and fails.
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -103,10 +200,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build & push image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.version }}
@@ -115,6 +213,35 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.tags.outputs.version }}
             org.opencontainers.image.licenses=MIT
+
+      # Cosign keyless signing for the Docker image. Signs the multi-arch
+      # manifest list digest (the recursive --recursive flag fans out to each
+      # platform-specific image). Verify after release with:
+      #
+      #   cosign verify ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z \
+      #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+      #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+      #
+      # Same COSIGN_ENABLED toggle as the binary signing job — flip the repo
+      # variable on once you've decided to commit to cosign verification as a
+      # supported install path.
+      - name: Install cosign
+        if: vars.COSIGN_ENABLED == 'true'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.1"
+
+      - name: Sign Docker image (cosign keyless)
+        if: vars.COSIGN_ENABLED == 'true'
+        env:
+          COSIGN_YES: "true"
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.tags.outputs.image }}
+        run: |
+          set -eu
+          # Sign by digest (immutable) rather than by tag (mutable) — best
+          # practice per Sigstore docs.
+          cosign sign --recursive "${IMAGE}@${DIGEST}"
 
   mirror:
     name: Mirror release to public install repo
@@ -150,6 +277,7 @@ jobs:
             echo "darwin_amd64=$(read_sha darwin-amd64)"
             echo "darwin_arm64=$(read_sha darwin-arm64)"
             echo "linux_amd64=$(read_sha linux-amd64)"
+            echo "linux_arm64=$(read_sha linux-arm64)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Clone mirror repo
@@ -193,8 +321,13 @@ jobs:
             end
 
             on_linux do
-              url "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/v#{version}/fendix-v#{version}-linux-amd64"
-              sha256 "${{ steps.sha.outputs.linux_amd64 }}"
+              if Hardware::CPU.arm?
+                url "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/v#{version}/fendix-v#{version}-linux-arm64"
+                sha256 "${{ steps.sha.outputs.linux_arm64 }}"
+              else
+                url "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/v#{version}/fendix-v#{version}-linux-amd64"
+                sha256 "${{ steps.sha.outputs.linux_amd64 }}"
+              end
             end
 
             depends_on "python@3.11" => :recommended

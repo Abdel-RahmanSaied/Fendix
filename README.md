@@ -42,7 +42,32 @@ curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/m
 
 Downloads the latest release binary, verifies its sha256 checksum, and installs to `/usr/local/bin/fendix`. Override the install directory with `FENDIX_DIR=$HOME/.local/bin` and the version with `FENDIX_VERSION=v0.4.0`.
 
-A short-URL installer at `https://get.fendix.dev` is planned for v1.0 (see Phase 13 / TASK-100).
+A short-URL installer at `https://get.fendix.dev` is on track for v1.0 — see [`docs/install.md`](docs/install.md#getfendixdev-rollout-status) for the rollout plan.
+
+### Debian / Ubuntu (.deb)
+
+```bash
+ARCH=$(dpkg --print-architecture)   # amd64 or arm64
+VERSION=v0.5.0
+URL="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${ARCH}.deb"
+curl -fsSL -o fendix.deb "${URL}"
+sudo dpkg -i fendix.deb && sudo apt-get install -f
+```
+
+Pulls in `python3` automatically; recommends `semgrep` for deeper static
+analysis. Uninstall with `sudo apt-get remove fendix`.
+
+### RHEL / Fedora / CentOS (.rpm)
+
+```bash
+case "$(uname -m)" in
+  x86_64)  PKG_ARCH=amd64 ;;
+  aarch64) PKG_ARCH=arm64 ;;
+esac
+VERSION=v0.5.0
+sudo dnf install \
+  "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${PKG_ARCH}.rpm"
+```
 
 ### Docker
 
@@ -465,6 +490,55 @@ Injection checks (last 3 rows) require `--enable-active`.
 
 ---
 
+## Performance
+
+Fendix is designed to keep scanner overhead well under the network latency
+floor — even on a localhost target, a 1000-endpoint scan finishes in under
+35 ms of pool/coordination cost.
+
+Numbers below are from `make bench` on an Apple M1 (8 cores, Go 1.21).
+Each row reflects the cost of running the worker pool against an
+`httptest` server with N endpoints × 3 checks per endpoint (3N total real
+HTTP roundtrips) at a fixed pool size of 32 workers.
+
+| Endpoints | Roundtrips | Wall time | Memory   | Allocs    | Peak goroutines |
+|----------:|-----------:|----------:|---------:|----------:|----------------:|
+|        10 |         30 |    0.8 ms |  336 KB  |   2,896   |             130 |
+|       100 |        300 |    5.1 ms |  2.6 MB  |  24,345   |             143 |
+|       500 |       1500 |   19.0 ms | 12.4 MB  | 119,453   |             175 |
+|      1000 |       3000 |   31.7 ms | 24.7 MB  | 238,256   |             166 |
+
+Reading the numbers:
+
+- **Throughput scales linearly** with endpoint count — Fendix's pool
+  coordination is not the bottleneck, the HTTP transport is.
+- **Memory is bounded.** ~25 KB per endpoint at 1000 endpoints, including
+  finding allocation, slog formatting, and HTTP response buffers. A
+  scan against 10,000 endpoints would still fit in well under 256 MB.
+- **Goroutine count is bounded** by `--workers` plus a small fixed
+  overhead (HTTP transport idle pool, slog handler, the test fixture's
+  goroutine-tracking probe). The pool clamps to your worker budget no
+  matter how many endpoints get crawled — verified by TASK-097's
+  fuzzed cancellation test and the 1000-endpoint `-race` job.
+
+Reproduce locally:
+
+```sh
+make bench                    # default, 5 iterations per size
+make bench BENCHTIME=2s        # longer runs, more stable numbers
+```
+
+Real-world scans against remote targets are network-bound, not
+Fendix-bound — expect the per-endpoint wall time to be dominated by
+the round-trip latency to your target, plus `--delay` (default
+100 ms) between requests. Use `--max-requests` and `--max-duration`
+to bound total work.
+
+For component-level micro-benchmarks (correlator, JSON parser, severity
+scoring, reporters), run `cd go && go test -bench . -benchmem ./...`.
+
+---
+
 ## How to Add a Check
 
 Fendix is designed to be extensible. Here's how to add a new security check:
@@ -604,6 +678,20 @@ cd go && go test -race -v ./...
 # Python tests
 cd python && python -m pytest tests/ -v
 ```
+
+---
+
+## Documentation
+
+- [Install reference](docs/install.md) — every install path (Homebrew, apt/dnf, Docker, source) with cosign verification.
+- [5-minute walkthrough — OWASP Juice Shop](docs/walkthrough-juice-shop.md) — try a real hybrid scan in under 5 minutes.
+- [CI/CD integration](docs/ci-cd-integration.md) — drop-in GitHub Actions workflow with SARIF upload and PR comment.
+- [Triage workflow](docs/triage-workflow.md) — what to do when a report lands.
+- [JSON schema reference](docs/schema.md) — every field of the JSON output, with stability guarantees.
+- [Semgrep rule guide](docs/semgrep-rules.md) — write project-specific static-analysis rules.
+- [Per-check reference](docs/checks/) — one page per built-in check.
+- [Architecture decision records](docs/adr/) — why Fendix is built the way it is.
+- [Security policy](SECURITY.md) and [active-scanner threat model](docs/threat-model.md).
 
 ---
 

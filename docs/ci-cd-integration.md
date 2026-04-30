@@ -179,3 +179,15 @@ ignore:
     category: auth
     reason: "Public endpoints intentionally unauthenticated"
 ```
+
+For the full suppression model and guidance on when to suppress vs. fix,
+see the [triage workflow](./triage-workflow.md).
+
+## See also
+
+- [JSON schema reference](./schema.md) — fields you can read in PR
+  comment templates and dashboards.
+- [Triage workflow](./triage-workflow.md) — what to do once findings
+  start landing in PRs.
+- [5-minute Juice Shop walkthrough](./walkthrough-juice-shop.md) — try
+  the full pipeline locally before wiring it into CI.

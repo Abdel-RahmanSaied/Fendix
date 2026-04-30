@@ -4,7 +4,41 @@
 
 ---
 
-## Active Phase: 12 — P2 Quality, performance, ops (v0.5) — ✅ Complete (7/7 done — ready to cut v0.5.0)
+## Active Phase: 13 — P3 External Release readiness (v1.0) — 🔄 In Progress
+
+**Sprint goal:** Trustworthy, signed, documented v1.0. Reproducible signed builds (linux/arm64 + cosign + signed Docker), distribution artifacts (.deb/.rpm + curl-pipe installer), docs pass, `--debug` diagnostic bundle, SECURITY.md + active-scanner threat model, benchmarks published in README.
+
+**Definition of Done:**
+
+- [ ] Release pipeline builds linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 — all signed with cosign (TASK-099)
+- [ ] Homebrew formula auto-updates SHA256 per release, no `PLACEHOLDER_*` (TASK-099)
+- [ ] Docker image published to ghcr.io, signed (TASK-099)
+- [ ] `.deb` and `.rpm` packages produced via nfpm; `get.fendix.dev` one-line installer (TASK-100)
+- [ ] Docs: 5-min juice-shop walkthrough + CI integration page + Semgrep rule guide + triage workflow + JSON schema reference (TASK-101)
+- [ ] `--debug` flag bundles a redacted diagnostic tarball (TASK-102)
+- [ ] `SECURITY.md` with disclosure policy + active-scanner threat model documented (TASK-103)
+- [ ] Performance benchmarks published in README — scan time vs endpoint count, memory peak, goroutine count (TASK-104)
+
+| ID | Task | Status | Notes |
+| --- | --- | --- | --- |
+| TASK-099 | Reproducible release pipeline: linux/arm64, cosign signing, Homebrew auto-update, signed Docker | 🔄 | Partial — see "Last Session" notes; secret-gated steps stubbed |
+| TASK-100 | Distribution artifacts: `.deb` + `.rpm` via nfpm, `get.fendix.dev` one-line installer | 🔄 | `.deb`/`.rpm` shipped 2026-04-30 — new `nfpm.yaml`, release.yml + cosign wired, smoke-tested locally; `get.fendix.dev` rollout documented but waiting on operator DNS action |
+| TASK-101 | Documentation pass: 5-min walkthrough, CI integration page, Semgrep rule guide, triage workflow, JSON schema ref | ✅ | New `docs/walkthrough-juice-shop.md` + `docs/semgrep-rules.md` + `docs/triage-workflow.md`; existing `docs/schema.md` + `docs/ci-cd-integration.md` audited and cross-linked; new "Documentation" index in README. |
+| TASK-102 | `--debug` bundle: redacted config + OS + Python version + probe audit + slog-debug into a tarball | 🔲 | |
+| TASK-103 | SECURITY.md + active-scanner threat model + signed commits/releases | 🔄 | SECURITY.md + threat-model shipped 2026-04-30; signed commits/releases pending COSIGN_ENABLED rollout |
+| TASK-104 | Performance benchmark suite: scan time vs endpoint count, memory peak, goroutine count, published in README | ✅ | Shipped 2026-04-30 — bench suite + README "Performance" section live |
+
+**Status legend:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
+
+---
+
+## Phase 12 — Shipped ✅ (v0.5.0 — 2026-04-29)
+
+All 7 tasks (TASK-092..098) shipped. Detail table preserved below under "Phase 12 — historical detail".
+
+---
+
+## Phase 12 — historical detail
 
 **Sprint goal:** Polish that turns a working scanner into one that fits production workflows: documented JSON schema, tighter unconfirmed-suffix semantics, severity↔confidence consistency, scan budgets, auth profiles, CI integration recipe.
 
