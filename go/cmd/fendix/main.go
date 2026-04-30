@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/democmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -62,8 +63,54 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newInitCmd())
+	root.AddCommand(newDemoCmd())
 
 	return root
+}
+
+func newDemoCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "demo",
+		Short: "Spin up OWASP Juice Shop locally and run a sample scan",
+		Long: `Pull and start bkimminich/juice-shop in Docker on localhost:3000, run
+a stock fendix scan against it, render an HTML report, and (with --open) open
+the report in the default browser. Useful for first-time evaluators who want
+to see a real Fendix scan without pointing it at production.
+
+Cleans up the container on exit (success or failure).`,
+		Example: `  fendix demo                       # scan, write report to $TMPDIR/fendix-demo-<unix>.html
+  fendix demo --open                # also open the report in your browser
+  fendix demo --port 4000           # bind juice-shop on a different port
+  fendix demo --output ./demo.html  # write report to an explicit path`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			openAfter, _ := cmd.Flags().GetBool("open")
+			port, _ := cmd.Flags().GetInt("port")
+			output, _ := cmd.Flags().GetString("output")
+			image, _ := cmd.Flags().GetString("image")
+
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer cancel()
+
+			path, err := democmd.Run(ctx, democmd.Options{
+				ImageRef:   image,
+				Port:       port,
+				OutputPath: output,
+				OpenAfter:  openAfter,
+				Stdout:     cmd.OutOrStdout(),
+				Stderr:     cmd.ErrOrStderr(),
+			})
+			if err != nil {
+				return err
+			}
+			_ = path // already printed by democmd.Run
+			return nil
+		},
+	}
+	cmd.Flags().Bool("open", false, "open the rendered HTML report in your default browser when the scan finishes")
+	cmd.Flags().Int("port", democmd.DefaultPort, "local port to bind juice-shop on")
+	cmd.Flags().String("output", "", "HTML report output path (default: $TMPDIR/fendix-demo-<unix>.html)")
+	cmd.Flags().String("image", democmd.DefaultImageRef, "juice-shop Docker image reference (pinned for reproducibility)")
+	return cmd
 }
 
 func newInitCmd() *cobra.Command {

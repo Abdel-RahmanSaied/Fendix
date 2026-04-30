@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fendix demo` command (TASK-108).** New `fendix demo` cobra
+  subcommand spins up `bkimminich/juice-shop:v17.1.1` in Docker,
+  runs a stock fendix scan against `http://localhost:3000`, renders
+  an HTML report, and (with `--open`) opens it in the user's
+  default browser. Removes the cold-start "what does a real scan
+  look like?" question for first-time evaluators. Container is
+  always cleaned up on exit (success or failure) via a deferred
+  `docker rm -f` running on a fresh context so a parent-cancel
+  doesn't strand the container. Flags: `--open`, `--port`,
+  `--output`, `--image` (image is overrideable but defaults to the
+  same pinned digest the benchmark suite uses, for reproducibility).
+  New `internal/democmd` package shells out to the host's `docker`
+  CLI rather than pulling in a Docker SDK dep — same pattern as
+  `scripts/benchmark/run-juice-shop.sh`. **Tests:** 10 unit tests
+  covering happy-path, docker-run-fails, juice-shop-never-healthy
+  (verifies cleanup still runs via the defer), context cancel
+  during health poll, becoming-healthy-after-503-retries, fendix
+  binary missing, and Options resolution defaults/overrides. 1 e2e
+  smoke test (`TestDemo_HelpListsFlags`) catches cobra-wiring
+  regressions without requiring Docker on every CI runner.
+
 - **GitHub App scaffold (TASK-107).** New `cmd/fendix-app` binary
   (separate from `fendix` CLI; long-running webhook server) plus
   `internal/ghapp` package and `app/manifest.yml` for one-click App
