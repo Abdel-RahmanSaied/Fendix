@@ -45,7 +45,7 @@ The pipeline at `.github/workflows/release.yml` runs end-to-end on every `v*` ta
 |---|---|---|
 | `release` (×3 matrix) | Cross-compiles for linux/amd64, darwin/amd64, darwin/arm64 with embedded Python engine; computes sha256 | Workflow artifacts `fendix-{linux,darwin}-{amd64,arm64}` |
 | `publish` | Downloads matrix artifacts, creates engine-repo GitHub Release | <https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/vX.Y.Z> |
-| `docker` | Builds + pushes container image to GHCR (linux/amd64 only) | `ghcr.io/abdel-rahmansaied/fendix:X.Y.Z` and `:latest` |
+| `docker` | Builds + pushes multi-arch container image to GHCR (linux/amd64 + linux/arm64) | `ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z` and `:latest` |
 | `mirror` | Creates mirror release with binaries+sha256, auto-rewrites `Formula/fendix.rb` in mirror's main with fresh SHA256s | <https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/tag/vX.Y.Z> |
 
 The mirror exists because the engine repo is private — anonymous users can't pull from a private GitHub Releases page, so install paths are routed through the public `homebrew-fendix` mirror.
@@ -58,7 +58,7 @@ The mirror exists because the engine repo is private — anonymous users can't p
 # Verify (~30 sec)
 gh release view vX.Y.Z -R Abdel-RahmanSaied/Fendix
 gh release view vX.Y.Z -R Abdel-RahmanSaied/homebrew-fendix
-docker pull --platform linux/amd64 ghcr.io/abdel-rahmansaied/fendix:X.Y.Z
+docker pull ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z  # multi-arch manifest picks the right platform
 ```
 
 Optional: spot-check that `brew install fendix` (with the tap already added) picks up the new version.

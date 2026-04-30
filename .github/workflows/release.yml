@@ -193,9 +193,15 @@ jobs:
         id: tags
         run: |
           REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          # Docker tag keeps the leading `v` so it matches the Git tag and
+          # the binary filename convention (fendix-vX.Y.Z-...). The OCI
+          # version label uses the bare semver without `v` per the OCI
+          # image-spec convention for org.opencontainers.image.version.
+          TAG="${GITHUB_REF_NAME}"
           VERSION="${GITHUB_REF_NAME#v}"
           {
             echo "image=ghcr.io/${REPO_LC}"
+            echo "tag=${TAG}"
             echo "version=${VERSION}"
           } >> "$GITHUB_OUTPUT"
 
@@ -207,7 +213,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.version }}
+            ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.tag }}
             ${{ steps.tags.outputs.image }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -219,6 +225,8 @@ jobs:
       # platform-specific image). Verify after release with:
       #
       #   cosign verify ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z \
+      #     # tag matches the Git tag including the `v` prefix; alternatively
+      #     # use a digest from the release notes for content-addressable verify
       #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
       #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
       #
