@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (0/6 tasks). Phases 0-12 complete; v0.5.0 shipped 2026-04-29.
-**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0 released; v1.0.0 (Phase 13) in progress.
+**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (4/6 tasks shipped + 2 partial; **v0.6.0-rc1 prepared locally 2026-04-30, awaiting push**). Phases 0-12 complete; v0.5.0 shipped 2026-04-29.
+**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0 released; v0.6.0-rc1 staged locally; v1.0.0 (Phase 13) in progress.
 **Last updated:** 2026-04-30
 
 ### Completed tasks
@@ -451,7 +451,7 @@ packaging>=23.0               — Dependency version comparison
 - TASK-099: Reproducible release pipeline — linux/arm64 ✅ shipped 2026-04-30 (partial); cosign signing wired but COSIGN_ENABLED toggle pending first signed release validation
 - TASK-100: Distribution artifacts — `.deb` + `.rpm` via nfpm ✅ shipped 2026-04-30 (smoke-tested locally); `get.fendix.dev` one-line installer documented and waiting on operator DNS action
 - ~~TASK-101: Documentation pass~~ ✅ shipped 2026-04-30 — `docs/walkthrough-juice-shop.md`, `docs/semgrep-rules.md`, `docs/triage-workflow.md` new; `docs/schema.md` + `docs/ci-cd-integration.md` audited and cross-linked; new "Documentation" index in README
-- TASK-102: `--debug` bundle — redacted config + OS + Python version + probe audit + slog-debug into a tarball
+- ~~TASK-102: `--debug` bundle~~ ✅ shipped 2026-04-30 — new `internal/diagnostic` package + `--debug-bundle <path>` flag; redacted tarball with config/environment/metadata/findings/probes/debug.log
 - TASK-103: SECURITY.md ✅ shipped 2026-04-30; signed commits/releases pending COSIGN_ENABLED rollout
 - ~~TASK-104: Performance benchmark suite~~ ✅ shipped 2026-04-30 — scan time vs endpoint count, memory peak, goroutine count, published in README
 
@@ -463,7 +463,122 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-04-30 (TASK-100 — Distribution artifacts: .deb + .rpm via nfpm + get.fendix.dev rollout plan)
+**Date:** 2026-04-30 (Phase 13 release prep — v0.6.0-rc1 staged locally)
+**Session goal:** Per the prior session's pointer, cut v0.6.0 (Phase 13). Prior session recommended `v0.6.0-rc1` first as the safer path to validate the new cosign + nfpm + ghcr release pipelines before committing to v1.0. Make the local prep, stop before any `git push` (irreversible publish step requires explicit operator confirmation).
+
+**Accomplished:**
+
+- **Build re-verified:** Go race-clean across 9 packages (build/diagnostic/budget/embedded/engine/logagg/models/reporters/scanner); Python 193/193. No source changes since TASK-102 shipped — release prep only.
+- **CHANGELOG.md rolled:** new `## [0.6.0-rc1] - 2026-04-30` heading inserted directly under `## [Unreleased]` (which is left empty as the post-rc1 staging area). Release-summary preamble explains the rc1 rationale (validate the new pipeline end-to-end before tagging clean v0.6.0) and lists the two operator items still pending for v1.0 cut: `COSIGN_ENABLED=true` repo variable + `get.fendix.dev` DNS rollout. The 6 batched `### Added` entries from the prior 2 sessions (TASK-099 multi-arch + cosign + Docker stubs, TASK-100 .deb/.rpm + install docs, TASK-101 docs pass, TASK-102 `--debug-bundle`, TASK-103 SECURITY.md + threat model, TASK-104 perf bench suite + README) move under v0.6.0-rc1 unchanged.
+- **No version constant change needed:** `go/cmd/fendix/main.go:22` defines `var Version = "dev"` set at build time via ldflags from `Makefile`'s `VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")`. Once the annotated tag exists, `make build` picks up `v0.6.0-rc1` automatically.
+- **CURRENT_SPRINT.md updated:** active phase header annotated with "(RC1 cut locally 2026-04-30, awaiting push)" + new "Release status" line documenting that the rc1 was prepared locally but not pushed.
+- **MEMORY.md updated:** Current Project State header annotated with "v0.6.0-rc1 prepared locally 2026-04-30, awaiting push"; this session entry added.
+
+**Files modified this session:**
+
+- `CHANGELOG.md` (new `[0.6.0-rc1] - 2026-04-30` heading inserted under `[Unreleased]`)
+- `tasks/CURRENT_SPRINT.md` (active phase status annotated; new "Release status" line)
+- `tasks/MEMORY.md` (this entry; "Current Project State" header updated)
+
+**Build state at session end:**
+
+- `make build` ✓ (Go 9 packages compile clean; ldflags will carry `git describe` output once the tag is in place)
+- `make test` ✓ (Go race-clean across 9 packages; Python 193/193)
+- No new tests this session — release prep only; no source code touched.
+
+**Decisions made:**
+
+- **Cut `v0.6.0-rc1`, not `v0.6.0` directly.** Two reasons: (a) the new release pipeline (nfpm `.deb`/`.rpm`, multi-arch Docker via QEMU, cosign keyless signing — all gated on `COSIGN_ENABLED`) has never run end-to-end against a real tag. The smoke tests on nfpm.yaml + the YAML parse on release.yml caught structural bugs but won't catch e.g. GH Actions runner-version drift, cosign-installer @v3 API changes, or QEMU plumbing edge cases. The rc1 is the cheap validation point. (b) The prior session's "Open questions" pointer explicitly recommended this path. Pre-1.0 semver allows freely cutting an `-rc1` without committing to a v1.0 timeline.
+- **Stop before `git push` and `git push --tags`.** Pushing the commit + tag triggers `release.yml` which publishes binaries to the GitHub Releases page — that's a public, hard-to-reverse action that needs explicit operator OK. Local commit + tag are reversible (`git reset HEAD~1`, `git tag -d`); pushing is not. Following the engineering principle of measure-twice-cut-once on shared-state changes.
+- **Leave `[Unreleased]` empty in CHANGELOG**, not deleted. Keep-a-Changelog convention: the `[Unreleased]` heading is the staging area for the next release. Removing it would force the next contributor to add it back; leaving it empty is the documented norm.
+- **No `COSIGN_ENABLED` flip suggested.** Out of scope for this session — the variable lives in the GitHub repo Settings → Secrets and variables → Actions → Variables tab, requires the operator's account, and only takes effect on the NEXT release run after it's flipped. The rc1 will run unsigned (the cosign step gates on `vars.COSIGN_ENABLED == 'true'` and skips cleanly when unset). After rc1 validates the binary/package/Docker plumbing, flip the variable + cut clean v0.6.0 to also validate the signing path.
+
+**Open questions / followups:**
+
+- **Awaiting operator confirmation to push.** The local commit + annotated tag are not yet created (this session ends without invoking `git commit` / `git tag`); see "Next session should start with" below for the exact 4-step push flow once OK is given.
+- **Validation plan for rc1 release:** after push, watch `release.yml` for: (1) all 4 binary builds succeed (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64), (2) both `.deb` packages + both `.rpm` packages build via the per-arch `nfpm package` step + sha256 sidecars produced, (3) ghcr.io multi-arch manifest list published successfully (linux/amd64 + linux/arm64), (4) GitHub Release page lists all expected artifacts. Cosign signing is gated off; will validate on the v0.6.0 cut after `COSIGN_ENABLED` is flipped.
+- **`--debug-bundle` self-test (v1.1 future):** still open — bundle a redaction-self-test that scans the produced tarball for the auth value with grep before declaring the bundle clean. Out of scope for v1.0; revisit after first external bug report (or during v1.1 hardening pass).
+
+**Next session should start with:**
+
+- **Decision: push the rc1, or pivot.** Three options:
+  - **(A) Push rc1.** Local 4-step flow once OK is given: (1) `git add CHANGELOG.md tasks/CURRENT_SPRINT.md tasks/MEMORY.md` from repo root, (2) `git commit -m "chore(release): v0.6.0-rc1 — Phase 13 RC ($description)"` (use heredoc for body covering the 6 TASK-099..104 entries + Co-Authored-By line), (3) `git tag -a v0.6.0-rc1 -m "v0.6.0-rc1 — Phase 13 release candidate"`, (4) `git push origin main && git push origin v0.6.0-rc1`. The push triggers `release.yml` for linux/amd64+arm64, darwin/amd64+arm64, multi-arch Docker, and (gated off) cosign signing.
+  - **(B) Skip the rc1 and cut v0.6.0 directly.** Same flow but with the `-rc1` suffix removed and the CHANGELOG heading edited to `[0.6.0] - 2026-04-30`. Faster, but commits to v0.6.0 without validating the new pipeline first.
+  - **(C) Hold the release; pick up code work.** The bundle-redaction self-test (v1.1 future) is the smallest useful pure-code task; it would harden the TASK-102 redaction guarantee. BACKLOG-011 (refresh-on-401, ~200 LOC, single-flight token-refresh RoundTripper) is the next-largest. Either makes sense if release timing is uncertain.
+
+The CHANGELOG/sprint/MEMORY edits are committed-ready (clean diff, no source touched). Verify with `git status` and `git diff` before any commit.
+
+---
+
+## Earlier Session (2026-04-30 — TASK-102 — `--debug-bundle` diagnostic tarball)
+
+**Session goal:** Per the prior session's pointer, ship TASK-102 — the only Phase 13 task with no shipped work. Build a redacted `.tar.gz` written at scan end containing scan config (auth values masked), environment versions, probe audit log, buffered DEBUG slog stream, and findings; intended for users to attach when filing bug reports.
+
+**Accomplished:**
+
+- **`internal/diagnostic/` (NEW package)**: two files, ~370 LOC + 240 LOC of tests. `redact.go` defines a `redactedConfig` struct that mirrors `models.ScanConfig` field-for-field with `Auth`/`AuthUser2` replaced by `redactedAuth` (preserves `Type`+`Header` for diagnosis but always emits `Value: "[REDACTED]"`); `secretsFrom(cfg)` returns the credential strings the redactor must scrub (full auth value + bare token after stripping `Bearer ` / `Basic ` prefixes, for both primary and IDOR-second-user auth). `bundle.go` defines `Bundle` (mu-protected metadata + a separate logMu for the slog buffer to avoid deadlock if a late goroutine logs during Write); `New(path, cfg)` returns a disabled bundle when path is empty so orchestrator wiring can call setters unconditionally; `Enabled()` gates the no-op path; `LogHandler(base)` returns a fanout that broadcasts records to base + a `bufferHandler` (DEBUG-level text handler over a `lockedWriter` synchronizing concurrent worker-pool writes); `Write(version)` serializes `README.md` + `config.json` + `environment.json` + optional `metadata.json`/`findings.json` + optional `probes.jsonl` (always written when `EnableActive`, even empty — empty file is itself signal) + redacted `debug.log` into a `tar.gz` at the configured path. Tar entries are mode 0o644, uid/gid 0, PAX format. `fanoutHandler` properly implements `WithAttrs`/`WithGroup` by cloning each child handler so attribute groups attach to both the user's stderr handler and the bundle's buffer handler.
+
+- **`internal/scanner/probe_audit_global.go` (NEW)**: package-level `globalAuditLog *ProbeAuditLog` plus `ResetGlobalAuditLog()` (call at scan start) and `GlobalAuditRecords() []ProbeRecord` (call after scan). Pre-fix the per-endpoint `CheckInjection` call created a fresh audit log on every invocation and discarded it after returning — fine for the existing stderr emission (records had been printed already) but useless to anyone wanting to read the audit log post-scan, e.g. the `--debug-bundle` writer. Tightly scoped change; one-line edit in `injection.go::CheckInjection` to use `currentAuditLog()` instead of `NewProbeAuditLog()`.
+
+- **`models.ScanConfig.DebugBundlePath string` (NEW field)**, plus `--debug-bundle <path>` CLI flag in `cmd/fendix/main.go` (default `""` = disabled).
+
+- **Orchestrator wiring**: at top of `Run()` — `scanner.ResetGlobalAuditLog()` + `bundle := diagnostic.New(o.cfg.DebugBundlePath, o.cfg)` + (if enabled) install slog tee handler with `defer slog.SetDefault(prevDefault)`. Stderr level honors `--verbose` (LevelDebug if set, else LevelInfo); bundle buffer always captures LevelDebug so the bundle has full diagnostic detail regardless of user-visible verbosity. Capture python version via `bundle.SetPythonVersion(pyStatus.Version)` after the python-availability check. Write the bundle near scan end, BEFORE `checkFailOn` so a non-zero exit (the exact case where users want to file a bug report) still produces the bundle; `bundle.SetFindings(findings)` + `bundle.SetMetadata(meta)` + `bundle.SetProbes(scanner.GlobalAuditRecords())` + `bundle.Write(o.version)`. `Orchestrator.version` field added to expose the version string captured at construction time.
+
+- **Critical bug found and fixed during e2e: deadlock in slog tee setup.** First impl wrapped `slog.Default().Handler()` directly. The stdlib's uninstalled default handler is `*slog.defaultHandler`, which routes through `log.Default()`, whose output writer is a `slog.handlerWriter` that routes back to `slog.Default()`. Once the new default IS the tee, every log call calls the tee → stdlib defaultHandler → log.Default → handlerWriter → slog.Default = tee = infinite loop. Caught when the e2e test hung for 600 seconds. Reproduced standalone, confirmed via stack trace (`internal/sync.(*Mutex).lockSlow` on the log package's mutex). Fix: when the bundle is enabled, install a fresh `slog.NewTextHandler(os.Stderr, ...)` rather than wrapping `slog.Default().Handler()`. Documented in the orchestrator's comment block.
+
+- **Tests**: 8 unit tests in `internal/diagnostic/bundle_test.go` covering empty-path-disabled, log-handler-passes-through-when-disabled, expected-tarball-entries, auth-redaction in config + slog stream + bare token, probes-only-with-enable-active (with content), enable-active-but-no-probes-still-emits-empty-file (signal value), environment.json contains all 6 runtime keys, and Write returns an error on unwritable path. New e2e test `TestDebugBundle_WrittenAndRedacted` runs the actual fendix binary against an httptest target with `--auth "Bearer e2e-debug-bundle-token-12345"`, asserts the bundle exists with all 6 expected entries, scans every entry's bytes for the literal auth value AND the bare token (neither must appear anywhere), validates `config.json::auth.value == "[REDACTED]"`, validates `environment.json` has go_version/goos/goarch, asserts `probes.jsonl` is absent (no `--enable-active`), asserts `debug.log` contains slog-text-format records (`level=` substring) so the tee actually fired.
+
+- **Real-world smoke test**: ran `fendix scan --code go/cmd --auth "Bearer real-secret-do-not-leak" --debug-bundle bundle.tar.gz`. Bundle written to disk (2065 bytes), all 6 expected entries present, `grep -r real-secret-do-not-leak bundle-extracted/` returned 0 matches, `config.json::auth.value` correctly shows `[REDACTED]` while `auth.type=bearer` and `auth.header=Authorization` are preserved.
+
+**Files modified this session:**
+
+- `go/internal/diagnostic/redact.go` (NEW)
+- `go/internal/diagnostic/bundle.go` (NEW)
+- `go/internal/diagnostic/bundle_test.go` (NEW)
+- `go/internal/scanner/probe_audit_global.go` (NEW)
+- `go/internal/scanner/injection.go` (one-line: use `currentAuditLog()` so probe records accumulate scan-wide)
+- `go/internal/models/config.go` (new field `DebugBundlePath string`)
+- `go/cmd/fendix/main.go` (read `--debug-bundle` flag → ScanConfig)
+- `go/internal/engine/orchestrator.go` (Orchestrator.version field; wire bundle setup at top of Run, capture python version + write bundle near end; document slog-default-deadlock pitfall)
+- `go/internal/e2e/debug_bundle_test.go` (NEW)
+- `CHANGELOG.md` (new TASK-102 entry at top of `[Unreleased]`)
+- `tasks/CURRENT_SPRINT.md` (TASK-102 row → ✅)
+- `tasks/PHASES.md` (Phase 13 `--debug` exit criterion ticked)
+- `tasks/MEMORY.md` (this entry; pending-tasks list; "Next session" pointer)
+
+**Build state at session end:**
+
+- `make build` ✓ (Go 8 packages compile clean — diagnostic added)
+- `make test` ✓ (Go race-clean across 8 packages, Python 193/193)
+- `make e2e` ✓ (17/17 — was 16; added `TestDebugBundle_WrittenAndRedacted`)
+- Real-world smoke test ✓ (no auth-value leak in any bundle entry)
+
+**Decisions made:**
+
+- **Fresh stderr handler instead of wrapping `slog.Default().Handler()`.** The stdlib default routes through `log` package which routes back through `slog.Default()` — installing a tee that wraps it creates an infinite recursion that deadlocks on the log mutex. Caught only because the e2e test hangs for 600s. The fresh-handler approach also lets us honor `--verbose` cleanly (stderr at INFO by default, DEBUG with `--verbose`, while the bundle always captures DEBUG).
+- **Bundle written before `checkFailOn`, not after.** A `--fail-on HIGH` non-zero exit is exactly the case where an operator wants to file a bug report — making the bundle conditional on a clean exit would defeat the purpose. The bundle is essentially free to write (a few KB tar.gz) so making it unconditional is the right call.
+- **Probes audit log promoted from per-call to package-level.** Originally `CheckInjection` created a fresh `ProbeAuditLog` on every endpoint call; records survived only as long as the call. To make the records readable post-scan, added `globalAuditLog` + `ResetGlobalAuditLog()` + `GlobalAuditRecords()`. This matches the pattern logagg already uses (package-level state + Reset at scan start). Per-test isolation kept by `CheckInjectionWithAudit` which still accepts an explicit log.
+- **`probes.jsonl` is always written when `--enable-active`, even when empty.** An empty file is itself a signal — it confirms active probing was on but emitted no probes (e.g. early exit, no targets). Absence of the file would conflate "active was off" with "active was on but produced nothing", which is exactly the kind of ambiguity bug reports need to resolve.
+- **Auth header NAME preserved, value redacted.** `config.json` shows `auth.type=bearer`, `auth.header=Authorization`, `auth.value=[REDACTED]`. The header name is not a secret and is highly useful for diagnosis (was the user using a custom header? did the auto-detector pick the right scheme?). The value is the secret and is never written.
+- **Tar format PAX, mode 0o644, uid/gid 0.** Reproducible across runs and across users — a published bundle should not carry the original author's uid. PAX format is the right pick for a portable archive that may include UTF-8 filenames in the future (no UTF-8 filenames currently, but free property to keep).
+- **`Bundle` is no-op-on-disabled rather than nil-checked at every callsite.** Cleaner orchestrator wiring: every `bundle.SetXxx()` and `bundle.Write()` is unconditional; the disabled-bundle branch is a tight no-op. Avoids 4 conditional blocks in Run.
+- **Two mutexes on Bundle (mu + logMu).** Defensive against a late-firing goroutine that logs during `Write()`. The metadata fields and the log buffer have different access patterns (metadata is set serially before Write; the log buffer can be written by any goroutine for the duration of the slog tee installation). Separate mutexes mean Write's metadata-side critical section doesn't block on a late log write and vice versa.
+
+**Open questions / followups:**
+
+- **Phase 13 release readiness**: TASK-101, TASK-102, TASK-104 fully shipped. TASK-099 (linux/arm64 ✅; cosign + ghcr stubbed pending COSIGN_ENABLED), TASK-100 (.deb/.rpm shipped, get.fendix.dev waiting on operator DNS), TASK-103 (SECURITY.md + threat model shipped, signed commits pending COSIGN_ENABLED) all have shipped pieces with clear remaining-work notes. The remaining Phase 13 work is (a) flip COSIGN_ENABLED on the GitHub repo, (b) tag a v0.6.0-rc1 to validate the signed-release pipeline end-to-end, (c) operator DNS rollout for get.fendix.dev. None of these are code changes; they're operator actions.
+- **CHANGELOG `[Unreleased]` is now 6 batched `### Added` entries** (TASK-099 partial + TASK-100 packaging + TASK-100 docs + TASK-101 + TASK-102 + TASK-103 + TASK-104). Ready to roll into v0.6.0 once the user wants to cut.
+- **Potential future enhancement**: bundle a bundle-redaction-self-test that scans the produced tarball for the auth value with grep before declaring the bundle clean. Currently the bundle relies on `secretsFrom(cfg)` correctly enumerating every secret-shaped field; if a future ScanConfig field carries credentials, it could leak. A self-test would catch that class of bug. Out of scope for v1.0.
+- **Default `--debug-bundle` filename**: the flag requires an explicit path. A future quality-of-life flag `--debug-bundle-on-error` (auto-write to `./fendix-debug-<timestamp>.tar.gz` only when scan fails) might be worth considering for v1.1.
+
+**Next session should start with:**
+
+- **Phase 13 release prep — cut v0.6.0**. All Phase 13 code work that doesn't depend on operator actions is now shipped (TASK-099 partial, TASK-100, TASK-101, TASK-102, TASK-103 partial, TASK-104). The remaining items are non-code: COSIGN_ENABLED variable on the GitHub repo (TASK-099 + TASK-103), domain registration for get.fendix.dev (TASK-100). The path forward: roll `[Unreleased]` to `[0.6.0] - 2026-MM-DD` in CHANGELOG, single commit `feat: v0.6.0 — Phase 13 quality & ops (TASK-099..104)`, annotated tag `v0.6.0`, push to origin to trigger `release.yml`. The first signed release will validate the cosign + nfpm + ghcr pipelines end-to-end. After that, only TASK-099 final validation + get.fendix.dev DNS rollout remain for v1.0. Alternatively: tag `v0.6.0-rc1` first as a release-candidate to validate the new pipeline before committing to v1.0 — this is the safer path mentioned in the prior session's open questions.
+
+---
+
+## Earlier Session (2026-04-30 — TASK-100 — Distribution artifacts: .deb + .rpm via nfpm + get.fendix.dev rollout plan)
+
 **Session goal:** Per the prior session's pointer, ship TASK-100. Two workstreams: (a) wire nfpm into the release pipeline so each `v*` tag produces `.deb` + `.rpm` packages alongside the bare binaries; (b) document the `get.fendix.dev` rollout as a clear operator action (domain registration + GitHub Pages CNAME — not a code change).
 
 **Accomplished:**

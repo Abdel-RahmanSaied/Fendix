@@ -4,9 +4,11 @@
 
 ---
 
-## Active Phase: 13 — P3 External Release readiness (v1.0) — 🔄 In Progress
+## Active Phase: 13 — P3 External Release readiness (v1.0) — 🔄 In Progress (RC1 cut locally 2026-04-30, awaiting push)
 
 **Sprint goal:** Trustworthy, signed, documented v1.0. Reproducible signed builds (linux/arm64 + cosign + signed Docker), distribution artifacts (.deb/.rpm + curl-pipe installer), docs pass, `--debug` diagnostic bundle, SECURITY.md + active-scanner threat model, benchmarks published in README.
+
+**Release status:** `v0.6.0-rc1` prepared locally — CHANGELOG rolled, commit + annotated tag created, **not pushed** (pending operator confirmation of irreversible publish step). The rc1 validates the new cosign + nfpm + ghcr pipelines end-to-end before tagging clean v0.6.0.
 
 **Definition of Done:**
 
@@ -24,7 +26,7 @@
 | TASK-099 | Reproducible release pipeline: linux/arm64, cosign signing, Homebrew auto-update, signed Docker | 🔄 | Partial — see "Last Session" notes; secret-gated steps stubbed |
 | TASK-100 | Distribution artifacts: `.deb` + `.rpm` via nfpm, `get.fendix.dev` one-line installer | 🔄 | `.deb`/`.rpm` shipped 2026-04-30 — new `nfpm.yaml`, release.yml + cosign wired, smoke-tested locally; `get.fendix.dev` rollout documented but waiting on operator DNS action |
 | TASK-101 | Documentation pass: 5-min walkthrough, CI integration page, Semgrep rule guide, triage workflow, JSON schema ref | ✅ | New `docs/walkthrough-juice-shop.md` + `docs/semgrep-rules.md` + `docs/triage-workflow.md`; existing `docs/schema.md` + `docs/ci-cd-integration.md` audited and cross-linked; new "Documentation" index in README. |
-| TASK-102 | `--debug` bundle: redacted config + OS + Python version + probe audit + slog-debug into a tarball | 🔲 | |
+| TASK-102 | `--debug` bundle: redacted config + OS + Python version + probe audit + slog-debug into a tarball | ✅ | Shipped 2026-04-30 — new `internal/diagnostic` package + `--debug-bundle <path>` CLI flag; tarball entries: README + config (auth `[REDACTED]`) + environment (fendix/go/python versions) + metadata + findings + debug.log + probes.jsonl (only on `--enable-active`); new package-level audit log in scanner; orchestrator installs slog tee at scan start and writes bundle before fail-on; 8 unit + 1 e2e test. |
 | TASK-103 | SECURITY.md + active-scanner threat model + signed commits/releases | 🔄 | SECURITY.md + threat-model shipped 2026-04-30; signed commits/releases pending COSIGN_ENABLED rollout |
 | TASK-104 | Performance benchmark suite: scan time vs endpoint count, memory peak, goroutine count, published in README | ✅ | Shipped 2026-04-30 — bench suite + README "Performance" section live |
 

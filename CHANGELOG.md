@@ -7,8 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc1] - 2026-04-30
+
+Phase 13 — P3 External Release readiness, release-candidate. Validates the
+new release pipeline (linux/arm64 binaries, multi-arch Docker, .deb/.rpm
+packages, opt-in cosign keyless signing) end-to-end before tagging the
+clean v0.6.0. Functional surface unchanged from `[Unreleased]` above —
+all 6 Phase 13 work items (TASK-099..104) included. Operator items pending
+for the v1.0 cut: `COSIGN_ENABLED=true` repo variable (signed artifacts +
+commits) and `get.fendix.dev` DNS rollout (short-URL installer).
+
 ### Added
 
+- **`--debug-bundle <path>` diagnostic tarball** (TASK-102). New flag on
+  `fendix scan` writes a redacted `.tar.gz` at scan end intended for
+  attaching to bug reports. Bundle contains six entries:
+  `README.md` (top-level explainer), `config.json` (scan config with
+  `auth.value` masked as `[REDACTED]` while preserving `auth.type` and
+  `auth.header` for diagnosis), `environment.json` (fendix version, Go
+  version, GOOS/GOARCH, resolved Python version, capture timestamp),
+  `metadata.json` (the same `ScanMetadata` the JSON reporter receives),
+  `findings.json` (post-sanitization findings), and `debug.log`
+  (DEBUG-and-above slog stream captured via a tee handler installed for
+  the duration of the scan, with auth values literal-replaced before
+  serialization). When `--enable-active` is on, also includes
+  `probes.jsonl` (one `ProbeRecord` per line, sorted by timestamp →
+  endpoint → parameter for reproducibility across runs). New
+  `internal/diagnostic` package (`bundle.go` + `redact.go`); new
+  `internal/scanner/probe_audit_global.go` adds a process-level
+  `ProbeAuditLog` with `ResetGlobalAuditLog` + `GlobalAuditRecords` so
+  the orchestrator can read post-scan audit records (pre-fix the
+  per-endpoint audit log was created freshly on each `CheckInjection`
+  call and discarded after returning). Wired into the orchestrator at
+  scan start (logagg + audit reset, slog tee install) and end (capture
+  python version, probes, findings, metadata; write tarball before the
+  fail-on check so non-zero exits still produce a bundle). 8 unit tests
+  under `internal/diagnostic/` cover redaction, tarball shape,
+  `--enable-active` probe inclusion, environment metadata, and
+  unwritable-path error handling. New e2e regression
+  `TestDebugBundle_WrittenAndRedacted` runs the binary against an
+  httptest server with a real `--auth` value and asserts the bundle
+  exists, contains all expected entries, and never leaks the auth
+  credential anywhere — including the buffered slog stream. Closes the
+  `--debug` exit criterion for Phase 13.
 - **Linux `.deb` and `.rpm` packages** (TASK-100). Each release now ships
   Debian and RPM packages alongside the bare binaries: `fendix-vX.Y.Z-linux-amd64.deb`,
   `fendix-vX.Y.Z-linux-arm64.deb`, `fendix-vX.Y.Z-linux-amd64.rpm`,
