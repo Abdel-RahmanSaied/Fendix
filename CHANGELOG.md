@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-30
+
+**Phase 13 — P3 External Release readiness — ✅ complete.**
+
+Identical content to `v0.6.0-rc2`, promoted to stable after the rc2
+release pipeline ran fully green across all 7 jobs and the cosign
+signing path was verified end-to-end via real `cosign verify-blob`
+against a signed binary (Sigstore Fulcio anchor + GitHub Actions OIDC
+identity → `Verified OK`). See [v0.6.0-rc2](#060-rc2---2026-04-30) for the full
+feature list. New since v0.5.0:
+
+- TASK-099 — Reproducible release pipeline (linux/arm64, cosign keyless
+  signing on every artifact, signed multi-arch Docker, Homebrew formula
+  auto-update)
+- TASK-100 — Distribution artifacts (`.deb` + `.rpm` via nfpm) plus the
+  `https://get.fendix.dev/install.sh` short-URL installer (DNS + GitHub
+  Pages + Let's Encrypt + auto-mirror-sync of install.sh + landing page
+  on every `v*` tag)
+- TASK-101 — Documentation pass (juice-shop walkthrough, Semgrep guide,
+  triage workflow, schema reference)
+- TASK-102 — `--debug-bundle <path>` redacted diagnostic tarball
+- TASK-103 — `SECURITY.md` + active-scanner threat model; signed
+  commits/releases now active
+- TASK-104 — Performance benchmark suite published in README
+- Landing-page positioning at `get.fendix.dev` rewritten around the
+  wedge ("DAST + SAST in one PR check, fails only when both engines
+  confirm")
+
+This is the first stable signed release. Every binary, `.deb`, `.rpm`,
+and Docker manifest ships with `.crt` + `.sig` cosign sidecars
+verifiable against the build's GitHub Actions OIDC identity — no
+static public key, no rotation surface.
+
 ## [0.6.0-rc2] - 2026-04-30
 
 Phase 13 — P3 External Release readiness, second release candidate.

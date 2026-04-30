@@ -4,11 +4,11 @@
 
 ---
 
-## Active Phase: 13 — P3 External Release readiness (v1.0) — 🔄 In Progress (rc2 cut 2026-04-30)
+## Active Phase: 13 — P3 External Release readiness (v1.0) — ✅ Complete (v0.6.0 shipped 2026-04-30)
 
-**Sprint goal:** Trustworthy, signed, documented v1.0. Reproducible signed builds (linux/arm64 + cosign + signed Docker), distribution artifacts (.deb/.rpm + curl-pipe installer), docs pass, `--debug` diagnostic bundle, SECURITY.md + active-scanner threat model, benchmarks published in README.
+**Sprint goal:** Trustworthy, signed, documented v1.0. Reproducible signed builds (linux/arm64 + cosign + signed Docker), distribution artifacts (.deb/.rpm + curl-pipe installer), docs pass, `--debug` diagnostic bundle, SECURITY.md + active-scanner threat model, benchmarks published in README. **All shipped.**
 
-**Release status:** `v0.6.0-rc1` shipped 2026-04-30 (validated multi-arch builds + nfpm + Docker mirror, but ran with `COSIGN_ENABLED=false` so no signed artifacts). `v0.6.0-rc2` cut 2026-04-30 — first release tag with `COSIGN_ENABLED=true` (flipped 14:07Z); validates the cosign keyless signing path before tagging clean `v0.6.0`. Plus `get.fendix.dev` short-URL installer is live (DNS + Pages + Let's Encrypt + auto-mirror-sync verified end-to-end), and the landing page was repositioned around the wedge ("DAST + SAST in one PR check, fails only when both engines confirm") with cosign verify recipe + GH Actions snippet + OG meta tags.
+**Release timeline:** `v0.6.0-rc1` shipped 2026-04-30 (multi-arch builds + nfpm + Docker mirror validated, ran without cosign). `v0.6.0-rc2` shipped 2026-04-30 — first signed release candidate with `COSIGN_ENABLED=true`; full release pipeline ran green across all 7 jobs; cosign verify recipe smoke-tested end-to-end against a real signed binary (`Verified OK`). `v0.6.0` final shipped 2026-04-30 — identical content to rc2, promoted to stable after pipeline validation. First stable signed release: every binary, `.deb`, `.rpm`, and Docker manifest ships with `.crt` + `.sig` cosign sidecars verifiable against the build's GitHub Actions OIDC identity.
 
 **Definition of Done:**
 

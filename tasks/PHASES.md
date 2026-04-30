@@ -22,7 +22,7 @@
 | 10 | P0 — Flag wiring | ✅ Complete | Fix broken user-facing CLI flags found in real-world testing (v0.2) — shipped 2026-04-29 |
 | 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
 | 12 | P2 — Quality & ops | ✅ Complete (7/7 — TASK-092..098; v0.5.0 shipped 2026-04-29) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
-| 13 | P3 — External release | 🔄 In Progress | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
+| 13 | P3 — External release | ✅ Complete (v0.6.0 shipped 2026-04-30 — first stable signed release) | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
 | 14 | P4 — External wedge | 🔲 Not Started | Reposition, prove coverage, lower CI-onramp friction, ship GH App (v1.1) |
 | 15 | P5 — Open & extensible | 🔲 Not Started | Open-source the engine, plugin system, reachability correlation (v1.2) |
 | 16 | P6 — Architecture v2 | 🔲 Not Started | Drop Python boot tax: native-Go simple checks, optional shelled-out Semgrep (v2.0) |
