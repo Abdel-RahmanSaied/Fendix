@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress. Shipped 2026-05-01: TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section), **TASK-105 (`fendix init` zero-config workflow generator)**. Scaffolded 2026-05-01: TASK-106 (benchmark runner + Makefile target + workflow_dispatch CI + docs/benchmarks.md — real numbers land after first CI run). **Frontend sync 2026-05-01**: `fendix_frontend` absorbed Phase 14 deltas (version bumps `v0.6.0-rc1`→`v0.6.0`, new Unreleased changelog entry, `fendix init` documented in cli-reference, memory.md updated, engine binary rebuilt for backend bind mount). No backend serializer changes (no new scan flags). Remaining engine work: TASK-106 numbers capture, TASK-107 (GH App), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml`). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-13 complete; Phase 14 ~57% (4 of 7 tasks shipped + scaffold). Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
+**Phase:** 14 — P4 External Wedge (v1.1) — ✅ Complete (engine code; one explicit follow-up TASK-107b for the GitHub App scan-and-comment wiring). All 7 Phase-14 tasks shipped: TASK-105 (`fendix init`), TASK-106 (vulnerable-app benchmark + numbers from v0.6.1 CI run captured), TASK-107 (GitHub App scaffold — manifest + webhook server + auth + handler stubs; TASK-107b follow-up wires clone+scan+comment+SARIF), TASK-108 (`fendix demo` command), TASK-109 (`.fendix.yaml` repo-committed policy + extended `fendix init` to write it), TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section). **v0.6.1 shipped 2026-05-01** (patch release: install.sh `mkdir -p` fix that was blocking benchmark CI + first-time users with non-default FENDIX_DIR). Engine code is at v0.6.1 + 4 Phase-14 commits (5300561, 3570d53, 3ba98e0, 31b9785). Phase 13 ✅ Complete 2026-04-30. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-14 effectively complete (TASK-107b is the only Phase-14 follow-up). Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), **v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01)**; v1.1+ scoped via Phases 14-16.
 **Last updated:** 2026-05-01
 
 ### Completed tasks
@@ -463,7 +463,99 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-01 (frontend + backend sync — Phase 14 absorption)
+**Date:** 2026-05-01 (Phase 14 closeout — multi-agent orchestration session — TASK-106 numbers + TASK-107 scaffold + TASK-108 + TASK-109 + v0.6.1 patch release)
+**Session goal:** Execute the remaining Phase 14 tasks in order — TASK-106 numbers capture, TASK-107 GitHub App, TASK-108 `fendix demo`, TASK-109 `.fendix.yaml` policy. Run as Orchestrator Agent per the multi-agent runbook in `resume-engine-work.md`.
+
+**Accomplished:**
+
+- **Bootstrap (Phase 0).** Read MEMORY.md / PHASES.md / CURRENT_SPRINT.md / FENDIX_CLAUDE_CODE.md. Confirmed Phase 14 ~57% with 4 tasks remaining (TASK-106 numbers + TASK-107/108/109). Build matrix green pre-work: Go 10 packages + Python 193/193.
+
+- **TASK-106 unblock + ship — v0.6.1 patch release.** Triggered the benchmark workflow against v0.6.0 → it failed in 10s. Root cause: `scripts/install.sh` calls `mv "${TMP_DIR}/fendix" "${INSTALL_DIR}/fendix"` without `mkdir -p "$INSTALL_DIR"` — fresh GitHub Actions runners don't have `~/.local/bin` populated, so the move failed with "No such file or directory". This was a real production bug (any first-time user with `FENDIX_DIR=$HOME/.local/bin` hit it). Per direction, cut a v0.6.1 patch release rather than push the fix directly to the homebrew-fendix mirror or work-around in benchmark.yml. Fix: try `mkdir -p` non-sudo first, escalate to `sudo mkdir -p` only when a parent up the chain isn't writable. POSIX-sh clean. Verified locally on a non-existent `FENDIX_DIR=/tmp/.../bin`. Committed (d92887a) + pushed + annotated tag v0.6.1 + pushed tag → release.yml ran 11m58s (success across all 7 jobs: 4 binary builds + cosign signing + multi-arch Docker + nfpm .deb/.rpm + mirror sync of install.sh into homebrew-fendix → `get.fendix.dev/install.sh` now serves the fix). Confirmed via `curl get.fendix.dev/install.sh | grep mkdir`.
+
+- **TASK-106 numbers captured.** Re-triggered benchmark workflow with `--field fendix_version=v0.6.1`. Run completed in 1m26s success (run 25193548945). Stock `fendix scan --url http://localhost:3000` against `bkimminich/juice-shop:v17.1.1` produced: 97 endpoints discovered (1 robots.txt + 13 JS link extraction + 83 from 117-path brute-force wordlist), 391 raw findings → **7 deduped** (4 MEDIUM, 2 LOW, 1 INFO; all blackbox; 0 correlated), 41.5s scan time. Honest numbers: juice-shop's interesting vulns (SQLi/XSS/IDOR) require `--enable-active` and/or `--code` to surface — explicitly noted in docs/benchmarks.md as a follow-up benchmark row. **Bonus fix in run-juice-shop.sh:** the jq summary parser was reading `metadata.endpoints_count` but the actual key is `endpoints_scanned` — so summary.json reported `endpoints_scanned: 0` even when 97 endpoints were really scanned. Fixed in 31b9785; real number was always recoverable from findings.json.
+
+- **Known follow-up flagged (not blocking):** `findings.json.metadata.version` emits `"dev"` even when the binary was built with `-X main.Version=v0.6.1` ldflag — release.yml passes the ldflag, `fendix version` (stdout) prints "v0.6.1" correctly, but the JSON metadata path uses a different code path that ignores it. Investigate as a separate task.
+
+- **TASK-107 — GitHub App scaffold.** New `cmd/fendix-app` binary (separate from `fendix` CLI), new `internal/ghapp` package, new `app/manifest.yml` for one-click App registration via GitHub's manifest flow. Webhook layer: HMAC-SHA256 sig verify (legacy sha1= rejected), event router (pull_request/push/check_run/ping + 200-OK silent drop on unknown events so a new event type doesn't disable the endpoint via repeated 4xx), 4 MiB body size cap. Auth layer: pure-stdlib RS256 App-JWT signing (no `golang-jwt` dep added — preserves zero-runtime-deps posture; PKCS1 + PKCS8 PEM both supported), `/app/installations/{id}/access_tokens` exchange, single-flight installation-token cache via `TokenSource` (50 concurrent goroutines for the same installation produce 1 network refresh, not 50). Handler layer: pull_request/push/check_run handlers — pull_request decodes payload, filters to scan-worthy actions (opened/synchronize/reopened), fetches installation token via TokenSource (proves credentials wire correctly), then STUBS the actual scan + PR comment + SARIF upload. **TASK-107b is the explicit follow-up** that wires clone + hybrid-scan + PR-comment-from-findings + SARIF-upload-to-Code-Scanning. The scaffold ships now so operators can deploy and verify credentials work BEFORE business logic lands. 28 unit tests under -race. `docs/github-app.md` setup guide covers manifest registration, env-var configuration, security model, troubleshooting, deployment recipes (Kubernetes + Cloud Run + Fly.io). Marketplace listing is an operator step distinct from code, called out in the doc. Committed 3ba98e0.
+
+- **TASK-108 — `fendix demo` command.** New `internal/democmd/run.go` shells out to host's `docker` CLI (no Docker SDK dep — same pattern as scripts/benchmark/run-juice-shop.sh) to spin up `bkimminich/juice-shop:v17.1.1` on `localhost:3000`, run `fendix scan --url http://localhost:3000 --format html --output <path>`, and (with `--open`) open the HTML report in the user's default browser via `open` (macOS) / `xdg-open` (linux) / `rundll32` (windows). Container always cleaned up on exit via deferred `docker rm -f` running on a fresh context (parent-cancel doesn't strand the container). Flags: `--open`, `--port`, `--output`, `--image` (image overrideable but pinned default for reproducibility). 10 unit tests with -race covering happy-path / docker-run-fails / health-check-never-passes-still-cleans-up / context-cancel / fendix-binary-missing / Options resolution. 1 e2e smoke test (cobra wiring; deliberately doesn't spin up Docker so the e2e suite stays runnable on Docker-free CI). Committed 3570d53.
+
+- **TASK-109 — `.fendix.yaml` repo-committed policy file.** New `internal/policy` package (schema struct + Load with strict KnownFields(true) parsing + Validate + ApplyTo setter-callback bag). New `--config <path>` flag on `fendix scan`. Precedence: cobra-default < policy-file value < explicit-CLI-flag. Auto-pickup behavior: `--config` explicit + missing file = HARD ERROR (no silent fallback that would mask typos); no `--config` + `.fendix.yaml` exists in cwd = silent pickup; no `--config` + no file = flag-only mode. Schema versioned (`version: 1` mandatory; future v2 = forward-rejected with clear upgrade error). 14 policy unit tests + 3 e2e tests. Extended `fendix init` to write `.fendix.yaml` alongside the workflow + ignore — pre-flight clobber check still atomic across all 3 files; existing init tests updated. New `docs/fendix-yaml.md` schema reference covers the precedence model, what's intentionally NOT in the schema (per-invocation flags, credential values), forward-rejected versioning, worked example, and CLI-flag → policy-field migration table. Committed 5300561.
+
+**Files changed this session:**
+
+- `scripts/install.sh` (mkdir -p fix)
+- `scripts/benchmark/run-juice-shop.sh` (jq endpoints_scanned key fix)
+- `docs/benchmarks.md` (v0.6.1 numbers + reading-the-row prose)
+- `docs/github-app.md` (NEW — TASK-107 setup guide)
+- `docs/fendix-yaml.md` (NEW — TASK-109 schema reference)
+- `app/manifest.yml` (NEW — TASK-107 GitHub App manifest)
+- `go/cmd/fendix-app/main.go` (NEW — TASK-107 webhook server)
+- `go/internal/ghapp/{webhook,auth,handler}.go` + `{webhook,auth}_test.go` (NEW — TASK-107)
+- `go/internal/democmd/run.go` + `run_test.go` (NEW — TASK-108)
+- `go/internal/policy/policy.go` + `policy_test.go` (NEW — TASK-109)
+- `go/internal/initcmd/init.go` (extended to 3 files), `init_test.go` (assertions updated), `templates/fendix-yaml.txt` (NEW)
+- `go/internal/e2e/{demo_cmd,policy}_test.go` (NEW)
+- `go/internal/e2e/init_cmd_test.go` (assertions updated for the 3rd file)
+- `go/cmd/fendix/main.go` (newDemoCmd + --config + policy.ApplyTo wiring; +time + +pflag imports)
+- `CHANGELOG.md` ([Unreleased] entries for TASK-107/108/109; new [0.6.1] section folding TASK-105/106/110/111)
+
+**Commits this session (in order):**
+
+- d92887a `chore(release): v0.6.1 — install.sh mkdir fix + Phase 14 partial`
+- 31b9785 `docs(benchmarks): juice-shop numbers from v0.6.1 CI run (TASK-106)`
+- 3ba98e0 `feat(ghapp): GitHub App scaffold (TASK-107)`
+- 3570d53 `feat(demo): fendix demo command — local juice-shop scan (TASK-108)`
+- 5300561 `feat(policy): .fendix.yaml repo-committed policy file (TASK-109)`
+
+**Build state at session end:**
+
+- `go build ./...` ✓ (13 Go packages including new `internal/ghapp`, `internal/democmd`, `internal/policy`, plus new `cmd/fendix-app`)
+- `go test -race ./...` ✓ (28 ghapp + 10 democmd + 14 policy + all existing; 0 failures)
+- `make test-python` ✓ (193/193)
+- `make e2e` ✓ (24 e2e tests in 11.2s — was 20 at session start; new tests: demo_cmd_test 1, policy_test 3 with 1 fixture-skipped)
+
+**Decisions made:**
+
+- **v0.6.1 patch release vs workaround.** Three options were on the table for unblocking benchmark CI: (a) push the install.sh fix directly to the homebrew-fendix mirror, (b) patch benchmark.yml to use checked-out install.sh, (c) cut v0.6.1 with the fix. Chose (c) for two reasons: it's the formal release path that auto-mirrors via release.yml, and it folds the four already-shipped Phase 14 features (TASK-105/110/111 + TASK-106 scaffold) into a tagged release rather than leaving them in [Unreleased] indefinitely.
+
+- **TASK-107 scaffold-first, not monolithic.** A complete GitHub App with clone+scan+comment+SARIF would be ~1700 LOC in one commit, hard to review. Splitting at the credentials/auth boundary lets operators deploy + verify credentials wire correctly before business logic adds new failure modes on top. The scaffold acknowledges events, fetches installation tokens, and 200-OKs — that's enough to validate manifest registration, env-var configuration, and the security model end-to-end. TASK-107b in a follow-up commit wires the actual scan workflow.
+
+- **Pure-stdlib RS256 for App JWTs (no golang-jwt dep).** Adds a non-trivial dep tree (jwt/v5 pulls in subdeps) for a ~40-line piece of crypto we already had stdlib primitives for. The project's zero-runtime-deps posture (only cobra + pflag + yaml.v3 in go.mod) is a real ergonomic and audit win; preserving it for TASK-107 was worth the 40 lines of explicit signing code.
+
+- **`fendix demo` shells out to docker CLI, not Docker SDK.** Same rationale: SDK adds binary size and dep tree; CLI is on every system with docker. Existing scripts/benchmark/run-juice-shop.sh already uses this pattern, so consistency too.
+
+- **`.fendix.yaml` strict YAML parsing (`KnownFields(true)`).** Most common config-file failure mode is a typo silently dropped (`fial_on:` instead of `fail_on:`). Hard-failing on unknown fields trades a minute of "fix your typo" friction for "configuration drift you can't see in code review."
+
+- **`--config` explicit-missing-file is a hard error, but default-path silent pickup is fine.** Falling back to flag-only when `--config` points at a typoed path would mask bugs; falling back when there's just no `.fendix.yaml` in cwd is correct (no user intent to interpret).
+
+- **Schema versioning is forward-rejected.** A future v2 schema reading a v1 file works (backward compatible). An older fendix build seeing a v2 file refuses to parse rather than silently ignoring v2-only fields. Opposite of YAML's default behavior, but matches what AppSec teams expect.
+
+- **Extended `fendix init` to 3 files.** TASK-105 explicitly deferred `.fendix.yaml` to TASK-109; this is where it lands. Pre-flight clobber check already covered .fendix-ignore so extending to .fendix.yaml is just one more entry in the loop. Existing tests updated to assert all 3 files.
+
+- **TASK-106's 0-correlated, 0-CRITICAL/HIGH numbers are honest.** Stock URL-only scan can't surface juice-shop's intentional SQLi/XSS/IDOR — those need `--enable-active` (DAST probes) or `--code` (white-box). docs/benchmarks.md explicitly notes this rather than tuning the row to make the numbers look better.
+
+**Open questions / followups:**
+
+- **TASK-107b — wire the actual scan-and-comment workflow.** Follow-up commit needs to: clone the PR's head SHA, run hybrid-mode `fendix scan` (URL of deploy preview if available, `--code` against the cloned source), render PR-comment markdown from findings JSON (reuse the github-script template from `examples/github-actions/fendix-scan.yml` so users see the same output regardless of installation path), upload SARIF to the Code Scanning Upload API. Plus check_run "Re-run check" handling. Plus `Dockerfile.app` + reference Kubernetes manifest.
+
+- **`metadata.version` says `"dev"` instead of `v0.6.1` in scan output.** The `fendix version` stdout path correctly prints v0.6.1, but the JSON metadata path uses a different `Version` variable. Fix is one-line — pass the same `main.Version` into the metadata builder. Not blocking the benchmark numbers (the summary.fendix_version field reads from the stdout path and is correct).
+
+- **vAPI + crapi benchmark fixtures.** TASK-106 ships one fixture (juice-shop). docs/benchmarks.md notes vAPI + crapi as follow-up rows; pattern is `scripts/benchmark/run-<target>.sh` + a row in benchmark.yml. Not urgent; one fixture is enough to start producing numbers.
+
+- **ZAP-baseline + Semgrep CI comparison runs.** Same juice-shop fixture, run the competing tools in parallel, compare finding count + scan time + FP rate. Apples-to-apples comparison is the marketing-strongest output of the whole TASK-106 line.
+
+- **Frontend sync deferred.** Per `SYNC_FRONTEND_BACKEND.md`, frontend changelog should cite the new TASK-106 numbers + announce TASK-107/108/109. None of those add new scan flags so the backend `LaunchScanSerializer` doesn't change. Defer to a separate frontend-focused session.
+
+**Next session should start with:**
+
+- **TASK-107b — wire the actual scan-and-comment workflow** in the GitHub App. The scaffold (auth + webhook + event router + handler stubs) is in place; this is the business-logic layer. Concretely: in `internal/ghapp/handler.go::HandlePullRequest`, replace `stubScanRunner` with a real `RunHybridScan(cloneURL, headSHA, installationToken)` that clones to a temp dir, runs `fendix scan --code <tmp> --url <preview-url-if-any> --format json`, parses the resulting findings, and feeds them to a `RenderPRComment` function (reuse the github-script template from `examples/github-actions/fendix-scan.yml`). Then `UploadSARIF` against `/repos/{owner}/{repo}/code-scanning/sarifs`. Plus the Dockerfile.app + reference k8s deployment.
+
+- **Or**, if the user wants to take the wedge story to market first, the next strategic move is the **frontend sync** (cite TASK-106 numbers + advertise TASK-107/108/109 in the changelog page) → then **register the actual GitHub App on github.com** using the now-shipped `app/manifest.yml`, deploy `fendix-app` somewhere (Fly.io is one Dockerfile + one secret), and submit the Marketplace listing. The code's done; the operator path is open.
+
+---
+
+## Earlier Session (2026-05-01 — frontend + backend sync — Phase 14 absorption)
 **Session goal:** Absorb the Phase 14 engine commits (TASK-105 `fendix init`, TASK-106 benchmark scaffold, TASK-110/111 README repositioning + telemetry) into the frontend (`fendix_frontend`) and backend (`fendix-backend`) per the `SYNC_FRONTEND_BACKEND.md` runbook. The frontend was last sync'd to v0.6.0-rc1 (StatsBar, LandingFooter, changelog, cli-reference); this sync brings it to v0.6.0 final and adds the Phase 14 surface that's user-visible.
 
 **Accomplished:**
