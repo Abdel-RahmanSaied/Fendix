@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **GitHub App scaffold (TASK-107).** New `cmd/fendix-app` binary
+  (separate from `fendix` CLI; long-running webhook server) plus
+  `internal/ghapp` package and `app/manifest.yml` for one-click App
+  registration via GitHub's manifest flow. Webhook layer:
+  HMAC-SHA256 signature verification (legacy `sha1=` rejected),
+  event router (`pull_request`, `push`, `check_run`, `ping`), 4 MiB
+  body size cap, 401 on missing/mismatched signatures, 200-OK silent
+  drop on unknown event types so a new event won't disable the
+  endpoint via repeated 4xx. Auth layer: pure-stdlib RS256
+  App-JWT signing (no `golang-jwt` dep added — the project's
+  zero-runtime-deps posture is preserved), `/app/installations/{id}/access_tokens`
+  exchange, single-flight installation-token cache via
+  `TokenSource` (concurrent webhook bursts for the same installation
+  produce one network refresh, not N). 28 unit tests with `-race`
+  including PKCS1 + PKCS8 private-key formats, JWT structural
+  correctness verified by parsing the App's own JWT with the public
+  half of the test key, and per-installation cache isolation.
+  **Setup guide:** `docs/github-app.md` walks through manifest
+  registration, env-var configuration, and the security model.
+  **What's stubbed (TASK-107b follow-up):** the actual clone +
+  hybrid-scan + PR-comment + SARIF-upload workflow on `pull_request`
+  events. The scaffold acknowledges events, fetches installation
+  tokens, and logs — operators can deploy *now* and confirm
+  credentials wire correctly before the business logic lands.
+  Marketplace listing is an operator step (App must be public, GH
+  review process, listing copy/screenshots) — distinct from
+  TASK-107's code deliverable.
+
 ## [0.6.1] - 2026-05-01
 
 **Phase 14 — P4 External Wedge — partial.** Folds the four Phase 14

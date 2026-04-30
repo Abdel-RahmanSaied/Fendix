@@ -1,0 +1,47 @@
+# Fendix — GitHub App manifest
+#
+# This manifest is consumed by GitHub's "Create a GitHub App from a manifest"
+# flow. A user clicks the "Install Fendix" button (or visits a URL like
+# https://github.com/organizations/<ORG>/settings/apps/new?manifest=...),
+# GitHub presents the App's permissions and webhook events, and on approval
+# auto-creates the App in the user's account/org with these settings.
+#
+# Operator setup steps and the deployment story are in docs/github-app.md.
+#
+# Spec reference:
+#   https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
+name: Fendix
+url: https://get.fendix.dev/
+hook_attributes:
+  # Filled in by GitHub on App creation; the operator points it at their
+  # deployed fendix-app webhook server (cmd/fendix-app).
+  url: https://app.fendix.dev/webhook
+  # active is true by default; explicit for clarity.
+  active: true
+redirect_url: https://get.fendix.dev/installed
+description: |
+  DAST + SAST as one PR check. Fails only when both engines confirm.
+  Fendix scans every pull request: black-box probes against the deployed
+  preview, white-box analysis against the source diff, and posts a single
+  PR comment plus uploads SARIF to the Code Scanning tab. Findings only
+  fail the build when both the runtime probe and the static analyzer agree.
+public: true
+default_events:
+  # The PR-event handler clones the head SHA, runs fendix scan, and posts
+  # a comment + uploads SARIF. push and check_run drive the live re-render
+  # of the same scan when the head SHA advances or a check is re-requested.
+  - pull_request
+  - push
+  - check_run
+default_permissions:
+  # Read repo contents to clone and run the static analyzer over source.
+  contents: read
+  # Read+write to Code Scanning to upload the scan's SARIF.
+  security_events: write
+  # Read+write to checks so the App can publish a check-run that gates
+  # the merge button on confirmed findings.
+  checks: write
+  # Write to PRs so the App can post the findings-summary comment.
+  pull_requests: write
+  # Read metadata is implied by every App but listed for clarity.
+  metadata: read
