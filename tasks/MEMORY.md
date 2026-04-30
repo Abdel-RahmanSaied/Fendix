@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress. Shipped 2026-05-01: TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section), **TASK-105 (`fendix init` zero-config workflow generator)**. Scaffolded 2026-05-01: TASK-106 (benchmark runner + Makefile target + workflow_dispatch CI + docs/benchmarks.md — real numbers land after first CI run). Remaining: TASK-106 numbers capture, TASK-107 (GH App), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml`). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-13 complete; Phase 14 started 2026-05-01 with README reposition + telemetry statement + cosign-verify section + benchmark scaffold. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
-**Last updated:** 2026-04-30
+**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress. Shipped 2026-05-01: TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section), **TASK-105 (`fendix init` zero-config workflow generator)**. Scaffolded 2026-05-01: TASK-106 (benchmark runner + Makefile target + workflow_dispatch CI + docs/benchmarks.md — real numbers land after first CI run). **Frontend sync 2026-05-01**: `fendix_frontend` absorbed Phase 14 deltas (version bumps `v0.6.0-rc1`→`v0.6.0`, new Unreleased changelog entry, `fendix init` documented in cli-reference, memory.md updated, engine binary rebuilt for backend bind mount). No backend serializer changes (no new scan flags). Remaining engine work: TASK-106 numbers capture, TASK-107 (GH App), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml`). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-13 complete; Phase 14 ~57% (4 of 7 tasks shipped + scaffold). Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
+**Last updated:** 2026-05-01
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -463,7 +463,69 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-01 (Phase 14 execution — TASK-110 + TASK-111 + TASK-106 scaffold + TASK-105 `fendix init`)
+**Date:** 2026-05-01 (frontend + backend sync — Phase 14 absorption)
+**Session goal:** Absorb the Phase 14 engine commits (TASK-105 `fendix init`, TASK-106 benchmark scaffold, TASK-110/111 README repositioning + telemetry) into the frontend (`fendix_frontend`) and backend (`fendix-backend`) per the `SYNC_FRONTEND_BACKEND.md` runbook. The frontend was last sync'd to v0.6.0-rc1 (StatsBar, LandingFooter, changelog, cli-reference); this sync brings it to v0.6.0 final and adds the Phase 14 surface that's user-visible.
+
+**Accomplished:**
+
+- **Engine state inventoried.** Read MEMORY.md "Current Project State", PHASES.md, CURRENT_SPRINT.md. Engine is at v0.6.0 final (commit `f3f7c21`) plus 3 Phase-14 commits: `86aa9fe` (TASK-110/111 README + telemetry), `56d466b` (TASK-106 benchmark scaffold), `dee44c1` (TASK-105 `fendix init`). Verified build: Go 10 packages compile + race-clean; Python 193/193; e2e 20/20.
+
+- **Diff analysis.** Determined that none of the Phase 14 commits add new scan flags. `fendix init` is a separate cobra subcommand (one-shot bootstrap, not per-scan). Benchmark scaffold is internal CI tooling (`scripts/benchmark/`, `make benchmark`, `.github/workflows/benchmark.yml`). README/telemetry changes are docs in the engine repo. So the backend `LaunchScanSerializer` + `services.py::build_command` pipeline is already complete from the prior v0.5/v0.6.0-rc1 sync — no backend serializer changes needed this session. Same rationale as `--debug-bundle` (TASK-102): host-filesystem CLI tools, not orchestration knobs.
+
+- **Frontend version bumps (`v0.6.0-rc1` → `v0.6.0`).** `app/components/StatsBar.tsx` (Latest release badge), `app/components/LandingFooter.tsx` (footer version), `app/lib/releases.ts` (JSDoc filename examples), `app/page.tsx` (landing-page hero pre-link bumped from `v0.6.0-rc2 — first signed release` to `v0.6.0 — first stable signed release`). `tests/components/StatsBar.test.tsx` updated to assert the new literal — 26 vitest files, 173 tests, all green.
+
+- **Frontend changelog page (`app/changelog/page.tsx`).** Added a new top entry **"Unreleased — External Wedge (Phase 14, in progress)"** with 5 highlights covering TASK-105 (`fendix init`), TASK-110 (README repositioning), TASK-111 (telemetry section), the bonus "Verifying signed releases" section, and TASK-106 partial (benchmark scaffold). Condensed the prior `v0.6.0-rc2` entry into a single **`v0.6.0` final** entry (rc2 details rolled in since rc2 → v0.6.0 is identical content per CHANGELOG.md). Updated the intro copy + footer copy to lead with v0.6.0 final + Phase 14 in progress (was v0.6.0-rc1 release-candidate validation messaging). New entry uses `status: "in-progress" as const` which TS unions cleanly with the existing `"complete" as const` array members; the rendering branch at line 303-311 already handles non-`"complete"` as the "In progress" badge case.
+
+- **Frontend `app/cli-reference/page.tsx`.** Added `fendix init` to the **Commands** list with description "Generate a drop-in GitHub Actions workflow + .fendix-ignore for the current repo (v0.6+)". Added a new dedicated **"Init Flags"** section (between Report Flags and the example blocks) documenting `--force` + `--print` with a one-paragraph description of stack/spec detection.
+
+- **Frontend `memory.md`.** Updated phase status block from "Phase 13 in release-candidate validation" to "Phase 14 in progress" with the new v0.6.0 final + Phase 14 ~57% line. Updated releases-shipped list to include v0.6.0-rc2 (first signed RC) and v0.6.0 final. Added a new "Phase 14 additions" sub-block describing `fendix init` rationale (not a per-scan knob, hence no backend wiring) — same shape as the prior `--debug-bundle` rationale block. Added a new "Phase 14 (P4 External Wedge, v1.1) — 🔄 in progress" section listing the Phase 14 commits + a "Frontend sync (2026-05-01)" notes block describing exactly what surfaces moved.
+
+- **Engine binary rebuilt for backend bind mount.** `make embed-engine` (re-bundles Python engine into `go/internal/embedded/engine/`) + `cd go && GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=v0.6.0-phase14" -o ../bin/fendix-linux-arm64 ./cmd/fendix/`. Resulting 9.0 MB ARM64 ELF binary at `bin/fendix-linux-arm64` is what `fendix-backend/docker-compose.dev.yml` bind-mounts into both `django` and `celery` services on `:ro`. Backend dev compose picks it up automatically on next `up --build` cycle. The new binary carries `fendix init` even though the backend doesn't expose it — operators using `docker compose exec celery fendix init` against a mounted repo would work.
+
+**Files modified this session (frontend only — engine read-only per SYNC_FRONTEND_BACKEND.md hard rule, backend serializer/services unchanged because no new scan flags):**
+
+- `fendix_frontend/app/components/StatsBar.tsx` (1-line version literal)
+- `fendix_frontend/app/components/LandingFooter.tsx` (1-line version literal)
+- `fendix_frontend/app/lib/releases.ts` (3 JSDoc filename examples)
+- `fendix_frontend/app/page.tsx` (1-line hero pre-link copy)
+- `fendix_frontend/app/changelog/page.tsx` (new Unreleased entry, condensed v0.6.0 entry, intro/footer copy refresh)
+- `fendix_frontend/app/cli-reference/page.tsx` (added `fendix init` command + Init Flags section)
+- `fendix_frontend/tests/components/StatsBar.test.tsx` (1-line literal assertion)
+- `fendix_frontend/memory.md` (Phase 14 absorption block + sync session notes)
+- `fendix-engine/bin/fendix-linux-arm64` (rebuilt; 9.0 MB; linux/arm64 ELF; not committed — gitignored binary artifact for the backend bind mount)
+- `fendix-engine/tasks/MEMORY.md` (this entry — engine session log only)
+- `fendix-engine/tasks/CURRENT_SPRINT.md` (note that the frontend/backend sync absorbed this session's Phase 14 deltas)
+
+**Build state at session end:**
+
+- Engine: `go build ./...` ✓ (Go 10 packages, from `go/` working dir); `python -m pytest python/tests/` ✓ (193/193 from repo root); engine binary cross-compiled clean.
+- Frontend: `npx vitest run` ✓ (26 files, 173 tests, all green; updated StatsBar literal assertion); `npm run build` ✓ (29 routes prerendered cleanly; no TS errors, no lint errors).
+- Backend: not exercised this session — no serializer/services changes were warranted (no new scan flags). The dev-compose bind mount auto-picks the new arm64 binary on next restart; the production image bake is gated on the engine `make stage-engine` step which runs out of band when the backend cuts a release.
+
+**Decisions made:**
+
+- **No backend changes this session.** Per the `SYNC_FRONTEND_BACKEND.md` hard-rule "never silently extend a half-wired pipeline": every Phase 14 engine surface that *would* warrant backend wiring (`fendix init`, benchmark scripts, README/telemetry) was inspected and found to be a non-orchestration knob — same pattern as `--debug-bundle` from the prior sync. So the backend pipeline is already complete; touching `LaunchScanSerializer` for these would be net-noise. Documented the rationale in the frontend `memory.md` Phase 14 additions block so the next agent doesn't re-debate it.
+- **Don't expose `fendix init` via the backend / new-scan form.** `fendix init` writes files into the user's local repo (`.github/workflows/fendix.yml` + `.fendix-ignore`); it is meaningless at the API surface where the user doesn't *have* a repo to bootstrap. If a future "set up CI from the dashboard" flow needs this, that's a wholly separate feature with its own design surface (probably a "Download workflow YAML" button rendering the same `templates/workflow.yml` content the engine embeds).
+- **Condense the v0.6.0-rc2 changelog entry into the v0.6.0 final entry.** rc2 → v0.6.0 final was promotion-without-content-change (CHANGELOG.md `[0.6.0] - 2026-04-30` says "identical content to rc2, promoted to stable after the rc2 release pipeline ran fully green"); preserving both as separate UI entries was misleading. The v0.6.0 final entry retains the cosign-signing/get.fendix.dev/landing-page bullets that originally lived in the rc2 entry.
+- **Use `"in-progress" as const` for the new Phase 14 entry**, not `"complete"`. The rendering code already does `phase.status === "complete" ? <CheckCircle> : <CircleDashed>`, so non-complete stages show the orange in-progress badge correctly. TS array inference unions the literals cleanly without explicit type annotation.
+- **Rebuild `bin/fendix-linux-arm64` even though no backend wiring change.** Keeps the dev compose bind mount aligned with the latest engine, so an operator running `docker compose exec celery fendix version` or `fendix init` sees Phase-14 behavior. The pinned ldflags version `v0.6.0-phase14` makes it visually distinguishable from a tagged release in `fendix version` output, which is the right signal for dev environments.
+- **Don't commit anything this session.** Per the SYNC runbook and the parent prompt's safety rules, I made all changes locally and verified the green state, but did not run `git commit` / `git push`. The user will review the frontend diff and decide on commit messaging. Two commits are expected per the SYNC runbook (one per repo) but this session only touched the frontend; engine MEMORY/CURRENT_SPRINT touches are documentation-only.
+
+**Open questions / followups:**
+
+- **TASK-106 benchmark numbers.** Still pending per the prior session's "Next session should start with". This sync session deliberately did NOT do that work; it would have been outside the SYNC scope. The next engine-focused session should `gh workflow run benchmark.yml -R Abdel-RahmanSaied/Fendix --field fendix_version=v0.6.0`, paste the `summary.json` into `docs/benchmarks.md`, then update the frontend changelog entry to call out concrete numbers.
+- **Should the frontend dashboard surface a "Latest scan via CLI" hint** that mentions `fendix init` for first-time users? Right now `fendix init` is only documented in `/cli-reference`. A small callout on `/integrations` ("Want PR-gated scans? `fendix init` writes the workflow for you.") would close the discovery loop. Defer to a future UI session — it's a marketing-surface decision, not a sync-driven one.
+- **`templates/workflow.yml` ↔ `examples/github-actions/fendix-scan.yml` drift.** Engine MEMORY notes the duplication is currently low-risk. If TASK-098's example is ever modified, both copies need to update in lockstep — easy to forget. Worth a Makefile sync check (`diff -q templates/workflow.yml examples/github-actions/fendix-scan.yml`) but defer until the example is actually touched.
+
+**Next session should start with:**
+
+- **TASK-106 numbers capture** is still the right next engine task, unchanged from prior session. Trigger `gh workflow run benchmark.yml -R Abdel-RahmanSaied/Fendix --field fendix_version=v0.6.0`, wait ~2 min, paste `summary.json` into `docs/benchmarks.md`. Then optionally amend the frontend Unreleased changelog entry to cite the numbers.
+- **Phase 14 remaining**: TASK-107 (GitHub App / Marketplace listing), TASK-108 (`fendix demo` command), TASK-109 (`.fendix.yaml` repo-committed policy + orchestrator wire-up + extend `fendix init` to write the file). TASK-108 is the smallest; TASK-109 is the most strategic.
+
+---
+
+## Earlier Session (2026-05-01 — Phase 14 execution — TASK-110 + TASK-111 + TASK-106 scaffold + TASK-105 `fendix init`)
+
 **Session goal:** Continue Phase 14 work after v0.6.0 ship. The README + landing page were repositioned around the wedge in earlier session work; this session ships the first-class README rewrite (TASK-110 + TASK-111), scaffolds the vulnerable-app benchmark suite (TASK-106) so the "DAST + SAST in one PR check, fails only when both engines confirm" claim can be backed by real numbers, and ships `fendix init` (TASK-105) — the zero-config workflow generator that closes the manual-CI-setup-yaml gap that filtered ~80% of first-time users.
 
 **Accomplished:**

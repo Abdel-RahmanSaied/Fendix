@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-01
+
+**Phase 14 — P4 External Wedge — partial.** Folds the four Phase 14
+features that landed on `main` between v0.6.0 and 2026-05-01 into a
+tagged release, and ships a critical install-pipe fix that was
+blocking the TASK-106 benchmark CI (and any first-time user passing
+`FENDIX_DIR=$HOME/.local/bin`).
+
+The Phase 14 work in this release is partial by design: TASK-105
+(`fendix init`), TASK-110 (README repositioning), and TASK-111
+(telemetry statement) shipped as standalone features; TASK-106
+(vulnerable-app benchmark) ships its scaffold here, with the
+juice-shop numbers landing in a follow-up commit once the benchmark
+CI run captures them. TASK-107 (GH App), TASK-108 (`fendix demo`),
+and TASK-109 (`.fendix.yaml`) remain ahead.
+
+### Fixed
+
+- **`scripts/install.sh` now creates the install directory before
+  `mv`.** Previously, running `curl -fsSL https://get.fendix.dev/install.sh
+  | FENDIX_DIR=$HOME/.local/bin sh` on a system where `$HOME/.local/bin`
+  did not pre-exist failed with `mv: cannot move 'fendix' to
+  '/home/runner/.local/bin/fendix': No such file or directory`. The
+  GitHub Actions benchmark workflow (TASK-106) hit this on every run
+  because fresh runners don't have `~/.local/bin` populated. Fixed by
+  adding `mkdir -p "$INSTALL_DIR"` before the `mv`, attempting it
+  without `sudo` first and falling back to `sudo mkdir -p` only when a
+  parent up the chain isn't writable. Locally verified end-to-end on a
+  non-existent `FENDIX_DIR=/tmp/.../bin` target.
+
 ### Added
 
 - **`fendix init` zero-config workflow generator (TASK-105).** New

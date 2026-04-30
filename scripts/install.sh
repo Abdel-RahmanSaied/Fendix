@@ -103,6 +103,17 @@ install() {
 
     chmod +x "${TMP_DIR}/fendix"
 
+    # Ensure install dir exists. mv would fail "No such file or directory"
+    # if e.g. FENDIX_DIR=$HOME/.local/bin on a fresh runner where the
+    # target dir doesn't exist yet. Try mkdir -p without sudo first; only
+    # escalate if a parent up the chain isn't writable.
+    if [ ! -d "$INSTALL_DIR" ]; then
+        if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+            info "Creating ${INSTALL_DIR} (requires sudo)..."
+            sudo mkdir -p "$INSTALL_DIR"
+        fi
+    fi
+
     # Install to target directory
     if [ -w "$INSTALL_DIR" ]; then
         mv "${TMP_DIR}/fendix" "${INSTALL_DIR}/fendix"
