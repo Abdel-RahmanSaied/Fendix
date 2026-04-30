@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fendix init` zero-config workflow generator (TASK-105).** New
+  `fendix init` subcommand detects the project's stack (Go, Python,
+  Node.js, Ruby, Rust, Java/Kotlin, PHP — coarse, by canonical
+  marker file) and a colocated OpenAPI/Swagger spec at any of 14
+  conventional paths (`openapi.{yaml,yml,json}` at root, `api/`,
+  `docs/`, `spec/`, plus `swagger.*` equivalents). Echoes what was
+  detected so the user can sanity-check, then writes two files into
+  the working directory: `.github/workflows/fendix.yml` (drop-in
+  PR-gated DAST + SAST scan with SARIF upload — same content as
+  `examples/github-actions/fendix-scan.yml` shipped in TASK-098,
+  embedded into the binary via `go:embed`) and `.fendix-ignore`
+  (commented starter for finding-level suppressions). Ends with a
+  next-steps block telling the user the exact `git add` + `git commit`
+  commands. Refuses to overwrite existing files by default — pre-flight
+  checks all targets *before* writing any of them, so a partial-init
+  state is impossible. New flags: `--force` (overwrite anyway) and
+  `--print` (dry-run; render to stdout without touching disk). New
+  `internal/initcmd` package: `detect.go` (stack + spec detection,
+  no I/O beyond `os.Stat`), `init.go` (Run loop + embedded templates),
+  `templates/{workflow.yml, fendix-ignore.txt}` (embedded via
+  `go:embed`). 12 unit tests + 3 e2e tests covering: empty dir
+  defaults to Generic, polyglot repo lists all stacks with first-found
+  primary, Python dedupes pyproject.toml + requirements.txt, OpenAPI
+  spec discovery at root and nested paths, refuse-to-clobber
+  preserves the user's existing file byte-for-byte, --force overwrites,
+  --print writes nothing to disk, detection echoes to stdout, e2e
+  binary respects all flags via cobra wiring. Closes the
+  manual-CI-setup-yaml gap that filtered ~80% of first-time users.
+
 - **Vulnerable-app benchmark scaffold (TASK-106, partial).** New
   `scripts/benchmark/run-juice-shop.sh` spins up
   `bkimminich/juice-shop:v17.1.1` in Docker, runs `fendix scan` against

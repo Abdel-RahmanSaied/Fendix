@@ -292,7 +292,7 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress. Shipped 2026-05-01: TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section). Scaffolded 2026-05-01: TASK-106 (benchmark runner + Makefile target + workflow_dispatch CI + docs/benchmarks.md — real numbers land after first CI run). Remaining: TASK-105 (`fendix init`), TASK-106 numbers capture, TASK-107 (GH App), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml`). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Phase:** 14 — P4 External Wedge (v1.1) — 🔄 In Progress. Shipped 2026-05-01: TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section), **TASK-105 (`fendix init` zero-config workflow generator)**. Scaffolded 2026-05-01: TASK-106 (benchmark runner + Makefile target + workflow_dispatch CI + docs/benchmarks.md — real numbers land after first CI run). Remaining: TASK-106 numbers capture, TASK-107 (GH App), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml`). Phase 13 ✅ Complete 2026-04-30 — all 6 tasks (TASK-099..104) shipped; `v0.6.0` final is the first stable signed release with cosign keyless on every artifact. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
 **Overall progress:** Phases 0-13 complete; Phase 14 started 2026-05-01 with README reposition + telemetry statement + cosign-verify section + benchmark scaffold. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, **v0.6.0 (first stable signed release, 2026-04-30)**; v1.1+ scoped via Phases 14-16.
 **Last updated:** 2026-04-30
 
@@ -463,8 +463,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-01 (Phase 14 execution — TASK-110 + TASK-111 + TASK-106 scaffold)
-**Session goal:** Continue Phase 14 work after v0.6.0 ship. The README + landing page were repositioned around the wedge in earlier session work; this session ships the first-class README rewrite (TASK-110 + TASK-111) and scaffolds the vulnerable-app benchmark suite (TASK-106) so the "DAST + SAST in one PR check, fails only when both engines confirm" claim can be backed by real numbers.
+**Date:** 2026-05-01 (Phase 14 execution — TASK-110 + TASK-111 + TASK-106 scaffold + TASK-105 `fendix init`)
+**Session goal:** Continue Phase 14 work after v0.6.0 ship. The README + landing page were repositioned around the wedge in earlier session work; this session ships the first-class README rewrite (TASK-110 + TASK-111), scaffolds the vulnerable-app benchmark suite (TASK-106) so the "DAST + SAST in one PR check, fails only when both engines confirm" claim can be backed by real numbers, and ships `fendix init` (TASK-105) — the zero-config workflow generator that closes the manual-CI-setup-yaml gap that filtered ~80% of first-time users.
 
 **Accomplished:**
 
@@ -474,30 +474,47 @@ packaging>=23.0               — Dependency version comparison
 
 - **Bonus README addition: "Verifying signed releases" section.** Full cosign keyless verify recipe (Sigstore Fulcio + GitHub Actions OIDC identity-regexp anchor) for binaries, .deb, .rpm, and Docker images. Cross-linked from the hero's "signed and silent" bullet (closing the broken-link warning the linter caught when the hero anchor was added before the section existed). Notes the v0.6.0-rc2 cutoff for sidecar availability.
 
+- **TASK-105 — `fendix init` zero-config workflow generator ✅.** New `internal/initcmd` package (`detect.go` + `init.go` + embedded templates `templates/{workflow.yml, fendix-ignore.txt}` via `go:embed`). New `fendix init` cobra subcommand wired into `cmd/fendix/main.go`. Detects 7 stacks (Go via `go.mod`, Python via `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile` with stack-name dedup, Node.js via `package.json`, Ruby via `Gemfile`, Rust via `Cargo.toml`, Java via `pom.xml`/`build.gradle`, Kotlin via `build.gradle.kts`, PHP via `composer.json`) plus OpenAPI/Swagger spec at 14 conventional paths. Echoes detection summary so users sanity-check before any write. Writes `.github/workflows/fendix.yml` (verbatim copy of `examples/github-actions/fendix-scan.yml` from TASK-098, embedded into the binary so init works offline) + `.fendix-ignore` (commented starter; replaces the rich-but-noisy `.fendix-ignore.example` content with a clean `ignore: []` + uncomment-to-adapt examples). Refuses to overwrite by default — pre-flight clobber check fires before *any* write so a partial-init state is impossible. New flags: `--force` (overwrite anyway) and `--print` (dry-run; render to stdout without disk write). User's existing files are byte-for-byte preserved on refuse-to-clobber (e2e regression locks this in). 12 unit tests across `detect_test.go` (empty-dir → Generic, Go-only, Python dedup of `pyproject.toml`+`requirements.txt`, polyglot ordering, OpenAPI spec at root + nested paths, no-discovery on unconventional paths, SummaryLine for 3 audience cases) + `init_test.go` (writes-both-files, refuses-to-clobber-and-preserves, --force-overwrites, --print-no-disk-writes, detection-echoed-to-output). 3 e2e tests in `init_cmd_test.go` (Python+OpenAPI project produces all expected output + on-disk files, refuse-to-clobber preserves original byte-for-byte AND skips the second file too, --print writes nothing to disk). Run from working dir is the default; `Options.RootDir` is overrideable for testing. `embed.FS` template loading is the single source of truth — examples/github-actions/fendix-scan.yml needs to stay in sync (drift risk noted, low for now).
+
 - **TASK-106 — Vulnerable-app benchmark scaffold 🔄 (numbers pending).** New `scripts/benchmark/run-juice-shop.sh` spins up `bkimminich/juice-shop:v17.1.1` in Docker, runs `fendix scan --url http://localhost:3000 --format json`, captures findings + duration into `bench-results/juice-shop/<UTC-timestamp>/{findings.json, summary.json, scan.stderr}`. Container force-cleaned via bash `trap`. New `make benchmark` Makefile target. New `.github/workflows/benchmark.yml` (workflow_dispatch only — manual against published release tags, not on every push) installs Fendix via `https://get.fendix.dev/install.sh` (so the workflow doubles as install-pipe smoke test), uploads `findings.json` + `summary.json` + `scan.stderr` as a build artifact, and posts the summary JSON to `$GITHUB_STEP_SUMMARY`. New `docs/benchmarks.md` documents the recipe, targets table, methodology (what counts as `correlated` vs `blackbox` vs `whitebox`), and caveats. Real numbers land in a follow-up commit after the first manual CI run captures them. vAPI + crapi fixtures intentionally deferred — one fixture is enough to start; pattern is copy-paste for new targets.
 
 **Files modified this session:**
 
 - `README.md` (hero + new "What Fendix sends to the network" + new "Verifying signed releases" sections)
-- `CHANGELOG.md` ([Unreleased] entries for TASK-110, TASK-111, TASK-106 partial)
+- `CHANGELOG.md` ([Unreleased] entries for TASK-110, TASK-111, TASK-106 partial, TASK-105)
 - `Makefile` (new `benchmark:` target)
 - `scripts/benchmark/run-juice-shop.sh` (NEW, executable)
 - `docs/benchmarks.md` (NEW)
 - `.github/workflows/benchmark.yml` (NEW)
 - `.gitignore` (added `bench-results/`)
-- `tasks/CURRENT_SPRINT.md` (TASK-110, TASK-111 ✅; TASK-106 status note)
-- `tasks/MEMORY.md` (this entry; phase header bumped from 13 → 14)
+- `go/cmd/fendix/main.go` (new `newInitCmd()` cobra subcommand + import of `internal/initcmd`)
+- `go/internal/initcmd/detect.go` (NEW — stack + OpenAPI spec detection, no I/O beyond os.Stat)
+- `go/internal/initcmd/init.go` (NEW — `Run()` orchestrator + embedded templates via `go:embed`)
+- `go/internal/initcmd/templates/workflow.yml` (NEW — copy of `examples/github-actions/fendix-scan.yml`, embedded)
+- `go/internal/initcmd/templates/fendix-ignore.txt` (NEW — clean starter, replaces noisy example for init's default output)
+- `go/internal/initcmd/detect_test.go` (NEW — 7 unit tests covering Detect + SummaryLine)
+- `go/internal/initcmd/init_test.go` (NEW — 5 unit tests covering Run, --force, --print, refuse-to-clobber)
+- `go/internal/e2e/init_cmd_test.go` (NEW — 3 e2e tests; cobra wiring regression guard)
+- `tasks/CURRENT_SPRINT.md` (TASK-110, TASK-111, TASK-105 ✅; TASK-106 status note)
+- `tasks/MEMORY.md` (this entry; phase header)
 
 **Build state at session end:**
 
-- `make build` ✓ (Go 9 packages compile clean; ldflags carry `v0.6.0-1-g86aa9fe`)
-- `make test` ✓ (Python 193/193; Go race-clean)
+- `make build` ✓ (Go 10 packages compile clean — `internal/initcmd` added)
+- `make test` ✓ (Python 193/193; Go race-clean across 10 packages including new initcmd 12 tests)
+- `make e2e` ✓ (20/20 — was 17, added 3 init-cmd e2e tests; 11.3s)
 - benchmark.yml YAML parses ✓
 - `bash -n scripts/benchmark/run-juice-shop.sh` syntax ✓
-- No new Go or Python source touched this session — docs + scripts + workflow only.
+- Real CLI smoke test: `bin/fendix init --print` in repo root → emits "Detected: Generic — no OpenAPI spec found" + workflow + ignore template; matches embedded content.
 
 **Decisions made:**
 
+- **`fendix init` writes 2 files, not 3.** The original Phase 14 plan called for `init` to write `.github/workflows/fendix.yml` + `.fendix.yaml` + `.fendix-ignore`. I shipped only the first and third. `.fendix.yaml` is TASK-109's job; the scan command doesn't currently *read* a `.fendix.yaml` policy file — writing one would create a misleading artifact ("you have a policy file but Fendix doesn't honor it yet"). Cleaner to ship the empty-shell .fendix.yaml together with the wire-up code in TASK-109.
+- **Stack detection is informational, not behavior-changing.** `init` reports the detected stack but emits the same workflow regardless. Stack-specific workflow variants (skip Python install for Go-only repos, recommend Semgrep for Python repos, etc.) are valid follow-ups but each adds a maintenance branch in the templates dir. v1 ships generic-with-comments; specialize when there's a concrete user complaint.
+- **Pre-flight clobber check, not per-file.** Atomicity in spirit: if `.github/workflows/fendix.yml` would clobber and `.fendix-ignore` wouldn't, we still abort before writing the ignore file. A partial-init state would be confusing — the user has *one* of the two files we promised, and no clean recovery path. Erroring before any write keeps the rerun model simple ("fix the conflict, rerun").
+- **`templates/fendix-ignore.txt` is intentionally different from `.fendix-ignore.example`.** The example file at repo root has rich sample suppression rules — useful for documentation, noisy as a starter file. The init template strips that down to `ignore: []` plus commented-out examples to keep the user's diff small on first commit.
+- **`embed.FS` over file-path reading.** Templates ship inside the binary via `go:embed`, so `fendix init` works on systems where the engine repo isn't checked out. Relative-path reading would create install-from-binary failures.
+- **`examples/github-actions/fendix-scan.yml` and `internal/initcmd/templates/workflow.yml` are duplicated.** Drift risk is real but small: the example has been stable since TASK-098 shipped, and any future change is one search-and-replace across 2 files. Adding a Makefile sync step is over-engineering until the example is touched.
 - **Make-target name `benchmark:` (not `bench:`).** Existing `bench:` already runs Go-internal microbenchmarks (function-level perf, used to populate the README "Performance" section). Keeping that target intact and adding a new `benchmark:` for end-to-end real-target scans avoids breaking the existing ldflags-pinned numbers.
 - **Pin juice-shop to `v17.1.1`.** Reproducibility matters for benchmarks across releases. `:latest` would silently shift numbers between runs.
 - **`workflow_dispatch` only, not on push/PR.** Benchmark run is ~2 min of runner time; running it on every push adds cost without catching regressions that aren't already caught by the existing Go bench tests. Manual triggering against published release tags is the right cadence.
@@ -516,7 +533,7 @@ packaging>=23.0               — Dependency version comparison
 
 - **Capture the first juice-shop benchmark numbers.** Trigger `.github/workflows/benchmark.yml` manually via `gh workflow run benchmark.yml -R Abdel-RahmanSaied/Fendix --field fendix_version=v0.6.0`, wait for completion (~2 min), download the artifact, and paste the `summary.json` numbers into the "Latest results" table in `docs/benchmarks.md`. Single commit. Then the wedge claim has actual numbers behind it.
 - **Alternative if Docker is up locally**: run `make benchmark` directly, inspect `bench-results/juice-shop/<latest>/summary.json`, paste into the docs.
-- **After numbers land**: TASK-105 (`fendix init` zero-config workflow generator) is the next-highest-leverage Phase 14 task. ~2 days of work; closes the manual-CI-setup gap that filters ~80% of first-time users.
+- **Phase 14 remaining (after numbers)**: TASK-107 (GitHub App / Marketplace listing), TASK-108 (`fendix demo` command — local vulnerable-target spin-up + scan + report; smaller scope than TASK-105), TASK-109 (`.fendix.yaml` repo-committed policy — wire into orchestrator's config layer + extend `fendix init` to write the file). TASK-108 is the smallest of the three; TASK-109 is the most strategic since AppSec engineers can't adopt without committable policy.
 
 ---
 

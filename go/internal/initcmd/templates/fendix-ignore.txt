@@ -1,0 +1,22 @@
+# Fendix suppressions — add rules here as you triage.
+#
+# Each rule suppresses findings that match ALL specified fields.
+# Omitted fields match everything (e.g. no endpoint = all endpoints).
+# "reason" is required — document why each suppression exists.
+#
+# See `.fendix-ignore.example` in the Fendix repo for a richer reference,
+# or run `fendix scan --help` for the full CLI surface.
+
+ignore: []
+
+# Examples (uncomment + adapt as needed):
+#
+# - id: SEC-014
+#   reason: "Rate limiting handled at API gateway level"
+#   until: 2026-12-31     # optional expiry — rule stops applying after this date
+#
+# - endpoint: GET /health
+#   reason: "Public health check endpoint, no auth required by design"
+#
+# - category: headers
+#   reason: "Security headers managed by reverse proxy"

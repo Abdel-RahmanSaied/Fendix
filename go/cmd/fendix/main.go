@@ -13,6 +13,7 @@ import (
 	"runtime"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/spf13/cobra"
@@ -60,8 +61,39 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newScanCmd())
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newVerifyCmd())
+	root.AddCommand(newInitCmd())
 
 	return root
+}
+
+func newInitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Generate a default CI workflow + .fendix-ignore in the current directory",
+		Long: `Detect the project stack and write a drop-in GitHub Actions workflow plus a
+.fendix-ignore starter file. Refuses to overwrite existing files unless --force is set.
+
+Files written (relative to the working directory):
+  .github/workflows/fendix.yml   — PR-gated DAST + SAST scan with SARIF upload
+  .fendix-ignore                 — empty starter for finding-level suppressions
+
+Use --print to preview without writing.`,
+		Example: `  fendix init                    # write the files
+  fendix init --print            # preview the generated content
+  fendix init --force            # overwrite existing files`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			force, _ := cmd.Flags().GetBool("force")
+			print, _ := cmd.Flags().GetBool("print")
+			return initcmd.Run(initcmd.Options{
+				Force: force,
+				Print: print,
+				Out:   cmd.OutOrStdout(),
+			})
+		},
+	}
+	cmd.Flags().Bool("force", false, "overwrite existing files")
+	cmd.Flags().Bool("print", false, "print generated content to stdout instead of writing")
+	return cmd
 }
 
 func newVersionCmd() *cobra.Command {
