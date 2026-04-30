@@ -4,11 +4,11 @@
 
 ---
 
-## Active Phase: 13 — P3 External Release readiness (v1.0) — 🔄 In Progress (RC1 cut locally 2026-04-30, awaiting push)
+## Active Phase: 13 — P3 External Release readiness (v1.0) — 🔄 In Progress (rc2 cut 2026-04-30)
 
 **Sprint goal:** Trustworthy, signed, documented v1.0. Reproducible signed builds (linux/arm64 + cosign + signed Docker), distribution artifacts (.deb/.rpm + curl-pipe installer), docs pass, `--debug` diagnostic bundle, SECURITY.md + active-scanner threat model, benchmarks published in README.
 
-**Release status:** `v0.6.0-rc1` prepared locally — CHANGELOG rolled, commit + annotated tag created, **not pushed** (pending operator confirmation of irreversible publish step). The rc1 validates the new cosign + nfpm + ghcr pipelines end-to-end before tagging clean v0.6.0.
+**Release status:** `v0.6.0-rc1` shipped 2026-04-30 (validated multi-arch builds + nfpm + Docker mirror, but ran with `COSIGN_ENABLED=false` so no signed artifacts). `v0.6.0-rc2` cut 2026-04-30 — first release tag with `COSIGN_ENABLED=true` (flipped 14:07Z); validates the cosign keyless signing path before tagging clean `v0.6.0`. Plus `get.fendix.dev` short-URL installer is live (DNS + Pages + Let's Encrypt + auto-mirror-sync verified end-to-end), and the landing page was repositioned around the wedge ("DAST + SAST in one PR check, fails only when both engines confirm") with cosign verify recipe + GH Actions snippet + OG meta tags.
 
 **Definition of Done:**
 

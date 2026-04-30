@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc2] - 2026-04-30
+
+Phase 13 — P3 External Release readiness, second release candidate.
+Validates the cosign keyless signing pipeline end-to-end (rc1 was tagged
+before `COSIGN_ENABLED=true` flipped on the engine repo on
+2026-04-30T14:07Z, so rc1's release pipeline ran with signing dormant).
+rc2 is the first tag where every binary, `.deb`, `.rpm`, and Docker
+image gets `.crt` + `.sig` cosign sidecars via Sigstore Fulcio.
+
+Also includes the `get.fendix.dev` short-URL installer rollout
+(complete — DNS + Pages + Let's Encrypt + auto-mirror-sync of
+install.sh / index.html / .nojekyll on every `v*` tag) and the
+landing-page positioning rewrite around the wedge ("DAST + SAST in
+one PR check, fails only when both engines confirm").
+
 ### Added
 
 - **`get.fendix.dev` short-URL installer is live** (TASK-100, complete).
@@ -52,6 +67,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified the sha256, installed to `/usr/local/bin/fendix`, and
   `fendix version` reported the expected version. Pipeline validated
   end-to-end before this entry shipped.
+
+- **Landing-page positioning around the wedge.** `https://get.fendix.dev/`
+  rewritten to lead with the differentiation, not the architecture.
+  Tagline flipped from "Hybrid API and code security scanner. DAST +
+  SAST in one PR check." → "DAST + SAST in one PR check. Fails only
+  when both engines confirm." Three-bullet "what it does" block under
+  the hero: confirmed findings (false-positive-flood reduction is the
+  value prop), single binary (active probes off by default), signed +
+  no telemetry (TASK-103/TASK-111 trust statement folded in). New
+  "First scan" example block right after install. New "In your CI"
+  section with an 8-line GitHub Actions snippet showing a PR-gated
+  DAST+SAST scan with SARIF upload. New "Verify the binary (cosign)"
+  section with the keyless verify recipe (Sigstore Fulcio,
+  `--certificate-identity-regexp` + `--certificate-oidc-issuer`).
+  OpenGraph + Twitter Card meta tags so social shares get a real
+  preview card; canonical link tag. HTML title flipped to carry the
+  wedge ("Fendix — DAST + SAST in one PR check") so search-result
+  snippets do too. All static, no JS, dark-mode CSS via
+  `prefers-color-scheme`.
+
+- **Cosign keyless signing now active on the release pipeline.**
+  `COSIGN_ENABLED=true` repo variable flipped on the engine repo
+  (2026-04-30T14:07Z). rc1 was tagged before the flip and shipped
+  without sidecar files; rc2 is the first tag where every binary,
+  `.deb`, `.rpm`, and Docker image gets a `.crt` + `.sig` cosign
+  sidecar. Verification anchors to the GitHub Actions OIDC identity
+  that built the release — no static public key to distribute, no
+  key rotation, no key-loss recovery. Verify recipe is documented at
+  the landing page section above and in `SECURITY.md`. Hard-fail
+  semantics: cosign step failure fails the release job, so a broken
+  signing path can't silently ship unsigned artifacts.
 
 ## [0.6.0-rc1] - 2026-04-30
 

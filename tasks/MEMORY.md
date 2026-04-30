@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (4/6 tasks shipped + 2 partial; **v0.6.0-rc1 prepared locally 2026-04-30, awaiting push**). Phases 0-12 complete; v0.5.0 shipped 2026-04-29. **Phases 14-16 added 2026-04-30 from strategic-advisor session** (external wedge → open & extensible → architecture v2). Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0 released; v0.6.0-rc1 staged locally; v1.0.0 (Phase 13) in progress; v1.1+ scoped via Phases 14-16.
+**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (5/6 tasks shipped including TASK-100 closeout; cosign signing now active via `COSIGN_ENABLED=true` flipped 2026-04-30T14:07Z; `v0.6.0-rc2` cut 2026-04-30 to validate signing pipeline end-to-end before final v0.6.0). Phases 0-12 complete; v0.5.0 shipped 2026-04-29. **Phases 14-16 added 2026-04-30 from strategic-advisor session** (external wedge → open & extensible → architecture v2). Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1 released; v0.6.0-rc2 cut (first signed release); v1.0.0 (Phase 13) in progress; v1.1+ scoped via Phases 14-16.
 **Last updated:** 2026-04-30
 
 ### Completed tasks
