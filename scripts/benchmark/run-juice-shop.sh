@@ -133,7 +133,7 @@ jq -n \
         total_findings: ($report[0].findings | length),
         by_severity: ($report[0].summary // {}),
         by_source: ($report[0].sources // {}),
-        endpoints_scanned: ($report[0].metadata.endpoints_count // 0)
+        endpoints_scanned: ($report[0].metadata.endpoints_scanned // 0)
     }' >"$OUTPUT_DIR/summary.json"
 
 # ─── Print human-readable summary ──────────────────────────────────────

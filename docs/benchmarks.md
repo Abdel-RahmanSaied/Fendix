@@ -72,13 +72,36 @@ Numbers from each manual run can be pasted into the table below.
 
 ## Latest results
 
-> *Numbers will be captured in a follow-up commit after CI runs the
-> benchmark workflow against `v0.6.0`. The infrastructure ships in
-> this commit; the data follows.*
+| Date | Fendix version | Target | Endpoints | Total findings | CRIT | HIGH | MED | LOW | INFO | Correlated | Scan time |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-05-01 | v0.6.1 | juice-shop v17.1.1 | 97 | 7 | 0 | 0 | 4 | 2 | 1 | 0 | 42s |
 
-| Date | Fendix version | Target | Endpoints | Total findings | CRIT | HIGH | MED | LOW | Correlated | Scan time |
-|---|---|---|---|---|---|---|---|---|---|---|
-| _pending_ | v0.6.0 | juice-shop v17.1.1 | _tbd_ | _tbd_ | _tbd_ | _tbd_ | _tbd_ | _tbd_ | _tbd_ | _tbd_ |
+**Reading the row.** All 7 findings are blackbox (passive) — this
+was a stock `fendix scan --url http://localhost:3000`, no
+`--enable-active`, no `--code`. The MEDIUM/LOW/INFO mix matches
+juice-shop's published-as-running-software-with-default-headers
+posture: missing CSP, missing HSTS, missing
+X-Content-Type-Options, missing X-Frame-Options, no rate limiting
+detected, CORS allows any origin, software version disclosed at
+`/metrics`. **97 endpoints discovered** (1 from robots.txt + 13 from
+JS link extraction + 83 from the default 117-path brute-force
+wordlist), **391 raw findings before dedup → 7 after** (TASK-088
+collapses identical-finding-across-N-endpoints into a single row
+with affected-endpoint count).
+
+**What this row does NOT measure.** Juice-shop ships with intentional
+SQLi, XSS, IDOR, and broken-auth vulnerabilities. None of those are
+detectable by passive HTTP probing alone. Reproducing the wedge
+("DAST + SAST in one PR check, fails only when both engines confirm")
+on this fixture requires the `--enable-active` and/or `--code` flags
+plus a checkout of juice-shop's source — adding `--enable-active`
+runs SQLi / CMDi / CRLF probes; adding `--code ./juice-shop` runs
+the white-box engine and unlocks the `correlated` column. Both are
+follow-up commits to this benchmark.
+
+**Source.** Captured by [GitHub Actions run 25193548945](https://github.com/Abdel-RahmanSaied/Fendix/actions/runs/25193548945)
+on 2026-05-01. Raw artifacts (findings.json, summary.json,
+scan.stderr) are downloadable from that run page for 30 days.
 
 ## Caveats
 
