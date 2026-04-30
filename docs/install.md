@@ -17,7 +17,7 @@ choose between them or want signature-verification details.
 | You want… | Use |
 |---|---|
 | One command on a developer laptop (macOS or Linux) | [Homebrew](#homebrew-macos--linux) |
-| One command on a CI runner (POSIX) | [`install.sh`](#install-script-curl--sh) |
+| One command on a CI runner (POSIX) | [`install.sh` via `get.fendix.dev`](#install-script-curl--sh) |
 | `apt install` / `apt upgrade` integration on Debian/Ubuntu | [.deb package](#debian--ubuntu-deb) |
 | `dnf install` / `yum install` integration on RHEL/Fedora | [.rpm package](#rhel--fedora--centos-rpm) |
 | Containers, no host install | [Docker](#docker) |
@@ -40,20 +40,34 @@ once the next release tag mirrors.
 ## Install script (curl | sh)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
+curl -fsSL https://get.fendix.dev/install.sh | sh
 ```
 
 Downloads the latest release binary, verifies its sha256 checksum, and
 installs to `/usr/local/bin/fendix`. Override:
 
 - `FENDIX_DIR=$HOME/.local/bin` — install to a user-writable directory.
-- `FENDIX_VERSION=v0.5.0` — pin a specific version.
+- `FENDIX_VERSION=v0.6.0` — pin a specific version.
 - `FENDIX_REPO=...` — pull from a fork or private mirror.
 
 Sudo is requested only if `FENDIX_DIR` isn't writable.
 
-A short-URL installer at `https://get.fendix.dev` is on track for v1.0;
-see [`get.fendix.dev` rollout](#getfendixdev-rollout-status) below.
+`get.fendix.dev` is a CNAME to the [`homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix)
+mirror, served via GitHub Pages with a Let's Encrypt cert. It's the
+preferred URL because it's stable across mirror-repo renames. If
+`get.fendix.dev` is ever unreachable, the mirror is also directly
+fetchable:
+
+```bash
+# Documented fallback — same script, served straight from the mirror branch.
+curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
+```
+
+To inspect the script before piping to a shell:
+
+```bash
+curl -fsSL https://get.fendix.dev/install.sh | less
+```
 
 ## Debian / Ubuntu (.deb)
 
@@ -194,28 +208,55 @@ sidecars — fall back to the `.sha256` file for those. See
 
 ---
 
-## `get.fendix.dev` rollout status
+## `get.fendix.dev` — how it's wired
 
-The plan: `curl -fsSL https://get.fendix.dev | sh` becomes the canonical
-one-liner. Today the equivalent works via the
-[install script](#install-script-curl--sh) at
-`raw.githubusercontent.com`.
+`https://get.fendix.dev/install.sh` is live as of 2026-04-30. It's a
+CNAME on the operator's `fendix.dev` zone pointing at
+`abdel-rahmansaied.github.io`, served via GitHub Pages on the
+[`homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix)
+mirror with an auto-provisioned Let's Encrypt cert.
 
-The short URL is gated on three operator actions, none of which require
-code changes:
+**Why `/install.sh` and not bare `https://get.fendix.dev`?** GitHub
+Pages can't serve a shell script at the apex without renaming it
+`index.html` (wrong content-type, weird browser experience). Splitting
+the script (`/install.sh`) from a real landing page (`/`, the index)
+matches `bun.sh/install` and `deno.land/install.sh` patterns: browsers
+get something useful, curl-pipe stays explicit.
 
-1. **Domain registration** for `fendix.dev` (or just the `get.` subdomain
-   delegated through the registrar).
-2. **GitHub Pages** enabled on the
-   [`Abdel-RahmanSaied/homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix)
-   mirror, serving `install.sh` from the repo root at
-   `abdel-rahmansaied.github.io/homebrew-fendix/install.sh`.
-3. **DNS CNAME** `get.fendix.dev → abdel-rahmansaied.github.io` plus a
-   `CNAME` file in the mirror repo so GitHub Pages binds the custom
-   domain.
+### What's in the mirror, and why
 
-When all three are in place, the README + this doc swap the install URL
-to `https://get.fendix.dev` in a single PR.
+The four files that make up the Pages site are auto-synced from the
+engine repo into the mirror on every `v*` tag by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml)
+(the `mirror` job, alongside the existing Formula update). The
+canonical sources live in this repo:
+
+| Mirror path     | Source in engine repo                                              | Purpose                                     |
+|-----------------|--------------------------------------------------------------------|---------------------------------------------|
+| `/install.sh`   | [`scripts/install.sh`](../scripts/install.sh)                      | The installer that `curl … \| sh` runs.     |
+| `/CNAME`        | [`scripts/release/mirror-pages-bootstrap/CNAME`](../scripts/release/mirror-pages-bootstrap/CNAME) | Tells Pages to bind `get.fendix.dev`.       |
+| `/.nojekyll`    | [`scripts/release/mirror-pages-bootstrap/.nojekyll`](../scripts/release/mirror-pages-bootstrap/.nojekyll) | Skips Jekyll processing on Pages.           |
+| `/index.html`   | [`scripts/release/mirror-pages-bootstrap/index.html`](../scripts/release/mirror-pages-bootstrap/index.html) | Browser landing page at `https://get.fendix.dev/`. |
+
+The mirror is generated, not hand-edited — every `v*` tag overwrites
+these four files. To change anything served at `get.fendix.dev`, edit
+the engine-repo source and cut a release.
+
+### Verifying the chain
+
+```bash
+# DNS resolves to GitHub Pages
+dig +short get.fendix.dev
+# Expected: abdel-rahmansaied.github.io. + 4 GitHub Pages IPs
+
+# HTTPS works, install.sh has the right content-type
+curl -I https://get.fendix.dev/install.sh
+# Expected: HTTP/2 200, content-type: application/x-sh, server: GitHub.com
+
+# End-to-end install (do this in a throwaway VM, not your laptop)
+curl -fsSL https://get.fendix.dev/install.sh | sh
+fendix version
+```
 
 ---
 

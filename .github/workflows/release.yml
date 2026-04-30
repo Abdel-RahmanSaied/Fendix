@@ -362,17 +362,34 @@ jobs:
           end
           EOF
 
-      - name: Commit Formula update
+      - name: Sync install.sh and get.fendix.dev Pages bootstrap into mirror
+        run: |
+          set -eu
+          # install.sh is the canonical user-facing installer. Until this
+          # step existed, install.sh was hand-committed once and drifted
+          # silently from the engine-repo source on every later edit.
+          cp scripts/install.sh mirror/install.sh
+          chmod 755 mirror/install.sh
+
+          # GitHub Pages bootstrap files for https://get.fendix.dev.
+          # CNAME binds the custom domain; .nojekyll skips Jekyll
+          # processing; index.html is the browser landing page.
+          # The mirror also serves install.sh from this same root.
+          cp scripts/release/mirror-pages-bootstrap/CNAME       mirror/CNAME
+          cp scripts/release/mirror-pages-bootstrap/.nojekyll   mirror/.nojekyll
+          cp scripts/release/mirror-pages-bootstrap/index.html  mirror/index.html
+
+      - name: Commit Formula + install.sh + Pages bootstrap update
         env:
           GH_TOKEN: ${{ secrets.DIST_REPO_TOKEN }}
         run: |
           set -eu
           cd mirror
-          if git diff --quiet -- Formula/fendix.rb; then
-            echo "Formula unchanged — nothing to commit."
+          git add Formula/fendix.rb install.sh CNAME .nojekyll index.html
+          if git diff --cached --quiet; then
+            echo "Mirror tree unchanged — nothing to commit."
           else
-            git add Formula/fendix.rb
-            git commit -m "chore(release): bump Formula to ${{ steps.sha.outputs.version }}"
+            git commit -m "chore(release): sync ${{ steps.sha.outputs.version }} (Formula + install.sh + Pages)"
             git push origin HEAD:main
           fi
 

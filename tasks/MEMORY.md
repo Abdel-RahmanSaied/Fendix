@@ -292,8 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (4/6 tasks shipped + 2 partial; **v0.6.0-rc1 prepared locally 2026-04-30, awaiting push**). Phases 0-12 complete; v0.5.0 shipped 2026-04-29.
-**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0 released; v0.6.0-rc1 staged locally; v1.0.0 (Phase 13) in progress.
+**Phase:** 13 — P3 External Release (v1.0) — 🔄 In Progress (4/6 tasks shipped + 2 partial; **v0.6.0-rc1 prepared locally 2026-04-30, awaiting push**). Phases 0-12 complete; v0.5.0 shipped 2026-04-29. **Phases 14-16 added 2026-04-30 from strategic-advisor session** (external wedge → open & extensible → architecture v2). Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-12 complete; v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0 released; v0.6.0-rc1 staged locally; v1.0.0 (Phase 13) in progress; v1.1+ scoped via Phases 14-16.
 **Last updated:** 2026-04-30
 
 ### Completed tasks
@@ -449,7 +449,7 @@ packaging>=23.0               — Dependency version comparison
 ### Pending tasks (Phase 13 — P3 External Release, v1.0)
 
 - TASK-099: Reproducible release pipeline — linux/arm64 ✅ shipped 2026-04-30 (partial); cosign signing wired but COSIGN_ENABLED toggle pending first signed release validation
-- TASK-100: Distribution artifacts — `.deb` + `.rpm` via nfpm ✅ shipped 2026-04-30 (smoke-tested locally); `get.fendix.dev` one-line installer documented and waiting on operator DNS action
+- TASK-100: Distribution artifacts ✅ complete 2026-04-30 — `.deb` + `.rpm` via nfpm (smoke-tested locally) + `https://get.fendix.dev/install.sh` live (DNS + Pages + Let's Encrypt verified end-to-end via real `curl … \| sh` install of v0.6.0-rc1 on darwin/arm64)
 - ~~TASK-101: Documentation pass~~ ✅ shipped 2026-04-30 — `docs/walkthrough-juice-shop.md`, `docs/semgrep-rules.md`, `docs/triage-workflow.md` new; `docs/schema.md` + `docs/ci-cd-integration.md` audited and cross-linked; new "Documentation" index in README
 - ~~TASK-102: `--debug` bundle~~ ✅ shipped 2026-04-30 — new `internal/diagnostic` package + `--debug-bundle <path>` flag; redacted tarball with config/environment/metadata/findings/probes/debug.log
 - TASK-103: SECURITY.md ✅ shipped 2026-04-30; signed commits/releases pending COSIGN_ENABLED rollout
@@ -463,7 +463,60 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-04-30 (Phase 13 release prep — v0.6.0-rc1 staged locally)
+**Date:** 2026-04-30 (Strategic-advisor session — positioning, moat, Phase 14-16 scoping)
+**Session goal:** Operator asked for a Principal-Security-Engineer / DevTools-founder critique of Fendix as a *product*, not a codebase. Plan the strategic next 12 months on top of v1.0; persist the analysis as durable phases/tasks instead of letting it decay into chat history.
+
+**Accomplished:**
+
+- **Three new phases scoped in `tasks/PHASES.md`** with full exit criteria and task lists:
+  - **Phase 14 (P4 — External wedge, v1.1)**: TASK-105 (`fendix init` zero-config CI), TASK-106 (vulnerable-app benchmark suite — juice-shop + vampi + crapi numbers in README), TASK-107 (GitHub App / Marketplace listing), TASK-108 (`fendix demo`), TASK-109 (`.fendix.yaml` repo-committed policy), TASK-110 (README repositioning around "DAST + SAST as one PR check, fails only when both engines confirm"), TASK-111 (top-of-README telemetry statement).
+  - **Phase 15 (P5 — Open & extensible, v1.2)**: TASK-112 (open-source the engine — license decision + repo split + ADR), TASK-113 (plugin system: NDJSON contract identical to engine IPC, 3 reference plugins), TASK-114 (reachability/dataflow correlation — whitebox taint chains + blackbox confirmation, new `correlated:reachable` source).
+  - **Phase 16 (P6 — Architecture v2, v2.0)**: TASK-115 (port secrets analyzer to Go), TASK-116 (make Semgrep optional / shelled-out, remove from embedded distribution), TASK-117 (AST analyzer migration via tree-sitter or Python plugin), TASK-118 (remove embedded Python, publish cold-start benchmark <500ms p50). Marked as v2.0 horizon — not pulled forward.
+
+- **Backlog expanded** with BACKLOG-012 (GraphQL), BACKLOG-013 (VS Code extension), BACKLOG-014 (`fendix server` for trend reporting — explicitly NOT multi-tenant SaaS), BACKLOG-015 (SOURCE_DATE_EPOCH-reproducible builds), BACKLOG-016 (`fendix-bench` standalone benchmark CLI), and BACKLOG-017 — a **decision log of explicit non-goals**: AI-driven triage / LLM fix suggestions, compliance dashboards, container/infra/CSPM/mobile scanning, Burp-style proxy, multi-tenant SaaS with SSO/RBAC. The non-goals list is durable in PHASES.md so future sessions don't re-debate it.
+
+- **`tasks/CURRENT_SPRINT.md` got a new "Strategic Backlog — Next Sprint Candidates" section** between the Phase 13 detail table and the Phase 12 historical detail. Lists the 10 strategic tasks in priority sequence with one-line strategic-value justifications. This makes them visible during sprint planning instead of buried 500 lines deep in PHASES.md.
+
+**Key strategic decisions captured (the load-bearing ones — full reasoning in this session entry):**
+
+- **Reposition around the DAST+SAST-in-one-PR-check wedge, not "hybrid scanner."** Current README hero "Find vulnerabilities before attackers do" is generic; "hybrid API and code security scanner" reads as "two half-tools instead of one good one." The actual differentiation is "only fails the build when both engines confirm" — that's seven words competitors can't copy because they don't have the architecture. Recommended hero copy lives in TASK-110.
+- **Open-source the engine. This is the single highest-leverage strategic decision.** Closed-source posture costs everything (trust, contributions, hiring leverage, audit story for AppSec buyers) and protects nothing right now (no SaaS, no enterprise contracts, no premium features yet). Sentry/Grafana/Semgrep playbook works. Sequencing: TASK-112 should happen before TASK-106/110/107 because all of those benefit from the open-source posture (HN launch credibility, OWASP outreach, community-contributed Semgrep rules, "audit the code yourself" trust angle).
+- **The long-term moat is reachability/dataflow correlation, not check count.** Naive correlation (same endpoint + same category) can be replicated in a weekend. Three-pass correlator (TASK-091) is real engineering but not yet a moat. Reachability — whitebox proves `request.args["id"] → cursor.execute(sql)` AND blackbox confirms time-based SQLi at `?id=` — is a 6-12 month build for a competitor. Semgrep has reachability; ZAP has DAST; nobody crosses the streams. That's TASK-114.
+- **Python embedding is a long-term liability.** ~2s startup tax × 1000s of daily CI runs across all users = real cost. Extraction to `~/.fendix/engine/` is a frequent bug source. Plugin-hostile (users wanting custom rules have to extract and modify embedded code). Phase 16 path: port secrets + OpenAPI parser to Go (~1000 LOC), shell out Semgrep to user-installed binary, drop embedded distribution. **Goal: <500ms cold for 80% of scans.** Not urgent — but the right v2.0 architecture.
+- **No AI-driven anything.** "AI triage" / "LLM fix suggestions" / "AI FP reducer" each burn 2 sprints, ship slop UX, weaken the trust story. Fendix's moat is *signal*, not *magic*. Recorded in BACKLOG-017.
+- **No SaaS / multi-tenant / enterprise pivot before 1000+ GH stars.** Free CLI + GitHub App route gets 95% of value at 10% of cost. Recorded in BACKLOG-017.
+- **Strategic-analysis content lives in PHASES.md (the right place for project plans), not MEMORY.md.** Per memory-system rules, MEMORY.md is for session decision logs + open questions, not frozen-in-time strategic snapshots. This session entry is the *index* into the durable plan, not the plan itself.
+
+**Files modified this session:**
+
+- `tasks/PHASES.md` (Phases 14, 15, 16 added with exit criteria + task lists; BACKLOG-012..017 appended; phase overview table extended; cross-cutting note updated to point at this session for Phase 14-16 rationale)
+- `tasks/CURRENT_SPRINT.md` (new "Strategic Backlog — Next Sprint Candidates" section listing 10 tasks in priority sequence with one-line value justifications)
+- `tasks/MEMORY.md` (this entry; "Current Project State" header annotated with Phase 14-16 reference; rc1-prep session demoted to "Earlier Session")
+
+**Build state at session end:**
+
+- No source code touched this session — strategic / planning only. Build state inherited from prior session: `make build` ✓, `make test` (Go race-clean across 9 packages, Python 193/193) ✓, `make e2e` 17/17 ✓.
+
+**Open questions / followups:**
+
+- **Sequencing decision for the next session.** Three reasonable paths:
+  - **(A)** Push `v0.6.0-rc1` first (the prior session's recommendation), let the release pipeline validate end-to-end, then start Phase 14.
+  - **(B)** Start Phase 14 work in parallel with the release — TASK-110 (README repositioning, ~1 day) and TASK-111 (telemetry statement, ~1 day) can land before v1.0 ships and would *improve* the v1.0 launch.
+  - **(C)** Pull TASK-112 (open-source the engine) forward and gate the v1.0 announcement on it. Highest-leverage but also highest-risk: open-sourcing requires a license decision, repo-split decisions on what stays private if anything, and a public communication. Not a 1-day task.
+- **License decision for TASK-112 (when promoted).** MIT vs Apache 2.0. MIT is simpler and aligns with the "we just want this to spread" thesis; Apache 2.0 has explicit patent grant which may matter for enterprise adoption. Recommend MIT unless future commercial features require Apache 2.0's contributor patent provisions.
+- **"Engine source private, mirror public" architecture is awkward externally** — when going OSS, the cleanest path is a single public repo (`github.com/<org>/fendix`) with no separate mirror. The current `Abdel-RahmanSaied/homebrew-fendix` mirror naming reads as personal, not project — consider organizing under a project-named GitHub org.
+- **Vulnerable-app benchmark targets to seed in TASK-106.** OWASP juice-shop is the obvious primary; vAPI / vampi for API-specific coverage; OWASP CRAPI for connected-vehicle-style API coverage; possibly Damn Vulnerable Web Services (DVWS) or VulnerableNet for breadth. Pin specific commits so benchmark numbers are reproducible.
+- **GitHub App scope (TASK-107).** Minimal: `pull_requests:write` (post comments), `checks:write` (status checks), `contents:read` (read code). Avoid `secrets:read`, `actions:write`, `administration` — anything that needs broad repo access kills install rate. Read the GitHub Marketplace listing requirements early; some categories require security review.
+
+**Next session should start with:**
+
+- **Operator decision on the sequencing question above (A / B / C).** The default recommendation is **(A) push rc1 first, then start Phase 14 with TASK-110 + TASK-111** because: (1) the rc1 push is already ready and validates the release pipeline cheaply, (2) TASK-110 + TASK-111 are 1-day edits that materially improve v1.0's external reception, (3) TASK-112 (open-source) deserves its own dedicated session given the license + repo-split + announcement coordination it requires. If operator picks (C), promote TASK-112 to Phase 13 and re-scope the v1.0 announcement around the open-source angle.
+- **If continuing in (A) flow:** the rc1 push is the prior session's "Next session should start with" — see the entry below this one. Local commit + tag are still uncreated; same 4-step push flow applies.
+
+---
+
+## Earlier Session (2026-04-30 — Phase 13 release prep — v0.6.0-rc1 staged locally)
+
 **Session goal:** Per the prior session's pointer, cut v0.6.0 (Phase 13). Prior session recommended `v0.6.0-rc1` first as the safer path to validate the new cosign + nfpm + ghcr release pipelines before committing to v1.0. Make the local prep, stop before any `git push` (irreversible publish step requires explicit operator confirmation).
 
 **Accomplished:**

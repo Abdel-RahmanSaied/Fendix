@@ -24,13 +24,36 @@
 | ID | Task | Status | Notes |
 | --- | --- | --- | --- |
 | TASK-099 | Reproducible release pipeline: linux/arm64, cosign signing, Homebrew auto-update, signed Docker | 🔄 | Partial — see "Last Session" notes; secret-gated steps stubbed |
-| TASK-100 | Distribution artifacts: `.deb` + `.rpm` via nfpm, `get.fendix.dev` one-line installer | 🔄 | `.deb`/`.rpm` shipped 2026-04-30 — new `nfpm.yaml`, release.yml + cosign wired, smoke-tested locally; `get.fendix.dev` rollout documented but waiting on operator DNS action |
+| TASK-100 | Distribution artifacts: `.deb` + `.rpm` via nfpm, `get.fendix.dev` one-line installer | ✅ | `.deb`/`.rpm` shipped 2026-04-30. **`get.fendix.dev/install.sh` is live as of 2026-04-30** — operator registered `fendix.dev`, configured DNS CNAME → `abdel-rahmansaied.github.io`, enabled GitHub Pages on the mirror; Let's Encrypt cert auto-provisioned. End-to-end smoke test confirmed: `curl -fsSL https://get.fendix.dev/install.sh \| sh` pulled `fendix v0.6.0-rc1` for `darwin/arm64`, verified the sha256, installed to `/usr/local/bin/fendix`. Engine-side: new `scripts/release/mirror-pages-bootstrap/` (CNAME + `.nojekyll` + `index.html`), `release.yml` mirror job auto-syncs them + `install.sh` into the mirror on every `v*` tag, README + `docs/install.md` cutover from `raw.githubusercontent.com/.../homebrew-fendix/main/install.sh` to `https://get.fendix.dev/install.sh` (mirror URL retained as documented fallback). |
 | TASK-101 | Documentation pass: 5-min walkthrough, CI integration page, Semgrep rule guide, triage workflow, JSON schema ref | ✅ | New `docs/walkthrough-juice-shop.md` + `docs/semgrep-rules.md` + `docs/triage-workflow.md`; existing `docs/schema.md` + `docs/ci-cd-integration.md` audited and cross-linked; new "Documentation" index in README. |
 | TASK-102 | `--debug` bundle: redacted config + OS + Python version + probe audit + slog-debug into a tarball | ✅ | Shipped 2026-04-30 — new `internal/diagnostic` package + `--debug-bundle <path>` CLI flag; tarball entries: README + config (auth `[REDACTED]`) + environment (fendix/go/python versions) + metadata + findings + debug.log + probes.jsonl (only on `--enable-active`); new package-level audit log in scanner; orchestrator installs slog tee at scan start and writes bundle before fail-on; 8 unit + 1 e2e test. |
 | TASK-103 | SECURITY.md + active-scanner threat model + signed commits/releases | 🔄 | SECURITY.md + threat-model shipped 2026-04-30; signed commits/releases pending COSIGN_ENABLED rollout |
 | TASK-104 | Performance benchmark suite: scan time vs endpoint count, memory peak, goroutine count, published in README | ✅ | Shipped 2026-04-30 — bench suite + README "Performance" section live |
 
 **Status legend:** 🔲 Not Started | 🔄 In Progress | ✅ Done | ⏸ Blocked
+
+---
+
+## Strategic Backlog — Next Sprint Candidates (post-v1.0)
+
+> Dropped here from the 2026-04-30 strategic-advisor session so they're visible during sprint planning instead of buried in PHASES.md. Full rationale in `tasks/MEMORY.md` "Strategic Session 2026-04-30". Sequencing logic: open-source first (TASK-112), because it changes how every other task ships (community contribution, trust posture, marketing channels). Then external-wedge proof (TASK-106 benchmarks + TASK-110 repositioning + TASK-105 init + TASK-107 GH App). Then extensibility (TASK-113 plugins + TASK-114 reachability correlation). Architecture v2 (Phase 16) is a year+ out — do not pull forward.
+
+**Recommended Phase 14 sprint order** (in priority sequence — each builds on the prior):
+
+| ID | Task | Phase | Strategic value |
+| --- | --- | --- | --- |
+| TASK-112 | Open-source the engine (license + repo split + ADR) | 15 → pull forward | Single highest-leverage decision. Closed-source posture protects nothing right now and costs everything (trust, contributions, hiring leverage). All other strategic tasks gain leverage once this lands. |
+| TASK-110 | README repositioning: lead with "DAST + SAST as one PR check, fails only when both engines confirm" | 14 | Current "hybrid" framing buries the wedge. Repositioning is a 1-day edit with multi-month payoff. |
+| TASK-111 | Telemetry statement at top of README | 14 | "Fendix sends nothing to the network by default" is verifiable and rare. AppSec buyers' first question; current README is silent. |
+| TASK-106 | Vulnerable-app benchmark suite in CI (juice-shop + vampi + crapi) | 14 | Without numbers, coverage claims are unprovable. "Detects 14 of 16 known juice-shop bugs in 18s vs ZAP-baseline's 9" is a marketing weapon. |
+| TASK-105 | `fendix init` zero-config workflow generator | 14 | Closes the manual-CI-setup gap that filters ~80% of first-time users. ~2 days. |
+| TASK-109 | `.fendix.yaml` repo-committed policy | 14 | AppSec engineers cannot adopt without committable policy. CLI-flags-only is dead-on-arrival for teams. |
+| TASK-107 | GitHub App / Marketplace listing | 14 | Distribution channel #1 for AppSec tools, untapped. |
+| TASK-108 | `fendix demo` command (local juice-shop spin-up + scan) | 14 | Removes the cold-start question of "what does a real scan look like?" |
+| TASK-113 | Plugin system (NDJSON contract identical to engine IPC, 3 reference plugins) | 15 | Without plugins, no community contribution. Promote `BACKLOG-003` to a real task. |
+| TASK-114 | Reachability/dataflow correlation (whitebox taint chains + blackbox confirmation) | 15 | The actual long-term moat. 6–12 months for a competitor to replicate. |
+
+**Explicit non-goals** (the don't-build list — see BACKLOG-017): AI-driven triage / LLM fix suggestions, compliance dashboards, container/infra/CSPM/mobile scanning, Burp-style proxy, multi-tenant SaaS.
 
 ---
 

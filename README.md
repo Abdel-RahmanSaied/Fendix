@@ -10,7 +10,7 @@ Fendix is a hybrid API and code security scanner that combines black-box HTTP pr
 
 ```bash
 # 1. Install (downloads the latest release binary for your platform)
-curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
+curl -fsSL https://get.fendix.dev/install.sh | sh
 
 # 2. Run your first scan
 fendix scan --url https://api.example.com --format html --output report.html
@@ -37,12 +37,18 @@ brew install fendix
 ### curl (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
+curl -fsSL https://get.fendix.dev/install.sh | sh
 ```
 
-Downloads the latest release binary, verifies its sha256 checksum, and installs to `/usr/local/bin/fendix`. Override the install directory with `FENDIX_DIR=$HOME/.local/bin` and the version with `FENDIX_VERSION=v0.4.0`.
+Downloads the latest release binary, verifies its sha256 checksum, and installs to `/usr/local/bin/fendix`. Override the install directory with `FENDIX_DIR=$HOME/.local/bin` and the version with `FENDIX_VERSION=v0.6.0`.
 
-A short-URL installer at `https://get.fendix.dev` is on track for v1.0 — see [`docs/install.md`](docs/install.md#getfendixdev-rollout-status) for the rollout plan.
+`get.fendix.dev` is the engine repo's short URL — it's a CNAME to the [`homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix) mirror, served via GitHub Pages. To inspect the script before piping to a shell:
+
+```bash
+curl -fsSL https://get.fendix.dev/install.sh | less
+```
+
+If `get.fendix.dev` is ever unreachable, the `raw.githubusercontent.com` URL is the documented fallback — see [`docs/install.md`](docs/install.md#install-script-curl--sh).
 
 ### Debian / Ubuntu (.deb)
 
@@ -341,7 +347,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Fendix
-        run: curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/Fendix/main/scripts/install.sh | sh
+        run: curl -fsSL https://get.fendix.dev/install.sh | sh
 
       - name: Run scan
         run: |

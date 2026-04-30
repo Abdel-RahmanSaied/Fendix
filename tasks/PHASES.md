@@ -23,10 +23,15 @@
 | 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
 | 12 | P2 — Quality & ops | ✅ Complete (7/7 — TASK-092..098; v0.5.0 shipped 2026-04-29) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
 | 13 | P3 — External release | 🔄 In Progress | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
+| 14 | P4 — External wedge | 🔲 Not Started | Reposition, prove coverage, lower CI-onramp friction, ship GH App (v1.1) |
+| 15 | P5 — Open & extensible | 🔲 Not Started | Open-source the engine, plugin system, reachability correlation (v1.2) |
+| 16 | P6 — Architecture v2 | 🔲 Not Started | Drop Python boot tax: native-Go simple checks, optional shelled-out Semgrep (v2.0) |
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
 
 Phases 10-13 grew out of the 2026-04-28 real-world test pass — see `tasks/MEMORY.md` "Last Session Summary" for the bug evidence that informed each task.
+
+Phases 14-16 grew out of the 2026-04-30 strategic-advisor session — see `tasks/MEMORY.md` "Strategic Session 2026-04-30" for the analysis that informed each phase. Sequencing rationale: Phase 14 wedges a credible external-evaluation story (numbers + onramp + GH App) on top of v1.0; Phase 15 opens the source + extensibility surface (the high-leverage growth multiplier); Phase 16 retires Python embedding once plugin system + native-Go checks make it optional.
 
 ---
 
@@ -479,7 +484,7 @@ TASK-098  ✅ CI integration recipe: examples/github-actions/fendix-scan.yml wit
 - [ ] Homebrew formula auto-updates SHA256 per release (no `PLACEHOLDER_*`)
 - [ ] Docker image published to ghcr.io, signed
 - [x] `.deb` and `.rpm` packages produced via nfpm
-- [ ] One-line installer at `get.fendix.dev` works on macOS + Linux
+- [x] One-line installer at `get.fendix.dev` works on macOS + Linux (live 2026-04-30)
 - [x] Docs: 5-minute juice-shop walkthrough, CI integration (GH Actions + GitLab + CircleCI), Semgrep rule guide, triage workflow, JSON schema reference
 - [x] `--debug` flag bundles a redacted diagnostic tarball
 - [x] `SECURITY.md` with disclosure policy
@@ -494,6 +499,91 @@ TASK-101  Documentation pass: 5-min walkthrough, CI integration page, Semgrep ru
 TASK-102  --debug bundle: redacted config + OS + Python version + probe audit + slog-debug into a tarball
 TASK-103  SECURITY.md + active-scanner threat model + signed commits/releases
 TASK-104  Performance benchmark suite: scan time vs endpoint count, memory peak, goroutine count, published in README
+```
+
+---
+
+## Phase 14 — P4: External wedge (v1.1)
+
+**Goal:** Turn v1.0 from "credible engineering" into "credible external evaluation." Reposition around the actual wedge (DAST + SAST in one PR check, only fails on confirmed findings); ship the proof (vulnerable-app benchmark numbers); lower the CI onramp (`fendix init`); occupy the GitHub Marketplace channel.
+
+**Value:** Engineering quality is already there. What's missing is the *story* (positioning), the *proof* (benchmark numbers), and the *channel* (GH Marketplace + zero-config init). Closing this gap is the difference between "interesting prototype" and "tool a startup defaults to."
+
+**Target:** A first-time user runs `brew install fendix && cd repo && fendix init && git push`, and 90 seconds later their PR has a Fendix comment showing "✓ confirmed by both engines" findings. README hero leads with the wedge ("DAST + SAST as one PR check"); README has a benchmark table with juice-shop / vampi / crapi numbers vs ZAP-baseline + Semgrep CI.
+
+**Exit criteria:**
+
+- [ ] README hero repositioned: lead with "DAST + SAST as one PR check, fails only when both engines confirm" — not "hybrid" (TASK-110)
+- [ ] Top-of-README "What Fendix sends to the network" telemetry statement (TASK-111)
+- [ ] Vulnerable-app benchmark suite running in CI on every push: juice-shop + vampi + crapi; numbers published in README (`Fendix detects N of M known bugs in X seconds vs ZAP-baseline Y / Semgrep Z`) (TASK-106)
+- [ ] `fendix init` writes a working `.github/workflows/fendix.yml` + `.fendix.yaml` based on detected stack (TASK-105)
+- [ ] `.fendix.yaml` repo-committed policy file: severities, ignored rules, fail-on threshold, auth profile reference (TASK-109)
+- [ ] `fendix demo` spins up a known-vulnerable target locally and produces a sample report in <60s (TASK-108)
+- [ ] GitHub App on the Marketplace: one-click install, auto-comments on PRs, auto-uploads SARIF (TASK-107)
+- [ ] PR-comment template rewritten to lead with "confirmed by both engines" framing for correlated findings (extension of TASK-098)
+
+**Tasks:**
+```
+TASK-105  fendix init: zero-config workflow generator (detect stack, write .github/workflows/fendix.yml + .fendix.yaml + .fendix-ignore)
+TASK-106  Vulnerable-app benchmark suite in CI (juice-shop + vampi + crapi); numbers published in README
+TASK-107  GitHub App / Marketplace listing: one-click install, auto PR comment, SARIF upload
+TASK-108  fendix demo command: spins up local vulnerable target, runs scan, opens report
+TASK-109  .fendix.yaml repo-committed policy file (severities, suppressions, fail-on, auth profile)
+TASK-110  README repositioning: lead with the wedge (DAST+SAST as one PR check, confirmed-by-both-engines)
+TASK-111  Telemetry statement at top of README ("What Fendix sends to the network") + verification one-liner
+```
+
+---
+
+## Phase 15 — P5: Open & extensible (v1.2)
+
+**Goal:** Open-source the engine + ship the plugin system + build the reachability/dataflow correlation that becomes the long-term moat.
+
+**Value:** Closed-source posture costs everything (no trust, no contributions, no audit story) and protects nothing right now (no SaaS, no enterprise contracts). Opening + extending unlocks community, hiring, and the only correlation feature competitors can't replicate quickly.
+
+**Target:** `github.com/fendix/fendix` is public under MIT or Apache 2.0; community can contribute Semgrep rules + custom checks via `~/.fendix/plugins/`; a hybrid scan against juice-shop produces at least one finding tagged `correlated:reachable` (whitebox proves taint source→sink AND blackbox confirms exploitation).
+
+**Exit criteria:**
+
+- [ ] License decision documented in ADR; engine repo split + released under chosen license; commercial-features repo (if any) clearly delineated (TASK-112)
+- [ ] Plugin system: `~/.fendix/plugins/<name>/plugin.yaml` + Go binary or Python script; plugins receive ScanContext via NDJSON, emit Findings via NDJSON (same contract as existing engine IPC); 3 reference plugins shipped (TASK-113)
+- [ ] Reachability/dataflow correlation: whitebox AST records taint-source-to-sink chains; correlator escalates to a new `correlated:reachable` source when blackbox confirms exploitation at the same endpoint; new severity multiplier (TASK-114)
+- [ ] CONTRIBUTING.md updated for plugin authors; `good first issue` labels seeded; first 5 community-contributed Semgrep rules merged
+- [ ] Open-source launch post published (HN, r/devops, r/golang); juice-shop walkthrough pulled forward to README hero
+
+**Tasks:**
+```
+TASK-112  Open-source the engine: license decision (MIT/Apache 2.0), repo split, public release, ADR documenting the strategic decision
+TASK-113  Plugin system: NDJSON contract identical to engine IPC, ~/.fendix/plugins/ + .fendix/plugins/ discovery, 3 reference plugins (e.g. custom-secret-pattern, custom-semgrep-pack, custom-blackbox-check)
+TASK-114  Reachability/dataflow correlation: whitebox taint chains, blackbox confirmation, new correlated:reachable source, severity escalation, walkthrough doc
+```
+
+---
+
+## Phase 16 — P6: Architecture v2 (v2.0)
+
+**Goal:** Make Python optional. Drop the embedded-Python boot tax for the 80% of scans that don't need Semgrep depth. Move closer to "Trivy-fast cold start" (<500ms) for the common case.
+
+**Value:** Python startup tax (~2s) aggregated across thousands of daily CI runs is real cost. Embedded extraction is a frequent bug source (permissions, partial extracts, version drift). Tested across 4 platforms per release. None of this is necessary for secrets/regex/OpenAPI-parsing checks — those are Go-native.
+
+**Target:** `fendix scan --code ./repo` (without Semgrep installed) finishes in <500ms cold and produces secrets + OpenAPI + dep-CVE findings. Semgrep depth is reachable via shelled-out `semgrep ci` if the user installs it. Python is removed from the embedded distribution.
+
+**Exit criteria:**
+
+- [ ] Secrets analyzer ported to Go (~400 LOC, all current patterns including .env handling)
+- [ ] OpenAPI 2.0/3.x spec parser ported to Go (existing Go crawler already does most of this — consolidate)
+- [ ] Dependency CVE checker shells out to `pip-audit` / `npm audit` / `govulncheck` (already does — formalize as the only path; remove offline-fallback list once tools are guaranteed-installable)
+- [ ] Semgrep + Bandit removed from embedded engine; shelled out to user-installed binaries; clear "install semgrep for deeper SAST" message when absent
+- [ ] AST analyzer either ported to Go (using `tree-sitter`) or kept as Python plugin (depends on Phase 15 plugin system)
+- [ ] Cold start benchmark: <500ms p50 for code-only scans without Semgrep
+- [ ] Embedded Python distribution removed; binary size reduction documented
+
+**Tasks:**
+```
+TASK-115  Port secrets analyzer to Go (all 15 patterns + .env handling)
+TASK-116  Make Semgrep optional: shell out to user-installed semgrep, remove from embedded distribution; clear absence-messaging
+TASK-117  AST analyzer migration: tree-sitter in Go OR Python plugin (decide after Phase 15 plugin system stabilizes)
+TASK-118  Remove embedded Python distribution; binary-size + cold-start benchmark in README
 ```
 
 ---
@@ -526,4 +616,10 @@ BACKLOG-008  Nuclei template compatibility layer
 BACKLOG-009  VS Code extension
 BACKLOG-010  SaaS hosted version
 BACKLOG-011  Refresh-on-401: token-refresh RoundTripper that traps 401, POSTs refresh-token to a configured URL, retries the original request with the new access token; needs single-flight to coalesce concurrent refreshes. Out of scope for v0.5 (TASK-096 deferred this) — original FENDIX_CLAUDE_CODE.md spec doesn't require it; the Phase 12 mention was forward-looking. Revisit when a real-world target needs it.
+BACKLOG-012  GraphQL API scanning: introspection-based discovery, alias-based query depth attacks, batched-query DoS, missing field-level auth. Closes a credibility gap with Burp/Nuclei. Promote to a phase task once the v1.x wedge is established.
+BACKLOG-013  VS Code extension: surface findings inline in the editor pre-CI; cheaper to fix while writing. Needs the plugin/IPC contract (Phase 15) before this is clean.
+BACKLOG-014  fendix server: web dashboard for trend reporting (severity over time, MTTR, regression alerts). Read-only over committed JSON reports — explicitly NOT multi-tenant SaaS, NOT a SOC2 dashboard. Trend-tracking only. Promote when ≥3 customers ask for it.
+BACKLOG-015  SOURCE_DATE_EPOCH-reproducible builds: every release byte-identical from git. Pairs with cosign for an end-to-end audit story. Cheap once the cosign pipeline (TASK-099) is fully ramped.
+BACKLOG-016  fendix-bench standalone benchmark CLI: lets users reproduce the README benchmark numbers locally and against their own targets. Strong proof-point for AppSec engineers evaluating the tool.
+BACKLOG-017  Strategic distractions explicitly to NOT build (decision log): AI-driven triage / LLM fix suggestions, compliance dashboards (SOC2/ISO 27001 mappings), container/infra scanning (Trivy/Aikido own this), CSPM / cloud config (Wiz/Aikido), mobile app scanning, Burp-style interactive proxy, multi-tenant SaaS with SSO/RBAC. See `tasks/MEMORY.md` "Strategic Session 2026-04-30" for the rationale on each.
 ```

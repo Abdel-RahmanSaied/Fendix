@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get.fendix.dev` short-URL installer is live** (TASK-100, complete).
+  `curl -fsSL https://get.fendix.dev/install.sh | sh` now installs the
+  latest signed Fendix binary on macOS and Linux. Pipeline: operator-owned
+  `fendix.dev` zone + DNS CNAME `get.fendix.dev → abdel-rahmansaied.github.io`
+  → GitHub Pages on the [`homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix)
+  mirror → Let's Encrypt cert (auto-provisioned by Pages, mandatory because
+  `.dev` is HTTPS-only) → static files served from the mirror root.
+
+  **Engine-side artifacts** (auto-synced into the mirror on every `v*`
+  tag by `release.yml`): new `scripts/release/mirror-pages-bootstrap/`
+  holds the four files Pages needs — `CNAME` (binds the custom domain),
+  `.nojekyll` (skips Jekyll), `index.html` (browser landing page; static,
+  no JS, dark-mode CSS, points at the install one-liner), plus a `README.md`
+  with the full operator playbook (DNS records, Pages settings, smoke-test
+  commands). The `mirror` job in `.github/workflows/release.yml` now
+  copies these four files plus `scripts/install.sh` into the mirror
+  alongside the existing Formula update — closing a long-standing drift
+  hazard where `install.sh` claimed to be "mirrored on every release"
+  but in reality was hand-committed once and silently diverged on every
+  later edit. The engine repo is now the single source of truth for
+  everything served at `get.fendix.dev`.
+
+  **Cutover**: README quick-start + curl-install section, README CI
+  example, and `docs/install.md` install one-liner all flipped from the
+  `raw.githubusercontent.com/.../homebrew-fendix/main/install.sh` URL to
+  `https://get.fendix.dev/install.sh`. The mirror URL is documented as a
+  fallback for users behind networks that block the custom domain. The
+  `docs/install.md` "rollout status" section was rewritten as a "how
+  it's wired" reference (with a table mapping each served file to its
+  engine-repo source) plus a `dig`/`curl -I`/end-to-end verification
+  recipe.
+
+  **`install.sh` header** now points at the canonical
+  `https://get.fendix.dev/install.sh` URL; PATH-not-set warning suggests
+  the `FENDIX_DIR=$HOME/.local/bin` re-run flow with the canonical URL.
+
+  **End-to-end smoke test (2026-04-30)**: `dig +short get.fendix.dev`
+  resolves to the GitHub Pages CNAME chain; `curl -I https://get.fendix.dev/install.sh`
+  returns HTTP/2 200 with `content-type: application/x-sh`; full
+  `curl … | sh` install pulled `fendix v0.6.0-rc1` for `darwin/arm64`,
+  verified the sha256, installed to `/usr/local/bin/fendix`, and
+  `fendix version` reported the expected version. Pipeline validated
+  end-to-end before this entry shipped.
+
 ## [0.6.0-rc1] - 2026-04-30
 
 Phase 13 — P3 External Release readiness, release-candidate. Validates the

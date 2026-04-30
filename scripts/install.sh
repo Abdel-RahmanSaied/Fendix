@@ -1,8 +1,11 @@
 #!/bin/sh
 # Fendix installer — downloads the latest release binary for your platform.
 #
-# This script is mirrored to the public install repo on every release. The
-# canonical user-facing URL is:
+# This script is mirrored to the public install repo on every release by
+# .github/workflows/release.yml. The canonical user-facing URL is:
+#   curl -fsSL https://get.fendix.dev/install.sh | sh
+#
+# Direct-from-mirror fallback (works even if get.fendix.dev DNS is down):
 #   curl -fsSL https://raw.githubusercontent.com/Abdel-RahmanSaied/homebrew-fendix/main/install.sh | sh
 #
 # Options (environment variables):
@@ -120,7 +123,9 @@ verify() {
         printf "  ${BOLD}fendix scan --url https://api.example.com${RESET}\n"
         printf "  ${BOLD}fendix scan --code ./src --spec openapi.yaml${RESET}\n\n"
     else
-        warn "fendix installed but not in PATH. Add ${INSTALL_DIR} to your PATH."
+        warn "fendix installed but not in PATH. Add ${INSTALL_DIR} to your PATH,"
+        warn "or re-run with FENDIX_DIR pointing at a directory already on PATH:"
+        warn "  curl -fsSL https://get.fendix.dev/install.sh | FENDIX_DIR=\$HOME/.local/bin sh"
     fi
 }
 
