@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-01
+
+**Headline:** the wedge is now defensible. Phase 14 (P4 External
+Wedge) closed end-to-end with the GitHub App business logic;
+Phase 15 (P5 Open & Extensible) shipped open-source ratification
++ plugin system + reachability/dataflow correlation. The
+correlator now distinguishes "DAST + SAST agreed" from "DAST +
+SAST agreed AND we can prove the path" — the latter gets a
+double severity escalation, which is what makes the wedge
+defensible against vendor noise.
+
+This release folds 8 commits since v0.6.1 (`5855dc4..1d739cf`):
+TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b GitHub
+App business logic, TASK-108 `fendix demo`, TASK-109 `.fendix.yaml`
+policy, TASK-112 ADR-007, TASK-113 plugin system, TASK-114
+reachability. Also includes two MEMORY-only commits documenting
+the frontend syncs along the way.
+
 ### Added
 
 - **Phase 15 — Open & Extensible (v1.2). Three task ship: open-source
