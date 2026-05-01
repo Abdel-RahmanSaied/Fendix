@@ -7,6 +7,7 @@ Fendix runs a runtime probe and a static analyzer on every scan. Only findings w
 - **Confirmed findings.** Both engines must agree on category and endpoint before the build fails.
 - **Single binary.** Drop into CI in 30 seconds. Active probes off by default; opt in with `--enable-active`.
 - **Signed and silent.** Releases signed via [cosign keyless](#verifying-signed-releases) (Sigstore Fulcio). [No telemetry](#what-fendix-sends-to-the-network) — verify with `tcpdump`.
+- **Open source under MIT.** Read the source, audit the wedge, fork it, ship plugins. See [ADR-007](docs/adr/ADR-007-open-source.md) for the strategic posture.
 
 ---
 

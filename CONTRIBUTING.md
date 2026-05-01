@@ -330,6 +330,21 @@ Major design decisions are documented in `docs/adr/`. If your change involves an
 
 - [ADR-001: Go+Python Hybrid Architecture](docs/adr/ADR-001-go-python-hybrid.md)
 - [ADR-002: Newline-delimited JSON IPC](docs/adr/ADR-002-ndjson-ipc.md)
+- [ADR-007: Open-source license + single-repo posture](docs/adr/ADR-007-open-source.md)
+
+---
+
+## Licensing of contributions
+
+Fendix is MIT-licensed (see [`LICENSE`](LICENSE) and [ADR-007](docs/adr/ADR-007-open-source.md) for the strategic rationale).
+
+**By submitting a pull request, you agree that your contribution is licensed under the same MIT terms as the rest of the tree.** No CLA, no copyright assignment, no separate paperwork. The Developer Certificate of Origin is satisfied by the act of submitting via your authenticated GitHub account.
+
+If you're unsure whether code you're submitting is yours to contribute (e.g. employer ownership of work-time output, copy from another project), please flag it in the PR description so we can resolve it before merge.
+
+### Out-of-tree plugins
+
+Plugins distributed outside this repo via the plugin system (see `docs/plugins.md`) are **not** required to be MIT-licensed. Plugin authors choose their own license; the Fendix engine loads any plugin that implements the NDJSON contract. Plugins shipped *inside* this repo (under `examples/plugins/`) are MIT to match the rest of the tree.
 
 ---
 
