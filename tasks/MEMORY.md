@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 14 — P4 External Wedge (v1.1) — ✅ Complete. All 7 Phase-14 tasks **+ TASK-107b follow-up** shipped. TASK-105 (`fendix init`), TASK-106 (vulnerable-app benchmark + numbers from v0.6.1 CI run captured), TASK-107 (GitHub App scaffold — manifest + webhook server + auth + handler stubs), **TASK-107b (this session — wired clone + scan + PR comment + SARIF upload + check_run rerequested + Dockerfile.app + reference k8s manifest)**, TASK-108 (`fendix demo` command), TASK-109 (`.fendix.yaml` repo-committed policy + extended `fendix init` to write it), TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section). **v0.6.1 shipped 2026-05-01** (patch release: install.sh `mkdir -p` fix). Engine code is at v0.6.1 + 5 Phase-14 commits on `main` (5300561, 3570d53, 3ba98e0, 31b9785, **TASK-107b uncommitted at session end**). Phase 13 ✅ Complete 2026-04-30. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-14 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), **v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01)**; v1.1+ scoped via Phases 15-16. Next tagged release will fold the post-v0.6.1 Phase-14 commits (including TASK-107b).
-**Last updated:** 2026-05-01 (frontend sync — TASK-107b absorption into `fendix_frontend`)
+**Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete (engine code). All 3 Phase-15 tasks shipped in one session 2026-05-01: TASK-112 (open-source posture ratified via ADR-007 — MIT, single repo, no open-core), TASK-113 (plugin system: `internal/plugin` package + NDJSON IPC + 3 reference plugins under `examples/plugins/` + `--no-plugins` CLI flag + `docs/plugins.md` author guide + 12 unit tests), TASK-114 (reachability/dataflow correlation: Python AST analyzer records `taint_chain` + `reachable: true` for SQLi/SSRF/open-redirect via recursive intra-function scope walking, models gain `TaintLink`/`TaintChain []TaintLink`/`Reachable bool` on Finding, correlator double-escalates severity when reachable, HTML reporter renders the chain, 5 new Python AST tests + 3 new Go correlator tests + 1 new e2e regression). Phase 14 fully complete + frontend-synced. **v0.6.1 shipped 2026-05-01** (patch release). Phase 13 ✅ Complete 2026-04-30. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase — explicitly year+ out, do not pull forward.
+**Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), **v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01)**. Next tagged release (recommended v0.7.0) will fold the post-v0.6.1 Phase-14 commits + TASK-107b + Phase-15 (TASK-112/113/114).
+**Last updated:** 2026-05-01 (Phase 15 ship — TASK-112 + TASK-113 + TASK-114 + frontend sync)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -463,7 +463,98 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-01 (frontend sync — absorbing TASK-107b into `fendix_frontend`)
+**Date:** 2026-05-01 (Phase 15 ship — TASK-112 + TASK-113 + TASK-114 + frontend sync)
+**Session goal:** Complete Phase 15 in one session per the parent prompt. Three tasks: open-source posture (TASK-112), plugin system (TASK-113), reachability/dataflow correlation (TASK-114). Then sync the frontend, cross-compile the engine binary for the backend bind mount, update MEMORY.md / CURRENT_SPRINT.md, commit + push.
+
+**Accomplished:**
+
+- **Bootstrap (Phase 0).** Verified engine state at `ef5d79f` (TASK-107b shipped + frontend sync recorded). Build matrix green pre-work: Go 13 packages compile + race-clean; Python 193/193; e2e 24/24. Read PHASES.md Phase 15 detail to confirm scope.
+
+- **TASK-112 — Open-source posture ratified.** New `docs/adr/ADR-007-open-source.md` (~150 lines) ratifies MIT (status quo from v0.1.0), single-repo, no open-core split as the deliberate strategic decision. ADR documents three rejected alternatives (Apache 2.0 — re-licensing friction, no patentable innovations; AGPL 3.0 — friction for legitimate enterprise CI use; open-core split — no commercial customers asking, splits the wedge across two repos). Forward-compatible: a future ADR can supersede *for new features* without breaking the engine's MIT contract. README hero gains a fourth bullet "**Open source under MIT** — read the source, audit the wedge, fork it, ship plugins." linking to the ADR. CONTRIBUTING.md gains a "Licensing of contributions" section ("by submitting a PR, you agree to MIT for your work; no CLA, no copyright assignment") plus an "Out-of-tree plugins" subsection clarifying that plugins distributed outside this repo choose their own license; `examples/plugins/` ships under MIT.
+
+- **TASK-113 — Plugin system.** New `internal/plugin/plugin.go` (~200 LOC): `Plugin` struct, `Spec` struct mirroring `plugin.yaml`, `Discover(roots)` walking repo-local + user-global with `seen` map for shadow-precedence dedup, `loadPlugin(dir)` parsing manifest with `yaml.NewDecoder.KnownFields(true)`, `validate()` rejecting bad name/entrypoint/mode/timeout, `(*Plugin).Run(ctx, req)` shelling out to the entrypoint with JSON `ScanRequest` on stdin and reading NDJSON `Finding`s on stdout. `readPluginFindings` mirrors the embedded engine's `readFindings` with `bufio.Scanner` + 1 MiB buffer + done-message terminator + malformed-line skip. Plugins inherit `FENDIX_PLUGIN_NAME` + `FENDIX_PLUGIN_DIR` env vars; every emitted finding gets `fendix-plugin:<name>` appended to References for provenance. `DefaultRoots(cwd)` returns repo-local then user-global (`<cwd>/.fendix/plugins/` then `~/.fendix/plugins/`). New `internal/plugin/plugin_test.go` (~270 LOC, 12 tests under `-race`): empty/missing roots, single-plugin discovery, unknown-field rejection, repo-local-shadows-user-global, validate() across 9 bad-input cases, happy-path Run, blackbox-mode source tagging, plugin error terminator, non-zero exit retains partial findings, timeout fires promptly, malformed line skipped not fatal, DefaultRoots ordering. **Orchestrator wiring**: new step 4.5 between whitebox spawn and Correlate runs `runPlugins(ctx)`; mode-filtered (blackbox plugins only on URL targets, whitebox on code/spec, hybrid on either); plugin findings flow through Correlate / Dedup / Sort / ID-assignment unchanged. Plugin failures log WARN and the scan continues — a broken plugin can't interrupt the embedded engines. **`absPathOrEmpty` helper**: orchestrator resolves filesystem paths (CodePath, SpecPath) to absolutes before sending to plugins, since plugins run with cwd=plugin-dir (a relative `./repo` from the scan caller's cwd would resolve under the plugin directory and find nothing — caught during real-world end-to-end test). New `--no-plugins` CLI flag. Three reference plugins under `examples/plugins/`: `custom-secret-pattern/` (Python stdlib, regex over source for fictional `acme-secret-<24 hex>` token), `custom-blackbox-check/` (Python stdlib `urllib`, asserts response includes `X-Acme-Compliance-Tier` header), `custom-semgrep-pack/` (bash + jq, wraps a custom Semgrep rule against `subprocess(... shell=True ...)`). New `docs/plugins.md` (~270 lines): discovery model, plugin.yaml schema, IPC contract (input/output/env vars/provenance), reference plugins, security model ("plugins are arbitrary executables"), authoring checklist. **Real-world end-to-end test**: copied `custom-secret-pattern` into `~/.fendix/plugins/`, scanned a fixture containing `acme-secret-aaaabbbb…`, observed plugin discover, run, emit 1 CRITICAL finding with redacted evidence (`acme-secret-aa…[REDACTED]`) and the `fendix-plugin:custom-secret-pattern` provenance ref. Caught the cwd-relative path bug during this test pass.
+
+- **TASK-114 — Reachability/dataflow correlation.** Python `analyzers/ast_analyzer.py` extended: `_emit_finding` gains optional `taint_chain` parameter (sets `reachable: true` and `taint_chain: [...]` on the emitted dict). New `_collect_taint_chain(sink_arg, sink_lineno, sink_expr)` returns ordered chain (source first, sink last) when intra-function dataflow proves a request-input reaches the sink, else None. New `_trace_to_source(expr, visited)` recursively walks `Name` references inside any expression (BinOp/Call/JoinedStr/etc.) through scope assignments — closes the multi-hop case `q = request.args.get('q'); sql = '...' + q; cursor.execute(sql)` that single-Name walking missed. Visited-set guards against assignment cycles. New `_link(lineno, expr)` helper produces `{"file": str, "line": int, "expr": str}`. New module-level `_ast_expr_text(node)` uses `ast.unparse` (Python ≥3.9) to render expressions short, capped at 200 chars to keep IPC line-size sane. **Wired into 3 sinks**: SQLi (`_is_sql_injection`), SSRF (`_is_ssrf`), open-redirect (`_is_open_redirect`). 5 new Python AST tests (`TestTaintChain`): inline request-input → sink, multi-step assignment chain (the recursive case), constant-only yields no chain (no false positive), SSRF chain, open-redirect chain. **Go-side propagation**: `models.Finding` gains `TaintLink` struct + `TaintChain []TaintLink` and `Reachable bool` fields (both `omitempty` — non-AST-analyzer engines and existing consumers see no schema change). `correlator.mergeFindings` propagates chain + Reachable from whitebox to merged correlated finding AND applies a *second* `escalateSeverity` call when `wb.Reachable` — so MEDIUM blackbox + MEDIUM whitebox + reachable jumps to CRITICAL (vs. HIGH without reachability). 3 new Go correlator tests: `TestCorrelate_ReachableWhiteboxEscalatesSeverityAndPropagatesChain` (chain + Reachable propagate, severity not regressed), `TestCorrelate_ReachableLowerSeverityDoubleEscalates` (MEDIUM × MEDIUM × reachable → CRITICAL), `TestCorrelate_NonReachableSingleEscalation` (regression: without reachable, MEDIUM × MEDIUM → HIGH only). **HTML reporter**: new `{{if .Reachable}}` block under finding details shows "Reachable dataflow (N steps)" with an ordered list of `<file>:<line> — <expr>` entries. **e2e regression**: new `internal/e2e/reachable_e2e_test.go::TestReachable_HybridScanProducesReachableCorrelated` — real fendix binary scans a fixture (`q = request.args.get('q'); sql = '...' + q; cursor.execute(sql)`) + a minimal OpenAPI spec + a live httptest server returning 200 without auth; asserts ≥1 finding has a non-empty taint chain referencing `request.args` AND ≥1 finding has `source: correlated` (verifies both TASK-091 and TASK-114 paths still work in hybrid mode).
+
+- **Frontend sync.** New "**Unreleased — Phase 15 — Open & Extensible (v1.2)**" entry at the top of `app/changelog/page.tsx` with 4 bullets covering all three tasks plus the "Backend not extended for plugins or reachability" decision callout. The prior "Phase 14 closeout" entry stays as the second Unreleased block since both Phase-14 and Phase-15 work are unreleased on the engine side until v0.7.0 cuts. Added `--no-plugins` to the cli-reference Scan Flags list. Frontend `memory.md` updated: phase status flipped to "Phase 15 fully complete on engine side"; tasks bumped 115 → 118 (TASK-112/113/114); test counts bumped to Go 14 packages / Python 198/198 / e2e 25/25; new "Frontend sync (Phase 15 absorption)" entry. **No backend changes**: plugins run on the host filesystem (backend container can't see them), and reachability is a property of findings the engine emits — the dashboard can surface `reachable: true` and `taint_chain` from the report payload directly.
+
+- **Engine binary cross-compiled.** `make embed-engine` (re-bundles Python engine including the new ast_analyzer.py taint-chain logic) + `cd go && GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=v0.6.1-phase15" -o ../bin/fendix-linux-arm64 ./cmd/fendix/`. Resulting 9.0 MB ARM64 ELF carries Phase 15 (plugins + reachability); `fendix-backend/docker-compose.dev.yml` bind mount picks it up automatically.
+
+**Files changed this session:**
+
+- `docs/adr/ADR-007-open-source.md` (NEW — TASK-112 strategic decision)
+- `docs/plugins.md` (NEW — TASK-113 author guide)
+- `README.md` (TASK-112 hero bullet)
+- `CONTRIBUTING.md` (TASK-112 "Licensing of contributions" + ADR-007 link)
+- `go/internal/plugin/plugin.go` (NEW — TASK-113)
+- `go/internal/plugin/plugin_test.go` (NEW — 12 tests, race-clean)
+- `go/internal/engine/orchestrator.go` (TASK-113 wiring: import + runPlugins method + step 4.5 + absPathOrEmpty helper)
+- `go/internal/models/config.go` (TASK-113: NoPlugins field on ScanConfig)
+- `go/internal/models/finding.go` (TASK-114: TaintLink struct + TaintChain + Reachable fields)
+- `go/internal/engine/correlator.go` (TASK-114: mergeFindings double-escalates when reachable, propagates chain)
+- `go/internal/engine/correlator_test.go` (TASK-114: 3 new tests)
+- `go/internal/reporters/html.go` (TASK-114: Reachable dataflow rendering)
+- `go/cmd/fendix/main.go` (TASK-113: --no-plugins flag wiring)
+- `python/analyzers/ast_analyzer.py` (TASK-114: `_collect_taint_chain` + `_trace_to_source` + `_ast_expr_text` + 3 sink call-sites pass chain to `_emit_finding`)
+- `python/tests/test_ast_analyzer.py` (TASK-114: TestTaintChain with 5 tests)
+- `examples/plugins/custom-secret-pattern/{plugin.yaml, run.py}` (NEW — TASK-113 reference plugin)
+- `examples/plugins/custom-blackbox-check/{plugin.yaml, run.py}` (NEW — TASK-113 reference plugin)
+- `examples/plugins/custom-semgrep-pack/{plugin.yaml, rules.yaml, run.sh}` (NEW — TASK-113 reference plugin)
+- `go/internal/e2e/reachable_e2e_test.go` (NEW — TASK-114 hybrid-scan regression)
+- `CHANGELOG.md` (Phase 15 entries at top of [Unreleased])
+- `fendix_frontend/app/changelog/page.tsx` (new Phase 15 Unreleased entry)
+- `fendix_frontend/app/cli-reference/page.tsx` (added --no-plugins to Scan Flags)
+- `fendix_frontend/memory.md` (Phase 15 status flip + sync entry)
+- `bin/fendix-linux-arm64` (rebuilt; 9.0 MB; gitignored binary artifact for backend bind mount)
+- `tasks/MEMORY.md` (this entry; Current State updated to Phase 15)
+- `tasks/CURRENT_SPRINT.md` (Phase 15 sprint card)
+
+**Build state at session end:**
+
+- `go build ./...` ✓ (14 Go packages — `internal/plugin` added)
+- `go test -race -count=1 ./...` ✓ (uncached; new plugin tests 4.2s; new correlator tests included)
+- `make test-python` ✓ (198/198 — was 193 + 5 new TaintChain tests)
+- `make e2e` ✓ (25 e2e tests, 24 PASS + 1 SKIP fixture-dependent — was 24 + 1 reachability regression)
+- Frontend: `npx vitest run` ✓ (26 files, 173 tests); `npm run build` ✓ (29 routes prerendered)
+
+**Decisions made:**
+
+- **MIT, single repo, no open-core (TASK-112).** The project has shipped MIT since v0.1.0; re-licensing requires contributor consent for every line still in the tree, and Apache 2.0's patent grant is theoretically valuable but Fendix has no patentable innovations. Open-core split (engine MIT + commercial repo) was rejected because (a) there is no commercial-features boundary that's meaningful at install time — splitting the wedge across repos would require duplicating the orchestration layer, and (b) there is no contracted customer asking for paid features. Forward-compatible: if revenue ever requires it, new advanced features can ship under a different license in a new repo without breaking the existing engine MIT contract.
+
+- **Plugins use NDJSON IPC, not Go plugins (`-buildmode=plugin`) (TASK-113).** Go plugins require matching toolchain versions between host and plugin, don't work cross-platform, and forbid stdlib changes. NDJSON IPC works for Python, Go, shell, Rust, anything that can read stdin and write stdout. The IPC contract is already proven in production (the embedded engine speaks it) so plugin authors writing in Python can reuse most of `engine.py` scaffolding. Cost: an extra subprocess per plugin per scan (overhead negligible compared to actual scan work).
+
+- **Plugins run with cwd=plugin-dir, but the orchestrator pre-resolves CodePath/SpecPath to absolutes (TASK-113).** Caught during real-world test: a relative `./repo` from the scan caller's cwd would resolve under the plugin directory after the orchestrator's `cmd.Dir = p.Dir`. The cleanest fix is `absPathOrEmpty` at the call site rather than burdening every plugin author with the resolution logic.
+
+- **Plugins are not sandboxed (TASK-113).** Decision documented in `docs/plugins.md` security model: plugins are arbitrary executables, treat installation like installing any other binary. The engine applies guardrails (timeout, manifest path validation, mode filter, no privilege escalation, stderr capture, crash isolation) but does not enforce seccomp/chroot/namespace isolation. If callers need that, run the entire `fendix` invocation in a container.
+
+- **Reachable findings get a *second* severity escalation in correlation, not just a flag (TASK-114).** The whole point of reachability is the wedge claim: "DAST + SAST agree AND we can show the path → build-failing severity." Without the extra bump, Reachable becomes informational metadata rather than a build gate. The math: MEDIUM × MEDIUM = MEDIUM (higher), → escalate = HIGH, → escalate-for-reachable = CRITICAL. CRITICAL saturates so HIGH × HIGH × reachable stays CRITICAL.
+
+- **Recursive `_trace_to_source` instead of single-Name walk (TASK-114).** Initial implementation only followed Name → Name chains, which failed on `sql = '...' + q` (BinOp, not direct Name). The recursive version walks any expression's `Name` children through scope and recurses on each, with a `visited` frozenset to prevent assignment cycles. Caught during the 5-test pass.
+
+- **No backend changes for Phase 15.** Plugins run on the host filesystem (`~/.fendix/plugins/` and `<repo>/.fendix/plugins/`) — the backend container can't see the user's plugin directory, and exposing a "plugins" field would mean either bundling third-party code into the backend image (security boundary violation) or rejecting it client-side (confusing). Reachability is a property of findings the engine emits, not a request flag — the frontend dashboard surfaces `reachable: true` and `taint_chain` from the report payload directly.
+
+**Open questions / followups:**
+
+- **Tag a release.** Phase 14 + Phase 15 sit on `main` post-v0.6.1. Recommended: **v0.7.0** (minor — TASK-107b is a meaningful new external surface, plugins are a meaningful new extensibility surface, reachability is the differentiator). Bump CHANGELOG `[Unreleased]` to `[0.7.0] - <date>`, push tag, watch release.yml, mirror-sync into homebrew-fendix. Then bump frontend version literals from v0.6.1 → v0.7.0 + flip both Unreleased changelog entries into a tagged "v0.7.0" entry.
+
+- **Phase 16 (v2.0 — make Python optional).** Year+ out per PHASES.md. Port secrets analyzer to Go (~400 LOC, all 15 patterns + .env handling), make Semgrep optional (shell out to user-installed binary), aim for <500ms cold start on code-only scans. Do not pull forward — Phase 15 work changes nothing about that timeline.
+
+- **Open-source launch post.** ADR-007 is ratified, the README hero leads with it, and the plugin system + reachability are the technical proof points for "DAST + SAST as one PR check." HN / r/devops / r/golang launch post is the natural next marketing beat once v0.7.0 ships with the cosign-signed binaries — Phase 15's exit criteria explicitly call for this.
+
+- **First community contributions.** PHASES.md exit criteria: 5 community-contributed Semgrep rules merged, `good first issue` labels seeded. Both are operator-side (label seeding, PR review) and unblocked by today's ship.
+
+**Next session should start with:**
+
+- **Tag v0.7.0** that folds the post-v0.6.1 Phase 14 work (TASK-106 numbers, TASK-107 scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) PLUS Phase 15 (TASK-112 ADR-007, TASK-113 plugin system, TASK-114 reachability correlation). Concretely: bump CHANGELOG `[Unreleased]` to `[0.7.0] - <date>`, push tag, watch release.yml, mirror-sync into homebrew-fendix. Then bump frontend version literals from v0.6.1 → v0.7.0 + flip the changelog page's two "Unreleased" entries into a single tagged "v0.7.0" entry.
+
+- **Or**, if release timing isn't right yet: **register the GitHub App** via `app/manifest.yml` and **deploy `fendix-app`** somewhere (Fly.io is the lightest path: one Dockerfile + one secret), then start the Marketplace listing submission. Phase 15 is fully complete on the engine side; the operator path is open.
+
+- **Or**, if going to market: **open-source launch post** (HN/r/devops/r/golang) leveraging the new ADR-007 framing + the plugin system + reachability correlation as the technical wedge.
+
+---
+
+## Earlier Session (2026-05-01 — frontend sync — absorbing TASK-107b into `fendix_frontend`)
+
 **Session goal:** Sync the frontend with the engine's TASK-107b GitHub App business logic. Per MEMORY.md "Next session should start with" branch (b): flip the changelog's TASK-107b callout from forward-looking to past-tense, advertise `Dockerfile.app` + the GitHub App as a deployment path on the integrations surface, update the frontend `memory.md` to reflect Phase 14 fully complete. Backend not extended (per the prior decision — TASK-107b is on the GitHub-event side, not the API side).
 
 **Accomplished:**

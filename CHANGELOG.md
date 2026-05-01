@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 15 — Open & Extensible (v1.2). Three task ship: open-source
+  posture, plugin system, reachability correlation.**
+
+- **Open-source posture: ADR-007 ratifies MIT, single-repo, no
+  open-core split (TASK-112).** Codifies what was previously a
+  tactical choice (MIT in `LICENSE` since v0.1.0) as a deliberate
+  strategic decision. README hero gains a fourth bullet "Open source
+  under MIT — read the source, audit the wedge, fork it, ship
+  plugins." CONTRIBUTING.md gains a "Licensing of contributions"
+  section: by submitting a PR, contributors agree to MIT for their
+  work; no CLA, no copyright assignment. Out-of-tree plugins choose
+  their own license. ADR-007 documents the full rationale (rejected
+  Apache 2.0, AGPL 3.0, dual-license, open-core).
+
+- **Plugin system: out-of-tree extension via NDJSON IPC (TASK-113).**
+  New `internal/plugin` package: `Discover` walks `<repo>/.fendix/
+  plugins/` (repo-local, takes precedence) + `~/.fendix/plugins/`
+  (user-global), parses each child's `plugin.yaml` with strict
+  `KnownFields(true)`, validates name/entrypoint/mode/timeout, and
+  returns plugins deduplicated by name. `(*Plugin).Run` invokes the
+  entrypoint with a JSON `ScanRequest` on stdin and reads NDJSON
+  Findings on stdout — same wire contract as the embedded Python
+  engine (ADR-002). Per-plugin timeout (default 30s, max 5m) bounds
+  wall-clock; partial findings before a kill or non-zero exit are
+  preserved; plugins inherit `FENDIX_PLUGIN_NAME` + `FENDIX_PLUGIN_DIR`
+  env vars; every emitted finding gets `fendix-plugin:<name>`
+  appended to References for provenance. Plugin findings flow through
+  the same Correlate / Dedup / Sort / ID-assignment pipeline as
+  embedded engine findings. New `--no-plugins` CLI flag disables
+  discovery for sandboxed CI or debugging. Three reference plugins
+  under `examples/plugins/`: `custom-secret-pattern` (Python, custom
+  regex over source), `custom-blackbox-check` (Python, custom
+  HTTP-response assertion), `custom-semgrep-pack` (shell, wraps a
+  custom Semgrep rule pack). Author guide: `docs/plugins.md` covers
+  discovery, IPC schema, reference plugins, security model, and an
+  authoring checklist. 12 unit tests in `internal/plugin/plugin_test.go`
+  (race-clean) covering discovery, manifest parsing, validation,
+  shadow precedence, happy-path Run, mode-tagged source attribution,
+  error terminator, non-zero-exit-retains-partial-findings, prompt
+  timeout, malformed-line tolerance, DefaultRoots ordering.
+
+- **Reachability/dataflow correlation: `correlated:reachable` for
+  proven exploit paths (TASK-114).** The Python AST analyzer records
+  taint chains for SQLi, SSRF, and open-redirect findings: when
+  `_collect_taint_chain` proves intra-function dataflow from a
+  request source (`request.args/POST/form/data/json/headers` plus
+  the Flask handler-arg form `req`) to the dangerous sink, the
+  emitted finding carries `taint_chain: [{file, line, expr}, …]`
+  plus `reachable: true`. The chain walks recursively through
+  scope assignments, so `q = request.args.get('q'); sql = '...' + q;
+  cursor.execute(sql)` resolves three links without false positives
+  on literal-only chains. Models gain `TaintLink` struct +
+  `TaintChain []TaintLink` and `Reachable bool` on Finding (both
+  `omitempty`). Correlator's `mergeFindings` propagates chain +
+  Reachable from whitebox to merged correlated finding AND applies
+  a *second* severity escalation when reachable — so a MEDIUM
+  blackbox finding plus a MEDIUM whitebox finding plus reachability
+  jumps to CRITICAL (vs HIGH without reachability). HTML reporter
+  renders the chain as an ordered list
+  ("Reachable dataflow (N steps)"). 5 new Python AST tests + 3 new
+  Go correlator tests + 1 new e2e regression
+  (`TestReachable_HybridScanProducesReachableCorrelated`) asserting
+  a real hybrid scan emits ≥1 finding with `taint_chain` referencing
+  `request.args` alongside ≥1 correlated finding.
+
 - **GitHub App: clone + scan + PR comment + SARIF upload (TASK-107b).**
   Wires the business-logic layer on top of the v0.6.1 scaffold. On
   every `pull_request.{opened,synchronize,reopened}` event, the

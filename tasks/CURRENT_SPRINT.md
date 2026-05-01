@@ -4,7 +4,27 @@
 
 ---
 
-## Active Phase: 14 — P4 External Wedge (v1.1) — ✅ Complete (all 7 tasks + TASK-107b follow-up shipped)
+## Active Phase: 15 — P5 Open & Extensible (v1.2) — ✅ Complete (all 3 tasks shipped)
+
+**Sprint goal:** Open-source the engine, ship the plugin system, build the reachability/dataflow correlation that becomes the long-term moat. **All 3 tasks (TASK-112, TASK-113, TASK-114) shipped 2026-05-01 in a single session, plus frontend sync.** Phase 15 engine work is complete; remaining surface is community-facing (open-source launch post, first community Semgrep rules, plugin author outreach) and operator-side (register the GitHub App from Phase 14, tag v0.7.0).
+
+**Phase 15 status:**
+
+| ID | Task | Status | Notes |
+| --- | --- | --- | --- |
+| TASK-112 | Open-source posture: ADR + LICENSE + repo split decision | ✅ | Shipped 2026-05-01. New `docs/adr/ADR-007-open-source.md` ratifies MIT, single repo, no open-core split (rejected Apache 2.0, AGPL 3.0, dual-license, open-core split with explicit rationale per option). Forward-compatible: future ADR can supersede *for new features* without breaking the existing engine MIT contract. README hero gains the open-source bullet linking to ADR-007. CONTRIBUTING.md gains "Licensing of contributions" (no CLA, MIT by submission) + "Out-of-tree plugins choose their own license" subsection. |
+| TASK-113 | Plugin system: NDJSON contract, discovery, 3 reference plugins | ✅ | Shipped 2026-05-01. New `internal/plugin` package (~200 LOC + 12 unit tests under `-race`): `Discover` walks `<repo>/.fendix/plugins/` + `~/.fendix/plugins/` with shadow precedence, parses `plugin.yaml` with strict `KnownFields(true)`, validates name/entrypoint/mode/timeout. `(*Plugin).Run` invokes the entrypoint with JSON `ScanRequest` on stdin and reads NDJSON Findings on stdout — same wire contract as the embedded engine (ADR-002). Per-plugin timeout (default 30s, max 5m). Provenance via `fendix-plugin:<name>` ref. New `--no-plugins` CLI flag. Three reference plugins under `examples/plugins/` (`custom-secret-pattern`, `custom-blackbox-check`, `custom-semgrep-pack`). New `docs/plugins.md` author guide (~270 lines). Real-world end-to-end test passed: live plugin discovers, runs, emits CRITICAL finding with redacted evidence. Caught a cwd-relative path bug during the test pass and fixed it via new `absPathOrEmpty` helper in the orchestrator. |
+| TASK-114 | Reachability/dataflow correlation: taint chains + correlator escalation | ✅ | Shipped 2026-05-01. Python `analyzers/ast_analyzer.py` extended with `_collect_taint_chain` + recursive `_trace_to_source` (walks Names through scope assignments via `ast.walk`, with visited-set cycle guard) + `_ast_expr_text` helper (uses `ast.unparse`, capped at 200 chars). Wired into 3 sinks (SQLi, SSRF, open-redirect). Findings emit `taint_chain: [{file, line, expr}, …]` + `reachable: true`. Models gain `TaintLink` struct + `TaintChain []TaintLink` + `Reachable bool` on Finding (both `omitempty`). `correlator.mergeFindings` propagates chain + Reachable flag from whitebox to merged correlated finding AND applies a *second* `escalateSeverity` call when reachable — so MEDIUM × MEDIUM × reachable jumps to CRITICAL. HTML reporter renders the chain as ordered list. 5 new Python AST tests + 3 new Go correlator tests + 1 new e2e regression (`TestReachable_HybridScanProducesReachableCorrelated`). |
+
+**Frontend sync (2026-05-01, Phase 15 absorption):** new "**Unreleased — Phase 15**" entry on `app/changelog/page.tsx` covering all three tasks + the "Backend not extended" decision callout. Added `--no-plugins` to the cli-reference Scan Flags list. Frontend `memory.md` updated to Phase 15 fully complete (118 tasks shipped). Engine binary cross-compiled to `bin/fendix-linux-arm64` with Phase 15 included for backend dev-compose bind mount. **No backend changes** — plugins run on the host filesystem (backend container can't see them); reachability is a property of findings the engine emits.
+
+---
+
+## Phase 14 — Shipped ✅ (engine code complete; frontend-synced; awaiting v0.7.0 tag)
+
+> Detail preserved below for historical reference.
+
+## Phase 14 (historical detail)
 
 **Sprint goal:** Reposition around the wedge ("DAST + SAST in one PR check, fails only when both engines confirm"); ship the proof (vulnerable-app benchmark numbers); lower the CI onramp (`fendix init` + `.fendix.yaml`); occupy the GitHub Marketplace channel (App). **All 7 tasks + TASK-107b follow-up landed; frontend absorbed TASK-107b on 2026-05-01.** Phase 14 engine work is complete; remaining surface is operator-side (register the App on github.com via `app/manifest.yml`, deploy `fendix-app` from `Dockerfile.app`, submit Marketplace listing).
 
