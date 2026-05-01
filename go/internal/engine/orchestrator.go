@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/plugin"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
@@ -177,6 +179,15 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			wbFindings := o.runWhiteboxScan(ctx)
 			findings = append(findings, wbFindings...)
 		}
+	}
+
+	// 4.5. Run out-of-tree plugins (TASK-113). Plugin findings flow
+	// through the same correlation/dedup/sort/ID pipeline as embedded
+	// engine findings, so a custom-secret-pattern plugin can correlate
+	// against a blackbox auth check exactly like the built-in secrets
+	// analyzer does.
+	if !o.cfg.NoPlugins {
+		findings = append(findings, o.runPlugins(ctx)...)
 	}
 
 	// 5. Correlate black-box and white-box findings
@@ -373,6 +384,93 @@ func (o *Orchestrator) checkFailOn(findings []models.Finding) int {
 		}
 	}
 	return 0
+}
+
+// runPlugins discovers plugins under the configured roots and runs
+// every plugin whose Mode is compatible with the current scan
+// (blackbox plugins only run when a target URL is set; whitebox
+// plugins only run when --code or --spec is set; hybrid plugins
+// run whenever either condition holds). Plugin failures are logged
+// at WARN and the scan continues — a broken plugin must not
+// interrupt the embedded engines.
+func (o *Orchestrator) runPlugins(ctx context.Context) []models.Finding {
+	cwd, _ := os.Getwd()
+	roots := plugin.DefaultRoots(cwd)
+	plugins, err := plugin.Discover(roots)
+	if err != nil {
+		slog.Warn("plugin discovery failed", "error", err)
+		return nil
+	}
+	if len(plugins) == 0 {
+		return nil
+	}
+
+	hasBlackboxTarget := o.cfg.URL != ""
+	hasWhiteboxTarget := o.cfg.CodePath != "" || o.cfg.SpecPath != ""
+
+	var out []models.Finding
+	for _, p := range plugins {
+		switch p.Mode {
+		case plugin.ModeBlackbox:
+			if !hasBlackboxTarget {
+				slog.Debug("plugin skipped (no blackbox target)", "plugin", p.Name)
+				continue
+			}
+		case plugin.ModeWhitebox:
+			if !hasWhiteboxTarget {
+				slog.Debug("plugin skipped (no whitebox target)", "plugin", p.Name)
+				continue
+			}
+		case plugin.ModeHybrid:
+			if !hasBlackboxTarget && !hasWhiteboxTarget {
+				slog.Debug("plugin skipped (no target)", "plugin", p.Name)
+				continue
+			}
+		}
+
+		// Resolve filesystem paths to absolutes before sending to the
+		// plugin. The plugin runs with cwd=plugin-dir, so a relative
+		// "./repo" from the scan caller's cwd would resolve under
+		// the plugin directory and find nothing.
+		req := plugin.ScanRequest{
+			Mode:       p.Mode,
+			URL:        o.cfg.URL,
+			Spec:       absPathOrEmpty(o.cfg.SpecPath),
+			CodePath:   absPathOrEmpty(o.cfg.CodePath),
+			Categories: p.Categories,
+			Verbose:    o.cfg.Verbose,
+		}
+		if o.cfg.Auth != nil {
+			req.Auth = o.cfg.Auth.Value
+			req.AuthType = string(o.cfg.Auth.Type)
+		}
+
+		slog.Info("running plugin", "plugin", p.Name, "version", p.Version, "mode", p.Mode)
+		findings, err := p.Run(ctx, req)
+		if err != nil {
+			slog.Warn("plugin failed (continuing)", "plugin", p.Name, "error", err)
+			// A plugin that exited non-zero may still have emitted findings
+			// before the failure; preserve them.
+		}
+		slog.Info("plugin complete", "plugin", p.Name, "findings", len(findings))
+		out = append(out, findings...)
+	}
+	return out
+}
+
+// absPathOrEmpty resolves p to an absolute path. Returns "" for an
+// empty input (so unset flags don't become spurious paths). Failures
+// fall back to the original value rather than dropping the field —
+// the plugin can still run, even if relative-path resolution is
+// imperfect.
+func absPathOrEmpty(p string) string {
+	if p == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // runWhiteboxScan spawns the Python engine and collects whitebox findings.

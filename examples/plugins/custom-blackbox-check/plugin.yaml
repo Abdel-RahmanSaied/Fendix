@@ -1,0 +1,13 @@
+name: custom-blackbox-check
+version: 0.1.0
+description: |
+  Reference plugin: assert that every scanned URL serves a custom
+  organisational compliance header (`X-Acme-Compliance-Tier`). Use
+  this as a template for adding your own organisation-specific
+  blackbox checks (e.g. proprietary auth headers, deprecation
+  hints, custom rate-limit envelopes) without modifying the engine.
+entrypoint: ./run.py
+mode: blackbox
+categories:
+  - headers
+timeout: 30s

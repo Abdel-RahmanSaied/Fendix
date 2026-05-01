@@ -70,4 +70,10 @@ type ScanConfig struct {
 	// versions, probe audit log, buffered DEBUG slog stream, and findings.
 	// Empty disables the bundle. See internal/diagnostic.
 	DebugBundlePath string
+	// NoPlugins disables out-of-tree plugin discovery and execution
+	// (TASK-113). When false (default), the orchestrator walks
+	// .fendix/plugins/ + ~/.fendix/plugins/ after the embedded
+	// blackbox/whitebox checks and feeds plugin findings through the
+	// same correlation/dedup pipeline.
+	NoPlugins bool
 }

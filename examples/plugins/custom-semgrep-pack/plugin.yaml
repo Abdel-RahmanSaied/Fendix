@@ -1,0 +1,15 @@
+name: custom-semgrep-pack
+version: 0.1.0
+description: |
+  Reference plugin: ship a custom Semgrep rule pack as a Fendix
+  plugin. Bundles `rules.yaml` (one example rule against
+  `subprocess.run(..., shell=True, ...)`) and shells out to the
+  user-installed `semgrep` binary, mapping its JSON output into
+  the Fendix Finding schema. Use this template to distribute
+  organisation-specific Semgrep rules without modifying the
+  embedded engine's rule directory.
+entrypoint: ./run.sh
+mode: whitebox
+categories:
+  - injection
+timeout: 60s

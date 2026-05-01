@@ -1,0 +1,14 @@
+rules:
+  - id: acme-shell-true
+    languages: [python]
+    severity: ERROR
+    message: |
+      subprocess called with shell=True. The Acme security guidelines
+      forbid shell=True without an explicit allowlist of safe inputs;
+      pass the command as a list of arguments instead.
+    metadata:
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)

@@ -1,0 +1,12 @@
+name: custom-secret-pattern
+version: 0.1.0
+description: |
+  Reference plugin: detect a fictional company-internal API key
+  format (`acme-secret-` followed by 24 hex chars). Use this as a
+  template for adding your own organisation-specific secret
+  patterns without modifying the engine source tree.
+entrypoint: ./run.py
+mode: whitebox
+categories:
+  - secrets
+timeout: 30s
