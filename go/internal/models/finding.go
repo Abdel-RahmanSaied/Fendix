@@ -32,6 +32,17 @@ const (
 	SourceCorrelated Source = "correlated"
 )
 
+// TaintLink is one step in a dataflow chain from a source (e.g.
+// request.args.get) to a sink (e.g. cursor.execute). The Python AST
+// analyzer records these chains for SQLi, SSRF, and open-redirect
+// findings (TASK-114) so the correlator and reporters can prove
+// "this is reachable" rather than "this looks dangerous."
+type TaintLink struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+	Expr string `json:"expr"`
+}
+
 // Finding represents a single security finding produced by either engine.
 // This struct is the shared data contract between Go and Python.
 //
@@ -40,6 +51,13 @@ const (
 // collapse into one. The slice contains every affected endpoint including
 // the primary one in `Endpoint`. When the finding represents a single
 // occurrence, AffectedEndpoints is nil (omitted from JSON via omitempty).
+//
+// TaintChain and Reachable are populated by the white-box AST analyzer
+// when it can prove an intra-function dataflow path from a request-input
+// source to a dangerous sink (TASK-114). The correlator promotes a
+// blackbox+whitebox match to Source=correlated AND Reachable=true when
+// the whitebox half carries a chain — that's the "DAST + SAST agree
+// AND we can show the path" case worth a build-failing exit code.
 type Finding struct {
 	ID                string     `json:"id"`
 	Title             string     `json:"title"`
@@ -53,6 +71,8 @@ type Finding struct {
 	References        []string   `json:"references"`
 	Confidence        Confidence `json:"confidence"`
 	Line              *string    `json:"line"`
+	TaintChain        []TaintLink `json:"taint_chain,omitempty"`
+	Reachable         bool        `json:"reachable,omitempty"`
 }
 
 // SeverityRank returns a numeric rank for severity comparison.

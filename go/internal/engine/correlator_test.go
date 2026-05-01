@@ -554,6 +554,135 @@ func TestPathSuffixMatch(t *testing.T) {
 	}
 }
 
+// TASK-114: when the whitebox half carries a TaintChain proving a
+// dataflow source→sink, the merged correlated finding inherits the
+// chain plus Reachable=true and gets a *second* severity escalation.
+func TestCorrelate_ReachableWhiteboxEscalatesSeverityAndPropagatesChain(t *testing.T) {
+	bb := models.Finding{
+		Title:      "SQL Injection (boolean-based)",
+		Severity:   models.SeverityMedium, // baseline MEDIUM blackbox
+		Source:     models.SourceBlackbox,
+		Category:   "injection",
+		Endpoint:   "https://api.example.com/api/v1/users",
+		Evidence:   "boolean payload toggled response",
+		Confidence: models.ConfidenceHigh,
+	}
+	chain := []models.TaintLink{
+		{File: "src/handlers.py", Line: 12, Expr: "request.args.get('id')"},
+		{File: "src/handlers.py", Line: 14, Expr: "cursor.execute(query)"},
+	}
+	wb := models.Finding{
+		Title:      "SQL query built via string formatting — injection risk",
+		Severity:   models.SeverityCritical, // CRITICAL whitebox
+		Source:     models.SourceWhitebox,
+		Category:   "injection",
+		// URL form (what spec_parser produces). The AST analyzer emits
+		// file:line endpoints; in a real hybrid scan the spec_parser
+		// finding correlates with blackbox and the AST chain is shared
+		// via dedup-then-merge. For this unit test we exercise the
+		// merge path directly.
+		Endpoint:   "GET /api/v1/users",
+		Evidence:   "cursor.execute(query)",
+		Confidence: models.ConfidenceHigh,
+		TaintChain: chain,
+		Reachable:  true,
+	}
+
+	result := Correlate([]models.Finding{bb, wb})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	got := result[0]
+	if got.Source != models.SourceCorrelated {
+		t.Errorf("source: want correlated, got %s", got.Source)
+	}
+	if !got.Reachable {
+		t.Errorf("expected Reachable=true to propagate, got false")
+	}
+	if len(got.TaintChain) != len(chain) {
+		t.Errorf("expected chain to propagate (%d links), got %d", len(chain), len(got.TaintChain))
+	}
+	// Without reachability: higher of (MEDIUM, CRITICAL) = CRITICAL,
+	// then escalate once = CRITICAL (saturates). With reachability: a
+	// second escalateSeverity call is a no-op at CRITICAL — but the
+	// Reachable flag itself is the gate the reporter uses. Verify the
+	// severity at minimum did not regress.
+	if models.SeverityRank(got.Severity) < models.SeverityRank(models.SeverityHigh) {
+		t.Errorf("severity should be at least HIGH for reachable correlated, got %s", got.Severity)
+	}
+}
+
+// Below-CRITICAL severities exercise the second escalation path; verify
+// MEDIUM blackbox + MEDIUM whitebox + Reachable jumps to CRITICAL.
+func TestCorrelate_ReachableLowerSeverityDoubleEscalates(t *testing.T) {
+	bb := models.Finding{
+		Title:      "Open redirect",
+		Severity:   models.SeverityMedium,
+		Source:     models.SourceBlackbox,
+		Category:   "auth_bypass",
+		Endpoint:   "https://api.example.com/redirect",
+		Confidence: models.ConfidenceMedium,
+	}
+	wb := models.Finding{
+		Title:      "Open redirect — user-controlled redirect target",
+		Severity:   models.SeverityMedium,
+		Source:     models.SourceWhitebox,
+		Category:   "auth",
+		Endpoint:   "/redirect",
+		Confidence: models.ConfidenceMedium,
+		TaintChain: []models.TaintLink{
+			{File: "h.py", Line: 3, Expr: "request.args.get('next')"},
+			{File: "h.py", Line: 4, Expr: "redirect(target)"},
+		},
+		Reachable: true,
+	}
+
+	result := Correlate([]models.Finding{bb, wb})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	// MEDIUM higher = MEDIUM → escalate = HIGH → reachability escalate = CRITICAL.
+	if result[0].Severity != models.SeverityCritical {
+		t.Errorf("expected severity CRITICAL for double-escalated reachable, got %s", result[0].Severity)
+	}
+	if !result[0].Reachable {
+		t.Errorf("expected Reachable=true to propagate")
+	}
+}
+
+// Without Reachable, correlation should NOT add the second escalation.
+func TestCorrelate_NonReachableSingleEscalation(t *testing.T) {
+	bb := models.Finding{
+		Title:      "Missing CSP",
+		Severity:   models.SeverityMedium,
+		Source:     models.SourceBlackbox,
+		Category:   "headers",
+		Endpoint:   "https://api.example.com/health",
+		Confidence: models.ConfidenceMedium,
+	}
+	wb := models.Finding{
+		Title:      "Header policy missing",
+		Severity:   models.SeverityMedium,
+		Source:     models.SourceWhitebox,
+		Category:   "headers",
+		Endpoint:   "/health",
+		Confidence: models.ConfidenceMedium,
+		// No TaintChain, no Reachable.
+	}
+
+	result := Correlate([]models.Finding{bb, wb})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	// MEDIUM → escalate once → HIGH (no second hop).
+	if result[0].Severity != models.SeverityHigh {
+		t.Errorf("expected single-escalation HIGH, got %s", result[0].Severity)
+	}
+	if result[0].Reachable {
+		t.Errorf("Reachable should remain false when whitebox didn't carry a chain")
+	}
+}
+
 func TestRelatedCategories(t *testing.T) {
 	tests := []struct {
 		input    string

@@ -205,8 +205,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         fix: str,
         lineno: int,
         category: str = "injection",
+        taint_chain: list[dict] | None = None,
     ) -> None:
-        self._emit({
+        finding: dict = {
             "id": f"SEC-{pat_id}",
             "title": title,
             "severity": severity,
@@ -218,7 +219,80 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             "references": [cwe],
             "confidence": confidence,
             "line": f"{self._rel}:{lineno}",
-        })
+        }
+        if taint_chain:
+            # TASK-114: when the visitor proves user input flows from a
+            # source (request.args/POST/form/etc.) through one or more
+            # intra-function assignments to this sink, attach the chain
+            # so the correlator can escalate severity and the report
+            # surfaces *why* this is a real exploit path. Each entry is
+            # {file, line, expr}; the engine treats this as opaque metadata.
+            finding["taint_chain"] = taint_chain
+            finding["reachable"] = True
+        self._emit(finding)
+
+    # ------------------------------------------------------------------
+    # Taint-chain helpers (TASK-114)
+    # ------------------------------------------------------------------
+
+    def _collect_taint_chain(
+        self, sink_arg: ast.AST, sink_lineno: int, sink_expr: str
+    ) -> list[dict] | None:
+        """Walk back from ``sink_arg`` through scope assignments to a request source.
+
+        Returns an ordered chain (source first, sink last) when reachable,
+        else None. The walker recurses through complex assignments — a
+        chain like ``q = request.args.get('q'); sql = '...' + q;
+        cursor.execute(sql)`` resolves via two hops: first ``sql`` ->
+        BinOp containing Name ``q``, then ``q`` -> Call referencing
+        ``request.args``.
+
+        Each link is ``{"file": str, "line": int, "expr": str}``.
+        """
+        # Inline case: the sink's argument is itself a request-input
+        # reference (no intermediate variables). The chain is two links:
+        # source @ sink-lineno → sink @ sink-lineno.
+        if _references_request_input(sink_arg):
+            return [
+                self._link(sink_lineno, _ast_expr_text(sink_arg)),
+                self._link(sink_lineno, sink_expr),
+            ]
+
+        prefix = self._trace_to_source(sink_arg, frozenset())
+        if prefix is None:
+            return None
+        return prefix + [self._link(sink_lineno, sink_expr)]
+
+    def _trace_to_source(
+        self, expr: ast.AST, visited: frozenset[str]
+    ) -> list[dict] | None:
+        """Recursively trace Names in ``expr`` through scope assignments.
+
+        Returns the chain prefix (oldest assignment first) up to and
+        including the assignment that introduced the request source.
+        ``visited`` guards against assignment cycles (``a = b; b = a``).
+        """
+        for n in ast.walk(expr):
+            if not isinstance(n, ast.Name) or n.id in visited:
+                continue
+            for scope in reversed(self._scopes):
+                if n.id not in scope:
+                    continue
+                assigned = scope[n.id]
+                lineno = getattr(assigned, "lineno", 0)
+                link = self._link(lineno, _ast_expr_text(assigned))
+                if _references_request_input(assigned):
+                    return [link]
+                deeper = self._trace_to_source(assigned, visited | {n.id})
+                if deeper is not None:
+                    return deeper + [link]
+                # Name resolved but didn't lead to a source; don't keep
+                # searching siblings — we found the assignment for n.id.
+                break
+        return None
+
+    def _link(self, lineno: int, expr: str) -> dict:
+        return {"file": self._rel, "line": int(lineno), "expr": expr}
 
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         """Detect dangerous function calls."""
@@ -277,6 +351,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # cursor.execute() with string formatting (or with a variable assigned
         # from a formatted/concatenated string elsewhere in the function).
         elif self._is_sql_injection(node):
+            chain = None
+            if node.args:
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"cursor.execute({_ast_expr_text(node.args[0])})",
+                )
             self._emit_finding(
                 "PY_SQL_INJECTION",
                 "SQL query built via string formatting — injection risk",
@@ -288,6 +369,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     "Never build SQL with % formatting or f-strings."
                 ),
                 node.lineno,
+                taint_chain=chain,
             )
 
         # pickle.load() / pickle.loads() — always dangerous on untrusted input.
@@ -350,6 +432,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Pattern: flask.redirect(request.args.get('url'))  or
         #          HttpResponseRedirect(request.GET['next'])
         elif self._is_open_redirect(node):
+            chain = None
+            if node.args:
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"redirect({_ast_expr_text(node.args[0])})",
+                )
             self._emit_finding(
                 "PY_OPEN_REDIRECT",
                 "Open redirect — user-controlled redirect target",
@@ -361,12 +450,20 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     "before passing to redirect(). Reject anything outside your domain."
                 ),
                 node.lineno,
+                taint_chain=chain,
             )
 
         # requests.get/post/etc. with non-literal first arg → potential SSRF.
         # MEDIUM confidence because legitimate HTTP-client use is common; the
         # signal is that the URL itself is dynamic.
         elif self._is_ssrf(node):
+            chain = None
+            if node.args:
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"requests.{node.func.attr}({_ast_expr_text(node.args[0])})",
+                )
             self._emit_finding(
                 "PY_SSRF",
                 "Potential SSRF — dynamic URL passed to HTTP client",
@@ -379,6 +476,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     "and use a SSRF-aware HTTP client wrapper."
                 ),
                 node.lineno,
+                taint_chain=chain,
             )
 
         self.generic_visit(node)
@@ -620,6 +718,24 @@ _REQUEST_INPUT_ATTRS: frozenset[str] = frozenset({
     "GET", "POST", "args", "values", "form", "data", "json",
     "query_params", "path_params", "params", "body", "files",
 })
+
+
+def _ast_expr_text(node: ast.AST) -> str:
+    """Return a short text representation of an AST expression.
+
+    Uses ast.unparse on Python ≥3.9 (always available in our supported
+    versions). Trims to a reasonable length so taint chains don't blow
+    out report rendering or push the IPC pipeline past readFindings'
+    1MiB-per-line cap.
+    """
+    try:
+        text = ast.unparse(node)
+    except Exception:  # noqa: BLE001 — unparse can hit unsupported nodes
+        text = type(node).__name__
+    text = text.strip()
+    if len(text) > 200:
+        text = text[:200] + "…"
+    return text
 
 
 def _references_request_input(arg: ast.AST) -> bool:

@@ -225,10 +225,20 @@ func categoryRelated(relCats []string, bbCat string) bool {
 
 // mergeFindings creates a correlated finding from matching blackbox and whitebox findings.
 // Severity is escalated by one level, confidence is HIGH, source is correlated.
+//
+// TASK-114: when the whitebox half carries a TaintChain (the AST analyzer
+// proved an intra-function source→sink dataflow), the merged finding inherits
+// the chain plus Reachable=true and gets a *second* severity escalation. This
+// is the "DAST + SAST agree AND we can show the path" case — exactly the
+// confirmed-finding-only-when-both-agree wedge promised in the README hero.
 func mergeFindings(bb, wb models.Finding) models.Finding {
+	severity := escalateSeverity(higherSeverity(bb.Severity, wb.Severity))
+	if wb.Reachable {
+		severity = escalateSeverity(severity)
+	}
 	merged := models.Finding{
 		Title:      bb.Title,
-		Severity:   escalateSeverity(higherSeverity(bb.Severity, wb.Severity)),
+		Severity:   severity,
 		Source:     models.SourceCorrelated,
 		Category:   bb.Category,
 		Endpoint:   bb.Endpoint,
@@ -237,6 +247,8 @@ func mergeFindings(bb, wb models.Finding) models.Finding {
 		References: mergeRefs(bb.References, wb.References),
 		Confidence: models.ConfidenceHigh,
 		Line:       wb.Line,
+		TaintChain: wb.TaintChain,
+		Reachable:  wb.Reachable,
 	}
 	return merged
 }

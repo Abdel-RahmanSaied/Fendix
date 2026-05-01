@@ -261,6 +261,97 @@ class TestAuthHeaderTrust:
             assert "SEC-PY_AUTH_HEADER_TRUST" in _ids(findings)
 
 
+class TestTaintChain:
+    """TASK-114: AST analyzer records a taint chain when it can prove
+    user input flows from a request source to a dangerous sink. The
+    chain is later used by the Go correlator to escalate matched
+    findings to `Reachable=true`."""
+
+    def test_inline_request_input_in_sink_yields_chain(self) -> None:
+        """cursor.execute(request.args.get('q')) — chain records source→sink."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import request\n"
+                "def handler(cursor):\n"
+                "    cursor.execute(request.args.get('q'))\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert len(sql) == 1, f"expected 1 SQLi finding, got {len(sql)}"
+            f = sql[0]
+            assert f.get("reachable") is True
+            assert isinstance(f.get("taint_chain"), list)
+            assert len(f["taint_chain"]) >= 2, f["taint_chain"]
+            # First link references request input; last link is the sink.
+            assert "request.args" in f["taint_chain"][0]["expr"]
+            assert "execute" in f["taint_chain"][-1]["expr"]
+
+    def test_multi_step_assignment_yields_chain(self) -> None:
+        """q = request.args.get('q'); sql = '...' + q; cursor.execute(sql) — full chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import request\n"
+                "def handler(cursor):\n"
+                "    q = request.args.get('q')\n"
+                "    sql = 'SELECT * FROM u WHERE id=' + q\n"
+                "    cursor.execute(sql)\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert len(sql) == 1
+            chain = sql[0].get("taint_chain") or []
+            assert sql[0].get("reachable") is True
+            # 3 links: source assignment, intermediate assignment, sink.
+            assert len(chain) >= 3, f"expected ≥3 chain links, got {chain}"
+            assert "request.args" in chain[0]["expr"]
+            assert any("execute" in link["expr"] for link in chain)
+
+    def test_constant_value_yields_no_chain(self) -> None:
+        """sql = 'static + ' + str(uuid); cursor.execute(sql) — no source, no chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import uuid\n"
+                "def handler(cursor):\n"
+                "    sql = 'SELECT * FROM logs WHERE id=' + str(uuid.uuid4())\n"
+                "    cursor.execute(sql)\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            # SQLi still flagged (BinOp + Call concat is still suspicious),
+            # but no chain because no request source was traced.
+            assert len(sql) == 1
+            assert sql[0].get("reachable") is not True
+            assert sql[0].get("taint_chain") is None or sql[0]["taint_chain"] == []
+
+    def test_ssrf_chain_recorded(self) -> None:
+        """requests.get(request.GET['url']) — SSRF with chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import requests\n"
+                "def handler(request):\n"
+                "    return requests.get(request.GET['url'])\n"
+            )
+            findings = _collect(tmpdir)
+            ssrf = [f for f in findings if f["id"] == "SEC-PY_SSRF"]
+            assert len(ssrf) == 1
+            assert ssrf[0].get("reachable") is True
+            assert any("request.GET" in link["expr"] for link in ssrf[0]["taint_chain"])
+
+    def test_open_redirect_chain_recorded(self) -> None:
+        """redirect(request.args.get('next')) — open redirect with chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import request, redirect\n"
+                "def handler():\n"
+                "    return redirect(request.args.get('next'))\n"
+            )
+            findings = _collect(tmpdir)
+            redir = [f for f in findings if f["id"] == "SEC-PY_OPEN_REDIRECT"]
+            assert len(redir) == 1
+            assert redir[0].get("reachable") is True
+            assert any("request.args" in link["expr"] for link in redir[0]["taint_chain"])
+
+
 class TestSQLConcatViaAssignment:
     """TASK-087 closes the multi-step SQLi gap.
 

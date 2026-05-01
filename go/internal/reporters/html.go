@@ -118,6 +118,7 @@ body{background:#fff;color:#1e293b;padding:1rem}
 <div class="field"><div class="field-label">Source</div><div class="field-value">{{.Source}} &middot; {{.Confidence}} confidence</div></div>
 <div class="field"><div class="field-label">Category</div><div class="field-value">{{.Category}}</div></div>
 {{if gt (len .AffectedEndpoints) 1}}<div class="field"><div class="field-label">Affected endpoints ({{len .AffectedEndpoints}})</div><div class="field-value"><ul class="affected-list">{{range .AffectedEndpoints}}<li>{{.}}</li>{{end}}</ul></div></div>{{end}}
+{{if .Reachable}}<div class="field"><div class="field-label">Reachable dataflow ({{len .TaintChain}} step{{if ne (len .TaintChain) 1}}s{{end}})</div><div class="field-value"><ol class="affected-list">{{range .TaintChain}}<li><code>{{.File}}:{{.Line}}</code> &mdash; <code>{{.Expr}}</code></li>{{end}}</ol></div></div>{{end}}
 {{if .References}}<div class="field"><div class="field-label">References</div><div class="field-value">{{joinRefs .References}}</div></div>{{end}}
 {{if .Line}}<div class="field"><div class="field-label">Location</div><div class="field-value">{{derefLine .Line}}</div></div>{{end}}
 </div>
