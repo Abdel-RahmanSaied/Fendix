@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub App: clone + scan + PR comment + SARIF upload (TASK-107b).**
+  Wires the business-logic layer on top of the v0.6.1 scaffold. On
+  every `pull_request.{opened,synchronize,reopened}` event, the
+  webhook handler now: (1) fetches an installation token via
+  `TokenSource` (cached + single-flighted as before); (2) clones the
+  PR head SHA into a per-scan tempdir using `git init` + shallow
+  `fetch --depth=1 origin <sha>` + `checkout FETCH_HEAD` — only the
+  exact commit, no history; auth via `x-access-token:<token>@…`
+  userinfo on the HTTPS clone URL; (3) runs `fendix scan --code
+  <tmp> --format json --output findings.json`; (4) re-renders SARIF
+  via `fendix report --format sarif` so the PR comment + Code
+  Scanning tab describe identical findings; (5) renders a Markdown
+  PR comment matching the github-script template from
+  `examples/github-actions/fendix-scan.yml` (TASK-098) byte-for-byte
+  modulo whitespace, so users see the same output regardless of
+  installation path; (6) POSTs the comment via the Issues API
+  (`/repos/{o}/{r}/issues/{n}/comments`); (7) gzip+base64-encodes
+  the SARIF and uploads via the Code Scanning Sarifs API
+  (`/repos/{o}/{r}/code-scanning/sarifs`) against
+  `refs/pull/<n>/head`. SARIF upload is best-effort: a misconfigured
+  repo (Code Scanning disabled, missing `security_events: write`)
+  logs a warning but the PR comment still posts. **Check-run re-run
+  support:** `check_run.action == "rerequested"` re-runs the scan
+  against the recorded head SHA; other check_run actions (created,
+  completed) silently ack. **Tempdir always cleaned up via
+  `defer os.RemoveAll`.** **Tokens redacted** from any error
+  surfaced for git-step failures so credentials don't leak into
+  webhook 5xx responses or operator logs. **Per-scan timeout:**
+  15-minute wall-clock cap on the entire flow (clone + scan +
+  comment + SARIF). **New `internal/ghapp` files:** `scanner.go`
+  (FendixScanner shells out to `git` + `fendix` on PATH;
+  configurable binaries for tests), `comment.go` (RenderPRComment
+  parser + PostPRComment HTTP client), `sarif.go` (UploadSARIF
+  with gzip+base64 encoding). **New tests:** scanner (8 tests
+  with PATH-injected fake git/fendix scripts; covers auth-URL
+  redaction, git-failure error mapping, fendix-scan/report failure
+  paths, input validation), comment (6 tests covering zero-finding
+  / 1-finding / >5-finding rendering, malformed JSON, full
+  PostPRComment via httptest including header + path + body
+  assertions, 403 error path), sarif (4 tests covering gzip+base64
+  round-trip, request shape via httptest, 422 error path, empty-
+  payload guard), handler (8 tests covering full PR flow with
+  fake scanner + httptest token endpoint, filtered actions,
+  no-installation skip, SARIF-failure-non-fatal, check_run
+  rerequested, check_run other-action no-op, NewHandler defaults).
+  **Distribution:** new `Dockerfile.app` at the repo root (multi-
+  stage; bundles `fendix` + `fendix-app` + Python engine + `git`
+  in a single ~250 MiB Debian-slim image). The image is the
+  deployment surface; `fendix-app` is a stateless HTTP server with
+  no shared state, so any container platform (Fly.io, Cloud Run,
+  Render, Railway, ECS, `docker run` under systemd, k8s) runs it
+  unchanged — we don't ship platform-specific manifests, since
+  every cluster/PaaS already has its own conventions for image
+  registries, secrets, ingress, and resource defaults.
+  **`docs/github-app.md` updated** to flip the "stubbed" section
+  to "wired today (TASK-107b)" and replace the placeholder
+  deployment-recipes section with a single "Running fendix-app"
+  block: the `docker build` + `docker run` commands plus a list
+  of supported platforms in prose.
+
 - **`.fendix.yaml` repo-committed policy file (TASK-109).** New
   `internal/policy` package + new `--config <path>` flag on
   `fendix scan`. Teams can now commit a `.fendix.yaml` at repo

@@ -58,7 +58,7 @@ func main() {
 	}
 	tokens := ghapp.NewTokenSource(creds, http.DefaultClient, cfg.GitHubAPIURL)
 
-	handler := &ghapp.Handler{Tokens: tokens}
+	handler := ghapp.NewHandler(tokens, cfg.GitHubAPIURL, http.DefaultClient)
 	server := ghapp.NewServer(cfg.WebhookSecret, handler, logger)
 
 	mux := http.NewServeMux()

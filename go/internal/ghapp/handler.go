@@ -4,73 +4,114 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"time"
 )
 
+// HandlerScanTimeout caps total wall-clock time for a single PR scan
+// (clone + scan + comment + SARIF upload). Long enough for a typical
+// repo + Semgrep run; short enough that a stuck scan doesn't pin a
+// goroutine for hours.
+const HandlerScanTimeout = 15 * time.Minute
+
 // Handler is the production EventRouter. It owns the App credentials
-// (via TokenSource), the scan-runner, and the GitHub API client. The
-// scan-runner and SARIF uploader are stubs in this commit — pending
-// the follow-up TASK-107b commit that wires up real clone + scan +
-// PR-comment + SARIF upload.
-//
-// To exercise this skeleton end-to-end against a live App: register the
-// App via app/manifest.yml, set FENDIX_APP_ID + FENDIX_APP_PRIVATE_KEY
-// + FENDIX_WEBHOOK_SECRET, deploy cmd/fendix-app, point the App's
-// webhook at the deployment, and watch logs — the App authenticates,
-// fetches installation tokens, and acknowledges events without yet
-// running scans.
+// (via TokenSource), the Scanner, an HTTP client + GitHub API base
+// URL, and optional override hooks for tests. Production deployments
+// instantiate it via NewHandler with sensible defaults.
 type Handler struct {
+	// Tokens supplies installation tokens (single-flighted + cached).
 	Tokens *TokenSource
-	// CommentBackend is the function the handler calls to post a PR
-	// comment. Defaults to a stub that just logs. Override in tests
-	// or in TASK-107b.
-	CommentBackend func(ctx context.Context, installationID int64, owner, repo string, prNumber int, body string) error
-	// ScanRunner is the function the handler calls to run a fendix
-	// scan against a checked-out PR. Defaults to a stub that returns
-	// a synthetic empty-findings JSON. Override in tests or TASK-107b.
-	ScanRunner func(ctx context.Context, repoCloneURL, headSHA string) (findingsJSON []byte, err error)
+
+	// BaseURL is the GitHub REST API base. Default:
+	// https://api.github.com. Override for GitHub Enterprise Server.
+	BaseURL string
+
+	// HTTPClient is reused for comment + SARIF API calls. Default:
+	// http.DefaultClient.
+	HTTPClient *http.Client
+
+	// Scanner runs the actual fendix scan. Default: &FendixScanner{}.
+	// Tests inject fakes.
+	Scanner Scanner
+
+	// PostComment posts a PR comment. Default: PostPRComment using
+	// Handler.HTTPClient + Handler.BaseURL. Tests inject fakes.
+	PostComment func(ctx context.Context, installationToken, owner, repo string, prNumber int, body string) error
+
+	// UploadSARIF uploads a SARIF blob. Default: UploadSARIF using
+	// Handler.HTTPClient + Handler.BaseURL. Tests inject fakes.
+	UploadSARIF func(ctx context.Context, installationToken, owner, repo, commitSHA, ref string, sarif []byte) error
 }
 
-// HandlePullRequest is invoked on pull_request webhook events. The MVP
+// NewHandler constructs a Handler with production defaults wired
+// from the components passed in. baseURL may be empty (defaults to
+// https://api.github.com). httpClient may be nil (defaults to
+// http.DefaultClient).
+func NewHandler(tokens *TokenSource, baseURL string, httpClient *http.Client) *Handler {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+	h := &Handler{
+		Tokens:     tokens,
+		BaseURL:    baseURL,
+		HTTPClient: httpClient,
+		Scanner:    &FendixScanner{},
+	}
+	h.PostComment = func(ctx context.Context, installationToken, owner, repo string, prNumber int, body string) error {
+		return PostPRComment(ctx, h.HTTPClient, h.BaseURL, installationToken, owner, repo, prNumber, body)
+	}
+	h.UploadSARIF = func(ctx context.Context, installationToken, owner, repo, commitSHA, ref string, sarif []byte) error {
+		return UploadSARIF(ctx, h.HTTPClient, h.BaseURL, installationToken, owner, repo, commitSHA, ref, sarif)
+	}
+	return h
+}
+
+// pullRequestPayload is the minimal subset of GitHub's pull_request
+// webhook payload the handler reads. Other fields decode silently.
+type pullRequestPayload struct {
+	Action      string `json:"action"`
+	Number      int    `json:"number"`
+	PullRequest struct {
+		Head struct {
+			SHA  string `json:"sha"`
+			Repo struct {
+				CloneURL string `json:"clone_url"`
+			} `json:"repo"`
+		} `json:"head"`
+	} `json:"pull_request"`
+	Repository struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name     string `json:"name"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repository"`
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
+}
+
+// HandlePullRequest is invoked on pull_request webhook events. The
 // flow:
 //
-//  1. Decode minimal fields from the payload (action, head SHA, owner,
-//     repo, PR number, installation ID).
-//  2. Filter to action ∈ {opened, synchronize, reopened} — the events
-//     that warrant a scan.
-//  3. Get installation token (cached/single-flighted via TokenSource).
-//  4. Run a fendix scan (STUBBED — see ScanRunner).
-//  5. Post PR comment summarising findings (STUBBED — see CommentBackend).
-//  6. Upload SARIF (STUBBED — see TASK-107b).
+//  1. Decode the payload.
+//  2. Filter to scan-worthy actions (opened / synchronize / reopened).
+//  3. Get an installation token (cached + single-flighted).
+//  4. Clone the head SHA + run the scan.
+//  5. Post a PR comment summarising findings.
+//  6. Upload SARIF to Code Scanning.
 //
-// Steps 4–6 are stubs in this commit. The point of shipping the scaffold
-// without them is to give operators a deployable Server they can
-// point a real App at — they'll see steps 1–3 work end-to-end (events
-// arrive, sigs verify, tokens fetch), with steps 4–6 obviously marked
-// as not-yet-wired. That's a clearer testable surface than a monolithic
-// commit nobody can incrementally validate.
+// Steps 5–6 are deliberately not fatal to each other: if SARIF upload
+// fails (e.g. Code Scanning not enabled on the repo), the comment
+// still posts and the operator can re-enable Code Scanning later.
+// A failed comment post does fail the handler so GitHub retries —
+// the comment is the user-visible signal that the App is alive.
 func (h *Handler) HandlePullRequest(ctx Context, body []byte) error {
-	var p struct {
-		Action      string `json:"action"`
-		Number      int    `json:"number"`
-		PullRequest struct {
-			Head struct {
-				SHA  string `json:"sha"`
-				Repo struct {
-					CloneURL string `json:"clone_url"`
-				} `json:"repo"`
-			} `json:"head"`
-		} `json:"pull_request"`
-		Repository struct {
-			Owner struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-			Name string `json:"name"`
-		} `json:"repository"`
-		Installation struct {
-			ID int64 `json:"id"`
-		} `json:"installation"`
-	}
+	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode pull_request: %w", err)
 	}
@@ -85,53 +126,110 @@ func (h *Handler) HandlePullRequest(ctx Context, body []byte) error {
 
 	if p.Installation.ID == 0 {
 		// Acted-on-by-user PR webhooks don't include an installation
-		// (the App wasn't installed in the source repo). Nothing to do.
+		// (the App wasn't installed in the source repo). Nothing to
+		// do — we have no credentials to scan with.
 		ctx.Logger.Info("pull_request without installation; skipping")
 		return nil
 	}
 
-	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	cloneURL := p.PullRequest.Head.Repo.CloneURL
+	if cloneURL == "" {
+		cloneURL = p.Repository.CloneURL
+	}
+
+	bgCtx, cancel := context.WithTimeout(context.Background(), HandlerScanTimeout)
 	defer cancel()
-	tok, err := h.Tokens.Get(bgCtx, p.Installation.ID)
+
+	return h.runScan(bgCtx, ctx, scanInputs{
+		InstallationID: p.Installation.ID,
+		Owner:          p.Repository.Owner.Login,
+		Repo:           p.Repository.Name,
+		PRNumber:       p.Number,
+		HeadSHA:        p.PullRequest.Head.SHA,
+		CloneURL:       cloneURL,
+		Ref:            "refs/pull/" + strconv.Itoa(p.Number) + "/head",
+	})
+}
+
+// scanInputs is the per-scan parameters extracted from a webhook
+// payload. Centralising them lets HandlePullRequest and
+// HandleCheckRun share a single runScan path.
+type scanInputs struct {
+	InstallationID int64
+	Owner          string
+	Repo           string
+	PRNumber       int
+	HeadSHA        string
+	CloneURL       string
+	Ref            string
+}
+
+func (h *Handler) runScan(bgCtx context.Context, ctx Context, in scanInputs) error {
+	if in.HeadSHA == "" || in.CloneURL == "" {
+		ctx.Logger.Info("scan inputs incomplete; skipping",
+			"have_sha", in.HeadSHA != "",
+			"have_clone_url", in.CloneURL != "",
+		)
+		return nil
+	}
+
+	tok, err := h.Tokens.Get(bgCtx, in.InstallationID)
 	if err != nil {
 		return fmt.Errorf("installation token: %w", err)
 	}
 	ctx.Logger.Info("installation token acquired",
-		"installation_id", p.Installation.ID,
+		"installation_id", in.InstallationID,
 		"expires_at", tok.ExpiresAt.Format(time.RFC3339),
 	)
 
-	scanRunner := h.ScanRunner
-	if scanRunner == nil {
-		scanRunner = stubScanRunner
+	scanner := h.Scanner
+	if scanner == nil {
+		scanner = &FendixScanner{}
 	}
-	findings, err := scanRunner(bgCtx, p.PullRequest.Head.Repo.CloneURL, p.PullRequest.Head.SHA)
+	result, err := scanner.Run(bgCtx, ScanRequest{
+		CloneURL:          in.CloneURL,
+		HeadSHA:           in.HeadSHA,
+		InstallationToken: tok.Token,
+	})
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
-	ctx.Logger.Info("scan complete (stub)", "findings_bytes", len(findings))
+	ctx.Logger.Info("scan complete",
+		"findings_bytes", len(result.FindingsJSON),
+		"sarif_bytes", len(result.SARIF),
+	)
 
-	commentBackend := h.CommentBackend
-	if commentBackend == nil {
-		commentBackend = stubCommentBackend
-	}
-	commentBody := fmt.Sprintf("Fendix scan placeholder for PR #%d at %s — TASK-107b not yet wired.",
-		p.Number, p.PullRequest.Head.SHA)
-	if err := commentBackend(bgCtx, p.Installation.ID,
-		p.Repository.Owner.Login, p.Repository.Name, p.Number, commentBody); err != nil {
-		return fmt.Errorf("post comment: %w", err)
+	body, err := RenderPRComment(result.FindingsJSON)
+	if err != nil {
+		return fmt.Errorf("render comment: %w", err)
 	}
 
-	// SARIF upload to Code Scanning API: TASK-107b.
-	ctx.Logger.Info("SARIF upload stubbed — TASK-107b")
+	if h.PostComment != nil && in.PRNumber > 0 {
+		if err := h.PostComment(bgCtx, tok.Token, in.Owner, in.Repo, in.PRNumber, body); err != nil {
+			return fmt.Errorf("post comment: %w", err)
+		}
+		ctx.Logger.Info("PR comment posted", "pr", in.PRNumber)
+	}
+
+	if h.UploadSARIF != nil && len(result.SARIF) > 0 {
+		// SARIF upload is best-effort — a misconfigured repo (Code
+		// Scanning disabled, branch ref missing) shouldn't fail the
+		// whole webhook. Log and continue.
+		if err := h.UploadSARIF(bgCtx, tok.Token, in.Owner, in.Repo, in.HeadSHA, in.Ref, result.SARIF); err != nil {
+			ctx.Logger.Warn("SARIF upload failed", "err", err)
+		} else {
+			ctx.Logger.Info("SARIF uploaded", "ref", in.Ref, "sha", in.HeadSHA)
+		}
+	}
 
 	return nil
 }
 
 // HandlePush is the webhook entrypoint for push events. Push to the
-// default branch will eventually trigger a fresh baseline scan; pushes
-// to feature branches are no-ops (the pull_request handler covers them).
-// Currently stubbed.
+// default branch will eventually trigger a baseline-refresh scan;
+// pushes to feature branches are no-ops (the pull_request handler
+// covers them). Currently a no-op acknowledgement — push-driven
+// baseline refresh is a follow-up.
 func (h *Handler) HandlePush(ctx Context, body []byte) error {
 	var p struct {
 		Ref string `json:"ref"`
@@ -143,40 +241,68 @@ func (h *Handler) HandlePush(ctx Context, body []byte) error {
 	return nil
 }
 
-// HandleCheckRun lets the App respond to "Re-run check" button clicks.
-// Currently stubbed; will re-trigger the scan for the same head SHA in
-// TASK-107b.
+// HandleCheckRun handles the "Re-run check" button click in the
+// GitHub UI. GitHub sends action=rerequested with the check_run's
+// head_sha; we re-run the scan against that SHA. Other actions
+// (created/completed) are silently acknowledged.
 func (h *Handler) HandleCheckRun(ctx Context, body []byte) error {
 	var p struct {
 		Action   string `json:"action"`
 		CheckRun struct {
-			Name    string `json:"name"`
-			HeadSHA string `json:"head_sha"`
+			Name        string `json:"name"`
+			HeadSHA     string `json:"head_sha"`
+			PullRequests []struct {
+				Number int `json:"number"`
+			} `json:"pull_requests"`
 		} `json:"check_run"`
+		Repository struct {
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+			Name     string `json:"name"`
+			CloneURL string `json:"clone_url"`
+		} `json:"repository"`
+		Installation struct {
+			ID int64 `json:"id"`
+		} `json:"installation"`
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode check_run: %w", err)
 	}
-	ctx.Logger.Info("check_run received",
-		"action", p.Action,
-		"name", p.CheckRun.Name,
-		"head_sha", p.CheckRun.HeadSHA,
-		"wired", false,
-	)
-	return nil
+
+	if p.Action != "rerequested" {
+		ctx.Logger.Info("check_run received",
+			"action", p.Action,
+			"name", p.CheckRun.Name,
+			"head_sha", p.CheckRun.HeadSHA,
+		)
+		return nil
+	}
+	if p.Installation.ID == 0 {
+		ctx.Logger.Info("check_run rerequested without installation; skipping")
+		return nil
+	}
+
+	prNumber := 0
+	if len(p.CheckRun.PullRequests) > 0 {
+		prNumber = p.CheckRun.PullRequests[0].Number
+	}
+	ref := p.CheckRun.HeadSHA
+	if prNumber > 0 {
+		ref = "refs/pull/" + strconv.Itoa(prNumber) + "/head"
+	}
+
+	bgCtx, cancel := context.WithTimeout(context.Background(), HandlerScanTimeout)
+	defer cancel()
+
+	return h.runScan(bgCtx, ctx, scanInputs{
+		InstallationID: p.Installation.ID,
+		Owner:          p.Repository.Owner.Login,
+		Repo:           p.Repository.Name,
+		PRNumber:       prNumber,
+		HeadSHA:        p.CheckRun.HeadSHA,
+		CloneURL:       p.Repository.CloneURL,
+		Ref:            ref,
+	})
 }
 
-func stubScanRunner(_ context.Context, cloneURL, sha string) ([]byte, error) {
-	// Returns the shape of a real scan output but with no findings —
-	// enough for the comment-rendering stub to produce a sensible
-	// placeholder message without false positives.
-	stub := fmt.Sprintf(`{"clone_url":%q,"head_sha":%q,"findings":[],"summary":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"stub":true}`, cloneURL, sha)
-	return []byte(stub), nil
-}
-
-func stubCommentBackend(_ context.Context, installID int64, owner, repo string, prNumber int, body string) error {
-	// Real implementation will POST to
-	//   /repos/{owner}/{repo}/issues/{pr_number}/comments
-	// using the installation token. TASK-107b.
-	return nil
-}

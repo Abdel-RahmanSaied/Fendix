@@ -1,10 +1,11 @@
 # Fendix GitHub App
 
-> **Status:** scaffold shipped in v0.6.1 (TASK-107). The webhook server,
-> App authentication, and event router are wired and tested. The
-> end-to-end PR workflow (clone repo → run scan → post PR comment →
-> upload SARIF) is stubbed pending TASK-107b. This page documents the
-> setup steps and what works *today* vs what's coming.
+> **Status:** end-to-end. The scaffold (webhook server, App-as-bot
+> authentication, event router) shipped in v0.6.1 (TASK-107). The
+> business logic (clone repo → run scan → post PR comment → upload
+> SARIF + check_run re-run) shipped in TASK-107b on top of the
+> scaffold. This page documents both the setup steps and the
+> deployment recipes.
 
 ## What this gives you
 
@@ -133,57 +134,76 @@ the server logs `webhook ping ack` on success.
   token cache reuse + concurrent single-flight + per-installation
   isolation.
 
-## What's stubbed (TASK-107b — follow-up)
+## What's wired today (TASK-107b)
 
-- 🔲 PR-event handler that **clones the head SHA** of the PR's repo.
-- 🔲 Runs `fendix scan` in hybrid mode (URL of the deploy preview if
-  one is published; `--code` against the cloned source otherwise).
-- 🔲 Renders a Markdown PR comment from the findings JSON. The
-  template will match the PR-comment style from
-  `examples/github-actions/fendix-scan.yml`'s github-script step
-  (TASK-098) so users see the same output regardless of installation
-  path.
-- 🔲 Uploads the SARIF via the [Code Scanning Upload
+- ✅ PR-event handler **clones the head SHA** via shallow init+fetch
+  (only the exact commit, no history). Auth uses the installation
+  token as `x-access-token` userinfo on the HTTPS clone URL.
+- ✅ Runs `fendix scan --code <tmp> --format json` against the cloned
+  source (white-box only — deploy-preview URL discovery is a
+  follow-up; not all PRs have one).
+- ✅ Renders a Markdown PR comment from the findings JSON. The
+  template matches `examples/github-actions/fendix-scan.yml`'s
+  github-script step (TASK-098) byte-for-byte modulo whitespace, so
+  users see the same output whether they install the App or copy the
+  reference workflow.
+- ✅ Re-renders SARIF from the same JSON via `fendix report
+  --format sarif` and uploads it via the [Code Scanning Upload
   API](https://docs.github.com/en/rest/code-scanning/code-scanning?apiVersion=2022-11-28#upload-an-analysis-as-sarif-data)
-  so findings annotate diff lines in the Files Changed tab.
-- 🔲 `check_run` re-run support — clicking "Re-run check" re-scans
-  the same head SHA and overwrites the previous comment + SARIF
-  upload.
-
-The handler currently logs every event it receives, fetches an
-installation token to confirm credentials are wired correctly, and
-acknowledges with `200 OK`. Deploy it now; rolling forward to
-TASK-107b will be a binary swap — no App re-registration needed.
+  (gzip+base64 encoded, against `refs/pull/<n>/head`). SARIF upload
+  is best-effort: a misconfigured repo (Code Scanning disabled) logs
+  a warning but the comment still posts.
+- ✅ `check_run.action == "rerequested"` re-runs the scan against the
+  recorded head SHA. Other check_run actions are silent ack.
 
 ## Deployment recipes
 
 ### Docker
 
-A `Dockerfile.app` will ship in the TASK-107b commit. For now you can
-build locally:
+A multi-stage [`Dockerfile.app`](../Dockerfile.app) lives at the repo
+root. It bundles `fendix-app`, the `fendix` CLI, the embedded Python
+engine, and `git` (required for the clone step) into a single
+runtime image:
 
 ```bash
-go build -o fendix-app ./cmd/fendix-app/
-# drop in a minimal alpine image or run on the host directly.
+docker build -f Dockerfile.app -t fendix-app:local .
+
+docker run --rm -p 8080:8080 \
+  -e FENDIX_APP_ID=1234567 \
+  -e FENDIX_APP_PRIVATE_KEY="$(cat private-key.pem)" \
+  -e FENDIX_WEBHOOK_SECRET="$WEBHOOK_SECRET" \
+  fendix-app:local
 ```
+
+Image size is dominated by the Python engine + `git` + Debian base
+(~250 MiB). For self-hosted runners that already have these on the
+host, building `fendix-app` directly with `go build` and running it
+under `systemd` is a smaller-footprint alternative.
 
 ### Kubernetes
 
-A `Deployment` with:
+A reference Deployment + Service + Ingress lives at
+[`deploy/k8s/fendix-app.yaml`](../deploy/k8s/fendix-app.yaml). It is
+a starting template, not a paved-road production manifest — adjust
+the image tag, replicas, ingress class/host, and TLS secret to your
+cluster's conventions. Highlights:
 
-- `replicas: 2` (idempotency comes from `X-GitHub-Delivery` UUID;
-  duplicate webhooks are safe).
-- `resources.requests` of ~64 MiB / 100m CPU (the server is mostly
-  network-I/O bound; the heavy lifting is in subprocess scans which
-  haven't landed yet).
-- A `ServiceAccount` with no extra cluster permissions (the App
-  authenticates against GitHub, not against Kubernetes).
-- The private key as a `Secret` mounted at
-  `/var/secrets/fendix-app-private-key.pem`.
-- The webhook secret as another `Secret` exposed via env var.
-- A `Service` in front, behind an `Ingress` that terminates TLS.
+- 2 replicas behind a `ClusterIP` Service. Webhook idempotency comes
+  from the `X-GitHub-Delivery` UUID — duplicate scans waste a cycle
+  but never destroy state.
+- `readOnlyRootFilesystem: true` with an `emptyDir` mount at `/tmp`
+  for per-scan clone targets.
+- Private key wired as a `Secret` mounted at
+  `/var/secrets/fendix/private-key.pem` (referenced via
+  `FENDIX_APP_PRIVATE_KEY_FILE`).
+- App ID + webhook secret wired as a `Secret` consumed via `envFrom`.
+- Liveness + readiness probes against `/healthz`.
+- 30s `terminationGracePeriodSeconds` so in-flight scans finish
+  during a rolling update.
 
-A reference manifest will land in TASK-107b.
+Bootstrap with the `kubectl create secret` commands inlined at the
+top of the manifest, then `kubectl apply -f
+deploy/k8s/fendix-app.yaml`.
 
 ### App engine alternatives
 
@@ -222,10 +242,20 @@ private key is loaded (mismatched key vs the App ID), the system
 clock is significantly skewed, or the key file isn't valid PEM.
 `openssl rsa -in private-key.pem -check` confirms the PEM parses.
 
-**Events arrive but nothing happens to the PR.** Today, that's
-expected — TASK-107b adds the comment + SARIF wiring. Watch the
-server logs for `webhook received event=pull_request` to confirm
-events are being received and routed.
+**Events arrive but the PR has no comment.** Filter the logs for
+`scan complete`: if it's missing, the scan failed before completing
+(network, repo size, SARIF re-render). If it's present but
+`PR comment posted` is missing, the App lacks `pull_requests: write`
+permission — re-install with the updated permission set. Re-running
+"Re-run check" from the Files Changed tab triggers a fresh scan
+against the same head SHA without needing a new push.
+
+**SARIF tab stays empty even though the PR comment posted.** The
+SARIF upload is best-effort and logs `SARIF upload failed` on a
+warning level. Common causes: Code Scanning isn't enabled on the
+repo (Settings → Code security and analysis), or the App lacks
+`security_events: write`. The comment posts regardless so the user
+still sees the findings.
 
 **`webhook signature does not match` on real GitHub events.**
 GitHub computes the HMAC over the *raw* request body, including
