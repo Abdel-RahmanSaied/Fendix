@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 14 — P4 External Wedge (v1.1) — ✅ Complete (engine code; one explicit follow-up TASK-107b for the GitHub App scan-and-comment wiring). All 7 Phase-14 tasks shipped: TASK-105 (`fendix init`), TASK-106 (vulnerable-app benchmark + numbers from v0.6.1 CI run captured), TASK-107 (GitHub App scaffold — manifest + webhook server + auth + handler stubs; TASK-107b follow-up wires clone+scan+comment+SARIF), TASK-108 (`fendix demo` command), TASK-109 (`.fendix.yaml` repo-committed policy + extended `fendix init` to write it), TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section). **v0.6.1 shipped 2026-05-01** (patch release: install.sh `mkdir -p` fix that was blocking benchmark CI + first-time users with non-default FENDIX_DIR). Engine code is at v0.6.1 + 4 Phase-14 commits (5300561, 3570d53, 3ba98e0, 31b9785). Phase 13 ✅ Complete 2026-04-30. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
-**Overall progress:** Phases 0-14 effectively complete (TASK-107b is the only Phase-14 follow-up). Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), **v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01)**; v1.1+ scoped via Phases 14-16.
-**Last updated:** 2026-05-01
+**Phase:** 14 — P4 External Wedge (v1.1) — ✅ Complete. All 7 Phase-14 tasks **+ TASK-107b follow-up** shipped. TASK-105 (`fendix init`), TASK-106 (vulnerable-app benchmark + numbers from v0.6.1 CI run captured), TASK-107 (GitHub App scaffold — manifest + webhook server + auth + handler stubs), **TASK-107b (this session — wired clone + scan + PR comment + SARIF upload + check_run rerequested + Dockerfile.app + reference k8s manifest)**, TASK-108 (`fendix demo` command), TASK-109 (`.fendix.yaml` repo-committed policy + extended `fendix init` to write it), TASK-110 (README repositioning), TASK-111 (telemetry statement + cosign-verify section). **v0.6.1 shipped 2026-05-01** (patch release: install.sh `mkdir -p` fix). Engine code is at v0.6.1 + 5 Phase-14 commits on `main` (5300561, 3570d53, 3ba98e0, 31b9785, **TASK-107b uncommitted at session end**). Phase 13 ✅ Complete 2026-04-30. **Phases 14-16 scoped 2026-04-30 from strategic-advisor session**. Strategic non-goals (AI/compliance/CSPM/mobile/SaaS) recorded in BACKLOG-017.
+**Overall progress:** Phases 0-14 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), **v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01)**; v1.1+ scoped via Phases 15-16. Next tagged release will fold the post-v0.6.1 Phase-14 commits (including TASK-107b).
+**Last updated:** 2026-05-01 (frontend sync — TASK-107b absorption into `fendix_frontend`)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -462,6 +462,175 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-01 (frontend sync — absorbing TASK-107b into `fendix_frontend`)
+**Session goal:** Sync the frontend with the engine's TASK-107b GitHub App business logic. Per MEMORY.md "Next session should start with" branch (b): flip the changelog's TASK-107b callout from forward-looking to past-tense, advertise `Dockerfile.app` + the GitHub App as a deployment path on the integrations surface, update the frontend `memory.md` to reflect Phase 14 fully complete. Backend not extended (per the prior decision — TASK-107b is on the GitHub-event side, not the API side).
+
+**Accomplished:**
+
+- **Bootstrap (Phase 0).** Read engine MEMORY.md / PHASES.md / CURRENT_SPRINT.md, frontend memory.md, frontend SYNC_FRONTEND_BACKEND.md runbook. Verified engine build green pre-work: Go 13 packages compile + race-clean (TASK-107b code clean); Python 193/193. Confirmed engine state: TASK-107b code in working tree but uncommitted (`Dockerfile.app`, `go/internal/ghapp/{scanner,comment,sarif,handler_test}.go` as `??`; `handler.go`, `cmd/fendix-app/main.go`, `docs/github-app.md`, `CHANGELOG.md` as `M`). Frontend changelog page already had a TASK-107b bullet pre-written but uncommitted; frontend `memory.md` still claimed "TASK-107b is the only follow-up" — stale. Backend serializers/services have no fendix-app refs (correct — TASK-107b adds no API knobs).
+
+- **Frontend `app/integrations/page.tsx` extended.** Added a new "**New in v0.7: GitHub App (zero-config PR scans)**" emerald-themed callout immediately under the existing v0.5 GitHub Actions callout — same visual language. Calls out: (1) install the App on a repo and `pull_request.{opened,synchronize,reopened}` triggers a hybrid scan automatically; (2) clone of the head SHA only (no history); (3) Markdown PR comment matching the workflow's template + SARIF upload to the Code Scanning tab; (4) `docs/github-app.md` link for App registration via `app/manifest.yml`; (5) `Dockerfile.app` for self-hosting `fendix-app` with the explicit list of supported platforms (Fly.io / Cloud Run / Render / Railway / ECS / k8s). The cli-reference page was deliberately NOT extended — `fendix-app` is a separate binary, not a `fendix` CLI command, so the integrations page is the right surface for it.
+
+- **Frontend `memory.md` flipped.** Phase 14 status line updated from "engine code COMPLETE (TASK-107b is the only Phase-14 follow-up)" → "engine code FULLY COMPLETE (TASK-107b shipped 2026-05-01 wiring the GitHub App's clone + scan + PR comment + SARIF upload)". Overall progress bumped from 114 → 115 tasks. The "Phase 14 additions" GitHub App entry rewritten from "Currently a SCAFFOLD … pending TASK-107b follow-up" → "TASK-107b shipped business-logic layer" with the full breakdown (clone strategy, scan invocation, SARIF re-render, PR comment template fidelity, comment POST, SARIF upload, check_run rerequested, tempdir cleanup, token redaction, 15-min timeout) + new `Dockerfile.app` deployment surface + supported-platforms list. Phase 14 status header updated likewise. New "**Frontend sync (2026-05-01, this session — TASK-107b absorption)**" entry captures exactly which surfaces moved this session, mirrors the format of prior sync entries.
+
+- **Frontend changelog `app/changelog/page.tsx`.** No new write needed — the previous session had already pre-written a "**GitHub App business logic wired end-to-end (TASK-107b)**" bullet plus a "**Backend not extended for the GitHub App (TASK-107/107b)**" decision callout, plus updated the entry title from "Phase 14 closeout (post-v0.6.1)" → "Phase 14 closeout — engine code complete (post-v0.6.1)" and removed the forward-looking "What's stubbed (TASK-107b follow-up)" sentence from the TASK-107 bullet. Those edits were locally uncommitted before this session started; this session leaves them as-is (they're already correct).
+
+- **Backend not modified — explicit decision (re-confirmed).** TASK-107b is on the GitHub-event side of the pipeline (`fendix-app` daemon listening for webhooks), not the API side (`LaunchScanSerializer` → `services.py::build_command` → CLI invocation). Same boundary as the prior session's explicit decision. The new `Dockerfile.app` is an operator-side deployment artifact — direct container users consume it, the backend doesn't. `fendix-backend/backend/scanning/{serializers,services}.py` are unchanged; backend git status is clean.
+
+- **Engine binary cross-compiled.** `make embed-engine` (re-bundles Python engine into `go/internal/embedded/engine/`) + `cd go && GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=v0.6.1-phase14-task107b" -o ../bin/fendix-linux-arm64 ./cmd/fendix/`. Resulting 9.0 MB ARM64 ELF at `bin/fendix-linux-arm64` is what `fendix-backend/docker-compose.dev.yml` bind-mounts into both `django` and `celery` services on `:ro`. Backend dev compose picks it up automatically on next `up --build` cycle. The new binary carries TASK-107b — but `fendix-app` is a separate binary not bound-mounted, so the dev backend doesn't gain the GitHub App functionality from this rebuild (correct: the App is meant to be deployed via `Dockerfile.app`, not run inside the backend's compose stack).
+
+- **Frontend build green.** `npx vitest run` ✓ (26 files, 173 tests, 4.30s); `npm run build` ✓ (29 routes prerendered, no TS errors, no lint errors). The integrations page edit is a static-content addition, no test changes needed. Engine build still green: Go race-clean across 13 packages; Python 193/193.
+
+**Files modified this session:**
+
+- `fendix_frontend/app/integrations/page.tsx` (new "GitHub App (zero-config PR scans)" emerald callout block)
+- `fendix_frontend/memory.md` (Phase 14 status line + GitHub App additions block + new sync session entry; ~3 separate edits)
+- `fendix-engine/bin/fendix-linux-arm64` (rebuilt; 9.0 MB; linux/arm64 ELF; not committed — gitignored binary artifact for the backend bind mount)
+- `fendix-engine/tasks/MEMORY.md` (this entry; Current State `Last updated` line)
+- `fendix-engine/tasks/CURRENT_SPRINT.md` (Phase 14 frontend-sync absorption note)
+
+**Build state at session end:**
+
+- Engine: `go build ./...` ✓ (Go 13 packages); `go test -race ./...` ✓ (uncached); `python -m pytest python/tests/` ✓ (193/193); engine binary cross-compiled clean (9.0 MB linux/arm64).
+- Frontend: `npx vitest run` ✓ (26 files, 173 tests, all green); `npm run build` ✓ (29 routes prerendered cleanly).
+- Backend: not exercised this session — no serializer/services changes warranted (TASK-107b adds no API knobs).
+
+**Decisions made:**
+
+- **Integrations page is the surface for the GitHub App, NOT cli-reference.** The cli-reference page is for `fendix` CLI flags. `fendix-app` is a separate long-running binary deployed via `Dockerfile.app`; surfacing it on cli-reference would conflate two deployment shapes (one-shot CLI vs daemon webhook server). The integrations page already had a "drop-in GitHub Actions workflow" callout — adding a parallel "GitHub App" callout right beneath it gives evaluators the no-CI-edit path next to the explicit-workflow path, with matching visual language.
+
+- **Emerald color for the GitHub App callout, indigo for the GitHub Actions callout.** Two visually distinct colors in the same place signals "two paths, both supported, pick one". Single color would have read as "one product with two examples".
+
+- **Use `v0.7` framing in the callout title.** The TASK-107b commits sit on `main` post-v0.6.1; the next tagged release will fold them in. Per MEMORY.md "Next session should start with", that's expected to be v0.7.0 (semver minor — TASK-107b is a meaningful new external surface). Pinning the callout to `v0.7` matches the engine's intended release naming. If the operator chooses v0.6.2 instead, the callout's "New in v0.7" copy is the only place that needs an update — small surface area, easy to flip.
+
+- **No frontend dashboard / new-scan / settings changes.** TASK-107b adds zero per-scan orchestration knobs. Same as the prior `--config` / `fendix demo` / `fendix init` decisions: the App is a separate deployable, not a per-scan flag. Frontend new-scan form remains correct as-is.
+
+- **Don't commit this session.** Per the SYNC runbook and the parent prompt's safety rules, all changes are made locally and verified green, but no `git commit` / `git push`. The user will review the frontend diff (and the engine's pre-existing TASK-107b uncommitted diff) and decide on commit messaging. Three uncommitted layers exist now: (1) engine TASK-107b code from the prior session, (2) frontend TASK-107b changelog edits from the prior session, (3) this session's integrations page + memory.md edits. All three should land in the same commit batch on each repo.
+
+**Open questions / followups:**
+
+- **Tag a release.** Same recommendation as the prior session's "Next session" pointer: v0.7.0 minor folding TASK-107b on the engine. Frontend release version literals are already at "v0.7" framing in the new integrations callout, so a frontend bump from v0.6.1 → v0.7.0 follows naturally on engine tag.
+
+- **Register the App on github.com.** `app/manifest.yml` is ready; `Dockerfile.app` is ready; the integrations page now advertises the path. The operator-side step is unchanged (visit `https://github.com/settings/apps/new?manifest=...`, paste, save). Plus deploying `fendix-app` somewhere. Plus Marketplace listing submission.
+
+- **Backend dev-compose `Dockerfile.app` path?** Considered: bind-mounting `fendix-app` binary into the backend's docker-compose stack so a developer running `docker compose exec celery fendix-app …` would work. Decided against: `fendix-app` is a long-running webhook server with its own port + lifecycle, not a CLI tool for ad-hoc invocation. The dev workflow for testing the App locally is `docker run --rm -p 8080:8080 fendix-app …` against a `smee.io` webhook proxy — outside the backend compose stack. Keeping the backend bind mount as just `fendix` (the CLI) preserves separation.
+
+- **Frontend dashboard could surface a "Latest scan via CLI" callout** mentioning `fendix demo` for first-time evaluators. Right now `fendix demo` is documented in `/cli-reference` but not advertised on the dashboard. Defer to a marketing-surface session — it's a UI placement decision, not a sync-driven one.
+
+**Next session should start with:**
+
+- **Tag a release that folds the post-v0.6.1 Phase 14 work** (TASK-106 numbers, TASK-107 scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) into a single tagged version. Recommended: **v0.7.0** (minor — TASK-107b is a meaningful new external surface). Concretely: bump CHANGELOG `[Unreleased]` to `[0.7.0] - <date>`, push tag, watch release.yml, mirror-sync into homebrew-fendix. Then bump frontend version literals (`StatsBar`, `LandingFooter`, landing-page hero, `app/lib/releases.ts`) from v0.6.1 → v0.7.0 + flip the changelog page's "Unreleased" entry into a tagged "v0.7.0" entry.
+
+- **Or**, if release timing isn't right yet: pick up the **operator-side App rollout** (register the GitHub App via `app/manifest.yml`, deploy `fendix-app` from `Dockerfile.app`, start the Marketplace submission). `docs/github-app.md` covers the registration flow.
+
+---
+
+## Earlier Session (2026-05-01 — TASK-107b — GitHub App business-logic layer wired on top of TASK-107 scaffold)
+
+**Session goal:** Close out the only remaining Phase-14 follow-up. Replace `stubScanRunner` and `stubCommentBackend` in `internal/ghapp/handler.go` with real implementations: clone the PR head SHA, run `fendix scan`, render + post a PR comment, upload SARIF to the Code Scanning API. Plus `Dockerfile.app` + reference k8s manifest. Plus `check_run` rerequested re-run support.
+
+**Accomplished:**
+
+- **Bootstrap (Phase 0).** Read MEMORY.md / PHASES.md / CURRENT_SPRINT.md / FENDIX_CLAUDE_CODE.md and the existing scaffold (`internal/ghapp/{auth,webhook,handler}.go`, `cmd/fendix-app/main.go`, `examples/github-actions/fendix-scan.yml`, `docs/github-app.md`, `Dockerfile`). Confirmed Phase 14 was 7/7 with TASK-107b as the only open task. Build matrix green pre-work: Go 13 packages compile + race-clean; Python 193/193.
+
+- **`internal/ghapp/scanner.go`.** New `FendixScanner` (production `Scanner` interface). Cloning strategy: `git init` + `git remote add origin <authedURL>` + `git -c protocol.version=2 fetch --depth=1 origin <sha>` + `git checkout FETCH_HEAD` — only the exact commit, no history walked. Auth via `https://x-access-token:<token>@…` userinfo on the HTTPS clone URL (the GitHub-documented App-to-Git pattern). After clone: `fendix scan --code <tmp> --format json --output findings.json` then re-render via `fendix report --format sarif --output results.sarif` so PR comment + SARIF tab describe identical findings (same single-source-of-truth pattern as the github-script template). Per-scan tempdir created via `os.MkdirTemp`, removed on return regardless of outcome. **Tokens redacted from any error message** that includes the git command line, so a webhook 5xx response doesn't leak the installation token. Configurable binary paths (`FendixBinary`, `GitBinary`) so tests can inject PATH-mounted shell-script fakes.
+
+- **`internal/ghapp/comment.go`.** `RenderPRComment(findingsJSON []byte) (string, error)` parses the documented `fendix scan --format json` schema (mode + endpoints_scanned + duration in `metadata`; severity + source counts; findings with severity/title/endpoint/line) and emits a markdown body that mirrors `examples/github-actions/fendix-scan.yml`'s github-script template byte-for-byte modulo whitespace. Same heading (`## Fendix scan: N finding(s)`), same metadata line, same 5-row severity × source table, same top-5 list with `**[SEVERITY]** title — \`where\`` format, same `_…and N more in the SARIF report._` overflow line, same no-findings checkmark, same Security-tab footer. Singular/plural (`finding` vs `findings`) handled. `PostPRComment(ctx, httpClient, baseURL, token, owner, repo, prNumber, body)` POSTs to `/repos/{o}/{r}/issues/{n}/comments` with `Authorization: Bearer <token>` + `Accept: application/vnd.github+json` + `X-GitHub-Api-Version: 2022-11-28` + `Content-Type: application/json`. Non-201 surfaces the response body (truncated to 4 KiB) in the error.
+
+- **`internal/ghapp/sarif.go`.** `UploadSARIF(ctx, httpClient, baseURL, token, owner, repo, sha, ref, sarif)` gzip+base64-encodes the SARIF blob (the format GitHub's Code Scanning API requires), POSTs `{commit_sha, ref, sarif}` JSON to `/repos/{o}/{r}/code-scanning/sarifs`. Same auth + accept + api-version headers as PostPRComment. Non-202 surfaces the response body. Empty-payload guard (`return error` on zero-length sarif) prevents accidentally sending an empty submission. Pure-stdlib (compress/gzip + encoding/base64) — no new dep.
+
+- **`internal/ghapp/handler.go` rewrite.** `Handler` struct now carries `BaseURL` + `HTTPClient` + a `Scanner` interface field + injectable `PostComment` and `UploadSARIF` function fields. New `NewHandler(tokens, baseURL, httpClient) *Handler` wires production defaults: `Scanner = &FendixScanner{}`, `PostComment` = closure over `PostPRComment` with the handler's HTTP client + base URL, `UploadSARIF` = closure over `ghapp.UploadSARIF` likewise. `HandlePullRequest` decodes the payload, filters to `opened/synchronize/reopened`, threads through new `runScan` helper. **`runScan` is shared** between `HandlePullRequest` and `HandleCheckRun` — single code path so both flows behave identically. **SARIF upload is best-effort:** failure logs a warning (Code Scanning disabled, missing `security_events: write` permission) but the PR comment still posts and the handler returns nil. **PR comment is fatal:** if posting fails the handler returns the error so GitHub retries the webhook. **`HandleCheckRun` rerequested** re-runs the scan against the recorded `check_run.head_sha`; other check_run actions (created, completed) silent ack. `HandlerScanTimeout` constant: 15-minute wall-clock cap on the entire flow. `cmd/fendix-app/main.go` updated to construct the handler via `NewHandler` instead of a struct literal.
+
+- **Tests under `-race`.**
+  - `scanner_test.go`: 8 tests. PATH-injected fake `git` and `fendix` shell scripts that record argv to a sidecar file the test reads back. Asserts: success path captures findings + SARIF blobs; argv contains `init` + `x-access-token:ghs_test@github.com` (auth injected) + `deadbeef` (head SHA fetched) + `--format json` + `--format sarif`; git failure surfaces error and **redacts the token**; fendix-scan failure surfaces a "fendix scan failed" error; input validation rejects empty CloneURL/HeadSHA/Token; `injectInstallationToken` table-driven (URL with/without `.git` suffix) + non-https rejection.
+  - `comment_test.go`: 6 tests. Zero-finding render (heading + checkmark + table); 1-finding render (top-finding bullet, no overflow line); >5-finding render (only top 5 shown, "…and 2 more" overflow); malformed JSON parse error; full `PostPRComment` via httptest captures auth header + accept header + api-version header + content-type + path (`/repos/octocat/hello-world/issues/42/comments`) + body field; 403 error returns error containing "403" + response body.
+  - `sarif_test.go`: 4 tests. Full round-trip: httptest captures the request, base64-decodes + gunzips the `sarif` field and asserts equality with the input → proves wire format is correct; header + path assertions; 422 error path; empty-payload guard.
+  - `handler_test.go`: 8 tests. Full PR flow with fake `Scanner` + httptest `installation/access_tokens` server + injected `PostComment`/`UploadSARIF` closures asserts all three are called with the correct args (token, owner, repo, PR number, head SHA, ref `refs/pull/42/head`); filtered action (`closed`) → no scan; no installation → no scan; **SARIF failure non-fatal** (returns nil, comment still posts); `check_run` rerequested re-runs; other check_run actions no-op; `NewHandler` defaults wired correctly. Includes a compile-time assertion that `*FendixScanner` implements `Scanner`.
+  - **All 26 new ghapp tests pass under `-race`** in 8.67s.
+
+- **Distribution: `Dockerfile.app`.** New multi-stage Dockerfile at the repo root (kept separate from `Dockerfile` because the App is a long-running daemon with different deployment shape than the one-shot CLI). Builder stage: `golang:1.21-alpine` builds both `fendix` and `fendix-app` binaries with the embedded Python engine. Runtime stage: `python:3.11-slim` + `git` + `ca-certificates` + `tini` + `pip install` of Python deps. Both binaries land in `/usr/local/bin/`. `tini` as `ENTRYPOINT` for clean signal forwarding. Non-root user (`fendix:fendix`) for the runtime. `EXPOSE 8080`. ARG `VERSION` so release CI can pass `-X main.Version` ldflag. Image size ~250 MiB (Python deps + git + Debian-slim). **The image is the entire deployment surface** — see decision below.
+
+- **`docs/github-app.md` updated.** Status block flipped from "scaffold shipped, TASK-107b is the follow-up" to "end-to-end. The scaffold shipped in v0.6.1 (TASK-107). The business logic shipped in TASK-107b on top of the scaffold." "What's stubbed (TASK-107b — follow-up)" section replaced with "What's wired today (TASK-107b)" — every bullet now ✅. The previous "Deployment recipes" section (with separate Docker / Kubernetes / App-engine-alternatives subsections) was condensed into a single "Running fendix-app" block: `docker build` + `docker run` example, plus one paragraph listing supported platforms in prose ("any container platform: Fly.io, Cloud Run, Render, Railway, ECS, `docker run` under systemd, k8s"). Two new troubleshooting entries: "Events arrive but the PR has no comment" and "SARIF tab stays empty even though the PR comment posted".
+
+- **`CHANGELOG.md` [Unreleased]** prepended with a new TASK-107b entry as the first item: full breakdown of the wired flow (clone strategy, scan invocation, SARIF re-render, PR comment template fidelity, comment POST, SARIF upload, check_run rerequested, tempdir cleanup, token redaction, 15-minute timeout) + new files (scanner.go/comment.go/sarif.go/handler_test.go/Dockerfile.app/deploy/k8s/fendix-app.yaml) + test breakdown.
+
+**Files changed this session:**
+
+- `go/internal/ghapp/scanner.go` (NEW — FendixScanner clone + scan + sarif render)
+- `go/internal/ghapp/comment.go` (NEW — RenderPRComment + PostPRComment)
+- `go/internal/ghapp/sarif.go` (NEW — UploadSARIF)
+- `go/internal/ghapp/handler.go` (rewrite — NewHandler constructor, real defaults, runScan helper, HandleCheckRun rerequested, 15min timeout, removed stubs)
+- `go/internal/ghapp/scanner_test.go` (NEW — 8 tests with PATH-injected fakes)
+- `go/internal/ghapp/comment_test.go` (NEW — 6 tests with httptest)
+- `go/internal/ghapp/sarif_test.go` (NEW — 4 tests with gzip+base64 round-trip)
+- `go/internal/ghapp/handler_test.go` (NEW — 8 tests covering full flow + fakes)
+- `go/cmd/fendix-app/main.go` (constructor swap — `&ghapp.Handler{Tokens: tokens}` → `ghapp.NewHandler(tokens, cfg.GitHubAPIURL, http.DefaultClient)`)
+- `Dockerfile.app` (NEW — multi-stage; bundles fendix + fendix-app + Python engine + git + tini)
+- `docs/github-app.md` (status flip + condensed "Running fendix-app" block + 2 new troubleshooting entries)
+- `CHANGELOG.md` (new TASK-107b entry at top of [Unreleased])
+- `tasks/CURRENT_SPRINT.md` (TASK-107b row updated to ✅; phase header updated)
+- `tasks/MEMORY.md` (this entry + Current State block updated)
+
+**Commits this session (none — operator-controlled):**
+
+The work is staged on the working tree. Per the project's "ask before commit" posture and the runbook's end-of-session step, the commit is left to the next operator action. Suggested message: `feat(ghapp): wire clone + scan + PR comment + SARIF upload (TASK-107b)`.
+
+**Build state at session end:**
+
+- `go build ./...` ✓ (Go 13 packages including new ghapp files)
+- `go test -race -count=1 ./...` ✓ (uncached; ghapp tests in 8.67s)
+- `go vet ./...` ✓
+- `make test` (Python) ✓ (193/193)
+- `make e2e` ✓ (24+ tests in 10.99s)
+
+**Decisions made:**
+
+- **Re-render SARIF from JSON, not run two scans.** The github-script template in `examples/github-actions/fendix-scan.yml` already established this pattern (TASK-098): one scan produces JSON, then `fendix report --format sarif` re-renders. Reusing it in the App means PR comment + SARIF tab can never describe different findings (e.g. due to non-deterministic crawler ordering), and operators don't pay for two scans per PR. Same single-source-of-truth pattern as the reference workflow.
+
+- **Shallow init+fetch by SHA, not `git clone`.** GitHub supports `uploadpack.allowReachableSHA1InWant` so we can fetch a specific commit without cloning history. Faster on large repos, less disk pressure on the App pod's `emptyDir`. Three-step init+remote+fetch+checkout is more verbose than `git clone --depth=1` but avoids the extra step of fetching the head branch first then resolving the SHA.
+
+- **HTTPS clone URL with `x-access-token:<token>@…` userinfo, not `git -c http.extraheader`.** Both work; userinfo is the format GitHub documents for App installations. The token is short-lived (1 hour, refreshed via single-flight cache), the App pod has no other tenants to spy on `ps`, and the resulting URL is redacted from any error message that surfaces the git command. Explicit redaction rule lives in `redactToken` and is unit-tested.
+
+- **Best-effort SARIF upload.** A repo with Code Scanning disabled or missing the `security_events: write` permission shouldn't make the PR comment fail to post — the comment is the user-visible signal that the App is alive. Failure logs `SARIF upload failed` at WARN, the handler returns nil, GitHub does not retry the webhook. PR comment failure, by contrast, is fatal — the handler returns the error so GitHub retries (eventually backs off to dead-letter, which is still better than a silent App).
+
+- **`HandlePullRequest` and `HandleCheckRun` share a single `runScan` path.** Both events ultimately want the same thing: clone, scan, comment, SARIF. Diverging the implementation would mean two places to update each time the scan workflow changes. Single `scanInputs` struct + single `runScan(ctx, inputs)` keeps the logic in one place; the handlers do payload extraction only.
+
+- **Constructor `NewHandler` (not zero-value-okay).** The Handler now owns four function fields with non-trivial defaults (Scanner, PostComment, UploadSARIF — the last two close over BaseURL + HTTPClient). A zero-value Handler would silently no-op all three. `NewHandler` makes the production wiring explicit and is the only path `cmd/fendix-app` uses; tests still construct `*Handler` directly so they can inject fakes per-field. Test `TestNewHandler_DefaultsWired` asserts the constructor sets all four fields.
+
+- **PATH-injected fake `git`/`fendix` for scanner tests, not a Go-side mock.** The scanner is a thin shell-out wrapper; the interesting behavior is the argv it constructs and the file paths it reads back. POSIX shell scripts that record argv to a sidecar file are exactly enough; mocking `os/exec` would be more ceremony for less coverage. Tests skip on Windows (POSIX shell unavailable). All other tests are platform-agnostic.
+
+- **`Dockerfile.app` is separate from `Dockerfile`.** The CLI image is a one-shot scanner; the App image is a long-running daemon with `EXPOSE 8080`, `tini` as init, and a different ENTRYPOINT. Sharing a single Dockerfile via build args would conflate the two deployment shapes. Both Dockerfiles share the same builder stage pattern (Go binary build with embedded Python engine), so changes propagate via convention rather than via abstraction.
+
+- **No platform-specific deployment manifest in the repo.** Initial draft included a `deploy/k8s/fendix-app.yaml` per the prior MEMORY pointer, but that pointer was wrong. `fendix-app` is one stateless HTTP server with no shared state — no database, no queue, no cross-replica coordination. Every container platform (Fly.io, Cloud Run, Render, Railway, ECS, `docker run` under systemd, k8s) runs it unchanged given the image. Shipping a manifest implicitly picks a platform for the operator and creates a maintenance surface for every other platform's users to ignore. Trivy / gitleaks / semgrep / govulncheck all ship Dockerfiles only — same shape of repo, same posture. The Dockerfile is the deliverable; the docs list platforms in prose; the operator picks. Removed `deploy/k8s/fendix-app.yaml` after writing it.
+
+- **No backend changes.** TASK-107/107b is on the GitHub-event side of the pipeline (`fendix-app` daemon listening for webhooks), not the API side (the Django backend's `LaunchScanSerializer` → `services.py::build_command` → CLI invocation). Same boundary as the prior session's explicit decision: the App is a separate deployable, not a per-scan orchestration knob. `fendix-backend` is unchanged.
+
+- **Frontend update deferred.** The frontend changelog page already advertises TASK-107 with an explicit "TASK-107b is the follow-up that wires clone+scan+comment+SARIF" callout. Now that TASK-107b shipped, the changelog can flip that callout from forward-looking to past-tense — but per the runbook this is a frontend-sync session, not a code session. Defer to a separate sync session (or absorb at the time of the next tagged release, whichever lands first).
+
+**Open questions / followups:**
+
+- **Tag a release.** Five Phase-14 commits sit on `main` post-v0.6.1. A v0.6.2 patch (or v0.7.0 minor) would surface this work to evaluators via `get.fendix.dev/install.sh`. Decision is operator-side (release timing, semver bump preference).
+
+- **Register the App on github.com.** `app/manifest.yml` is ready. The actual registration is a one-time operator step (visit `https://github.com/settings/apps/new?manifest=...`, paste the YAML, save). Plus deploying `fendix-app` somewhere (Fly.io is one Dockerfile + one secret; the k8s manifest is the production-track alternative). Plus Marketplace listing submission.
+
+- **`metadata.version` says `"dev"` instead of release version in scan output.** Pre-existing one-line fix flagged in the prior session; not blocking.
+
+- **vAPI + crapi benchmark fixtures + ZAP-baseline / Semgrep-CI comparison runs.** Pre-existing TASK-106 follow-ups; pattern is copy-paste from juice-shop.
+
+- **Frontend sync to flip TASK-107b status from "follow-up" to "shipped" in the changelog page** + advertise the new Dockerfile.app + k8s manifest as deployment paths in the cli-reference / docs surface. Runbook's `SYNC_FRONTEND_BACKEND.md` covers exactly which surfaces move.
+
+**Next session should start with:**
+
+- **Tag a release that folds the post-v0.6.1 Phase 14 work** (TASK-106 numbers, TASK-107 scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) into a single tagged version. Either v0.6.2 (patch — argues these are all additive on the v0.6.1 wedge) or v0.7.0 (minor — argues TASK-107b is a meaningful new external surface). Recommended: v0.7.0. Concretely: bump CHANGELOG `[Unreleased]` to `[0.7.0] - <date>`, push tag, watch release.yml, mirror-sync into homebrew-fendix.
+
+- **Or**, if release timing isn't right yet: pick up the **frontend sync** (flip the TASK-107b callout from forward-looking to past-tense in `app/changelog/page.tsx`; advertise Dockerfile.app + k8s manifest in cli-reference's deployment section). No backend changes — TASK-107b doesn't add per-scan flags.
+
+- **Or**, if everything's aligned and you want to ship the App externally: register the GitHub App via `app/manifest.yml`, deploy `fendix-app` (Fly.io recipe is in `docs/github-app.md`; k8s manifest is in `deploy/k8s/`), and start the Marketplace submission.
+
+---
+
+## Earlier Session (2026-05-01 — frontend sync — absorbing v0.6.1 + Phase 14 closeout into `fendix_frontend`)
 
 **Date:** 2026-05-01 (frontend sync — absorbing v0.6.1 + Phase 14 closeout into `fendix_frontend`)
 **Session goal:** Sync the frontend's user-visible surfaces with the v0.6.1 release + the four post-v0.6.1 Phase 14 commits (TASK-106 numbers, TASK-107 GH App scaffold, TASK-108 `fendix demo`, TASK-109 `.fendix.yaml` policy). Per the `SYNC_FRONTEND_BACKEND.md` runbook in the frontend repo. Backend was inventoried but not modified — the v0.6.1 deltas didn't add any per-scan orchestration knobs (only the `--config` host-filesystem flag, which follows the same not-exposed rationale as `--debug-bundle` from the v0.6.0 sync).
