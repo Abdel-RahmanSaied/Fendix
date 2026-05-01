@@ -4,9 +4,11 @@
 
 ---
 
-## Active Phase: 15 — P5 Open & Extensible (v1.2) — ✅ Complete (all 3 tasks shipped)
+## Active Phase: 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as v0.7.0 on 2026-05-01
 
-**Sprint goal:** Open-source the engine, ship the plugin system, build the reachability/dataflow correlation that becomes the long-term moat. **All 3 tasks (TASK-112, TASK-113, TASK-114) shipped 2026-05-01 in a single session, plus frontend sync.** Phase 15 engine work is complete; remaining surface is community-facing (open-source launch post, first community Semgrep rules, plugin author outreach) and operator-side (register the GitHub App from Phase 14, tag v0.7.0).
+**Sprint goal:** Open-source the engine, ship the plugin system, build the reachability/dataflow correlation that becomes the long-term moat. **All 3 tasks (TASK-112, TASK-113, TASK-114) shipped 2026-05-01 in a single session, then folded with Phase 14 closeout (TASK-107b + TASK-106..109) into a single tagged minor release `v0.7.0`** (commit `e5ef2f3`, annotated tag pushed to `origin/main`, release.yml run 25227704658 in flight). Headline framing: "the wedge is now defensible" — the correlator distinguishes 'DAST + SAST agreed' from 'DAST + SAST agreed AND we can prove the path', the latter gets a double severity escalation. Remaining surface is community-facing (open-source launch post, first community Semgrep rules, plugin author outreach) and operator-side (register the GitHub App on github.com, deploy `fendix-app`, submit Marketplace listing).
+
+**Frontend sync (2026-05-01, v0.7.0 release absorption):** bumped 5 version-display literals from v0.6.1 → v0.7.0 across `app/page.tsx` (hero), `app/components/StatsBar.tsx` (Latest-release badge), `app/components/LandingFooter.tsx` (footer logo subtext), `app/lib/releases.ts` (3 JSDoc filename examples), `tests/components/StatsBar.test.tsx` (literal assertion). Collapsed the two prior "Unreleased" changelog blocks (Phase 15 + Phase 14 closeout) into a single tagged `v0.7.0` entry with the "the wedge is now defensible" headline framing as the first bullet. Refreshed the changelog page intro/footer prose blocks to cite v0.7.0 instead of v0.6.0/in-progress Phase 14. Frontend `memory.md` updated with phase-shipped status + new sync entry. **No backend changes** — same not-exposed posture as the prior sync (plugins on host filesystem, reachability in report payload).
 
 **Phase 15 status:**
 

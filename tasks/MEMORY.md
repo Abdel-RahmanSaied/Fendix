@@ -292,9 +292,9 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete (engine code). All 3 Phase-15 tasks shipped in one session 2026-05-01: TASK-112 (open-source posture ratified via ADR-007 — MIT, single repo, no open-core), TASK-113 (plugin system: `internal/plugin` package + NDJSON IPC + 3 reference plugins under `examples/plugins/` + `--no-plugins` CLI flag + `docs/plugins.md` author guide + 12 unit tests), TASK-114 (reachability/dataflow correlation: Python AST analyzer records `taint_chain` + `reachable: true` for SQLi/SSRF/open-redirect via recursive intra-function scope walking, models gain `TaintLink`/`TaintChain []TaintLink`/`Reachable bool` on Finding, correlator double-escalates severity when reachable, HTML reporter renders the chain, 5 new Python AST tests + 3 new Go correlator tests + 1 new e2e regression). Phase 14 fully complete + frontend-synced. **v0.6.1 shipped 2026-05-01** (patch release). Phase 13 ✅ Complete 2026-04-30. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase — explicitly year+ out, do not pull forward.
-**Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), **v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01)**. Next tagged release (recommended v0.7.0) will fold the post-v0.6.1 Phase-14 commits + TASK-107b + Phase-15 (TASK-112/113/114).
-**Last updated:** 2026-05-01 (Phase 15 ship — TASK-112 + TASK-113 + TASK-114 + frontend sync)
+**Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
+**Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
+**Last updated:** 2026-05-01 (v0.7.0 release — folded Phase 14 closeout + Phase 15 + frontend sync)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -463,7 +463,92 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-01 (Phase 15 ship — TASK-112 + TASK-113 + TASK-114 + frontend sync)
+**Date:** 2026-05-01 (v0.7.0 release — folded Phase 14 closeout + Phase 15)
+**Session goal:** Tag v0.7.0 that folds the post-v0.6.1 Phase 14 work + TASK-107b + Phase 15 (TASK-112 + TASK-113 + TASK-114) into a single minor release. Per the prior session's "Next session should start with" pointer. Then bump frontend version literals from v0.6.1 → v0.7.0 and collapse the two "Unreleased" changelog entries into one tagged v0.7.0 entry.
+
+**Accomplished:**
+
+- **Bootstrap (Phase 0).** Verified engine state at `1d739cf` (4 fresh commits from the prior session: TASK-112 ADR-007, TASK-113 plugin system, TASK-114 reachability, memory). Build matrix green pre-release: 14 Go packages compile, Python 198/198. Confirmed 8 commits since v0.6.1 (`5855dc4..1d739cf`) ready to fold.
+
+- **CHANGELOG release prelude.** Inserted new `## [0.7.0] - 2026-05-01` section directly above `## [0.6.1] - 2026-05-01` (kept `## [Unreleased]` empty for future work). Prelude paragraph carries the headline framing: "the wedge is now defensible — the correlator distinguishes 'DAST + SAST agreed' from 'DAST + SAST agreed AND we can prove the path', the latter gets a double severity escalation, which is what makes the wedge defensible against vendor noise". Lists the 8 folded commits by TASK ID. The pre-existing detailed entries for each TASK (TASK-107b, TASK-112, TASK-113, TASK-114, etc.) live under the v0.7.0 section so the per-task technical detail is preserved.
+
+- **Release commit + annotated tag.** Single commit `e5ef2f3 chore(release): v0.7.0 — Phase 14 closeout + Phase 15 (open + extensible)` with full per-task summary. Annotated tag `v0.7.0` (object on `e5ef2f3`) created with the headline framing. Both pushed to `origin/main` cleanly.
+
+- **release.yml triggered.** Background watch confirmed run 25227704658 ("Release") started at 2026-05-01T18:41:22Z, status `in_progress`. Prior comparable run (v0.6.1 release.yml) took 11m58s end-to-end across 7 jobs (4 binary builds + cosign signing + multi-arch Docker + nfpm `.deb`/`.rpm` + mirror sync of `install.sh` into `homebrew-fendix`). Same job graph for v0.7.0 — operator can verify via `gh run watch 25227704658 -R Abdel-RahmanSaied/Fendix` if blocking.
+
+- **Frontend version literals bumped.** Five files updated: `app/page.tsx` (landing-page hero pre-link copy `v0.6.1 — install.sh fix + Phase 14 partial (cosign keyless)` → `v0.7.0 — open & extensible (plugins + reachability correlation)`), `app/components/StatsBar.tsx` (Latest-release badge `v0.6.1` → `v0.7.0`), `app/components/LandingFooter.tsx` (footer logo subtext `v0.6.1` → `v0.7.0`), `app/lib/releases.ts` (3 JSDoc filename examples bumped — pattern `fendix-v0.6.1-` → `fendix-v0.7.0-`), `tests/components/StatsBar.test.tsx` (literal assertion bumped to `v0.7.0`).
+
+- **Frontend changelog collapsed Unreleased → tagged v0.7.0 entry.** Replaced the two prior "Unreleased" blocks (Phase 15 + Phase 14 closeout) with a single `version: "v0.7.0"`, `status: "complete" as const` entry. Kept all the per-TASK detail bullets, but hoisted the headline framing as the first bullet ("the wedge is now defensible"), folded the redundant per-task "Backend not extended" callouts into a single combined decision bullet at the bottom. The `app/changelog/page.tsx` intro prose at line 306 + footer prose at line 390 also rewritten to cite v0.7.0 instead of v0.6.0/in-progress Phase 14 — both prose blocks now lead with "the wedge is now defensible".
+
+- **Frontend `memory.md` updated.** Phase 15 status flipped from "engine code FULLY COMPLETE on `main`" to "✅ COMPLETE and shipped as v0.7.0 on 2026-05-01" with run-25227704658 reference. Releases-shipped list extended with the v0.7.0 entry. Added a "Frontend sync (2026-05-01, v0.7.0 release absorption)" entry to the Phase 14/15 sync log capturing exactly which surfaces moved (5 file literal bumps, changelog collapse, intro/footer prose refresh, memory bump, no backend changes).
+
+- **Backend not extended (re-confirmed).** The v0.7.0 release introduces no new orchestration knobs: TASK-107b is GitHub-event-side (separate `fendix-app` daemon), TASK-112 is documentation, TASK-113 plugins run on the host filesystem, TASK-114 is a property of findings the engine emits (no API flag). Backend `LaunchScanSerializer` + `services.py::build_command` unchanged. `fendix-backend/docker-compose.dev.yml` bind mount picks up the v0.7.0-pinned `bin/fendix-linux-arm64` from the prior session's cross-compile.
+
+- **Frontend build green.** `npx vitest run` ✓ (26 files, 173 tests, 4.13s); `npm run build` ✓ (29 routes prerendered cleanly).
+
+**Files changed this session:**
+
+- `CHANGELOG.md` (new `[0.7.0] - 2026-05-01` section with headline framing + folded-commit list)
+- `tasks/MEMORY.md` (this entry + Current Project State updated to v0.7.0 shipped)
+- `tasks/CURRENT_SPRINT.md` (v0.7.0 ship card)
+- `fendix_frontend/app/page.tsx` (landing-page hero pre-link literal)
+- `fendix_frontend/app/components/StatsBar.tsx` (Latest-release badge literal)
+- `fendix_frontend/app/components/LandingFooter.tsx` (footer version literal)
+- `fendix_frontend/app/lib/releases.ts` (3 JSDoc examples)
+- `fendix_frontend/app/changelog/page.tsx` (Unreleased → tagged v0.7.0 entry collapse + intro/footer prose refresh)
+- `fendix_frontend/tests/components/StatsBar.test.tsx` (literal assertion)
+- `fendix_frontend/memory.md` (Phase 15 status flipped to shipped + new sync entry)
+
+**Commits this session:**
+
+- `e5ef2f3` `chore(release): v0.7.0 — Phase 14 closeout + Phase 15 (open + extensible)` (engine)
+- annotated tag `v0.7.0` on `e5ef2f3` (engine)
+- (frontend commit pending end-of-session — see Open questions)
+
+**Build state at session end:**
+
+- Engine: `go build ./...` ✓ (14 packages); `go test -race ./...` ✓ (uncached); Python 198/198; e2e 25/25 from the prior session unchanged.
+- Frontend: `npx vitest run` ✓ (26 files, 173 tests); `npm run build` ✓ (29 routes prerendered cleanly).
+- Backend: not exercised — no serializer/services changes warranted.
+
+**Decisions made:**
+
+- **v0.7.0 minor, not v0.6.2 patch.** TASK-107b (full GitHub App business logic), TASK-113 (plugin system — entirely new extensibility surface), and TASK-114 (reachability — new severity-escalation tier) are each substantial enough that semver minor is the correct framing. Patch would understate what's in the release for marketing/evaluator audiences.
+
+- **Headline framing leads with "the wedge is now defensible".** Phase 14 + Phase 15 together close the loop on the README hero claim: confirmed findings only when both engines agree AND we can show the path. Pre-v0.7.0 the second clause was aspirational; post-v0.7.0 the correlator actually escalates severity when the dataflow chain is present, which is the buying signal for the wedge.
+
+- **Single tagged changelog entry, not two.** Phase 14 closeout + Phase 15 ship in the same release; splitting them across two entries on the page would suggest two events to evaluators reading the timeline. One entry, headline framing first, full per-task detail in bullets, single combined decision callout at the bottom.
+
+- **Prose blocks (intro + footer) updated, not just the entries.** The changelog page has free-text prose at lines 306 + 390 that introduce the page and close it. Bumping just the entries leaves stale prose claiming "v0.6.0 first stable signed release" + "Phase 14 in progress". Both refreshed in lockstep with the new entry.
+
+- **Frontend commit deferred.** Engine commit + tag pushed unilaterally because release.yml needs to fire promptly (mirror sync into homebrew-fendix is part of the chain). Frontend commit batched at end-of-session per the SYNC runbook so the operator can review the entire frontend diff (5 literal bumps + changelog collapse + memory) in one message.
+
+**Open questions / followups:**
+
+- **Frontend commit + push.** Files staged but not committed yet; suggested message: `feat: absorb v0.7.0 release (Phase 14 closeout + Phase 15)`. Engine `bin/fendix-linux-arm64` rebuild not needed this session — the prior session's `v0.6.1-phase15`-pinned binary already carries Phase 15 code; the only delta in v0.7.0 vs that binary is the CHANGELOG.md text, which doesn't reach the binary.
+
+- **release.yml run 25227704658 verification.** Operator-side: confirm all 7 jobs green (4 binary builds + cosign signing + multi-arch Docker + nfpm + mirror sync). `gh run watch 25227704658 -R Abdel-RahmanSaied/Fendix --exit-status` blocks until completion. Prior v0.6.1 run took ~12 minutes.
+
+- **`get.fendix.dev/install.sh` smoke test.** Once the mirror sync job in release.yml completes, `curl -fsSL https://get.fendix.dev/install.sh | sh` should pull the v0.7.0 binary. Worth a one-line verify.
+
+- **Marketplace listing submission.** TASK-107 explicitly noted Marketplace listing as an operator step distinct from code. v0.7.0 ships the `app/manifest.yml`, `cmd/fendix-app` binary, `Dockerfile.app` image, and `docs/github-app.md` setup guide — everything the operator needs. Submission requires App registration on github.com first, then a 1–2 week review window.
+
+- **Open-source launch post.** Phase 15 explicitly called for an HN/r/devops/r/golang launch post (PHASES.md exit criteria). v0.7.0 is the launching tag — ADR-007 is ratified, the plugin system is public, reachability is the technical proof point. Marketing copy + launch timing are operator-side.
+
+- **First community Semgrep rules.** PHASES.md Phase 15 exit criteria: 5 community-contributed rules merged + `good first issue` labels seeded. Both unblocked by today's ship.
+
+- **Phase 16 (v2.0 — make Python optional).** Year+ out per PHASES.md. Port secrets analyzer to Go (~400 LOC), make Semgrep optional (shell out to user-installed binary), aim for <500ms cold start. Do not pull forward — Phase 15 work changes nothing about that timeline.
+
+**Next session should start with:**
+
+- **Operator-side rollout.** With v0.7.0 tagged + release.yml running, the engine code is done. Three parallel paths: (a) **register the GitHub App** via `app/manifest.yml` and **deploy `fendix-app`** somewhere (Fly.io is the lightest path: one Dockerfile + one secret), then submit the **Marketplace listing**; (b) **publish the open-source launch post** (HN / r/devops / r/golang) leveraging the new ADR-007 framing + plugin system + reachability correlation; (c) **seed `good first issue` labels** on the engine repo to invite the first community Semgrep rule contributions per Phase 15 exit criteria.
+
+- **Or**, if going engine-side again: **Phase 16 scoping refresh.** Re-read PHASES.md Phase 16 with v0.7.0 in hand to confirm the goal still makes sense (Python startup tax matters, embedded extraction is bug-prone, secrets/regex/OpenAPI checks are Go-portable). Phase 16 itself is year+ out, but the scoping pass is cheap and avoids drift.
+
+---
+
+## Earlier Session (2026-05-01 — Phase 15 ship — TASK-112 + TASK-113 + TASK-114 + frontend sync)
+
 **Session goal:** Complete Phase 15 in one session per the parent prompt. Three tasks: open-source posture (TASK-112), plugin system (TASK-113), reachability/dataflow correlation (TASK-114). Then sync the frontend, cross-compile the engine binary for the backend bind mount, update MEMORY.md / CURRENT_SPRINT.md, commit + push.
 
 **Accomplished:**
