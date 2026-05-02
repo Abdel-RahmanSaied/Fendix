@@ -1,7 +1,7 @@
 # Operator Rollout Checklist
 
 > Step-by-step guide to take Fendix from "engine shipped" to "live on GitHub Marketplace."
-> Each step is independent unless noted. Estimated total: ~1 hour of operator time.
+> Steps are sequential (each builds on the prior). Estimated total: ~1 hour of operator time.
 
 ---
 
@@ -16,13 +16,25 @@
 
 ## Step 1: Register the GitHub App
 
-1. Go to https://github.com/settings/apps/new
-2. Paste the contents of [`app/manifest.yml`](../app/manifest.yml) into the manifest field
-3. Approve permissions (contents:read, pull_requests:write, checks:write, security_events:write)
-4. Confirm events (pull_request, push, check_run)
-5. **Save the private key** (one-time download) to `~/.config/fendix/app-private-key.pem`
-6. Note the **App ID** from the settings page
-7. Set a **Webhook Secret** (generate with `openssl rand -hex 32`) — save it
+**Option A — Manual creation (recommended for customization):**
+
+1. Go to https://github.com/settings/apps/new (or `/organizations/<ORG>/settings/apps/new`)
+2. Fill in the fields using [`app/manifest.yml`](../app/manifest.yml) as reference:
+   - Name: `Fendix`
+   - Homepage URL: `https://get.fendix.dev/`
+   - Webhook URL: leave blank for now (set after deploy in Step 3)
+   - Webhook Secret: generate with `openssl rand -hex 32` — save it
+3. Set permissions: Contents (Read), Pull requests (Write), Checks (Write), Security events (Write)
+4. Subscribe to events: `pull_request`, `push`, `check_run`
+5. Click "Create GitHub App"
+6. **Download the private key** (one-time download) → save to `~/.config/fendix/app-private-key.pem`
+7. Note the **App ID** from the App's General settings page
+
+**Option B — Manifest flow (one-click, less common):**
+
+POST the JSON-converted manifest to `https://github.com/settings/apps/new` via the
+[manifest creation API](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
+This is programmatic and pre-fills everything, but requires a redirect URL handler.
 
 **Result:** You have `APP_ID`, `private-key.pem`, and `WEBHOOK_SECRET`.
 

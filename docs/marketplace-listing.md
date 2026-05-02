@@ -12,7 +12,7 @@ Fendix
 
 ## Short description (80 chars max)
 
-DAST + SAST as one PR check. Fails only when both engines confirm the bug.
+DAST + SAST as one PR check. Correlated findings get elevated severity.
 
 ## Detailed description
 
@@ -22,7 +22,7 @@ Fendix scans every pull request with two engines working together:
 
 **White-box (SAST):** Analyzes your source code for hardcoded secrets, unsafe patterns, dependency CVEs, and taint-source-to-sink flows.
 
-**The key insight:** A finding only fails your build when *both engines agree*. This eliminates the false-positive fatigue that makes teams ignore their security tooling.
+**The key insight:** When both engines agree on the same vulnerability, Fendix escalates severity and confidence — correlated findings rise above the noise. You control the `fail_on` threshold, so you can choose to only block merges on high-confidence correlated findings.
 
 ### What happens on every PR
 
@@ -30,7 +30,7 @@ Fendix scans every pull request with two engines working together:
 2. Runs a hybrid scan (SAST over source + DAST if a preview URL is available)
 3. Posts a single PR comment summarizing findings by severity
 4. Uploads SARIF to the Code Scanning tab (inline annotations on changed lines)
-5. Only blocks merge when a finding is confirmed by both engines
+5. Blocks merge based on your configured `fail_on` threshold (default: HIGH)
 
 ### Features
 

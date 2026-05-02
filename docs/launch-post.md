@@ -5,7 +5,7 @@
 
 ---
 
-## Show HN: Fendix — DAST + SAST as one PR check (MIT, Go + Python)
+## Show HN: Fendix — DAST + SAST in one scan, correlated findings (MIT, Go + Python)
 
 **Link:** https://github.com/Abdel-RahmanSaied/Fendix
 
@@ -17,7 +17,7 @@ I built Fendix because I was tired of running three separate security tools in C
 
 **The problem:** SAST tools find patterns that look dangerous but might be dead code. DAST tools confirm exploitability but can't tell you which line to fix. Running both means two reports, two triage workflows, and no connection between them.
 
-**The solution:** Fendix runs both engines in a single `fendix scan` invocation and cross-correlates the results. A finding only fails your build when the static analyzer AND the runtime probe agree. When both agree AND taint analysis proves the data flows from source to sink, it gets a double severity escalation.
+**The solution:** Fendix runs both engines in a single `fendix scan` invocation and cross-correlates the results. When both engines find the same vulnerability, Fendix merges them into a correlated finding with escalated severity and confidence. When taint analysis also proves data flows from source to sink, it escalates two severity levels (e.g., MEDIUM → CRITICAL). You configure `--fail-on` to set your threshold — set it to CRITICAL and only confirmed, correlated findings block your build.
 
 **What it does:**
 - Black-box: auth bypass, SQLi (time/error/boolean-based), CORS, headers, secrets in responses, rate limit detection
@@ -35,11 +35,11 @@ fendix scan --code ./ --url https://your-api.dev --format html --output report.h
 Or install the GitHub App for zero-config PR scanning.
 
 **Technical details:**
-- Go for the CLI + HTTP scanner + orchestrator (~15k LOC)
-- Python for the static analysis engine (~4k LOC)
+- Go for the CLI + HTTP scanner + orchestrator
+- Python for the static analysis engine
 - Communication via NDJSON over stdin/stdout (no gRPC, no sockets)
 - Plugin system: drop a script in `~/.fendix/plugins/`, receive ScanRequest on stdin, emit findings on stdout
-- Single binary distribution (Python engine embedded via `go:embed`)
+- Single distributable binary (Python engine bundled via `go:embed`, extracted at first run; requires Python 3.x on PATH)
 
 **What it's NOT:**
 - Not a SaaS. Self-hosted only. No telemetry, no cloud dependency.
@@ -55,11 +55,11 @@ I'd love feedback on the correlation approach and the plugin contract. The plugi
 
 ## r/devops version (shorter)
 
-**Title:** We open-sourced our security scanner — DAST + SAST in one PR check, fails only on confirmed findings
+**Title:** We open-sourced our security scanner — DAST + SAST in one PR check, correlated findings get elevated severity
 
 Fendix is a hybrid API and code security scanner that runs both a black-box probe and static analysis in a single invocation, then cross-correlates the results.
 
-The key insight: a finding only fails your CI if both engines agree it's real. This kills false-positive fatigue without missing confirmed exploitable bugs.
+The key insight: when both engines find the same vulnerability, the finding gets escalated severity and confidence. Set `--fail-on CRITICAL` and only double-confirmed findings block your build. This kills false-positive fatigue without missing confirmed exploitable bugs.
 
 **Quick start:**
 ```
@@ -70,7 +70,7 @@ fendix scan --code ./ --url https://your-staging-api.dev
 Or install the GitHub App → zero-config, automatic PR comments + SARIF annotations.
 
 - MIT licensed, fully open source
-- Single binary (Go + embedded Python)
+- Single distributable binary (Go + embedded Python; requires Python 3.x on PATH)
 - Plugin system for custom checks
 - No telemetry, no cloud dependency
 
@@ -96,7 +96,7 @@ Built a security scanner that uses Go for the HTTP/DAST layer and shells out to 
 
 **What it does:** DAST + SAST in one `fendix scan`, cross-correlates findings, outputs SARIF for Code Scanning. Findings only fail CI when both engines confirm.
 
-The Python embedding was a pragmatic choice (Semgrep + pip-audit + AST analysis), but Phase 16 on the roadmap ports the regex-based checks to native Go and makes Python optional. The plugin system (Phase 15, just shipped) means community checks don't need to be in either language.
+The Python embedding was a pragmatic choice (Semgrep + pip-audit + AST analysis), but the roadmap includes porting regex-based checks to native Go and making Python optional. The plugin system (Phase 15, just shipped) means community checks don't need to be in either language.
 
 https://github.com/Abdel-RahmanSaied/Fendix
 

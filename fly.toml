@@ -22,17 +22,17 @@ primary_region = "iad"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"
+  auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 1
 
   [http_service.concurrency]
     type = "requests"
-    hard_limit = 25
-    soft_limit = 20
+    hard_limit = 100
+    soft_limit = 80
 
 [[http_service.checks]]
-  grace_period = "10s"
+  grace_period = "15s"
   interval = "30s"
   method = "GET"
   path = "/healthz"
@@ -40,4 +40,12 @@ primary_region = "iad"
 
 [[vm]]
   size = "shared-cpu-2x"
-  memory = "512mb"
+  memory = "1024mb"
+
+[processes]
+  app = ""
+
+# Allow 15-minute scans to finish during deploys/shutdowns.
+# The webhook handler responds 200 immediately and processes async,
+# but clone+scan is goroutine-local, so we need this grace period.
+kill_timeout = "920s"

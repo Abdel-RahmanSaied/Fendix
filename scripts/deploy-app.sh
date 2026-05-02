@@ -37,11 +37,25 @@ echo ""
 
 # Collect secrets
 read -rp "FENDIX_APP_ID (from GitHub App settings): " APP_ID
-read -rp "Path to private-key.pem: " KEY_PATH
-read -rp "FENDIX_WEBHOOK_SECRET: " WEBHOOK_SECRET
+if [[ -z "$APP_ID" ]]; then
+    echo "ERROR: APP_ID cannot be empty"
+    exit 1
+fi
 
+read -rp "Path to private-key.pem: " KEY_PATH
 if [[ ! -f "$KEY_PATH" ]]; then
     echo "ERROR: Private key not found at: $KEY_PATH"
+    exit 1
+fi
+if ! grep -q "BEGIN.*PRIVATE KEY" "$KEY_PATH"; then
+    echo "ERROR: File does not look like a PEM private key: $KEY_PATH"
+    exit 1
+fi
+
+read -rsp "FENDIX_WEBHOOK_SECRET: " WEBHOOK_SECRET
+echo ""
+if [[ -z "$WEBHOOK_SECRET" ]]; then
+    echo "ERROR: WEBHOOK_SECRET cannot be empty"
     exit 1
 fi
 
@@ -58,13 +72,15 @@ else
 fi
 
 echo ""
-echo "--- Step 2: Set secrets ---"
+echo "--- Step 2: Set secrets (staged, not deployed yet) ---"
 echo ""
 
-fly secrets set \
-    "FENDIX_APP_ID=$APP_ID" \
-    "FENDIX_APP_PRIVATE_KEY=$(cat "$KEY_PATH")" \
-    "FENDIX_WEBHOOK_SECRET=$WEBHOOK_SECRET"
+# Use `fly secrets import` to avoid leaking PEM content in the process list.
+fly secrets import --stage <<SECRETS
+FENDIX_APP_ID=$APP_ID
+FENDIX_WEBHOOK_SECRET=$WEBHOOK_SECRET
+FENDIX_APP_PRIVATE_KEY=$(cat "$KEY_PATH")
+SECRETS
 
 echo ""
 echo "--- Step 3: Deploy ---"

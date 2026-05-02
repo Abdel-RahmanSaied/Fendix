@@ -28,17 +28,29 @@ spec:
       labels:
         app: fendix-app
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 960
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: fendix-app
           image: ghcr.io/abdel-rahmansaied/fendix-app:latest
           ports:
             - containerPort: 8080
               protocol: TCP
-          envFrom:
-            - secretRef:
-                name: fendix-app-secrets
           env:
+            - name: FENDIX_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: fendix-app-secrets
+                  key: FENDIX_APP_ID
+            - name: FENDIX_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fendix-app-secrets
+                  key: FENDIX_WEBHOOK_SECRET
             - name: FENDIX_APP_PRIVATE_KEY_FILE
               value: /var/secrets/fendix/private-key.pem
           volumeMounts:
@@ -51,6 +63,9 @@ spec:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           livenessProbe:
             httpGet:
               path: /healthz
