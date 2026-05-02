@@ -4,7 +4,26 @@
 
 ---
 
-## Active Phase: 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as v0.7.0 on 2026-05-01
+## Active Phase: Operator Rollout (post-v0.7.0) — 🔄 In Progress
+
+**Sprint goal:** Take the shipped v0.7.0 engine from "code complete" to "live on GitHub Marketplace with community issues seeded and launch post published."
+
+| Step | Task | Status | Notes |
+| --- | --- | --- | --- |
+| 1 | Deployment config (Fly.io + k8s) | ✅ | `fly.toml` + `deploy/k8s/fendix-app.yaml` + `scripts/deploy-app.sh` shipped 2026-05-02 |
+| 2 | Issue templates + seeding script | ✅ | `.github/ISSUE_TEMPLATE/` (3 files) + `scripts/seed-issues.sh` (5 issues) shipped 2026-05-02 |
+| 3 | Marketplace listing copy | ✅ | `docs/marketplace-listing.md` shipped 2026-05-02 |
+| 4 | Launch post drafts | ✅ | `docs/launch-post.md` (HN + r/devops + r/golang) shipped 2026-05-02 |
+| 5 | Operator runbook | ✅ | `docs/operator-rollout.md` (8-step checklist) shipped 2026-05-02 |
+| 6 | Register GitHub App on github.com | 🔲 | Operator step — follow runbook step 1 |
+| 7 | Deploy fendix-app (Fly.io) | 🔲 | Operator step — `./scripts/deploy-app.sh` |
+| 8 | Submit Marketplace listing | 🔲 | Operator step — after deploy verified |
+| 9 | Run seed-issues.sh | 🔲 | Operator step — after repo is public |
+| 10 | Publish launch post | 🔲 | Operator step — after Marketplace approved |
+
+---
+
+## Prior Active Phase: 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as v0.7.0 on 2026-05-01
 
 **Sprint goal:** Open-source the engine, ship the plugin system, build the reachability/dataflow correlation that becomes the long-term moat. **All 3 tasks (TASK-112, TASK-113, TASK-114) shipped 2026-05-01 in a single session, then folded with Phase 14 closeout (TASK-107b + TASK-106..109) into a single tagged minor release `v0.7.0`** (commit `e5ef2f3`, annotated tag pushed to `origin/main`, release.yml run 25227704658 in flight). Headline framing: "the wedge is now defensible" — the correlator distinguishes 'DAST + SAST agreed' from 'DAST + SAST agreed AND we can prove the path', the latter gets a double severity escalation. Remaining surface is community-facing (open-source launch post, first community Semgrep rules, plugin author outreach) and operator-side (register the GitHub App on github.com, deploy `fendix-app`, submit Marketplace listing).
 

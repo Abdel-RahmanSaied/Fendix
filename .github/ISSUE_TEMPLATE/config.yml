@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://get.fendix.dev
+    about: Read the docs before filing a bug
+  - name: Plugin authoring guide
+    url: https://github.com/Abdel-RahmanSaied/Fendix/blob/main/docs/plugins.md
+    about: How to write a Fendix plugin

@@ -1,0 +1,43 @@
+# Fendix GitHub App — Fly.io deployment config
+#
+# Deploy:
+#   fly launch --copy-config --no-deploy
+#   fly secrets set FENDIX_APP_ID=<id> \
+#                   FENDIX_APP_PRIVATE_KEY="$(cat private-key.pem)" \
+#                   FENDIX_WEBHOOK_SECRET=<secret>
+#   fly deploy
+#
+# The app name below is a placeholder — `fly launch` will prompt you
+# to choose a unique name or auto-generate one.
+
+app = "fendix-app"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.app"
+
+[env]
+  FENDIX_LISTEN_ADDR = ":8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 25
+    soft_limit = 20
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/healthz"
+  timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "512mb"

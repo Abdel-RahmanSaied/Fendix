@@ -463,6 +463,57 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
+**Date:** 2026-05-02 (Operator-side rollout — deployment config + community seeding + launch prep)
+
+**Session goal:** Prepare all operator-side artifacts for the v0.7.0 external rollout: deployment config (Fly.io + k8s), community issue seeding, Marketplace listing copy, open-source launch post drafts, and operator runbook tying everything together.
+
+**Accomplished:**
+
+- **Build verification.** Confirmed engine state at `c14c910` (HEAD of main). Go 15 packages compile + pass; Python 198/198; build green pre-work.
+
+- **Fly.io deployment config.** New `fly.toml` at repo root: region IAD, auto-suspend with min 1 machine, healthcheck on `/healthz`, shared-cpu-2x/512MB, force HTTPS. Ready for `fly launch --copy-config`.
+
+- **Kubernetes reference manifest.** New `deploy/k8s/fendix-app.yaml`: 2-replica Deployment + ClusterIP Service + nginx Ingress with TLS. Private key via Secret mount, readOnlyRootFilesystem, liveness/readiness probes, resource limits. Template for operators to customize.
+
+- **Deployment script.** New `scripts/deploy-app.sh`: interactive Fly.io deploy script that collects secrets, runs `fly launch` + `fly secrets set` + `fly deploy`, verifies healthcheck, prints next steps (set webhook URL, check logs).
+
+- **GitHub issue templates.** New `.github/ISSUE_TEMPLATE/` with: `good-first-issue.md` (generic template), `semgrep-rule.md` (structured template for new detection rules), `config.yml` (contact links to docs + plugin guide).
+
+- **Community issue seeding script.** New `scripts/seed-issues.sh`: creates 5 well-scoped `good first issue` tickets via `gh issue create` — 3 Semgrep rules (subprocess shell=True, Django raw SQL, Express.js helmet), 1 docs (README screenshots), 1 plugin (AWS credential age check). Each issue has vulnerable/safe code examples, CWE references, and a contribution checklist.
+
+- **Marketplace listing copy.** New `docs/marketplace-listing.md`: complete submission-ready copy (short description, detailed description, category, pricing, support URL, screenshot descriptions, post-install instructions).
+
+- **Open-source launch post.** New `docs/launch-post.md`: three platform-tailored versions — HN (Show HN format with technical depth + questions for the community), r/devops (outcome-focused), r/golang (architecture-focused with interesting Go patterns).
+
+- **Operator runbook.** New `docs/operator-rollout.md`: 8-step checklist from "register the App" through "verify end-to-end" with rollback procedures. Ties together all the artifacts above into a single operator workflow.
+
+**Files created:**
+- `fly.toml`
+- `deploy/k8s/fendix-app.yaml`
+- `scripts/deploy-app.sh`
+- `scripts/seed-issues.sh`
+- `.github/ISSUE_TEMPLATE/good-first-issue.md`
+- `.github/ISSUE_TEMPLATE/semgrep-rule.md`
+- `.github/ISSUE_TEMPLATE/config.yml`
+- `docs/marketplace-listing.md`
+- `docs/launch-post.md`
+- `docs/operator-rollout.md`
+
+**Decisions:**
+- Fly.io as the recommended deployment path (lightest: one Dockerfile + one command). K8s provided as alternative for teams that already have a cluster.
+- 5 seeded issues balance breadth: 3 Semgrep rules (lowest barrier), 1 docs (non-code contribution), 1 plugin (demonstrates extension system). All are genuinely useful, not synthetic.
+- Launch post timing: after Marketplace listing is approved (so "Install" button works when people click through from HN/Reddit).
+
+**Next session should start with:**
+
+- **Execute the runbook.** Follow `docs/operator-rollout.md` steps 1-8: register the App, deploy via `./scripts/deploy-app.sh`, point webhook, install on test repo, verify PR comment appears, submit Marketplace listing, run `./scripts/seed-issues.sh`, publish launch post (after Marketplace approval).
+
+- **Or**, if the operator steps are blocked (waiting for Marketplace review, DNS propagation, etc.): **Phase 16 scoping refresh** — re-read PHASES.md Phase 16, confirm the goal still makes sense, draft TASK-115..118 acceptance criteria with v0.7.0's plugin system in mind (AST analyzer could become a plugin instead of a Go port).
+
+---
+
+## Previous Session Summary
+
 **Date:** 2026-05-01 (v0.7.0 release — folded Phase 14 closeout + Phase 15)
 **Session goal:** Tag v0.7.0 that folds the post-v0.6.1 Phase 14 work + TASK-107b + Phase 15 (TASK-112 + TASK-113 + TASK-114) into a single minor release. Per the prior session's "Next session should start with" pointer. Then bump frontend version literals from v0.6.1 → v0.7.0 and collapse the two "Unreleased" changelog entries into one tagged v0.7.0 entry.
 

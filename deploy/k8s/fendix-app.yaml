@@ -1,0 +1,120 @@
+# Fendix GitHub App — Kubernetes reference deployment
+#
+# Prerequisites:
+#   kubectl create secret generic fendix-app-secrets \
+#     --from-literal=FENDIX_APP_ID=<id> \
+#     --from-literal=FENDIX_WEBHOOK_SECRET=<secret> \
+#     --from-file=private-key.pem=./private-key.pem
+#
+# Deploy:
+#   kubectl apply -f deploy/k8s/fendix-app.yaml
+#
+# This is a starting template — adjust image tag, replicas, ingress
+# class/host, and TLS secret to your cluster's conventions.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fendix-app
+  labels:
+    app: fendix-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fendix-app
+  template:
+    metadata:
+      labels:
+        app: fendix-app
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: fendix-app
+          image: ghcr.io/abdel-rahmansaied/fendix-app:latest
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: fendix-app-secrets
+          env:
+            - name: FENDIX_APP_PRIVATE_KEY_FILE
+              value: /var/secrets/fendix/private-key.pem
+          volumeMounts:
+            - name: private-key
+              mountPath: /var/secrets/fendix
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+      volumes:
+        - name: private-key
+          secret:
+            secretName: fendix-app-secrets
+            items:
+              - key: private-key.pem
+                path: private-key.pem
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fendix-app
+spec:
+  selector:
+    app: fendix-app
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fendix-app
+  annotations:
+    # Adjust for your ingress controller (nginx, traefik, alb, etc.)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.fendix.dev
+      secretName: fendix-app-tls
+  rules:
+    - host: app.fendix.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fendix-app
+                port:
+                  number: 80
