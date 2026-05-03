@@ -7,6 +7,7 @@ HTTP-only (non-TLS) server URLs.
 from __future__ import annotations
 
 import json
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
@@ -260,12 +261,27 @@ class SpecParser:
     def _parse_file(self) -> dict:
         """Read and parse the spec file (YAML or JSON).
 
+        Accepts a local path or an HTTP/HTTPS URL (mirroring the Go
+        engine's ``loadSpec`` which gained URL support in TASK-082).
+
         Always returns a dict. Raises ValueError if the parsed content
         is not a dict (e.g., empty file, scalar value, list).
         """
-        path = Path(self.spec_path)
-        text = path.read_text(encoding="utf-8")
-        if path.suffix in {".json"}:
+        src = self.spec_path
+        lower = src.lower()
+        if lower.startswith(("http://", "https://")):
+            req = urllib.request.Request(
+                src,
+                headers={"Accept": "application/json, application/yaml, */*"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                text = resp.read().decode("utf-8")
+            is_json = lower.endswith(".json") or "json" in (resp.headers.get("Content-Type") or "")
+        else:
+            path = Path(src)
+            text = path.read_text(encoding="utf-8")
+            is_json = path.suffix == ".json"
+        if is_json:
             result = json.loads(text)
         else:
             result = yaml.safe_load(text)  # handles both YAML and JSON
