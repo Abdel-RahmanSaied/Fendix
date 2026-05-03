@@ -24,7 +24,7 @@ class SpecParser:
     """
 
     def __init__(self, spec_path: str) -> None:
-        """Initialize with the path to an OpenAPI spec file."""
+        """Initialize with the path to an OpenAPI spec file or URL."""
         self.spec_path = spec_path
         self._spec: dict | None = None
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
@@ -466,6 +467,11 @@ func (o *Orchestrator) runPlugins(ctx context.Context) []models.Finding {
 func absPathOrEmpty(p string) string {
 	if p == "" {
 		return ""
+	}
+	// URLs must not be passed through filepath.Abs — it collapses the
+	// double-slash in "https://" to a single slash and prepends cwd.
+	if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+		return p
 	}
 	if abs, err := filepath.Abs(p); err == nil {
 		return abs

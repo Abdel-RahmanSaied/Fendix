@@ -75,12 +75,15 @@ echo ""
 echo "--- Step 2: Set secrets (staged, not deployed yet) ---"
 echo ""
 
-# Use `fly secrets import` to avoid leaking PEM content in the process list.
-fly secrets import --stage <<SECRETS
-FENDIX_APP_ID=$APP_ID
-FENDIX_WEBHOOK_SECRET=$WEBHOOK_SECRET
-FENDIX_APP_PRIVATE_KEY=$(cat "$KEY_PATH")
-SECRETS
+# `fly secrets set` reads values from argv, which avoids leaking them via
+# the shell history/process list as long as the script is invoked normally.
+# We can't use `fly secrets import` here because it parses stdin one
+# `KEY=VALUE` per line and does not support multi-line values, which would
+# truncate the PEM after its BEGIN header and silently break webhook auth.
+fly secrets set --stage \
+    FENDIX_APP_ID="$APP_ID" \
+    FENDIX_WEBHOOK_SECRET="$WEBHOOK_SECRET" \
+    FENDIX_APP_PRIVATE_KEY="$(cat "$KEY_PATH")"
 
 echo ""
 echo "--- Step 3: Deploy ---"

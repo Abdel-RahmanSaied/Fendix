@@ -84,18 +84,15 @@ func (ps *PythonSpawner) Run(ctx context.Context, req ScanRequest) SpawnResult {
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
 
-	slog.Info("spawning python engine", "bin", ps.pythonBin, "engine", enginePath)
+	// Send ScanRequest and close stdin
+	reqJSON, err := json.Marshal(req)
+	if err != nil {
+		return SpawnResult{Err: fmt.Errorf("marshaling scan request: %w", err)}
+	}
 	startTime := time.Now()
 
 	if err := cmd.Start(); err != nil {
 		return SpawnResult{Err: fmt.Errorf("starting python engine: %w", err)}
-	}
-
-	// Send ScanRequest and close stdin
-	reqJSON, err := json.Marshal(req)
-	if err != nil {
-		cmd.Process.Kill()
-		return SpawnResult{Err: fmt.Errorf("marshaling scan request: %w", err)}
 	}
 
 	if _, err := stdin.Write(reqJSON); err != nil {
