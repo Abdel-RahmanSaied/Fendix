@@ -244,19 +244,21 @@ func (ts *TokenSource) Get(ctx context.Context, installationID int64) (*Installa
 
 	go func() {
 		defer close(flight.done)
-		jwt, err := SignAppJWT(ts.creds, ts.now())
-		if err != nil {
-			flight.err = err
-			return
+		jwt, signErr := SignAppJWT(ts.creds, ts.now())
+		if signErr != nil {
+			flight.err = signErr
+		} else {
+			tok, fetchErr := FetchInstallationToken(ctx, ts.httpClient, ts.baseURL, jwt, installationID)
+			if fetchErr != nil {
+				flight.err = fetchErr
+			} else {
+				flight.token = tok
+			}
 		}
-		tok, err := FetchInstallationToken(ctx, ts.httpClient, ts.baseURL, jwt, installationID)
-		if err != nil {
-			flight.err = err
-			return
-		}
-		flight.token = tok
 		ts.mu.Lock()
-		ts.tokens[installationID] = tok
+		if flight.token != nil {
+			ts.tokens[installationID] = flight.token
+		}
 		delete(ts.flights, installationID)
 		ts.mu.Unlock()
 	}()
