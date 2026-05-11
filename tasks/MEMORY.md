@@ -154,9 +154,22 @@ fendix/
   "fix": "Move to environment variable. Rotate the exposed key immediately.",
   "references": ["CWE-798"],
   "confidence": "HIGH",
-  "line": "src/config.py:14"
+  "line": "src/config.py:14",
+  "affected_endpoints": ["src/config.py:14", "src/admin.py:22"],
+  "taint_chain": [
+    {"file": "app/views.py", "line": 12, "expr": "q = request.args.get('q')"},
+    {"file": "app/views.py", "line": 15, "expr": "cursor.execute(sql)"}
+  ],
+  "reachable": true
 }
 ```
+
+**Optional fields** (omitted when not applicable; `omitempty` on the Go side):
+- `affected_endpoints` — populated by the dedup pass when N≥2 occurrences collapse (Phase 11 / TASK-088).
+- `taint_chain` — ordered dataflow proof from a request source to a sink; emitted by the whitebox AST analyzer for SQLi / SSRF / open-redirect / XSS / command-injection findings (Phase 15 / TASK-114; XSS + cmdi land in TASK-120/121).
+- `reachable` — true when the chain proves user input reaches the sink; drives the correlator's second severity escalation.
+
+Authoritative source: [docs/schema.json](../docs/schema.json) + [docs/schema.md](../docs/schema.md).
 
 ### Stream terminator (Python → Go stdout, final line)
 ```json
@@ -296,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-01 (v0.7.0 release — folded Phase 14 closeout + Phase 15 + frontend sync)
+**Last updated:** 2026-05-11 (cross-repo sync absorbed engine v0.7.0 fields into backend + frontend — pre-17a hygiene; no Phase 17a tasks shipped yet)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -464,6 +477,80 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (Cross-repo sync — absorbed engine v0.7.0 fields into backend + frontend; pre-17a hygiene)
+
+**Session goal:** Operator chose "sync backend+frontend first" before starting Phase 17a engine tasks. Verify backend `FendixEngine` wrapper + frontend types match the current engine schema (`docs/schema.json`); fix any drift from Phase 14/15 fields the engine has been emitting since v0.7.0 but the backend/frontend haven't absorbed yet (TASK-088 `affected_endpoints`, TASK-114 `taint_chain` + `reachable`).
+
+**Drift discovered (3 layers):**
+
+- **Engine repo (internal drift)**: `docs/schema.json` was missing `taint_chain` + `reachable` from the Finding definition. Phase 15 shipped these to the Go struct + JSON output but never updated the canonical schema doc. `docs/schema.md` had the same gap (no rows for the two fields, no example). The hand-rolled validator in `go/internal/reporters/schema_test.go` didn't exercise them either.
+- **Backend repo**: `scanning/models.py::ScanFinding` (DB model) had no columns for `affected_endpoints` / `taint_chain` / `reachable`. `scanning/services.py::_finding_defaults` (engine→DB mapper) ignored all three keys — every finding the engine emitted lost its dataflow proof on ingest. `scanning/serializers.py::FindingSerializer` didn't expose them either, so `GET /api/findings` served stripped rows. The cached JSON report artifact still had them; only the structured REST surface was stripped.
+- **Frontend repo**: `app/types/index.ts::Finding` had `affected_endpoints?` (Phase 11 absorbed earlier) but no `taint_chain` / `reachable`. Generated `app/types/api.ts` missing all three (consequence of stale backend openapi). The changelog page mentions `reachable`/`taint_chain` in prose but no UI / type ever surfaced them.
+
+**Decision (per operator AskUserQuestion):** "Persist + serve via REST (full sync)". Land the migration now rather than 3× separately when TASK-120/121/124 ship — once-and-done, future fields slot in without further schema work.
+
+**Accomplished:**
+
+- **Engine: schema doc + validator.** Added `TaintLink` definition to `docs/schema.json` + extended `Finding` properties with `taint_chain` (array of TaintLink) and `reachable` (boolean), both optional. Mirrored in `docs/schema.md`: new rows in the Finding field table, expanded example JSON with a real 3-link chain. Extended `go/internal/reporters/schema_test.go::validateAgainstSchema` to walk the chain when present (validates `{file:string, line:int, expr:string}` per link, drops invalid links the same way the backend does). Added a 6th sample finding (`SEC-006 "Reachable SQLi"`) to `schemaSampleFindings` so `TestJSONReport_ValidatesAgainstSchema` actually exercises the new branches. **Validation**: all reporter / engine / models tests green under `-race`.
+
+- **Backend: model + migration + service + serializer + tests + openapi.** New migration `scanning/migrations/0006_finding_reachability.py` adds 3 columns (`affected_endpoints` JSONField default=list, `taint_chain` JSONField default=list, `reachable` BooleanField default=False) — hand-written (the local DB had an inconsistent migration history preventing `makemigrations`, but the migration shape is mechanical). Wrote it as a new migration depending on `0005_reconcile_stuck_reports_periodic_task`. `ScanFinding` model extended with the same 3 fields. New `_coerce_taint_chain` helper in `services.py` that validates each link (`file:str, line:int≥0, expr:str`) and drops malformed links rather than failing the whole finding — partial chain still has signal. `_finding_defaults` reads all three keys with safe defaults. `FindingSerializer` exposes them. Regenerated `backend/openapi.json` via `python manage.py spectacular --format openapi-json` — 41 spectacular warnings (pre-existing), 0 errors. **3 new tests** in `scanning/tests/test_services.py::TestFendixEngineRun`: (a) `test_persists_reachable_taint_chain_and_affected_endpoints` (happy path: 3-link chain + reachable=True + affected_endpoints stored end-to-end), (b) `test_missing_optional_fields_default_to_empty` (older engine versions or non-reachable findings → safe defaults), (c) `test_malformed_taint_chain_links_are_dropped` (garbage link dropped, good links kept). **Validation**: all 18 services tests + views + models tests green via `FAST_TESTS=1` SQLite in-memory.
+
+- **Frontend: types + codegen.** Added `TaintLink` interface to `app/types/index.ts`. Extended `Finding` with optional `taint_chain?: TaintLink[]` and `reachable?: boolean`. Regenerated `app/types/api.ts` via `npm run codegen` (openapi-typescript reading the new `../fendix-backend/backend/openapi.json`) — auto-emitted `affected_endpoints`, `taint_chain`, and `reachable` on the generated `components.schemas.Finding` shape, matching the hand-written index.ts shape. **Validation**: `npx tsc --noEmit` clean, `npm run test` (vitest) 198/198. No UI components surface the new fields yet — that's deferred until TASK-120/121 ship the second-and-third reachability patterns (XSS, command-injection), at which point a real findings-detail UI iteration is justified.
+
+**Files modified:**
+
+Engine repo (3):
+- `docs/schema.json` (TaintLink + Finding extension)
+- `docs/schema.md` (table row + example)
+- `go/internal/reporters/schema_test.go` (validator extension + 6th sample)
+
+Backend repo (5 modified + 1 new):
+- `backend/scanning/models.py` (3 new columns)
+- `backend/scanning/services.py` (_coerce_taint_chain + _finding_defaults)
+- `backend/scanning/serializers.py` (3 new fields exposed)
+- `backend/scanning/tests/test_services.py` (3 new tests)
+- `backend/openapi.json` (regenerated via drf-spectacular)
+- `backend/scanning/migrations/0006_finding_reachability.py` (NEW)
+
+Frontend repo (2 + 1 lockfile):
+- `app/types/index.ts` (TaintLink + Finding extension)
+- `app/types/api.ts` (regenerated via npm run codegen)
+- `package-lock.json` (from npm install — node_modules wasn't present)
+
+**Build state at session end:**
+
+- Engine Go: 15 packages race-clean under `go test -race -count=1 ./...` (~75s total)
+- Engine Python: `pytest python/tests/` 198/198 passed
+- Backend Django: `scanning/tests/test_services.py` + `test_views.py` + `test_models.py` all green via `FAST_TESTS=1 FENDIX_ENCRYPTION_KEY=<gen> pytest` (SQLite in-memory; couldn't use the local Postgres because of pre-existing migration history inconsistency unrelated to this work)
+- Frontend: `npx tsc --noEmit` clean, `npm run test` 198/198
+
+**Decisions made:**
+
+- **Persist in DB, don't just pass-through.** The original Phase 15 design note ("backend not extended; frontend reads taint_chain from cached report payload directly") was load-bearing at the time but creates 2-endpoint reads in the dashboard. Persisting in `ScanFinding` columns means `GET /api/findings` returns full fidelity in one call, plus the schema is ready for TASK-120/121/124 fields without another migration. Operator confirmed via AskUserQuestion.
+- **Hand-wrote the migration; didn't auto-generate.** Local backend DB has an inconsistent migration history (admin.0001_initial applied before accounts.0001_initial) that blocks `makemigrations` even with `--dry-run`. Migration shape is mechanical (3 AddField calls) — risk of hand-writing is low. The CI/staging DB has clean state and would generate the same file via `makemigrations`.
+- **Defensive parsing in `_coerce_taint_chain`.** Drop malformed links instead of failing the whole finding. Engine NDJSON contract permits omitting the field entirely, and a partial chain is more useful than no chain. Mirrors how the engine itself handles malformed JSON lines (skip and continue).
+- **No UI changes yet.** Types are extended end-to-end, but no findings-detail UI surfaces the new fields. Defer until TASK-120/121 ship — at that point there are 5 reachability patterns and a real UI iteration is justified. Today the dashboard would render a `reachable: true` badge on exactly one finding type (TASK-114's SQLi/SSRF/open-redirect from Phase 15), which doesn't earn its design cost.
+
+**Open questions / followups:**
+
+- **Backend's docker compose isn't running.** I used the local venv (installed deps fresh) + `FAST_TESTS=1` SQLite to verify. The committed migration needs to apply cleanly against Postgres in CI/staging. Owner action: run `make migrate` against the real DB before deploying — the migration is additive (3 AddField with safe defaults), should apply without blocking writes.
+- **`backend/openapi.json` diff is large.** drf-spectacular regenerated some unrelated metadata too (key ordering, `tags` arrays). Net new content is the 3 fields on the Finding schema; rest is noise. Worth a `git diff` review before commit.
+- **Frontend `package-lock.json` is new** — node_modules wasn't present before this session, so `npm install` produced a fresh lockfile. Should be reviewable; the lockfile matches `package.json` deps that were already pinned.
+- **No commits made.** All work is uncommitted in three working trees. Per the engineering principle ("only commit when explicitly asked"), waiting for operator to review the diffs and bless the commit + push sequence.
+
+**Next session should start with:**
+
+- **Commit the sync across the three repos.** Three small commits, one per repo:
+  1. Engine repo: `docs: document taint_chain + reachable in schema (docs sync, no engine code change)` — files: `docs/schema.json`, `docs/schema.md`, `go/internal/reporters/schema_test.go`.
+  2. Backend repo: `feat(scanning): persist taint_chain + reachable + affected_endpoints` — files listed above + migration. Worth running `make migrate` against the dev DB first to confirm the migration applies cleanly.
+  3. Frontend repo: `feat(types): surface taint_chain + reachable from engine v0.7+` — files: `app/types/index.ts`, `app/types/api.ts`, `package-lock.json`.
+- **Then start TASK-119 (native dep-CVE scanners), beginning with govulncheck.** Per prior session's "Next session" pointer. Single-language sub-deliverable, ~2 days. New package `go/internal/scanner/deps/govulncheck/` that reads `go.mod` directly and queries the Go vulnerability DB via `golang.org/x/vuln/scan` API (in-process, not shelling out to the govulncheck binary). Emits Finding rows. After it lands, pip-audit-equivalent and npm-audit-equivalent follow the same pattern.
+- **Consider writing TASK-126 (ADR-008) in parallel.** ~1 day, conceptual anchor for the 5-month engine-first pivot, independent of feature timing. Doing it before TASK-119 lands means PRs reference a written decision rather than an inferred one.
+
+---
+
+## Earlier Session (2026-05-11 — Strategic pivot — engine-first roadmap; defer cloud Q1; Phase 17 opened)
 
 **Date:** 2026-05-11 (Strategic pivot — engine-first roadmap; defer cloud Q1; Phase 17 opened)
 

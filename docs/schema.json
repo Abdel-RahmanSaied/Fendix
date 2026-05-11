@@ -54,6 +54,16 @@
         "correlated": { "type": "integer", "minimum": 0 }
       }
     },
+    "TaintLink": {
+      "type": "object",
+      "required": ["file", "line", "expr"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 0 },
+        "expr": { "type": "string" }
+      }
+    },
     "Finding": {
       "type": "object",
       "required": ["id", "title", "severity", "source", "category", "endpoint", "evidence", "fix", "references", "confidence", "line"],
@@ -70,7 +80,9 @@
         "fix":                { "type": "string" },
         "references":         { "type": "array", "items": { "type": "string" } },
         "confidence":         { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
-        "line":               { "type": ["string", "null"] }
+        "line":               { "type": ["string", "null"] },
+        "taint_chain":        { "type": "array", "items": { "$ref": "#/definitions/TaintLink" } },
+        "reachable":          { "type": "boolean" }
       },
       "allOf": [
         {

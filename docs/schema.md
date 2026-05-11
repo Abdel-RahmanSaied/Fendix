@@ -76,7 +76,13 @@ changes are reserved for major versions.
   "fix":                 "Move to environment variable. Rotate the exposed key immediately.",
   "references":          ["CWE-798"],
   "confidence":          "HIGH",
-  "line":                "src/config.py:14"
+  "line":                "src/config.py:14",
+  "taint_chain":         [
+    {"file": "app/views.py", "line": 12, "expr": "q = request.args.get('q')"},
+    {"file": "app/views.py", "line": 14, "expr": "sql = 'SELECT * FROM users WHERE name=' + q"},
+    {"file": "app/views.py", "line": 15, "expr": "cursor.execute(sql)"}
+  ],
+  "reachable":           true
 }
 ```
 
@@ -94,6 +100,8 @@ changes are reserved for major versions.
 | `references` | array of string | yes | CWE / OWASP / RFC identifiers. May be empty array. |
 | `confidence` | string enum | yes | One of `HIGH`, `MEDIUM`, `LOW`. |
 | `line` | string \| null | yes | File and line for whitebox findings, e.g. `"src/config.py:14"`. Always serialised; `null` when not applicable. |
+| `taint_chain` | array of `TaintLink` | no | Whitebox dataflow proof: ordered chain from source (e.g. `request.args.get`) through intermediate assignments to the sink. Each link is `{file, line, expr}`. Emitted by the Python AST analyzer for SQLi / SSRF / open-redirect / XSS / command-injection findings when intra-function dataflow resolves end-to-end. Inherited onto the merged `source: "correlated"` finding. Omitted when no chain was proven. |
+| `reachable` | boolean | no | Whitebox-proven that user input reaches the sink. Currently implies `taint_chain` is non-empty. Used by the correlator to apply a *second* severity escalation on top of the standard correlated-bonus (so MEDIUM × MEDIUM × reachable → CRITICAL). Omitted (treat as `false`) when not proven. |
 
 ### Severity ↔ confidence consistency
 

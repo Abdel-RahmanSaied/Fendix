@@ -82,6 +82,24 @@ func validateAgainstSchema(t *testing.T, report map[string]any) {
 			requireString(t, path+".line", l)
 		}
 
+		// taint_chain: optional; when present each link must have {file, line:int, expr}.
+		if v, ok := f["taint_chain"]; ok {
+			arr := requireArray(t, path+".taint_chain", v)
+			for i, raw := range arr {
+				link := requireObject(t, path+".taint_chain[]", raw)
+				lp := path + ".taint_chain[" + itoa(i) + "]"
+				requireKeys(t, lp, link, []string{"file", "line", "expr"})
+				requireString(t, lp+".file", link["file"])
+				requireInt(t, lp+".line", link["line"])
+				requireString(t, lp+".expr", link["expr"])
+			}
+		}
+
+		// reachable: optional boolean.
+		if v, ok := f["reachable"]; ok {
+			requireBool(t, path+".reachable", v)
+		}
+
 		// Severity↔confidence consistency: LOW confidence caps severity at MEDIUM.
 		if conf == "LOW" {
 			rank := map[string]int{"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
@@ -194,12 +212,24 @@ func itoa(i int) string {
 // schemaSampleFindings exercises every enum value at least once.
 func schemaSampleFindings() []models.Finding {
 	line1 := "src/config.py:14"
+	line6 := "app/views.py:15"
 	return []models.Finding{
 		{ID: "SEC-001", Title: "Missing HSTS header", Severity: models.SeverityMedium, Source: models.SourceBlackbox, Category: "headers", Endpoint: "GET /api/users", Evidence: "HSTS missing", Fix: "Add Strict-Transport-Security", References: []string{"CWE-319"}, Confidence: models.ConfidenceHigh},
 		{ID: "SEC-002", Title: "Hardcoded secret", Severity: models.SeverityHigh, Source: models.SourceWhitebox, Category: "secrets", Endpoint: "src/config.py:14", Evidence: "API_KEY = '...'", Fix: "Use env var", References: []string{"CWE-798"}, Confidence: models.ConfidenceHigh, Line: &line1},
 		{ID: "SEC-003", Title: "Auth bypass", Severity: models.SeverityCritical, Source: models.SourceCorrelated, Category: "auth_bypass", Endpoint: "GET /api/admin", AffectedEndpoints: []string{"GET /api/admin", "GET /api/admin/users"}, Evidence: "200 without auth | Code: no @login_required", Fix: "Add auth", References: []string{"CWE-306"}, Confidence: models.ConfidenceHigh},
 		{ID: "SEC-004", Title: "Server fingerprint", Severity: models.SeverityInfo, Source: models.SourceBlackbox, Category: "info_disclosure", Endpoint: "GET /api/health", Evidence: "Server: nginx/1.18.0", Fix: "Strip Server header", References: []string{"CWE-200"}, Confidence: models.ConfidenceLow},
 		{ID: "SEC-005", Title: "Boolean SQLi candidate", Severity: models.SeverityLow, Source: models.SourceBlackbox, Category: "injection", Endpoint: "GET /api/items", Evidence: "Length-delta on payload", Fix: "Parameterize", References: []string{"CWE-89"}, Confidence: models.ConfidenceMedium},
+		{
+			ID: "SEC-006", Title: "Reachable SQLi", Severity: models.SeverityCritical, Source: models.SourceCorrelated, Category: "injection",
+			Endpoint: "app/views.py:15", Evidence: "user input flows into cursor.execute", Fix: "Use parameterized queries",
+			References: []string{"CWE-89"}, Confidence: models.ConfidenceHigh, Line: &line6,
+			TaintChain: []models.TaintLink{
+				{File: "app/views.py", Line: 12, Expr: "q = request.args.get('q')"},
+				{File: "app/views.py", Line: 14, Expr: "sql = 'SELECT ...' + q"},
+				{File: "app/views.py", Line: 15, Expr: "cursor.execute(sql)"},
+			},
+			Reachable: true,
+		},
 	}
 }
 

@@ -32,8 +32,8 @@
 2. End of phase: FP corpus quality — if <15 real FPs, expand corpus or accept Phase 17d does the heavy lifting.
 
 **Cross-repo coordination this phase:**
-- `fendix-backend`: when TASK-120 + TASK-121 ship, the backend's `services.py::FendixEngine` subprocess wrapper needs to ingest the new taint-chain shapes. ~1 day; ticket lives in the backend repo.
-- `fendix_frontend`: after backend regenerates `openapi.json`, run `npm run codegen` + surface the new taint chains in the findings detail view. ~2 days; ticket lives in the frontend repo.
+- `fendix-backend`: **Phase 15 fields (`taint_chain`, `reachable`, `affected_endpoints`) absorbed 2026-05-11** — pre-17a sync session landed `0006_finding_reachability` migration + `_finding_defaults` ingest + serializer exposure + regenerated `openapi.json`. Future TASK-120/121/124 fields slot into the existing JSONField columns without further migrations. Suppression-snippet field for TASK-124 may need a new column when it ships — see that task's notes.
+- `fendix_frontend`: **Phase 15 types (`TaintLink`, extended `Finding`) absorbed 2026-05-11** — `app/types/index.ts` extended + `app/types/api.ts` regenerated via `npm run codegen`. UI surfacing deferred until TASK-120/121 ship the second-and-third reachability patterns (XSS, cmdi); ~2 days when that triggers, ticket lives in the frontend repo.
 
 **Upcoming sub-phases (summary; detail lives in [tasks/PHASES.md](PHASES.md)):**
 
