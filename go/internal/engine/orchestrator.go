@@ -20,6 +20,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/govulncheck"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/npm"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/pip"
 )
 
@@ -177,8 +178,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// Findings flow through the same dedup pipeline so the Python
 	// output collapses with native output during the transition window.
 	//
-	// Go: golang.org/x/vuln gives call-graph reachability.
+	// Go:   golang.org/x/vuln gives call-graph reachability.
 	// PyPI: OSV.dev /v1/query per pinned (==) dep, cached 24h.
+	// npm:  OSV.dev /v1/query per resolved version in package-lock.json
+	//       v2/v3 (full transitive tree), cached 24h.
 	//
 	// Each ecosystem has an ErrNo... sentinel for silent-skip; other
 	// errors slog.Warn and continue so a network blip doesn't stop a
@@ -204,6 +207,17 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			slog.Debug("no requirements.txt at code path, skipping native pypi deps scan")
 		default:
 			slog.Warn("native pypi deps scan failed", "error", err)
+		}
+
+		npmFindings, err := npm.Scan(ctx, o.cfg.CodePath)
+		switch {
+		case err == nil:
+			slog.Info("native npm deps scan complete", "findings", len(npmFindings))
+			findings = append(findings, npmFindings...)
+		case errors.Is(err, npm.ErrNoLockfile):
+			slog.Debug("no package-lock.json at code path, skipping native npm deps scan")
+		default:
+			slog.Warn("native npm deps scan failed", "error", err)
 		}
 	}
 
