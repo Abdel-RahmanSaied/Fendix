@@ -4,7 +4,48 @@
 
 ---
 
-## Active Phase: Operator Rollout (post-v0.7.0) — 🔄 In Progress
+## Active Phase: 17a — v0.8 Detection + FP reduction — 🔄 In Progress
+
+**Sprint goal:** Ship v0.8.0 with native dep-CVE scanners (Go/Python/Node), two new reachability patterns (XSS, command-injection), a confidence-math-tuned correlator measured against a real FP corpus, one-click suppression in PR comments, and ADR-008 formalising the read-only AI / supersede-BACKLOG-017 decision.
+
+**Source of plan:** [docs/quarter_plan.md](../docs/quarter_plan.md) (full 4-release roadmap), [tasks/PHASES.md](PHASES.md) Phase 17a (this sub-phase's exit criteria + task detail).
+
+**Sprint shape:** ~25 solo days with 25% integration buffer ≈ ~6 weeks at 70% capacity. Runs in parallel with Q0 Operator Rollout (table below).
+
+**Strategic context (2026-05-11 decision):** Cloud Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation, ~23 days) is deferred for ~5 months in favour of the engine-first roadmap (Phase 17a → 17b → 17c → 17d). Cloud work resumes after v0.11 ships. Trade-off accepted: no paid revenue until ~month 6. Rationale: engine is the moat per [docs/example_plan.md](../docs/example_plan.md) §1.7; widening it before turning on revenue means Q2 conversion happens against a stronger product.
+
+| ID | Task | Status | Estimate | Notes |
+| --- | --- | --- | --- | --- |
+| TASK-119 | Native dep-CVE scanners — govulncheck / pip-audit / npm-audit in `internal/scanner/deps/{govulncheck,pip,npm}/` | 🔲 | ~6 days | Reads `go.mod` / `requirements.txt` / `package-lock.json` directly. OSV-format CVE database, cached locally. Emits Finding rows. |
+| TASK-120 | XSS-sink reachability pattern | 🔲 | ~2 days | Extend `engine/correlator.go` — taint chain for "user input → HTML render context" (Jinja2, Django templates, JSX `dangerouslySetInnerHTML`, raw `innerHTML`). Same TASK-114 pattern. |
+| TASK-121 | Command-injection-sink reachability pattern | 🔲 | ~2 days | Same correlator extension — "user input → `subprocess.run` / `os.system` / Go `exec.Command`". |
+| TASK-122 | FP corpus build | 🔲 | ~2 days | New `scripts/fp-corpus/` runner. Run engine against juice-shop + 2 more targets, catalogue every FP into `tasks/FP_CORPUS.md` with reproduction notes. Input for TASK-123. |
+| TASK-123 | Correlator confidence math pass | 🔲 | ~3 days | Tune thresholds against TASK-122 corpus. "DAST + SAST agreed + reachable" escalates; "one engine only, no taint chain" de-escalates. Update `internal/models/scoring.go`. Measure FP-rate delta, document in release notes. |
+| TASK-124 | One-click suppression snippet in PR comment | 🔲 | ~3 days | Extend `internal/ghapp/handler.go` — every finding ships with a copy-paste `.fendix-ignore` snippet keyed on stable finding hash. |
+| TASK-125 | Severity scoring refresh | 🔲 | ~2 days | Rebalance underused `reachable_code` multiplier per [docs/example_plan.md](../docs/example_plan.md) §3.5. EPSS/KEV multipliers explicitly deferred to cloud quarter. |
+| TASK-126 | ADR-008 — read-only AI / supersede BACKLOG-017 | 🔲 | ~1 day | New `docs/adr/ADR-008-readonly-ai.md` formalising the strategic decision from the 2026-05-11 session. Independent of feature timing — write during 17a even though no AI ships this phase. |
+
+**Exit criteria:** see [tasks/PHASES.md](PHASES.md) Phase 17a section.
+
+**Decision gates active during this phase:**
+1. End of week 2: Q0 launch result — if <100 stars / <8 installs in 2 weeks, pause Phase 17a and re-evaluate.
+2. End of phase: FP corpus quality — if <15 real FPs, expand corpus or accept Phase 17d does the heavy lifting.
+
+**Cross-repo coordination this phase:**
+- `fendix-backend`: when TASK-120 + TASK-121 ship, the backend's `services.py::FendixEngine` subprocess wrapper needs to ingest the new taint-chain shapes. ~1 day; ticket lives in the backend repo.
+- `fendix_frontend`: after backend regenerates `openapi.json`, run `npm run codegen` + surface the new taint chains in the findings detail view. ~2 days; ticket lives in the frontend repo.
+
+**Upcoming sub-phases (summary; detail lives in [tasks/PHASES.md](PHASES.md)):**
+
+| Phase | Release | Estimate | Theme |
+|---|---|---:|---|
+| 17b | v0.9 | ~21 days | Phase 16 pulled forward — secrets → Go (TASK-115), Semgrep shelled-out (TASK-116), drop embedded Python + cold-start benchmark (TASK-118), plugin compat audit (TASK-127). TASK-117 deferred. |
+| 17c | v0.10 | ~14 days | Plugin ecosystem polish — docs (TASK-128), 2 reference plugins in non-Go languages (TASK-129), `fendix plugins` CLI (TASK-130), CI smoke test (TASK-131). |
+| 17d | v0.11 | ~19 days | Real-world FP round 2 — triage real user FPs (TASK-132), targeted correlator fixes (TASK-133), one more reachability pattern data-driven (TASK-134), suppression UX iteration (TASK-135), benchmark refresh (TASK-136). |
+
+---
+
+## Active Phase: Operator Rollout (post-v0.7.0) — 🔄 In Progress (parallel with 17a)
 
 **Sprint goal:** Take the shipped v0.7.0 engine from "code complete" to "live on GitHub Marketplace with community issues seeded and launch post published."
 

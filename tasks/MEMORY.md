@@ -292,6 +292,8 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
+**Phase:** 17a — P7 Engine-first roadmap, v0.8 release — 🔄 **In Progress** (entered 2026-05-11). See [docs/quarter_plan.md](../docs/quarter_plan.md) for the full 4-release roadmap (v0.8 → v0.11, ~5 months) and [tasks/PHASES.md](PHASES.md) Phase 17 for exit criteria + task detail. **Cloud Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation, ~23 days) is deferred for ~5 months** in favour of widening the engine moat across four directions: detection breadth (TASK-119/120/121), FP discipline (TASK-122/123/124/125), Phase 16 cold-start (pulled forward — TASK-115/116/118), plugin ecosystem (TASK-128–131), real-world FP round 2 (TASK-132–136). Q0 Operator Rollout (Marketplace launch) runs in parallel with Phase 17a, not deferred. ADR-008 (read-only AI / supersede BACKLOG-017) is written during 17a as TASK-126. Cloud work resumes after v0.11. No paid revenue until ~month 6 — explicit trade-off.
+
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
 **Last updated:** 2026-05-01 (v0.7.0 release — folded Phase 14 closeout + Phase 15 + frontend sync)
@@ -463,7 +465,78 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-02 (Operator-side rollout — deployment config + community seeding + launch prep)
+**Date:** 2026-05-11 (Strategic pivot — engine-first roadmap; defer cloud Q1; Phase 17 opened)
+
+**Session goal:** Operator asked for opinion on the 18-month plan ([docs/example_plan.md](../docs/example_plan.md)), then explicitly chose to defer Q1 (Stripe + AI explanation, ~23 days against the production-ready `fendix-backend`) in favour of widening the OSS engine moat. Initial plan crammed all four engine directions into one quarter (~49 days, zero slack); revised to give each workstream its own honest time across ~5 months. Persist the decision as durable tasks + phases + memory state so the next session reads "Phase 17a / v0.8 — start TASK-119" instead of re-discovering it from chat.
+
+**Accomplished:**
+
+- **[docs/quarter_plan.md](../docs/quarter_plan.md) written** — superseded twice in-session. v1 crammed all four engine workstreams into one quarter (rejected: zero slack, workstreams stepping on each other). v2 (final) sequences each workstream as its own release with 25% integration buffer, 5 decision gates, explicit cut order. End-to-end honest expectation: ~5 months / ~79 engine days / 4 releases (v0.8 → v0.11). Cross-repo coordination: ~5 backend days + ~12 frontend days spread thinly across the 4 releases.
+
+- **Phase 17 opened in [tasks/PHASES.md](PHASES.md)** with sub-phases 17a (v0.8 Detection + FP), 17b (v0.9 Phase 16 cold-start pulled forward), 17c (v0.10 Plugin ecosystem), 17d (v0.11 Real-world FP round 2). Each sub-phase has exit criteria + task table + sequencing rationale. Cross-repo coordination + cut order + 5 decision gates documented at Phase 17 header level.
+
+- **Phase 16 annotated, not rewritten.** Status note added to Phase 16 header: "TASK-115/116/118 pulled forward into Phase 17b; only TASK-117 (AST analyzer migration) remains in Phase 16 as the true v2.0 leftover." Phase 16 body kept verbatim for historical reference. Task list within Phase 16 marked `[PULLED FORWARD → Phase 17b]` and `[DEFERRED — true v2.0 leftover]` inline so a reader skimming PHASES.md sees the status at the task level.
+
+- **[tasks/CURRENT_SPRINT.md](CURRENT_SPRINT.md) updated** — new "Active Phase: 17a — v0.8 Detection + FP reduction" section added *above* the existing "Operator Rollout (post-v0.7.0)" table. Phase 17a section carries the TASK-119..126 detail rows with status / estimate / notes columns matching the file's existing convention. Operator Rollout retitled to "Active Phase: Operator Rollout (post-v0.7.0) — In Progress (parallel with 17a)" — explicitly *not* deferred. Q0 still runs. Future sub-phases 17b/c/d summarised in a single table at the bottom of the 17a section; full detail stays in [tasks/PHASES.md](PHASES.md) per the "active sub-phase only" convention.
+
+- **[docs/example_plan.md](../docs/example_plan.md) NOT touched this session.** Earlier in the session I edited it under the false belief that fendix-backend was empty; reverted to original state once the user prompted me to re-check the backend and I discovered I had been reading the wrong directory (`Fendix_Main_App/` legacy app) while the real apps live at `backend/`. Diff against HEAD for [docs/example_plan.md](../docs/example_plan.md) is empty. The 18-month plan stays intact; Phase 17 supersedes Q1 *for the next ~5 months only* and hands back to [docs/example_plan.md](../docs/example_plan.md) §Q2 at the end.
+
+- **Memory hygiene fix.** Auto-memory directory at `~/.claude/projects/-Users-saied-WorkDir-Fendix-fendix-services-Fendix/memory/` had two false files I'd written earlier (claiming the backend was fictional and Q1 needed +12 days). Both deleted. Replaced with a single correct feedback memory: `feedback_reverify_after_resume.md` — "workspace repos can `git pull --tags origin main` between turns; re-verify disk state when challenged, especially on resume."
+
+**Task inventory created (engine repo only; backend + frontend tickets live in their own repos per the cross-repo coordination decision):**
+
+| Phase | Release | Task IDs | Engine days |
+| --- | --- | --- | ---: |
+| 17a | v0.8 | TASK-119, 120, 121, 122, 123, 124, 125, 126 (ADR-008) | ~25 |
+| 17b | v0.9 | TASK-115, 116, 118 (pulled forward), TASK-127 | ~21 |
+| 17c | v0.10 | TASK-128, 129, 130, 131 | ~14 |
+| 17d | v0.11 | TASK-132, 133, 134, 135, 136 | ~19 |
+| Phase 16 | v2.0 | TASK-117 (AST migration) | deferred |
+
+**Files modified this session:**
+
+- [docs/quarter_plan.md](../docs/quarter_plan.md) (NEW — superseded twice; final is the time-honest sequential version)
+- [tasks/PHASES.md](PHASES.md) (Phase 16 status note added; Phase 17 + sub-phases 17a/b/c/d appended with TASK-119..136 detail)
+- [tasks/CURRENT_SPRINT.md](CURRENT_SPRINT.md) (Phase 17a section added; Operator Rollout retitled to "parallel with 17a"; Phase 15 closeout demoted to "Prior Active Phase" further down — same shape as before)
+- [tasks/MEMORY.md](MEMORY.md) (this entry; Current Project State header updated to "Phase 17a — v0.8 — In Progress")
+- `~/.claude/.../memory/feedback_reverify_after_resume.md` (NEW)
+- `~/.claude/.../memory/MEMORY.md` (NEW — single-line index pointing at the feedback file above)
+
+**Build state at session end:**
+
+- No source code touched this session — strategic / planning / docs only.
+- Engine repo `git status` for tracked files: only documentation paths modified ([docs/quarter_plan.md](../docs/quarter_plan.md), [tasks/PHASES.md](PHASES.md), [tasks/CURRENT_SPRINT.md](CURRENT_SPRINT.md), [tasks/MEMORY.md](MEMORY.md)). [docs/example_plan.md](../docs/example_plan.md) clean.
+- Build inherited from prior session: `make build` ✓ (Go 15 packages), `make test` ✓ (Go race-clean + Python 198/198), `make e2e` ✓.
+
+**Decisions made (the load-bearing ones):**
+
+- **Cloud Q1 deferred ~5 months.** Stripe + AI explanation move to "next-up after v0.11." [example_plan.md](../docs/example_plan.md) Q2-Q6 shift right by ~5 months but otherwise unchanged. Trade-off: no paid revenue until ~month 6; $10K-MRR-by-month-9 target gone, replaced with "v0.8 → v0.11 ship cleanly + founder not burned out" as the only real success criteria for the engine quarter.
+- **All four engine directions in scope, but sequenced not crammed.** Operator initially answered "all four this quarter"; I pushed back ("~49 days in ~50-day window = zero slack; workstreams step on each other"); operator agreed to drop the artificial deadline. Each workstream ships as its own release. Order: 1 (detection+FP, lowest invasiveness) → 2 (Phase 16, invasive) → 3 (plugins, needs stable wire contract from Phase 16) → 4 (real-world FP round, needs launch data accumulated by then).
+- **TASK-117 explicitly deferred** to true Phase 16 / v2.0. Hardest of the four Phase 16 tasks; AST analyzer doesn't degrade gracefully when removed; <500ms cold start achievable without it.
+- **Q0 Operator Rollout NOT deferred.** Marketplace launch runs in parallel with Phase 17a. Q0 has its own decision gate at week 2 (≥100 stars / ≥8 installs) which can re-plan all of Phase 17.
+- **ADR-008 written during 17a as TASK-126.** Even though no AI ships this quarter, the strategic decision (read-only AI permitted, auto-PR forbidden) is independent of feature timing — and ADR-008 was the explicit pivot point that triggered the whole 18-month-plan rewrite back on 2026-05-11. Document it now.
+- **Engine repo tracks engine tasks only.** Backend + frontend get cross-repo coordination notes in PHASES.md + CURRENT_SPRINT.md but no TASK-IDs in this repo. Canonical tickets for backend (re-parse new fields, regenerate openapi.json) and frontend (codegen, surface new fields) live in those repos' own planning files. Avoids drift.
+- **Task numbering starts at TASK-119.** Verified against `grep -oE "TASK-[0-9]+" tasks/PHASES.md` — last assigned was TASK-118. TASK-115/116/117/118 were already-on-books Phase 16 tickets; TASK-115/116/118 are reused (pulled forward to 17b), TASK-117 stays in Phase 16.
+- **5 decision gates, not 1.** End of week 2 (Q0 result); end of 17a (FP corpus quality); before 17b (capacity check); end of 17b (plugin breakage rate); before 17d (launch-data sufficiency). Any one can re-plan the rest.
+- **Cut order is documented, not negotiated under stress.** If external pressure forces a stop: 17d entire → TASK-131 → TASK-130 → TASK-118 publish → TASK-120+121. Never cut: 17a's FP reduction (TASK-123/124/125), TASK-126 (ADR-008), Q0 launch ops.
+
+**Open questions / followups:**
+
+- **Backend repo: write Phase 17 cross-repo tickets.** `fendix-backend` should have its own task entries for "re-parse new ScanFinding fields per engine release" + "regenerate openapi.json after each engine release" — ~5 days total across 4 releases. Not blocking Phase 17a kickoff (TASK-120/121 land late in 17a; the backend integration ticket fires when those ship).
+- **Frontend repo: write Phase 17 cross-repo tickets.** Same as above for `fendix_frontend` — ~12 days total across 4 releases (codegen + UI surface for new fields per engine release). Not blocking 17a kickoff.
+- **Q0 launch first.** Phase 17a starts in parallel with Q0 Operator Rollout, but Q0's week-2 decision gate is the *first* re-plan trigger. If Q0 misses (<100 stars / <8 installs in 2 weeks), pause TASK-119 and re-evaluate.
+- **No ADR-009 / ADR-010 yet.** [docs/example_plan.md](../docs/example_plan.md) Critical-Files index mentions ADR-009 (backend-vs-OSS split) and ADR-010 (no-runtime-agent policy retained) as future writes. Defer to whenever those decisions actually come under pressure; not in Phase 17 scope.
+- **Q0 launch ops decision gate at week 2.** Documented in [docs/quarter_plan.md](../docs/quarter_plan.md) §"Decision gates" and in [tasks/CURRENT_SPRINT.md](CURRENT_SPRINT.md) Phase 17a section. Owner action: at week 2, count stars + installs against thresholds (≥100 / ≥8 = continue; below = pause + re-evaluate).
+
+**Next session should start with:**
+
+- **Operator picks: kick off TASK-119 (native dep-CVE scanners, ~6 days) or finish Q0 first?** Per the sequencing rationale, Q0 launch is parallel with TASK-119 — they don't block each other. But practically, an unlaunched product getting native deps is sunk-cost-y. Recommendation: ship Q0 steps 6–10 (operator side — register GitHub App, deploy, Marketplace submit, seed issues, launch post) first if any are still pending, *then* start TASK-119 with Q0 traffic flowing in. If Q0 is already submitted and just waiting on Marketplace review, start TASK-119 immediately — it's 6 days of pure engine work and the Marketplace review window is the ideal time to do it.
+- **Decide which of TASK-119's three sub-deliverables ships first.** govulncheck (Go), pip-audit-equivalent (Python), npm-audit-equivalent (Node). Recommend govulncheck first — it's a Go binary, single-language, and `golang.org/x/vuln/cmd/govulncheck` is the upstream tool to model the in-process logic against. Python + Node follow same pattern.
+- **Write TASK-126 (ADR-008) early in 17a, not late.** It's 1 day, it's the conceptual anchor for the whole strategic pivot, and writing it forces clarity that helps the rest of 17a. Recommend day 2 or 3 of the sprint, right after Q0 operator-side steps complete.
+
+---
+
+## Earlier Session (2026-05-02 — Operator-side rollout — deployment config + community seeding + launch prep)
 
 **Session goal:** Prepare all operator-side artifacts for the v0.7.0 external rollout: deployment config (Fly.io + k8s), community issue seeding, Marketplace listing copy, open-source launch post drafts, and operator runbook tying everything together.
 

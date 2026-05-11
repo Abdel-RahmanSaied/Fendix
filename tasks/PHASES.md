@@ -562,6 +562,8 @@ TASK-114  Reachability/dataflow correlation: whitebox taint chains, blackbox con
 
 ## Phase 16 — P6: Architecture v2 (v2.0)
 
+**Status note (2026-05-11):** TASK-115, TASK-116, TASK-118 pulled forward into **Phase 17b** (v0.9) per [docs/quarter_plan.md](../docs/quarter_plan.md). Only TASK-117 (AST analyzer migration via tree-sitter or Python plugin) remains in Phase 16 as the true v2.0 leftover — it's the hardest of the four, the AST analyzer doesn't degrade gracefully when removed, and shipping <500ms p50 cold start without it still wins the cold-start story. The original Phase 16 body below is retained verbatim for historical reference; the cold-start work is now Phase 17b.
+
 **Goal:** Make Python optional. Drop the embedded-Python boot tax for the 80% of scans that don't need Semgrep depth. Move closer to "Trivy-fast cold start" (<500ms) for the common case.
 
 **Value:** Python startup tax (~2s) aggregated across thousands of daily CI runs is real cost. Embedded extraction is a frequent bug source (permissions, partial extracts, version drift). Tested across 4 platforms per release. None of this is necessary for secrets/regex/OpenAPI-parsing checks — those are Go-native.
@@ -580,10 +582,155 @@ TASK-114  Reachability/dataflow correlation: whitebox taint chains, blackbox con
 
 **Tasks:**
 ```
-TASK-115  Port secrets analyzer to Go (all 15 patterns + .env handling)
-TASK-116  Make Semgrep optional: shell out to user-installed semgrep, remove from embedded distribution; clear absence-messaging
-TASK-117  AST analyzer migration: tree-sitter in Go OR Python plugin (decide after Phase 15 plugin system stabilizes)
-TASK-118  Remove embedded Python distribution; binary-size + cold-start benchmark in README
+TASK-115  Port secrets analyzer to Go (all 15 patterns + .env handling)              [PULLED FORWARD → Phase 17b]
+TASK-116  Make Semgrep optional: shell out to user-installed semgrep, remove from
+          embedded distribution; clear absence-messaging                              [PULLED FORWARD → Phase 17b]
+TASK-117  AST analyzer migration: tree-sitter in Go OR Python plugin (decide after
+          Phase 15 plugin system stabilizes)                                          [DEFERRED — true v2.0 leftover]
+TASK-118  Remove embedded Python distribution; binary-size + cold-start benchmark
+          in README                                                                   [PULLED FORWARD → Phase 17b]
+```
+
+---
+
+## Phase 17 — P7: Engine-first roadmap (v0.8 → v0.11)
+
+**Period:** 2026-05-11 → ~5 months (4 releases, each its own honest time budget)
+**Source document:** [docs/quarter_plan.md](../docs/quarter_plan.md)
+**Supersedes for this period only:** Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation work). Cloud work resumes after Phase 17d ships.
+
+**Goal:** Widen the OSS engine moat across four directions — detection breadth, false-positive discipline, cold-start performance, plugin ecosystem — before turning on revenue. Each direction ships as its own minor release with measurable exit criteria. No artificial 3-month deadline; each workstream takes the time it needs.
+
+**Value:** The engine is the funnel per [docs/example_plan.md](../docs/example_plan.md) §1.7. Investing one stretched quarter (~5 months) widening the moat before Stripe + AI ship means: (a) Q2 conversion happens against a stronger product, (b) Q0 launch traffic gets a v0.8+ with FP discipline rather than v0.7 with rough edges, (c) Phase 16 cold-start work lands before more checks are written against the embedded-Python path. Trade-off accepted: no paid revenue for ~5 months; original Q1 of [docs/example_plan.md](../docs/example_plan.md) ($10K-MRR-by-month-9 target) shifts right by one full quarter.
+
+**Decision gates (each one can re-plan the rest):**
+
+1. **End of week 2:** Q0 launch result. If <100 stars / <8 installs in 2 weeks, pause Phase 17a and re-evaluate — widening moat on an unused product is sunk cost.
+2. **End of Phase 17a (v0.8 ships):** FP corpus quality. If <15 real FPs catalogued, expand the corpus or accept that Phase 17d's real-world pass is doing the heavy lifting.
+3. **Before Phase 17b:** Capacity check. If Phase 17a took >7 weeks (vs. ~6 planned), 70% capacity assumption is wrong — consider skipping straight to Phase 17c and deferring Phase 16/17b to next year.
+4. **End of Phase 17b (v0.9 ships):** Plugin breakage rate. If v0.9 broke >1–2 reference plugins, add a hotfix sprint before Phase 17c.
+5. **Before Phase 17d:** Launch-data sufficiency. Phase 17d needs real user FPs. If <20 user-reported FPs by then, defer Phase 17d to next year — no signal to act on.
+
+**Cross-repo coordination (canonical tickets live in those repos):**
+
+- `fendix-backend`: per-release, re-parse new engine JSON fields in `backend/scanning/services.py::FendixEngine` and regenerate `openapi.json` via `make schema`. No new Django apps. No Stripe. No AI explanation. ~1 day per engine release × 4 releases.
+- `fendix_frontend`: per-release, `npm run codegen` against the regenerated `openapi.json`; surface new `ScanFinding` fields (taint chains for new reachability patterns, suppression snippet for TASK-124) in the dashboard. No new pages. ~2 days per engine release × 4 releases.
+
+**Cut order if external pressure forces a stop:**
+
+1. Phase 17d entire — defer round-2 FP tuning to "do during cloud quarter as a side track."
+2. TASK-131 (plugin CI smoke test) — keep docs + reference plugins, drop the automated regression guard.
+3. TASK-130 (`fendix plugins` CLI) — docs + reference plugins are the deliverable; CLI is nice-to-have.
+4. TASK-118 cold-start benchmark publish — ship Phase 17b without published numbers; add in v0.9.1.
+5. TASK-120 + TASK-121 (XSS + cmd-injection reachability) — keep v0.7's three patterns; v0.8 ships with just deps + FP work.
+
+**Never cut:** Phase 17a's FP reduction (TASK-123, TASK-124, TASK-125), TASK-126 (ADR-008), or Q0 launch ops.
+
+---
+
+### Phase 17a — v0.8: Detection quality + FP reduction
+
+**Estimate:** ~25 solo days with 25% integration buffer, ~6 weeks at 70% capacity. Runs in parallel with Q0 operator launch ops.
+
+**Exit criteria:**
+
+- [ ] Native dep-CVE scanners shipped for Go (`govulncheck`), Python (`pip-audit`-equivalent), Node (`npm-audit`-equivalent), reading manifests directly without delegating to OSV/Trivy.
+- [ ] Two new reachability patterns shipped: XSS-sink taint chains and command-injection-sink taint chains, behind the same TASK-114 correlator escalation logic.
+- [ ] FP corpus catalogued in `tasks/FP_CORPUS.md` with ≥15 real false positives from running engine against 3+ OWASP-juice-shop-style targets.
+- [ ] Correlator confidence math rebalanced against the FP corpus; measured FP-rate reduction documented in release notes.
+- [ ] Every finding in the PR comment ships with a copy-paste `.fendix-ignore` snippet keyed on stable hash (one-click suppression).
+- [ ] `reachable_code` severity multiplier audited and rebalanced per [docs/example_plan.md](../docs/example_plan.md) §3.5; EPSS/KEV multipliers explicitly deferred to cloud quarter.
+- [ ] ADR-008 (read-only AI / supersede BACKLOG-017) committed to [docs/adr/](../docs/adr/).
+- [ ] v0.8.0 tagged + release.yml run succeeds.
+
+**Tasks:**
+```
+TASK-119  Native dep-CVE scanners (govulncheck / pip-audit / npm-audit) in
+          internal/scanner/deps/{govulncheck,pip,npm}/                                ~6 days
+TASK-120  XSS-sink reachability pattern in engine/correlator.go                       ~2 days
+TASK-121  Command-injection-sink reachability pattern in engine/correlator.go         ~2 days
+TASK-122  FP corpus build — scripts/fp-corpus/ runner + tasks/FP_CORPUS.md            ~2 days
+TASK-123  Correlator confidence math pass — tighten thresholds against TASK-122       ~3 days
+TASK-124  One-click suppression snippet in PR comment (ghapp/handler.go)              ~3 days
+TASK-125  Severity scoring refresh — rebalance reachable_code multiplier              ~2 days
+TASK-126  ADR-008 written into docs/adr/                                              ~1 day
+```
+
+---
+
+### Phase 17b — v0.9: Phase 16 cold-start pulled forward
+
+**Estimate:** ~21 solo days with 25% buffer, ~5 weeks at 70% capacity. The invasive workstream — most likely to slip; test extensively before tagging.
+
+**Exit criteria:**
+
+- [ ] Secrets analyzer ported from `python/analyzers/secrets.py` to Go in `internal/scanner/secrets/`; all current patterns including `.env` handling preserved; behind the same NDJSON in-process plugin contract.
+- [ ] Semgrep shelled-out, not embedded — detect `semgrep` in `$PATH`; if absent, scan continues + emits "install semgrep for X% more checks" notice.
+- [ ] Embedded Python distribution removed from binary; binary-size reduction documented.
+- [ ] Cold-start benchmark: <500ms p50 for code-only scans without Semgrep; numbers published in [docs/benchmarks.md](../docs/benchmarks.md).
+- [ ] Plugin wire-contract compatibility verified — v0.7-era plugins still work against v0.9, OR breaking changes documented with 1-minor-version deprecation window.
+- [ ] v0.9.0 tagged + release.yml run succeeds.
+
+**Tasks:**
+```
+TASK-115  Port secrets analyzer to Go (pulled forward from Phase 16)                 ~6 days
+TASK-116  Make Semgrep shelled-out, not embedded (pulled forward from Phase 16)      ~5 days
+TASK-118  Drop embedded Python distribution + cold-start benchmark publish
+          (pulled forward from Phase 16)                                              ~4 days
+TASK-127  Plugin wire-contract compatibility audit                                    ~2 days
+```
+
+TASK-117 (AST analyzer migration) is **deliberately deferred** to true Phase 16 / v2.0 — see rationale at top of this Phase 17 entry and at the Phase 16 status note.
+
+---
+
+### Phase 17c — v0.10: Plugin ecosystem polish
+
+**Estimate:** ~14 solo days with 25% buffer, ~4 weeks at 70% capacity.
+
+**Sequencing rationale:** Phase 17b may shift the plugin NDJSON contract subtly; doing plugin docs/examples before v0.9 ships means rewriting them. After v0.9 the contract is stable and the documentation work is wasted-effort-free.
+
+**Exit criteria:**
+
+- [ ] [docs/plugins.md](../docs/plugins.md) rewritten for external authors — NDJSON wire contract with worked examples, plugin lifecycle, error handling, packaging, installation.
+- [ ] At least 2 new reference plugins in non-Go languages (Python + Ruby or Node) under `examples/plugins/`; proves wire contract is language-agnostic.
+- [ ] `fendix plugins list` / `fendix plugins install <git-url>` CLI subcommands shipped; local install only (no marketplace — that's Q3 of [docs/example_plan.md](../docs/example_plan.md)).
+- [ ] CI smoke test: each reference plugin runs against a fixture in `make test`, asserts findings shape; guards wire-contract regressions.
+- [ ] v0.10.0 tagged + release.yml run succeeds.
+
+**Tasks:**
+```
+TASK-128  Plugin authoring docs — rewrite docs/plugins.md for external authors        ~3 days
+TASK-129  2 new reference plugins in non-Go languages (Python + Ruby/Node)            ~3 days
+TASK-130  fendix plugins list / install <git-url> CLI subcommands (new
+          internal/pluginscmd/ package)                                               ~3 days
+TASK-131  Plugin smoke test in CI — make test runs each reference plugin              ~2 days
+```
+
+---
+
+### Phase 17d — v0.11: Real-world FP round 2 (post-launch data)
+
+**Estimate:** ~19 solo days with 25% buffer, ~5 weeks at 70% capacity.
+
+**Sequencing rationale:** This phase depends on real-world FP reports from launch traffic. Q0 launches in parallel with Phase 17a; by the time 17a–17c ship, you have ~4–6 months of real user feedback. The second pass of FP tuning is informed by *actual* user pain, not synthetic juice-shop fixtures.
+
+**Exit criteria:**
+
+- [ ] Every user-reported FP filed against v0.8–v0.10 is triaged in `tasks/FP_USER_TICKETS.md`; clustered by pattern; top 5–10 categories selected for fix.
+- [ ] Targeted correlator fixes shipped for the top 5–10 FP categories.
+- [ ] One more reachability pattern added, chosen from real ticket data (likely XXE, deserialization, or path-traversal — not predetermined).
+- [ ] Suppression UX iterated based on how users actually use TASK-124's one-click snippets.
+- [ ] Benchmark numbers refreshed in [docs/benchmarks.md](../docs/benchmarks.md) on v0.11.
+- [ ] v0.11.0 tagged + release.yml run succeeds.
+
+**Tasks:**
+```
+TASK-132  Real-world FP triage — catalog + cluster every FP filed against v0.8–v0.10  ~3 days
+TASK-133  Targeted correlator fixes for top 5–10 FP categories                        ~5 days
+TASK-134  One more reachability pattern, data-driven from TASK-132 results            ~4 days
+TASK-135  Suppression UX iteration based on TASK-124 usage data                       ~2 days
+TASK-136  Benchmark refresh on v0.11                                                  ~1 day
 ```
 
 ---
