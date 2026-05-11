@@ -249,6 +249,15 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		findings = Correlate(findings)
 	}
 
+	// 5.4. Escalate non-correlated reachable findings (TASK-125).
+	// The correlator already bumps correlated-reachable findings via
+	// mergeFindings's second escalateSeverity call. This step catches
+	// the pure-whitebox case: an AST-proven taint chain on a finding
+	// that didn't correlate to a blackbox match. Per docs/example_plan.md
+	// §3.5 the multiplier is 1.5x; on the discrete severity scale that's
+	// ~one level up. Saturates at CRITICAL.
+	findings = escalateNonCorrelatedReachable(findings)
+
 	// 5.5. Deduplicate identical findings across endpoints (TASK-088).
 	// Runs after correlation so correlated findings are grouped too.
 	// "Missing CSP × 21 endpoints" → 1 finding with AffectedEndpoints[21].
@@ -556,6 +565,50 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
 
 	slog.Info("whitebox scan complete", "findings", len(result.Findings))
 	return result.Findings
+}
+
+// escalateNonCorrelatedReachable bumps severity by one level on findings
+// where the engine proved a reachable taint chain (Finding.Reachable=true)
+// but no blackbox match was correlated. The correlator already bumps the
+// correlated-reachable case in mergeFindings; this catches the pure-
+// whitebox slice that misses correlation (no live HTTP target, or no
+// matching blackbox endpoint).
+//
+// TASK-125 / docs/example_plan.md §3.5: reachable adds a 1.5× multiplier
+// which on the discrete severity scale lands as ~one level up. Saturates
+// at CRITICAL. Findings with Reachable=false are unchanged.
+//
+// Confidence cap (enforceConsistency, step 5.6) runs after this, so a
+// MEDIUM-confidence finding escalated to CRITICAL gets capped back to
+// HIGH — the reachable bump amplifies what the confidence allows; it
+// can't override the cap.
+func escalateNonCorrelatedReachable(findings []models.Finding) []models.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	escalated := 0
+	for i, f := range findings {
+		if !f.Reachable {
+			continue
+		}
+		if f.Source == models.SourceCorrelated {
+			// Correlator already applied this bump in mergeFindings.
+			// Re-applying here would double-bump and exceed the cap.
+			continue
+		}
+		bumped := escalateSeverity(f.Severity)
+		if bumped != f.Severity {
+			slog.Debug("reachable severity escalation (non-correlated)",
+				"id", f.ID, "title", f.Title,
+				"original_severity", f.Severity, "new_severity", bumped)
+			findings[i].Severity = bumped
+			escalated++
+		}
+	}
+	if escalated > 0 {
+		slog.Info("reachable findings escalated", "count", escalated)
+	}
+	return findings
 }
 
 // enforceConsistency walks every finding through models.EnforceSeverityConsistency

@@ -28,14 +28,40 @@ var SourceMult = map[Source]float64{
 	SourceWhitebox:   0.9,
 }
 
+// ReachableMult is the multiplier applied when the engine proved
+// intra-function dataflow from a request source to a dangerous sink
+// (Finding.Reachable=true). Per docs/example_plan.md §3.5: "(1.5 if
+// reachable_code else 1.0)". Translates to ~one severity-level bump
+// on the discrete CRITICAL/HIGH/MEDIUM/LOW/INFO scale.
+//
+// TASK-125: lifts the multiplier from "an idea in the plan doc" to a
+// first-class factor in CalculateSeverity. The correlator already
+// applies a discrete escalateSeverity for the correlated-reachable
+// case (TASK-114); this lets non-correlated whitebox findings with
+// reachable=true also benefit, via the orchestrator's
+// escalateNonCorrelatedReachable step.
+const ReachableMult = 1.5
+
 // CalculateSeverity computes the severity level for a finding based on
 // its category, confidence, and source using the scoring model.
 func CalculateSeverity(category string, confidence Confidence, source Source) Severity {
+	return CalculateSeverityReachable(category, confidence, source, false)
+}
+
+// CalculateSeverityReachable extends CalculateSeverity with the
+// Finding.Reachable=true bump (TASK-125 / docs/example_plan.md §3.5).
+// When reachable is true, the score is multiplied by ReachableMult
+// before banding, which lifts most findings by one severity level
+// (subject to the confidence cap enforced by EnforceSeverityConsistency).
+func CalculateSeverityReachable(category string, confidence Confidence, source Source, reachable bool) Severity {
 	base, ok := ImpactBase[category]
 	if !ok {
 		return SeverityInfo
 	}
 	score := base * ConfidenceMult[confidence] * SourceMult[source]
+	if reachable {
+		score *= ReachableMult
+	}
 
 	switch {
 	case score >= 9.0:

@@ -175,6 +175,85 @@ func TestCalculateSeverity(t *testing.T) {
 	}
 }
 
+// TASK-125: reachable=true applies ReachableMult (1.5x) and typically
+// lifts severity by one level. Locks in the multiplier value + the
+// banding it produces.
+func TestCalculateSeverityReachable(t *testing.T) {
+	cases := []struct {
+		name             string
+		category         string
+		confidence       Confidence
+		source           Source
+		wantWithout      Severity
+		wantWithReachable Severity
+	}{
+		{
+			// injection 9.5 × HIGH 1.0 × whitebox 0.9 = 8.55 → HIGH;
+			// × 1.5 = 12.825 → CRITICAL.
+			name: "injection_whitebox_HIGH bumps to CRITICAL",
+			category: "injection", confidence: ConfidenceHigh, source: SourceWhitebox,
+			wantWithout: SeverityHigh, wantWithReachable: SeverityCritical,
+		},
+		{
+			// headers 4.0 × HIGH 1.0 × blackbox 1.0 = 4.0 → MEDIUM;
+			// × 1.5 = 6.0 → MEDIUM (banding doesn't cross 7.0 yet).
+			name: "headers stays MEDIUM (within band)",
+			category: "headers", confidence: ConfidenceHigh, source: SourceBlackbox,
+			wantWithout: SeverityMedium, wantWithReachable: SeverityMedium,
+		},
+		{
+			// data_exposure 7.0 × HIGH 1.0 × blackbox 1.0 = 7.0 → HIGH;
+			// × 1.5 = 10.5 → CRITICAL.
+			name: "data_exposure_HIGH bumps HIGH → CRITICAL",
+			category: "data_exposure", confidence: ConfidenceHigh, source: SourceBlackbox,
+			wantWithout: SeverityHigh, wantWithReachable: SeverityCritical,
+		},
+		{
+			// cors 6.5 × MEDIUM 0.75 × whitebox 0.9 = 4.39 → MEDIUM;
+			// × 1.5 = 6.58 → MEDIUM (still in band).
+			name: "cors_MEDIUM_whitebox stays MEDIUM",
+			category: "cors", confidence: ConfidenceMedium, source: SourceWhitebox,
+			wantWithout: SeverityMedium, wantWithReachable: SeverityMedium,
+		},
+		{
+			// unknown category returns INFO regardless of reachable.
+			name: "unknown category INFO regardless of reachable",
+			category: "made_up", confidence: ConfidenceHigh, source: SourceWhitebox,
+			wantWithout: SeverityInfo, wantWithReachable: SeverityInfo,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotWithout := CalculateSeverityReachable(c.category, c.confidence, c.source, false)
+			if gotWithout != c.wantWithout {
+				t.Errorf("without reachable: got %s, want %s", gotWithout, c.wantWithout)
+			}
+			gotWith := CalculateSeverityReachable(c.category, c.confidence, c.source, true)
+			if gotWith != c.wantWithReachable {
+				t.Errorf("with reachable: got %s, want %s", gotWith, c.wantWithReachable)
+			}
+		})
+	}
+}
+
+func TestReachableMultConstantStable(t *testing.T) {
+	// Lock in the documented value per docs/example_plan.md §3.5.
+	if ReachableMult != 1.5 {
+		t.Errorf("ReachableMult must remain 1.5 per the plan; got %f", ReachableMult)
+	}
+}
+
+func TestCalculateSeverity_BackwardsCompatible(t *testing.T) {
+	// CalculateSeverity must still produce the same answer as before
+	// when reachable is implicitly false. Locks in that existing callers
+	// (tests, benchmarks) keep working without touching them.
+	got := CalculateSeverity("injection", ConfidenceHigh, SourceWhitebox)
+	want := CalculateSeverityReachable("injection", ConfidenceHigh, SourceWhitebox, false)
+	if got != want {
+		t.Errorf("CalculateSeverity drift: %s vs %s", got, want)
+	}
+}
+
 func TestSeverityRank(t *testing.T) {
 	tests := []struct {
 		severity Severity
