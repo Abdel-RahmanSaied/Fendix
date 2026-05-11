@@ -44,6 +44,10 @@ Thumbs.db
 # Benchmark run artifacts (per-run timestamped dirs)
 bench-results/
 
+# FP-corpus raw scan outputs (per-run timestamped dirs); the curated
+# catalog is at tasks/FP_CORPUS.md.
+fp-corpus-results/
+
 # Environment / secrets
 .env
 .env.*

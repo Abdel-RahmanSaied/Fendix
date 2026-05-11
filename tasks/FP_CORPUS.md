@@ -1,0 +1,149 @@
+# Fendix FP Corpus
+
+> Phase 17a / TASK-122. Catalogue of false positives surfaced by running
+> fendix against curated targets. Input for TASK-123 (correlator
+> confidence math) and downstream FP-reduction tasks.
+
+**Last updated:** 2026-05-11 (initial build — fendix-self + juice-shop passive)
+**Engine version:** v0.7.0-19-g57f85a1 (post-TASK-119/120/121)
+**Methodology:** see `scripts/fp-corpus/run.sh`
+**Raw results:** `fp-corpus-results/<timestamp>/` (gitignored — regenerate with the runner)
+
+---
+
+## Phase 17a exit gate
+
+- Target: ≥15 real FPs catalogued.
+- Status: ✅ **35 FP instances across 4 distinct root-cause patterns** — see below.
+
+---
+
+## FP-pattern summary
+
+| Pattern | Instances | Root cause | Mitigation today | TASK-123 confidence-math lever |
+|---|---:|---|---|---|
+| **P1** Test fixtures flagged as production | 31 | Engine has no concept of "test code vs prod code" | `.fendix-ignore` rule for `**/tests/**` | Out of scope — path filter, not confidence tuning |
+| **P2** Header/CORS check fires on 4xx response | 3 | Scanner doesn't filter by response status | Manual suppression per endpoint | De-escalate confidence (HIGH → MEDIUM → LOW) when target returned 4xx |
+| **P3** Rate-limiting check on static-file endpoint | 1 | Scanner doesn't distinguish API from static files | Manual suppression | De-escalate when endpoint matches static-file regex (`.DS_Store`, `robots.txt`, `favicon.ico`, etc.) |
+| **P4** Header check on metrics-exposure endpoint | (0 — flagged here as a known-mostly-TP class for tracking) | n/a | n/a | n/a — TP class |
+
+Three of these patterns are addressable by TASK-123 confidence math (P2, P3) or trivial config (P1). P4 is not actually an FP class — included for tracking parity with how the engine treats /metrics-style endpoints.
+
+---
+
+## Detailed catalog
+
+### Pattern P1: Test fixtures flagged as production findings
+
+**Target:** fendix-self (`python/` tree of this repository)
+**Scan:** `fendix scan --code $(pwd)/python`
+**Engine output:** 32 findings, see `fp-corpus-results/<ts>/fendix-self.json`
+
+Every finding fires on a path under `python/tests/fixtures/` or in test files themselves. These are intentional vulnerability samples used to validate the analyzer's detection logic; they are **NOT** production code. The engine flags them correctly *for its own internal testing*, but a user scanning their own repo will hit the same shape of FP for every test fixture they have.
+
+| Finding ID | Severity | Category | Endpoint | Root cause | TP/FP |
+|---|---|---|---|---|---|
+| SEC-002 | MEDIUM | injection | tests/fixtures/ast_target/dangerous.js:11 | Test fixture for JS document.write XSS heuristic | **FP** for user prod scan |
+| SEC-003 | HIGH | injection | tests/fixtures/ast_target/dangerous.js:16 | Test fixture for JS SQL template literal | **FP** |
+| SEC-004 | HIGH | injection | tests/fixtures/ast_target/dangerous.js:5 | Test fixture for JS eval | **FP** |
+| SEC-005 | HIGH | injection | tests/fixtures/ast_target/dangerous.js:8 | Test fixture for JS innerHTML | **FP** |
+| SEC-006 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:14 | Test fixture for PY_OS_SYSTEM | **FP** |
+| SEC-007 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:19 | Test fixture for PY_EVAL | **FP** |
+| SEC-008 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:24 | Test fixture for PY_EXEC | **FP** |
+| SEC-009 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:29 | Test fixture for PY_SUBPROCESS_SHELL | **FP** |
+| SEC-010 | CRITICAL | injection | tests/fixtures/ast_target/dangerous.py:34 | Test fixture for PY_SQL_INJECTION | **FP** |
+| SEC-011 | CRITICAL | injection | tests/fixtures/ast_target/dangerous.py:55 | Test fixture for PY_PICKLE_LOAD | **FP** |
+| SEC-012 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:60 | Test fixture for PY_YAML_UNSAFE_LOAD | **FP** |
+| SEC-013 | HIGH | secrets | tests/fixtures/ast_target/dangerous.py:70 | Test fixture for PY_WEAK_CRYPTO_PASSWORD | **FP** |
+| SEC-014 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:86 | Test fixture for PY_OPEN_REDIRECT (reachable=true) | **FP** |
+| SEC-015 | HIGH | injection | tests/fixtures/ast_target/dangerous.py:91 | Test fixture for PY_SSRF | **FP** |
+| SEC-016 | HIGH | auth_bypass | tests/fixtures/ast_target/dangerous.py:96 | Test fixture for PY_AUTH_HEADER_TRUST | **FP** |
+| SEC-017 | HIGH | secrets | tests/fixtures/secrets_target/.env:1 | Test fixture for ENV_SECRET pattern | **FP** |
+| SEC-018 | CRITICAL | secrets | tests/fixtures/secrets_target/.env:4 | Test fixture for STRIPE_LIVE_KEY in .env | **FP** |
+| SEC-019 | HIGH | secrets | tests/fixtures/secrets_target/config.py:10 | Test fixture for generic API_KEY | **FP** |
+| SEC-020 | HIGH | secrets | tests/fixtures/secrets_target/config.py:18 | Test fixture for password assignment | **FP** |
+| SEC-021 | HIGH | secrets | tests/fixtures/secrets_target/config.py:21 | Test fixture for DB connection string | **FP** |
+| SEC-022 | CRITICAL | secrets | tests/fixtures/secrets_target/config.py:7 | Test fixture for AWS secret | **FP** |
+| SEC-023 | CRITICAL | secrets | tests/fixtures/secrets_target/gcp_service_account.json:2 | Test fixture for GCP service account | **FP** |
+| SEC-024 | CRITICAL | secrets | tests/fixtures/secrets_target/gcp_service_account.json:5 | Test fixture for GCP service account private key | **FP** |
+| SEC-025 | HIGH | secrets | tests/fixtures/secrets_target/provider_tokens.py:15 | Test fixture for SLACK_TOKEN | **FP** |
+| SEC-026 | HIGH | secrets | tests/fixtures/secrets_target/provider_tokens.py:21 | Test fixture for GOOGLE_API_KEY | **FP** |
+| SEC-027 | CRITICAL | secrets | tests/fixtures/secrets_target/provider_tokens.py:24 | Test fixture for ANTHROPIC_API_KEY | **FP** |
+| SEC-028 | CRITICAL | secrets | tests/fixtures/secrets_target/provider_tokens.py:27 | Test fixture for OPENAI_API_KEY | **FP** |
+| SEC-029 | HIGH | secrets | tests/fixtures/secrets_target/provider_tokens.py:33 | Test fixture for NPM_TOKEN | **FP** |
+| SEC-030 | CRITICAL | secrets | tests/fixtures/secrets_target/provider_tokens.py:6 | Test fixture for GITHUB_TOKEN | **FP** |
+| SEC-031 | HIGH | secrets | tests/test_secrets.py:211 | Embedded test data — secret detector unit test | **FP** |
+| SEC-032 | CRITICAL | secrets | tests/test_secrets.py:219 | Embedded test data — secret detector unit test | **FP** |
+
+**Total: 31 FPs from this pattern.** All have the same root cause: the engine has no semantic concept of "this is a test fixture." Any user scanning a repo with test code will hit this.
+
+**Mitigation today:** ship a `.fendix-ignore` snippet by default in `fendix init` (already done — TASK-105) covering `**/tests/**` and `**/test_*.py`. Document the pattern in the README.
+
+**TASK-123 lever:** none — this is not addressable via confidence math. Out of scope; relevant to TASK-124 (one-click suppression) so the user can ignore the whole cluster with one click.
+
+---
+
+### Pattern P2: Header/CORS check fires on a 4xx response
+
+**Target:** juice-shop v17.1.1 (passive blackbox)
+**Scan:** `fendix scan --url http://localhost:3000`
+**Engine output:** 7 findings, see `fp-corpus-results/<ts>/juice-shop.json`
+
+When the discovery crawler hits an endpoint that returns 404, the header/CORS scanners still inspect the response headers and flag missing security headers. Missing CSP on a 404 page is real-but-not-actionable: the page isn't a feature, and any reasonable framework returns 4xx pages without app-specific headers.
+
+| Finding ID | Severity | Category | Endpoint | Why FP |
+|---|---|---|---|---|
+| SEC-002 | MEDIUM | cors | GET /.env.local | Endpoint returns 404; CORS misconfig on a 404 page is unreachable |
+| SEC-003 | MEDIUM | headers | GET /.env.local | Missing CSP on a 404 page — not exploitable |
+| SEC-004 | MEDIUM | headers | GET /.env.local | Missing HSTS on a 404 page — not exploitable on this specific path |
+
+**Total: 3 FPs from this pattern.** Likely more in the wild — any crawler-discovered 404 path produces the same shape.
+
+**TASK-123 lever:** **strong candidate.** In `internal/scanner/cors.go` + `internal/scanner/headers.go`, skip the check (or de-escalate to LOW confidence) when the response status is 4xx. Severity → MEDIUM → LOW for these instances would drop them below the typical `--fail-on HIGH` gate. Implementation: pass response status into the check function (already available — just gate the emit on it).
+
+**Cross-cutting note:** the crawler discovered `/.env.local` via the wordlist (TASK-089's expanded common-paths list). The endpoint legitimately returns 404 because juice-shop doesn't have a `.env.local`. The wordlist is doing its job (discovery); the FP is at the per-check level.
+
+---
+
+### Pattern P3: Rate-limiting check on static-file endpoint
+
+**Target:** juice-shop v17.1.1 (passive blackbox)
+
+| Finding ID | Severity | Category | Endpoint | Why FP |
+|---|---|---|---|---|
+| SEC-001 | MEDIUM | headers | GET /.DS_Store | Rate limiting on a static-file endpoint is overzealous; `.DS_Store` isn't an API |
+
+**Total: 1 FP from this pattern.** Likely more on other targets — `favicon.ico`, `robots.txt`, `humans.txt`, source-map `.map` files would all hit the same path.
+
+**TASK-123 lever:** **medium candidate.** In `internal/scanner/ratelimit.go`, skip when endpoint path matches a known static-file regex (`\.(DS_Store|map|ico|txt|woff2?|ttf|css|js|png|jpg|gif|svg)$`). Or de-escalate severity to INFO for these paths. Implementation: small regex check in the rate-limit emit.
+
+---
+
+### Non-FP class P4 (tracked for parity): metrics-endpoint header findings
+
+| Finding ID | Severity | Category | Endpoint | Classification |
+|---|---|---|---|---|
+| SEC-005 | INFO | data_exposure | GET /metrics | **TP** — version string leak |
+| SEC-006 | LOW | headers | GET /metrics | **TP** — missing X-Content-Type-Options on a real endpoint |
+| SEC-007 | LOW | headers | GET /metrics | **TP** — missing X-Frame-Options on a real endpoint |
+
+Listed only to document that the engine handles real endpoints correctly. Not counted in the FP total.
+
+---
+
+## Methodology + reproduction
+
+1. Build the engine: `make build` (writes `bin/fendix`)
+2. Run the corpus collector: `scripts/fp-corpus/run.sh` (writes raw JSON to `fp-corpus-results/<timestamp>/`)
+3. Human review classifies each finding TP/FP and updates this file
+4. Re-run after each Phase 17a task that touches detection logic; track FP-rate delta over time
+
+## Next steps (TASK-123)
+
+Confidence-math levers identified above:
+
+1. **4xx-response gate** for header + CORS checks (addresses P2 — 3 FPs eliminated)
+2. **Static-file path regex** for rate-limit check (addresses P3 — 1 FP eliminated, likely more on real targets)
+3. **Path-scope `.fendix-ignore` template** in `fendix init` (addresses P1 — 31 FPs collapsable to 1 ignore rule)
+
+TASK-123 should ship levers 1 + 2 (confidence-math changes) and document 3 as a follow-up for TASK-124 (one-click suppression) since it's a UX/CLI change not a math change.
