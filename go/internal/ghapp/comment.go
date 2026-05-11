@@ -3,6 +3,8 @@ package ghapp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,9 +38,47 @@ type findingsReport struct {
 	Findings []struct {
 		Severity string `json:"severity"`
 		Title    string `json:"title"`
+		Category string `json:"category"`
 		Endpoint string `json:"endpoint"`
 		Line     string `json:"line"`
 	} `json:"findings"`
+}
+
+// findingHash returns a short stable hash of (title, category, endpoint).
+// Used in the PR-comment suppression snippet so users can map a
+// .fendix-ignore entry back to a specific finding even after SEC-NNN
+// IDs reassign across scans. Truncated to 8 hex chars — collision-
+// resistance over a single repo's finding set is fine at this length
+// (2^32 unique values).
+//
+// TASK-124. The hash is documentary (a // comment in YAML); the actual
+// suppression key is the (endpoint, category) pair, which is what the
+// existing ignore.go matcher already uses.
+func findingHash(title, category, endpoint string) string {
+	h := sha256.Sum256([]byte(title + "|" + category + "|" + endpoint))
+	return hex.EncodeToString(h[:4]) // 8 hex chars
+}
+
+// suppressionSnippet renders the one-line YAML the user copies into
+// .fendix-ignore to suppress this finding. Format matches
+// internal/engine/ignore.go::IgnoreRule (endpoint glob + category
+// case-insensitive match). A trailing `# fp-<hash>` comment lets users
+// search for the exact suppression they pasted later.
+//
+// TASK-124 / FP-corpus pattern P1 (test fixtures flagged as prod) is
+// the highest-volume case this helps with — one paste per pattern,
+// not one paste per instance, since the endpoint can be a glob.
+func suppressionSnippet(title, category, endpoint string) string {
+	if category == "" {
+		category = "unknown"
+	}
+	if endpoint == "" {
+		endpoint = "*"
+	}
+	// Quote the endpoint so a path with leading `/` or special chars
+	// parses unambiguously as a string scalar in YAML.
+	return fmt.Sprintf(`- {endpoint: %q, category: %q}  # fp-%s`,
+		endpoint, category, findingHash(title, category, endpoint))
 }
 
 // RenderPRComment builds the Markdown body for a PR comment from a
@@ -99,11 +139,19 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 				where = f.Line
 			}
 			fmt.Fprintf(&b, "- **[%s]** %s — `%s`\n", f.Severity, f.Title, where)
+			// TASK-124: one-click suppression snippet. Keyed on
+			// (endpoint, category) — the (title, category, endpoint)
+			// hash in the trailing comment lets users map back to the
+			// originating finding after they paste.
+			fmt.Fprintf(&b, "  ```yaml\n  %s\n  ```\n",
+				suppressionSnippet(f.Title, f.Category, where))
 		}
 		if total > 5 {
 			fmt.Fprintf(&b, "\n_…and %d more in the SARIF report._\n", total-5)
 		}
 		b.WriteString("\n")
+		b.WriteString("<sub>Copy a `yaml` block into `.fendix-ignore` to suppress that finding. ")
+		b.WriteString("The `# fp-<hash>` comment is stable across runs — search for it later.</sub>\n\n")
 	}
 
 	b.WriteString("<sub>Open the **Security** tab for inline annotations. ")

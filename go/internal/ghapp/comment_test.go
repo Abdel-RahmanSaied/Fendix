@@ -100,6 +100,105 @@ func TestRenderPRComment_TruncatesAtFive(t *testing.T) {
 	}
 }
 
+// TASK-124: every top finding gets a one-click suppression snippet.
+func TestRenderPRComment_SuppressionSnippetPerFinding(t *testing.T) {
+	body, err := RenderPRComment([]byte(`{
+		"metadata":{"mode":"blackbox","endpoints_scanned":2,"duration":"1s"},
+		"summary":{"critical":0,"high":0,"medium":2,"low":0,"info":0},
+		"sources":{"blackbox":2,"whitebox":0,"correlated":0},
+		"total":2,
+		"findings":[
+			{"severity":"MEDIUM","title":"Missing CSP header","category":"headers","endpoint":"GET /.env.local"},
+			{"severity":"MEDIUM","title":"CORS allows any origin","category":"cors","endpoint":"GET /.env.local"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("RenderPRComment: %v", err)
+	}
+
+	// Each finding's snippet is a fenced yaml block with the
+	// (endpoint, category) tuple and a fp-<hash> comment.
+	expected := []string{
+		`endpoint: "GET /.env.local", category: "headers"`,
+		`endpoint: "GET /.env.local", category: "cors"`,
+		"# fp-",
+		"```yaml",
+	}
+	for _, want := range expected {
+		if !strings.Contains(body, want) {
+			t.Errorf("snippet missing %q in body:\n%s", want, body)
+		}
+	}
+
+	// Two findings → two snippets → two yaml fences (the body also
+	// has a fp-<hash> reference in the trailing prose explaining the
+	// feature, so we count the fence opener instead).
+	if got := strings.Count(body, "```yaml"); got != 2 {
+		t.Errorf("expected 2 ```yaml fences, got %d", got)
+	}
+	// Same fields but different category should produce different
+	// hashes — locks in that the hash actually keys on all three
+	// inputs, not just the endpoint.
+	h1 := findingHash("Missing CSP header", "headers", "GET /.env.local")
+	h2 := findingHash("CORS allows any origin", "cors", "GET /.env.local")
+	if h1 == h2 {
+		t.Errorf("hashes should differ for different (title,category) pairs, both = %s", h1)
+	}
+}
+
+func TestRenderPRComment_NoSnippetWhenZeroFindings(t *testing.T) {
+	// The snippet is only useful next to a finding; the no-findings
+	// case shouldn't render a stray hint about copying YAML.
+	body, err := RenderPRComment([]byte(`{
+		"metadata":{"mode":"blackbox","endpoints_scanned":4,"duration":"0.5s"},
+		"summary":{"critical":0,"high":0,"medium":0,"low":0,"info":0},
+		"sources":{"blackbox":0,"whitebox":0,"correlated":0},
+		"total":0,
+		"findings":[]
+	}`))
+	if err != nil {
+		t.Fatalf("RenderPRComment: %v", err)
+	}
+	if strings.Contains(body, "```yaml") {
+		t.Errorf("zero-findings body should not contain yaml snippet: %s", body)
+	}
+	if strings.Contains(body, "Copy a `yaml` block") {
+		t.Errorf("zero-findings body should not advertise the snippet feature: %s", body)
+	}
+}
+
+func TestSuppressionSnippet_StableAcrossRuns(t *testing.T) {
+	// The hash must be deterministic — a developer who pastes the
+	// fp-abc12345 from one PR should be able to find it later by
+	// grep, even if SEC-NNN ids reshuffle.
+	a := suppressionSnippet("Missing CSP header", "headers", "GET /api/v1/users")
+	b := suppressionSnippet("Missing CSP header", "headers", "GET /api/v1/users")
+	if a != b {
+		t.Errorf("snippet should be deterministic:\n  %s\n  %s", a, b)
+	}
+}
+
+func TestSuppressionSnippet_HandlesMissingFields(t *testing.T) {
+	// Defensive: if category or endpoint are empty in the JSON, the
+	// snippet should still parse as valid YAML.
+	s := suppressionSnippet("orphan title", "", "")
+	if !strings.Contains(s, `category: "unknown"`) {
+		t.Errorf("empty category should fall back to 'unknown', got: %s", s)
+	}
+	if !strings.Contains(s, `endpoint: "*"`) {
+		t.Errorf("empty endpoint should fall back to '*', got: %s", s)
+	}
+}
+
+func TestFindingHash_Length(t *testing.T) {
+	// 8 hex chars (4 bytes) — enough to disambiguate within a single
+	// repo's finding set. Larger would clutter the comment.
+	h := findingHash("t", "c", "e")
+	if len(h) != 8 {
+		t.Errorf("expected 8-char hash, got %d (%q)", len(h), h)
+	}
+}
+
 func TestRenderPRComment_MalformedJSON(t *testing.T) {
 	_, err := RenderPRComment([]byte("{not json"))
 	if err == nil {
