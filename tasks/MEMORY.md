@@ -309,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (TASK-120 XSS reachability shipped — Phase 17a now 2/8 tasks complete; commit `6ed3ce2` pushed to origin/main)
+**Last updated:** 2026-05-11 (TASK-121 cmd-injection reachability shipped — Phase 17a now 3/8 tasks complete; commits `6ed3ce2` + `a1c8d7c` pushed to origin/main)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +477,55 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (TASK-121 cmd-injection reachability — Phase 17a's third task complete; engine now has 6 reachable sink categories across TASK-114 + TASK-120 + TASK-121)
+
+**Session goal:** Per the prior-entry "Next session" pointer, ship TASK-121 (command-injection reachability). Phase 17a now 2/8 done after TASK-120 (XSS) just landed. This closes the reachability-pattern trio for Phase 17a (TASK-120 + TASK-121); TASK-122 (FP corpus) is the next exit-criteria gate.
+
+**Accomplished:**
+
+- **Extended two existing cmd-injection sinks with `_collect_taint_chain`.** `PY_OS_SYSTEM` (os.system) and `PY_SUBPROCESS_SHELL` (subprocess.run/Popen/call with shell=True) were already detected as suspicious calls, but didn't emit `taint_chain` / `reachable: true`. Now they do. Both call sites call `_collect_taint_chain(node.args[0], ...)` and pass the result via the `taint_chain=` kwarg the existing `_emit_finding` already accepts. Sink-expr labels match the call shape (`os.system(<arg>)`, `subprocess(shell=True, cmd=<arg>)`).
+
+- **New `PY_OS_POPEN` sink.** `os.popen(x)` is the deprecated stdlib form with the same shell-injection surface as `os.system`. Now detected with the same shape: HIGH severity, HIGH confidence, CWE-78. Caught by an attribute-form check (`node.func.attr == "popen"` and value is `Name("os")`).
+
+- **8 new unit tests under `TestCmdInjectionReachable`.** os.system with request source (chain captured), os.system with literal (finding fires without chain), subprocess.run with shell=True request source, same with literal arg, os.popen with request source (the new sink), os.popen with literal, multi-step assignment hop (`cmd = req.args['x']; os.system(cmd)`), finding-shape parity (severity / confidence / category / CWE / chain shape).
+
+- **Posture parity with TASK-114 + TASK-120.** Sink-call fires unconditionally (suspicious shape); `reachable: true` set only when chain traces to a request source. Six reachable sink categories now ship: SQLi + SSRF + open-redirect (TASK-114), XSS Markup/mark_safe/render_template_string (TASK-120), and now os.system / subprocess(shell=True) / os.popen (TASK-121).
+
+**Files modified:**
+
+- `python/analyzers/ast_analyzer.py` (extended 2 existing branches + added 1 new branch in `visit_Call` — ~50 LOC delta)
+- `python/tests/test_ast_analyzer.py` (NEW: `TestCmdInjectionReachable` class with 8 tests — ~120 LOC)
+
+**Release commit:** `a1c8d7c` ("feat(ast): TASK-121 reachable command-injection taint chains") pushed to `origin/main`.
+
+**Build state at session end:**
+
+- Go race-clean: 18 packages (unchanged).
+- Python: **215/215** (was 207, +8 cmd-injection tests).
+- e2e: 16/16 — binary rebuilt with new embedded Python engine.
+
+**Decisions made:**
+
+- **3 sinks, not Go `exec.Command`.** Task description mentioned Go's `exec.Command` as a target. The Python AST analyzer can't parse Go (different language). Go-side cmd-injection reachability would need a Go AST visitor on the engine side — out of scope for Phase 17a. The Python coverage hits the dominant real-world cmd-injection surface for Flask/Django apps; Go cmd-injection in user codebases scanned by fendix is rare (most Go projects don't shell out at all). Defer to a future Go-AST task if any FP corpus or user report calls for it.
+- **Extended existing finding IDs, didn't introduce `PY_CMD_INJECTION_REACHABLE`.** Original task brief proposed a new finding ID, but extending `PY_OS_SYSTEM` and `PY_SUBPROCESS_SHELL` keeps the dedup pipeline simple: same ID before and after the chain extension, so historical baselines and ignore rules don't break. The `reachable: true` flag is the new signal — that's what changed, not the finding identity.
+- **`PY_OS_POPEN` as a new ID, not a sub-type of `PY_OS_SYSTEM`.** Distinct sink, distinct call site, distinct CWE-78-but-different-API. Splitting them lets users suppress one without the other (some legacy codebases use `os.popen` deliberately).
+- **No backend / frontend sync needed.** All three findings use the existing `taint_chain` + `reachable` fields absorbed earlier today (`8871c00` backend, `088d4fc` frontend). The new `SEC-PY_OS_POPEN` ID is just another string value in the existing `id` field. Zero schema delta.
+
+**Open questions / followups:**
+
+- **TASK-122 FP corpus is the next critical-path task.** Phase 17a's exit criteria require ≥15 real FPs catalogued in `tasks/FP_CORPUS.md`. With six reachable sink categories now shipping, running the engine against juice-shop + 2 more targets is the next thing that produces actionable signal. TASK-123 (correlator confidence math) depends on having that corpus.
+- **CI run for `a1c8d7c`.** Should pass cleanly — Python-only change, no Go or toolchain delta.
+
+**Next session should start with:**
+
+- **TASK-122: FP corpus build** (~2 days). New `scripts/fp-corpus/` runner. Run engine in hybrid mode against juice-shop + 1–2 more vulnerable apps (vAPI, crapi — fixtures already exist per TASK-106 scaffold). Catalogue every FP into `tasks/FP_CORPUS.md` with reproduction notes (target version, fendix version, exact CLI invocation, finding ID, why it's a FP, suggested fix). Target ≥15 FPs to satisfy the Phase 17a exit gate. Input for TASK-123.
+- **TASK-126 (ADR-008) in parallel** — ~1 day, conceptual anchor for the engine-first pivot. Independent of TASK-122 timing.
+- **TASK-123 (correlator confidence math)** depends on TASK-122 — defer until corpus exists.
+
+---
+
+## Earlier Session (2026-05-11 — TASK-120 XSS reachability — Phase 17a's second task complete; second reachability category added after TASK-114's SQLi/SSRF/open-redirect)
 
 **Date:** 2026-05-11 (TASK-120 XSS reachability — Phase 17a's second task complete; second reachability category added after TASK-114's SQLi/SSRF/open-redirect)
 
