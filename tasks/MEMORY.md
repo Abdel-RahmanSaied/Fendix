@@ -309,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (cross-repo sync absorbed engine v0.7.0 fields into backend + frontend — pre-17a hygiene; no Phase 17a tasks shipped yet)
+**Last updated:** 2026-05-11 (TASK-119 govulncheck sub-deliverable shipped — first Phase 17a code work; commit `5bf874b` pushed to origin/main)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +477,65 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (TASK-119 govulncheck sub-deliverable — first Phase 17a code work)
+
+**Session goal:** Continue the engine-first roadmap. Per the prior in-day session's "Next session" pointer, start TASK-119 with the govulncheck sub-deliverable (single language, well-defined upstream tool, ~2 of 6 task-days). Pip-audit + npm-audit follow the same pattern in subsequent sessions.
+
+**Accomplished:**
+
+- **New `internal/scanner/deps/govulncheck/` package.** `Scan(ctx, modulePath) ([]Finding, error)` invokes `golang.org/x/vuln/scan.Command` in-process — no `govulncheck` binary dependency, same call-graph reachability filter as the upstream tool, behavioral parity with `python/analyzers/deps.py::_check_go_modules` so dedup catches transition-window overlap. Parser handles `osv` + `finding` NDJSON message types; only emits a Finding when at least one `trace[].function` is non-empty (proves the user's code actually reaches the vulnerable symbol). `ErrNoGoMod` sentinel signals "not a Go module → skip silently"; other errors propagate. 13 unit tests pass: ErrNoGoMod path, parser happy path, vendored-but-uncalled drop, finding-without-function drop, no-fix-version placeholder, deterministic OSV ordering, malformed-JSON tolerance, stderr line truncation, exit-code parsing. Plus 1 `-short`-gated live test (runs in 5.7s against a fixture go.mod, no panic).
+
+- **Orchestrator wiring as step 3.5.** New step in `engine/orchestrator.go::Run()` between blackbox checks (step 3) and Python whitebox spawn (step 4). Fires when `CodePath` is set and `NoNativeDeps` is false. `errors.Is(err, govulncheck.ErrNoGoMod)` is the silent-skip signal; other errors `slog.Warn` and continue. Findings flow through the same dedup pipeline (TASK-088) so the Python deps.py output collapses into a single entry per OSV regardless of which path discovered it — important for the transition window before Phase 17b drops the embedded Python distribution entirely.
+
+- **`--no-native-deps` CLI flag + `ScanConfig.NoNativeDeps` field.** Escape hatch for debugging, regression checks, or "vuln DB unreachable, fall back to Python list." Mirrors the existing `--no-plugins` shape.
+
+- **Go toolchain bump 1.21 → 1.22.** Not stylistic. `x/tools v0.17.0` has a `-delta*delta` constant-folding bug that fails compilation on the local toolchain (Go 1.25). `x/vuln v1.0.4` (the only version compatible with go 1.21 floor) pins `x/tools v0.17.0`. `x/vuln v1.1.4` is the earliest version that picks up a fixed `x/tools`, but its own minimum go directive is 1.22. Bumped CI (`.github/workflows/ci.yml` × 2 invocations + `release.yml` × 1) and both Dockerfiles (`Dockerfile` + `Dockerfile.app`) from `golang:1.21-alpine` to `1.22-alpine` to match. v1.2.0+ require 1.25 which is too aggressive a bump; v1.1.4 is the sweet spot.
+
+- **Cross-repo sync absorption from earlier today.** Backend now persists `taint_chain` / `reachable` / `affected_endpoints`; frontend types extended. Pushed earlier in commits `8871c00` (backend) and `088d4fc` (frontend); engine docs in `2597650`. Documented in the earlier session entry below.
+
+**Files modified (engine repo, 11 files):**
+
+- `go/internal/scanner/deps/govulncheck/scanner.go` (NEW — ~250 LOC)
+- `go/internal/scanner/deps/govulncheck/scanner_test.go` (NEW — 13 tests)
+- `go/internal/engine/orchestrator.go` (step 3.5 + errors import + govulncheck import)
+- `go/internal/models/config.go` (new `NoNativeDeps bool` field)
+- `go/cmd/fendix/main.go` (new `--no-native-deps` flag, threaded into `ScanConfig`)
+- `go/go.mod` + `go/go.sum` (go 1.21 → 1.22, x/vuln v1.1.4 + 5 transitive)
+- `.github/workflows/ci.yml` (setup-go 1.21 → 1.22 × 2)
+- `.github/workflows/release.yml` (setup-go 1.21 → 1.22)
+- `Dockerfile` (golang:1.21-alpine → 1.22-alpine)
+- `Dockerfile.app` (same)
+
+**Release commit:** `5bf874b` ("feat(scanner): TASK-119 native Go dep-CVE scanner (govulncheck sub-deliverable)") pushed to `origin/main`. CI will run with the bumped Go version; if anything regresses on the 1.22 floor the commit will need a revert + capacity-check decision gate.
+
+**Build state at session end:**
+
+- Go race-clean: 16 packages incl. new `govulncheck` (added one to the prior 15).
+- Python: 198/198.
+- e2e (`make e2e`): 16/16 — built binary at `v0.7.0-9-g2597650`.
+
+**Decisions made:**
+
+- **Depend on `golang.org/x/vuln/scan`, not roll-from-scratch OSV.** Operator confirmed via AskUserQuestion. Trade-off: 5 transitive deps added (`x/mod`, `x/sync`, `x/sys`, `x/telemetry`, `x/tools`) and Go floor bumped to 1.22. Wins: call-graph reachability filter inherited from upstream (the actual value-add), ~250 LOC scanner instead of ~600 LOC OSV-only.
+- **Go floor 1.22, not 1.25.** v1.2.0+ of x/vuln require 1.25 (telemetry pkg lives there). v1.1.4 needs 1.22 only. Picking the conservative bump matches the project's "minimum-viable-bump" posture; 1.25 floor would gate the engine off any Linux distro shipping older toolchains.
+- **Wire into orchestrator alongside Python deps.py, not as a replacement.** Phase 17b will drop the Python deps path entirely (TASK-118). Today's wiring runs both; dedup catches overlap. Means a Phase 17b regression doesn't lose Go-deps coverage — the native scanner is already the source of truth.
+- **No backend / frontend sync needed for govulncheck.** Findings emit standard `Finding` shape (no new fields). Backend / frontend already absorbed the v0.7.0 fields earlier today; nothing new to plumb.
+
+**Open questions / followups:**
+
+- **CI run for commit 5bf874b.** Bumped Go version means `go.yml` and `release.yml` need to actually use Go 1.22. Action: verify GitHub Actions doesn't fail on the toolchain bump. If `go test -race` fails on a 1.22-specific incompatibility, revert + investigate.
+- **`make benchmark` against juice-shop.** Recommended sometime in Phase 17a — confirms the native deps scan doesn't add wall-clock noise to a real scan. Not blocking pip-audit kickoff.
+
+**Next session should start with:**
+
+- **TASK-119 pip-audit sub-deliverable** (~2 days, second of three). New `go/internal/scanner/deps/pip/` package, same shape as govulncheck: `Scan(ctx, codePath) ([]Finding, error)`. Reads `requirements.txt` + `Pipfile.lock` directly. OSV.dev query against the PyPI ecosystem. Cache locally at `~/.fendix/cache/osv-pypi/<sha256-of-manifest>.json` to avoid re-querying on every scan. Emits `SEC-DEPS-PY-*` findings matching the Python deps.py shape. The OSV.dev API has a batch-query endpoint (`/v1/querybatch`) so the whole dep tree is one HTTP call. Wire into orchestrator alongside govulncheck.
+- **npm-audit sub-deliverable** follows pip-audit (~2 days). Same pattern: `internal/scanner/deps/npm/`, parses `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock`, OSV.dev for npm ecosystem.
+- **TASK-126 (ADR-008) in parallel.** ~1 day, conceptual anchor, independent of feature timing.
+
+---
+
+## Earlier Session (2026-05-11 — Cross-repo sync — absorbed engine v0.7.0 fields into backend + frontend; pre-17a hygiene)
 
 **Date:** 2026-05-11 (Cross-repo sync — absorbed engine v0.7.0 fields into backend + frontend; pre-17a hygiene)
 

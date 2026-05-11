@@ -16,7 +16,7 @@
 
 | ID | Task | Status | Estimate | Notes |
 | --- | --- | --- | --- | --- |
-| TASK-119 | Native dep-CVE scanners — govulncheck / pip-audit / npm-audit in `internal/scanner/deps/{govulncheck,pip,npm}/` | 🔲 | ~6 days | Reads `go.mod` / `requirements.txt` / `package-lock.json` directly. OSV-format CVE database, cached locally. Emits Finding rows. |
+| TASK-119 | Native dep-CVE scanners — govulncheck / pip-audit / npm-audit in `internal/scanner/deps/{govulncheck,pip,npm}/` | 🔄 1/3 sub-deliverables (govulncheck shipped 2026-05-11, commit `5bf874b`) | ~4 days remaining | govulncheck ✅ — `golang.org/x/vuln/scan` in-process, call-graph reachability filter, --no-native-deps escape hatch, Go 1.21→1.22 toolchain bump required (x/tools v0.17.0 incompatibility). pip-audit + npm-audit pending; OSV.dev batch-query for both ecosystems, cached at `~/.fendix/cache/osv-{pypi,npm}/`. |
 | TASK-120 | XSS-sink reachability pattern | 🔲 | ~2 days | Extend `engine/correlator.go` — taint chain for "user input → HTML render context" (Jinja2, Django templates, JSX `dangerouslySetInnerHTML`, raw `innerHTML`). Same TASK-114 pattern. |
 | TASK-121 | Command-injection-sink reachability pattern | 🔲 | ~2 days | Same correlator extension — "user input → `subprocess.run` / `os.system` / Go `exec.Command`". |
 | TASK-122 | FP corpus build | 🔲 | ~2 days | New `scripts/fp-corpus/` runner. Run engine against juice-shop + 2 more targets, catalogue every FP into `tasks/FP_CORPUS.md` with reproduction notes. Input for TASK-123. |
