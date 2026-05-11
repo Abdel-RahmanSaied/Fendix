@@ -309,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (TASK-119 govulncheck sub-deliverable shipped — first Phase 17a code work; commit `5bf874b` pushed to origin/main)
+**Last updated:** 2026-05-11 (TASK-119 govulncheck + pip-audit sub-deliverables shipped — 2/3 done; commits `5bf874b` + `aade7e1` pushed to origin/main)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +477,58 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (TASK-119 pip-audit sub-deliverable — second of three)
+
+**Session goal:** Continue TASK-119 with the pip-audit sub-deliverable. govulncheck shipped earlier today in `5bf874b`; pip is ~2 days, npm-audit follows.
+
+**Accomplished:**
+
+- **New `internal/scanner/deps/pip/` package (~340 LOC).** `Scan(ctx, codePath) ([]Finding, error)` parses `requirements.txt`, POSTs each pinned (`==`) dep to OSV.dev's `/v1/query` endpoint, maps the response to Findings. Cache at `~/.fendix/cache/osv-pypi/<pkg>@<ver>.json` with 24h TTL (mtime-based, atomic via `os.CreateTemp` + `os.Rename` so concurrent scans don't see half-written files). Per-package failure logs to stderr and continues — same posture as pip-audit's own behaviour.
+
+- **Behavioural parity with `python/analyzers/deps.py::_run_pip_audit`.** ID shape `SEC-DEPS-<vid-with-underscores>` (no `PY` prefix — matches the Python output exactly so dedup catches transition-window overlap). Title `Vulnerable dependency: <pkg>==<ver> (<vid>)`. Refs `[osv_id, first-alias-if-present]`. Fix line `Upgrade to <pkg>==<fix> or later.` from `affected[].ranges[].events[].fixed`. Severity HIGH, confidence HIGH, source whitebox, category deps.
+
+- **requirements.txt parser, deliberately minimal.** Only `==` pins are checked. Ranges (`>=`, `~=`, `>`) skipped — pip-audit refuses these too because the resolved version is environment-dependent. Comments + blank lines + extras (`pkg[extra1]`) + env markers (`; python_version > "3.8"`) + `--hash=sha256:...` specifiers all stripped. Package names lowercased per PEP 503 (OSV.dev expects the canonical form).
+
+- **17 unit tests pass.** ErrNoRequirements path, parser edge cases (extras, env markers, hash specifiers, lowercase normalisation, blank/comment lines), `firstFixVersion`, `buildFinding` shape parity with Python output, cache round-trip, TTL expiry (`os.Chtimes` to back-date), empty-dir no-op (won't panic when `HOME` is unset). End-to-end `TestScan_HappyPath_AgainstFakeOSV` stands up an `httptest.NewServer` that returns one OSV vuln for `flask==2.0.1`, verifies the full pipeline (parse → query → map). `TestScan_PerPackageErrorDoesNotKillScan` confirms a 500 on one package doesn't stop findings for the next.
+
+- **Orchestrator wiring.** Added `pip.Scan` to step 3.5 right after `govulncheck.Scan`, behind the same `--no-native-deps` escape hatch (one knob covers both scanners — npm will share it too). `errors.Is(err, pip.ErrNoRequirements)` is the silent-skip signal.
+
+**Files modified:**
+
+- `go/internal/scanner/deps/pip/scanner.go` (NEW — ~340 LOC)
+- `go/internal/scanner/deps/pip/scanner_test.go` (NEW — 17 tests)
+- `go/internal/engine/orchestrator.go` (pip.Scan call in step 3.5)
+
+**Release commit:** `aade7e1` ("feat(scanner): TASK-119 native PyPI dep-CVE scanner (pip-audit sub-deliverable)") pushed to `origin/main`.
+
+**Build state at session end:**
+
+- Go race-clean: 17 packages (+1 from govulncheck, now `+1` for pip).
+- Python: 198/198.
+- e2e: 16/16 — built binary at `v0.7.0-11-g862e182`.
+
+**Decisions made:**
+
+- **No transitive resolution.** Direct deps from `requirements.txt` only. Adding a `pip install --dry-run --report` step would broaden coverage but adds a host pip-install dependency and triples the wall-clock. Phase 17b can revisit if transitive coverage matters. Today the contract matches the Python deps.py path's same-day shape.
+- **Lowercase package names.** PEP 503 / OSV.dev canonical form. Parser normalises so `Django==3.2.0` → `django==3.2.0` queries OSV correctly. Lock-in test: `TestParseRequirements_LowercaseNormalisation`.
+- **Cache as a perf optimisation, not load-bearing.** `cacheDir()` returns empty string if `HOME` is unset or perms are wrong — Scan still works, just hits the network every call. Tests use `t.Setenv("HOME", t.TempDir())` to isolate cache from the user's real `~/.fendix`.
+- **`SEC-DEPS-<vid>` ID shape, no language prefix.** Matches the Python deps.py output for pip + npm; Go uses `SEC-DEPS-GO-<vid>` because the Python deps.py also uses that prefix for Go. Inconsistent ID scheme inherited from the existing path — flagged in the prior session's notes but kept for dedup parity. A future cleanup task could unify all three under `SEC-DEPS-<lang>-<vid>` but it's a breaking-rule-key change for downstream consumers (ignore files, baseline diffs).
+
+**Open questions / followups:**
+
+- **CI run for commit aade7e1.** Go 1.22 toolchain from `5bf874b` is the load-bearing change; this commit only adds new package + test file + 4-line orchestrator extension. CI should pass; will verify after this push.
+- **npm-audit next (~2 days).** Same shape: new `internal/scanner/deps/npm/` package, `Scan(ctx, codePath) ([]Finding, error)`, parses `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock`, OSV.dev `/v1/query` against the `npm` ecosystem, same `~/.fendix/cache/osv-npm/` cache shape. Findings emit `SEC-DEPS-<vid>` matching Python deps.py.
+- **Reachability for PyPI?** Python doesn't have call-graph reachability the way govulncheck does for Go. Could add AST-level reachability inside the existing whitebox Python analyzer (a Phase 17a fit for TASK-120/121 — those are XSS + cmdi reachability patterns; dep reachability is a different lane). Not blocking npm.
+
+**Next session should start with:**
+
+- **TASK-119 npm-audit sub-deliverable** (~2 days, third and final of TASK-119). New `go/internal/scanner/deps/npm/` package, mirroring pip-audit's shape. Parses `package-lock.json` v2/v3 first (lockfiles have exact resolved versions for the entire transitive tree — npm-audit's primary input). `pnpm-lock.yaml` + `yarn.lock` as follow-ups if either is found and `package-lock.json` is absent. OSV.dev `/v1/query` against the `npm` ecosystem. Cache at `~/.fendix/cache/osv-npm/`. Same `SEC-DEPS-<vid>` ID shape.
+- **TASK-126 (ADR-008) in parallel** — ~1 day, conceptual anchor for the 5-month engine-first pivot, independent of code timing.
+
+---
+
+## Earlier Session (2026-05-11 — TASK-119 govulncheck sub-deliverable — first Phase 17a code work)
 
 **Date:** 2026-05-11 (TASK-119 govulncheck sub-deliverable — first Phase 17a code work)
 
