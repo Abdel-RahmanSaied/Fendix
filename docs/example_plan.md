@@ -24,8 +24,10 @@ The prompt asks for an "AI-native Developer Security Intelligence Platform" plan
 
 Three hard constraints shape every section:
 - **One engineer.** Every milestone fits one person + part-time contractor help; if it doesn't, defer it.
-- **MIT engine stays MIT, no telemetry.** New commercial features live in a separate repo (`fendix-cloud`). The engine's trust capital is non-negotiable.
+- **MIT engine stays MIT, no telemetry.** New commercial features live in `fendix-backend` (proprietary, already exists). The engine's trust capital is non-negotiable.
 - **Cash discipline.** Cloud + LLM bills cannot exceed ~$500/month until paid revenue covers them. Rent everything; self-host nothing.
+
+**Critical correction vs. original plan:** `fendix-backend` already exists and is production-ready. It is a Django 5.2 + DRF + Postgres 16 + Redis + Celery backend with auth (simplejwt RS256 + API keys), subscriptions (Free/Pro/Team/Enterprise plans, quota enforcement), scan lifecycle (Scan → Celery → ScanFinding), scheduled scans, email notifications, and a Stripe scaffold. The plan does **not** need to build a new cloud backend from scratch. Q1 foundations are ~80% done. The real Q1 work is wiring Stripe and adding the AI explanation endpoint.
 
 Reference files I'll cite repeatedly:
 - [go/internal/models/finding.go](go/internal/models/finding.go) — Finding struct, seed of the graph schema
@@ -34,6 +36,9 @@ Reference files I'll cite repeatedly:
 - [go/internal/plugin/plugin.go](go/internal/plugin/plugin.go) — NDJSON wire contract (the seam for ingesting other scanners)
 - [docs/adr/](docs/adr/) — ratified ADRs; ADR-008 is added by this plan
 - [tasks/MEMORY.md](tasks/MEMORY.md), [tasks/PHASES.md](tasks/PHASES.md), [tasks/CURRENT_SPRINT.md](tasks/CURRENT_SPRINT.md) — strategic + operational state
+- `../fendix-backend/backend/scanning/` — Scan, ScanFinding, ScheduledScan models + Celery tasks (already shipped)
+- `../fendix-backend/backend/subscriptions/` — Plan, Subscription, UsageRecord, quota enforcement (already shipped)
+- `../fendix-backend/backend/billing/` — Stripe scaffold (exists, not yet wired — Q1 priority)
 
 ---
 
@@ -55,7 +60,7 @@ Supersede BACKLOG-017 with the following revised non-goals:
 **Now permitted (was forbidden):**
 - AI-assisted finding **explanation** (read-only, deterministic prompts, cacheable).
 - AI-assisted **fix suggestion as text in PR comment** (no auto-PR, no auto-merge).
-- A persistent backend (`fendix-cloud`, separate repo, proprietary license) that aggregates findings across a user's repos for **one tenant per install** — not multi-tenant SaaS.
+- A persistent backend (`fendix-backend`, already exists, proprietary license) that aggregates findings across a user's repos for **one tenant per install** — not multi-tenant SaaS.
 - Lightweight runtime signal ingestion **opt-in only**, behind an explicit flag, off by default.
 
 **Still forbidden (durable):**
@@ -68,9 +73,9 @@ Supersede BACKLOG-017 with the following revised non-goals:
 
 ### Consequences
 - The OSS engine continues unchanged. It is the sensor, MIT, offline-capable.
-- A new commercial repo `fendix-cloud` (proprietary, closed) takes findings from the OSS engine and adds: persistence, AI explanation, AI fix-suggestion-as-text, cross-scanner ingestion. Solo-operable.
+- The existing `fendix-backend` (proprietary, already deployed) is the commercial layer. It adds: persistence, AI explanation (Q1), AI fix-suggestion-as-text (Q2), cross-scanner ingestion (Q2). Solo-operable.
 - "AI-native" marketing claim is justified by **explanation + suggestion + cross-scanner correlation**, not by autonomous remediation.
-- Multi-tenant SaaS is **still off-limits** until 1000+ GH stars (durable threshold from BACKLOG-017, retained). `fendix-cloud` ships as **single-tenant Pro** (one user → one cloud instance, hosted on a single shared SaaS but with strict tenant isolation; no enterprise gates).
+- Multi-tenant SaaS is **still off-limits** until 1000+ GH stars (durable threshold from BACKLOG-017, retained). `fendix-backend` serves as **single-tenant Pro** (user-level isolation via FK, strict per-row ownership; no SSO/SAML/enterprise gates).
 
 ### Why this is the right supersession, not a full reversal
 BACKLOG-017's core thesis was correct: full-autonomy AI agents burn sprints for slop UX. The supersession draws a tighter line: **read-only AI** (explain, suggest) is permitted because it cannot break a customer's code; **write AI** (auto-PR, auto-merge) remains forbidden. This keeps the trust posture while letting Fendix compete for the AI-native category.
@@ -81,7 +86,7 @@ BACKLOG-017's core thesis was correct: full-autonomy AI agents burn sprints for 
 
 ### 1.1 Strategic Direction (one paragraph)
 
-Fendix stops being only an OSS scanner and becomes a **two-layer product**: the MIT scanner (the sensor, trust capital, OSS funnel) and a closed-source cloud product (`fendix-cloud`, single-tenant SaaS) that adds AI explanation, AI fix-suggestion-as-text, cross-scanner ingestion, and persistent dashboards. The wedge ("DAST + SAST as one PR check") stays unchanged and funnels free signups. AI is **read-only** (explain + suggest); autonomous remediation is off the table per the ADR-008 supersession.
+Fendix stops being only an OSS scanner and becomes a **two-layer product**: the MIT scanner (the sensor, trust capital, OSS funnel) and the existing closed-source `fendix-backend` (Django + Postgres, already deployed) that adds AI explanation, AI fix-suggestion-as-text, cross-scanner ingestion, and persistent dashboards. The wedge ("DAST + SAST as one PR check") stays unchanged and funnels free signups. AI is **read-only** (explain + suggest); autonomous remediation is off the table per the ADR-008 supersession.
 
 ### 1.2 Category To Own
 
@@ -109,7 +114,7 @@ LAND     OSS engine + GitHub App + Marketplace listing (free, v0.7.0)
                    ↓
 SIGNAL   GitHub App install rate, OSS GitHub stars, plugin authorship
                    ↓
-EXPAND-1 Free fendix-cloud account (single tenant, 1 user, 3 repos cap)
+EXPAND-1 Free fendix-backend account (1 user, 3 repos cap)
             └─► dashboard + AI explanation per finding (10/mo cap)
                    ↓
 EXPAND-2 Pro ($15-30/dev/month), 50 explanations/dev/month, AI fix-as-text
@@ -179,31 +184,48 @@ This is the **current** [tasks/CURRENT_SPRINT.md](tasks/CURRENT_SPRINT.md) sprin
 
 **Exit criteria Q0:** Public Marketplace listing live, launch post published, ≥250 GH stars within 2 weeks, ≥20 GitHub App installs. **If Q0 underperforms** (e.g., <100 stars, <10 installs), the AI-native pivot in Q1 should be reconsidered — solo bandwidth cannot save an unsuccessful launch with new features.
 
-#### Q1 (months 0–3) — "Cloud Backend Foundations + AI Explanation"
+#### Q1 (months 0–3) — "Wire Stripe + Ship AI Explanation"
 
-Theme: stand up `fendix-cloud` (separate proprietary repo); ship AI explanation as the first paid feature.
+Theme: `fendix-backend` is already running — auth, scans, subscriptions, quota enforcement are done. Q1 closes the two remaining gaps: revenue collection (Stripe) and the first AI feature (explanation).
+
+**What already exists in `fendix-backend` and does NOT need to be built:**
+
+- Postgres 16 + Django ORM — `Scan`, `ScanFinding`, `ScheduledScan`, `ReportArtifact` models ✓
+- Auth — simplejwt RS256 + `fx_`-prefixed API keys (SHA-256 hashed at rest) ✓
+- Plan tiers — Free / Pro / Team / Enterprise with `PlanFeature` + `UsageRecord` quota ✓
+- Async job queue — Celery 5.4 + Redis (no new queue infrastructure needed) ✓
+- Scan lifecycle — `POST /api/scans` → Celery → engine subprocess → `ScanFinding` bulk-create ✓
+- Scheduled scans — `ScheduledScan` + `django_celery_beat` ✓
+- Email notifications — completion + critical-finding alert ✓
+- Frontend dashboard — Next.js 16 consuming the DRF OpenAPI contract ✓
 
 | Workstream | Deliverable | Estimate (solo days) |
 |---|---|---|
-| New repo `fendix-cloud` (private, proprietary) | Go monorepo; one binary `cloud-api`. Hosted on Fly.io (same provider as `fendix-app`). Auth via Clerk (rented). Single Postgres on Fly.io's managed Postgres or Supabase free tier. | 10 |
-| Findings API | `POST /v1/findings` accepts the same NDJSON the engine emits. `fendix scan --cloud-token <…>` uploads after a local scan. Behind feature flag. | 6 |
-| GitHub App v2 | Existing app additionally POSTs findings to `cloud-api` after the local scan, if a cloud token is configured. Backward-compatible. | 3 |
-| Dashboard (cloud-api built-in) | Plain HTML + htmx (no React). Renders findings table, filterable. Auth via Clerk. | 8 |
-| AI explanation | Anthropic Claude Haiku 4.5 with prompt caching. Per-finding `POST /v1/findings/:id/explain` → 200-word natural-language explanation. Cached forever by `(finding_hash, model_version)`. | 5 |
-| Pricing + billing | Stripe Checkout. Free tier (3 repos, 10 AI explanations/month). Pro tier ($20/dev/month, 50/month). | 5 |
+| Wire Stripe Checkout | `billing/` scaffold already exists with `stripe_subscription_id` + `stripe_customer_id` on `Subscription`. Add webhook handler for `checkout.session.completed` + `customer.subscription.updated/deleted`. Handle dunning (failed payments, grace period). Replace `UpgradeRequest` manual-approve flow with self-serve checkout. | 9 |
+| AI explanation endpoint | New `POST /api/findings/:id/explain` view in `scanning/`. Calls Claude Haiku 4.5 with prompt caching. Response cached by `(finding_hash, model_version)` in a new `FindingExplanation` model (`UniqueConstraint` guards idempotency). Add `"ai_explanation"` `PlanFeature` key to seed plans: Free tier value = `"10"`, Pro = `"50"`. Quota enforced via `ai_explanations_used` on `UsageRecord` — same `F()+1` atomic pattern as `scans_used`. **No separate feature gate** — both Free and Pro can explain; only the monthly cap differs. | 5 |
+| `ai_explanations_used` quota meter | Add field to `UsageRecord`. Add `check_explanation_quota()` helper mirroring `check_scan_quota()`. Wire into the explain view before calling Anthropic. | 2 |
+| `taint_chain` + `reachable` on `ScanFinding` | Engine emits these fields since TASK-114 but backend model doesn't store them. One migration: add `reachable BooleanField(default=False)` + `taint_chain JSONField(default=list)`. Update `services.FendixEngine` to parse and persist. Old findings show `reachable=False` — correct, not misleading. | 2 |
 | ADR-008 written into [docs/adr/](docs/adr/) | This plan's ADR section, formalized | 1 |
-| OSS engine v0.8 maintenance | P0 bug fixes from `plan.md` (baseline, code-only, spec param, SARIF dedup) | 8 |
+| OSS engine v0.8 maintenance | P0 bug fixes only | 4 |
 
-**Total Q1: ~46 solo days = roughly 1 quarter at 70% capacity** (leaving 30% for community management, marketplace operations, customer support, sales emails).
+**Note on OpenAPI sync overhead:** Every backend serializer/view change requires `make schema` → commit `openapi.json` → `cd ../fendix_frontend && npm run codegen` → commit `api.ts`. Budget ~30 min per Q1 feature for this loop. It is mandatory per the backend `CLAUDE.md` contract — do not skip it.
+
+**Note on Q0/Q1 parallelism:** Marketplace review takes 1–2 weeks after submission. Stripe wiring and the `taint_chain` migration have zero dependency on Marketplace approval — start those in parallel during the review window. Do not start AI explanation work until Q0's launch post is published (the funnel must be open before adding paid features).
+
+**Total Q1: ~23 solo days ≈ 5–6 weeks at 70% capacity** (leaving 30% for community, marketplace ops, support).
 
 **Exit criteria Q1:**
-- A free fendix-cloud user can sign up, install the GitHub App, see findings in the cloud dashboard, click any finding, read an AI explanation.
-- First 5 paid Pro signups via Stripe.
+
+- A free user signs up, runs a scan, sees findings in the dashboard, clicks any finding, reads an AI explanation.
+- Self-serve Stripe Checkout works end-to-end for Pro upgrade.
+- First 5 paid Pro signups.
 - ≥500 GH stars on OSS engine.
 - Total LLM bill < $50/month.
+- `taint_chain` and `reachable` visible in the dashboard for correlated findings.
 
 **What is intentionally NOT in Q1:**
-- No SSO (just Clerk's GitHub/Google OAuth).
+
+- No new backend framework, no new repo, no new language. Django is the backend.
 - No SARIF imports from other scanners (Q2).
 - No AI fix suggestions (Q2).
 - No runtime, no compliance, no enterprise.
@@ -237,7 +259,7 @@ Theme: monetize the plugin ecosystem; broaden the funnel.
 
 | Workstream | Deliverable | Solo days |
 |---|---|---|
-| Plugin marketplace v1 | `fendix-cloud` lists community plugins with author, downloads, ratings. Plugins remain user-installable (no cloud-side execution — still local subprocess, ADR-002 contract). | 8 |
+| Plugin marketplace v1 | The `fendix-backend` dashboard lists community plugins with author, downloads, ratings. Plugins remain user-installable (no cloud-side execution — still local subprocess, ADR-002 contract). | 8 |
 | Paid plugin revenue share | Stripe Connect. Plugin authors set price; Fendix takes 20%. | 6 |
 | Studio tier ($X/team/month) | Multi-user same-org account (still single tenant per company; not multi-tenant SaaS — distinction preserved). Shared inbox, shared policies. | 6 |
 | Saved query / triage workflows | "Find me all findings on services tagged 'production' from Snyk import where EPSS > 0.5." | 4 |
@@ -286,7 +308,7 @@ By month 12 you have data to make the real decision:
 ```
 [Q0: Marketplace launch]
         ↓
-[Q1: cloud-api + AI explanation] ── relies on ──► OSS engine v0.7+ (already shipped)
+[Q1: fendix-backend Stripe + AI explanation] ── relies on ──► OSS engine v0.7+ (already shipped)
         ↓
 [Q2: AI suggest + multi-scanner ingest + priority inbox]
         ↓
@@ -334,13 +356,13 @@ This is the **default-alive** posture: $500/month burn = $6K/year survives on fr
 
 ### 11.6 Technical Debt Traps (specific to solo)
 
-1. **Don't write your own auth.** Use Clerk's free tier (10K MAUs). Switching cost later is small; building it now is fatal.
-2. **Don't write your own job queue.** Use Postgres + `SKIP LOCKED` (battle-tested at startup scale). No Temporal, no Redis queues, no Kafka in year 1.
+1. **Don't rewrite the backend.** Auth (simplejwt RS256 + API keys), subscriptions, quota, scan lifecycle, Celery queue — all exist and are tested. Django is not glamorous; it is done. Rewriting in Go to match a plan that was written before you checked what existed would be a quarter of wasted work.
+2. **Don't put LLM calls in the request path.** Always async via Celery. User gets a `202 Accepted` with `explanation_id`; frontend polls `GET /api/findings/:id/explain`. One synchronous 30-second Claude call in a DRF view is a P0 incident waiting to happen.
 3. **Don't pick Neo4j or any graph DB.** Postgres adjacency is fine for 18 months.
-4. **Don't put LLM calls in the request path.** Always async; user gets `request_id`; UI polls. One synchronous 30-second Claude call in a webhook handler is a P0 incident waiting to happen.
-5. **Don't run your own Postgres.** Fly.io Postgres or Supabase. Backup/restore is their problem.
-6. **Don't conflate the OSS engine and the cloud product.** Two repos, two licenses, versioned NDJSON contract between them. Engine talks to cloud over the same documented API any third party could call.
-7. **Resist the urge to add a new feature whenever a community user requests it.** OSS engine bug fixes + one new feature per quarter. Cloud product is where new features go.
+4. **Don't skip the OpenAPI sync loop.** Every backend change requires `make schema` → `npm run codegen` → commit both. Skipping it breaks the frontend's `api.ts` types silently — you won't notice until a runtime error in prod.
+5. **Don't create a `--cloud-token` CLI upload path.** The backend runs the engine via Celery (`POST /api/scans` → `FendixEngine().run()`). A second upload path (user runs locally, posts JSON) creates two code paths that diverge over time. If users want cloud persistence, they use the GitHub App or the dashboard — not a secret upload token.
+6. **Don't conflate the OSS engine and the backend.** Two repos, two licenses, versioned JSON report contract between them. Engine speaks no cloud dialect; backend drives the engine as a subprocess.
+7. **Resist the urge to add a new feature whenever a community user requests it.** OSS engine: bug fixes + one new feature per quarter. Backend: roadmap only. Everything else goes to BACKLOG.
 
 ---
 
@@ -349,25 +371,31 @@ This is the **default-alive** posture: $500/month burn = $6K/year survives on fr
 ### 2.1 Topology (solo-operable)
 
 ```
-                    ┌──────────────────────────────────────────────┐
-                    │              fendix-cloud (Fly.io)            │
-                    │                                              │
-                    │  ┌────────────────────────────────────────┐  │
-                    │  │   cloud-api  (single Go binary)        │  │
-                    │  │   - net/http + chi router              │  │
-                    │  │   - Clerk JWT validation               │  │
-                    │  │   - Stripe webhooks                    │  │
-                    │  │   - htmx-rendered dashboard            │  │
-                    │  │   - /v1/findings, /v1/explain, ...     │  │
-                    │  │   - background goroutine = job queue   │  │
-                    │  │     (Postgres SKIP LOCKED)             │  │
-                    │  └────────────────────────────────────────┘  │
-                    │                    │                          │
-                    │       ┌────────────┼────────────┐             │
-                    │       ▼            ▼            ▼             │
-                    │  Postgres     Cloudflare R2  Anthropic API    │
-                    │  (Supabase    (SARIF/        (Claude)         │
-                    │   or Fly.io)   evidence)                      │
+                    ┌──────────────────────────────────────────────────┐
+                    │              fendix-backend (already deployed)    │
+                    │                                                  │
+                    │  ┌──────────────────────────────────────────┐    │
+                    │  │   Django 5.2 + DRF  (django + celery +   │    │
+                    │  │                      celery-beat)         │    │
+                    │  │   - simplejwt RS256 + API key auth        │    │
+                    │  │   - /api/scans, /api/findings, ...        │    │
+                    │  │   - Stripe webhooks (Q1 — wire now)       │    │
+                    │  │   - /api/findings/:id/explain (Q1 — new)  │    │
+                    │  └──────────────────────────────────────────┘    │
+                    │                    │                              │
+                    │       ┌────────────┼────────────┐                 │
+                    │       ▼            ▼            ▼                 │
+                    │  Postgres 16    Redis        Anthropic API        │
+                    │  (models:       (Celery      (Claude — Q1)        │
+                    │  Scan,          broker)                           │
+                    │  ScanFinding,                                     │
+                    │  Subscription)                                    │
+                    └──────────────────────────────────────────────────┘
+                                        ▲
+                                        │ HTTPS + JSON
+                    ┌───────────────────┴──────────────────────────┐
+                    │           fendix_frontend (Next.js 16)        │
+                    │  Consumes DRF OpenAPI contract (api.ts)       │
                     └──────────────────────────────────────────────┘
 
    ─── Customer side (unchanged from today) ───
@@ -375,102 +403,96 @@ This is the **default-alive** posture: $500/month burn = $6K/year survives on fr
         │ fendix CLI (OSS, MIT)    │    │ fendix-app (OSS, GitHub App)│
         │ + plugin sandbox         │    │ webhook → scan → comment    │
         └────────────┬─────────────┘    └────────────┬────────────────┘
-                     │ optional --cloud-token         │ optional cloud upload
+                     │ offline only (no upload)       │ POST /api/scans (GitHub webhook)
                      │                                │
                      └──────────────┬─────────────────┘
                                     ▼
-                       POST /v1/findings (NDJSON)
+                       POST /api/scans  (JSON report)
 ```
 
-### 2.2 Service Inventory — One Service
+### 2.2 Service Inventory — What Already Exists
 
-**There is one cloud service.** `cloud-api`. Go monorepo. One binary. One Postgres. One R2 bucket. One Clerk tenant. One Stripe account.
+**There is one cloud service.** `fendix-backend`. Django monorepo. Three processes (django + celery + celery-beat), all sharing one Postgres 16 and one Redis. Already running.
 
-This is deliberate. Microservices are a tax a solo founder cannot pay. Splitting becomes worth it at ~5 engineers, not before.
+Django apps within `fendix-backend/backend/`:
 
-Internal packages within `cloud-api`:
-- `findings/` — ingest, store, list, search
-- `explain/` — Claude calls, prompt cache, response cache
-- `ingest/` — scanner adapters (Trivy, Gitleaks, Semgrep, Snyk SARIF)
-- `enrich/` — EPSS/KEV daily cron
-- `dashboard/` — htmx templates + handlers
-- `billing/` — Stripe webhooks + entitlement check
-- `auth/` — Clerk JWT validation
-- `queue/` — Postgres SKIP LOCKED job poller
+- `scanning/` — `Scan`, `ScanFinding`, `ScheduledScan`, `ReportArtifact`; `FendixEngine` subprocess wrapper; Celery tasks
+- `subscriptions/` — `Plan`, `PlanFeature`, `Subscription`, `UsageRecord`; quota enforcement (`check_scan_quota`, `require_feature`)
+- `billing/` — Stripe scaffold; `stripe_subscription_id` + `stripe_customer_id` on `Subscription` (wire in Q1)
+- `accounts/` — `CustomUser` (UUID pk, email auth), simplejwt RS256, API keys
+- `common/` — pagination, middleware (request-ID, CSP), shared base models
+- `config/` — settings (base/development/production), URLs, Celery, ASGI/WSGI
+
+**New Django apps to add (Q1–Q2):**
+
+- `explain/` — `FindingExplanation` model; Claude Haiku calls with prompt caching; quota enforcement (Q1)
+- `ingest/` — SARIF import adapters for Trivy, Gitleaks, Semgrep, Snyk (Q2)
+- `enrich/` — EPSS/KEV daily Celery Beat task (Q2)
 
 ### 2.3 Communication Protocols
 
 | Boundary | Protocol | Why |
-|---|---|---|
-| Browser → cloud-api | HTTPS + HTML (htmx) | No SPA — saves a frontend codebase |
-| CLI / GitHub App → cloud-api | HTTPS + NDJSON | Matches existing engine plugin contract |
-| LLM | Anthropic SDK direct | Prompt caching is decisive |
-| Stripe | webhook (HMAC verified) | Standard |
-| No gRPC, no NATS, no Kafka, no Temporal | — | Not needed at solo scale |
+| --- | --- | --- |
+| Browser → backend | HTTPS + JSON (DRF) | Frontend is Next.js — already consumes the OpenAPI contract |
+| CLI / GitHub App → backend | HTTPS + JSON (`POST /api/scans`) | Existing contract; no new format needed |
+| LLM | Anthropic Python SDK | Prompt caching is decisive for cost |
+| Stripe | webhook (HMAC verified via `stripe-signature`) | Standard; scaffold in `billing/signing.py` already exists |
+| Celery | Redis broker + result backend | Already wired; no new infra |
+| No gRPC, no NATS, no Kafka, no Temporal | — | Not needed; Celery + Redis is the queue |
 
 ### 2.4 Sync vs Async
 
-| Sync (user waits) | Async (queued) |
-|---|---|
-| Dashboard reads | AI explanation generation |
-| Auth flows | Cross-scanner ingest of large SARIF |
-| Finding upload ack (returns id, processing async) | EPSS/KEV nightly enrichment |
-| Billing webhooks | Notification delivery |
+| Sync (user waits) | Async (Celery task) |
+| --- | --- |
+| Dashboard reads (`GET /api/scans`) | AI explanation generation (`explain.tasks.generate_explanation`) |
+| Auth flows | Cross-scanner SARIF ingest of large files (Q2) |
+| Scan creation ack — returns `scan.id`, status=QUEUED | EPSS/KEV nightly enrichment (Q2, Celery Beat) |
+| Stripe webhook ack | Scan execution (`scanning.tasks.execute_scan`) |
 
-Async via Postgres `SKIP LOCKED`:
-```sql
-SELECT * FROM jobs
-WHERE status = 'pending' AND run_after <= now()
-ORDER BY priority DESC, created_at
-FOR UPDATE SKIP LOCKED
-LIMIT 1;
-```
-Goroutine pool inside `cloud-api`. No external queue. Idempotent jobs only.
+All async work uses Celery 5.4 + Redis. No new queue infrastructure. Idempotent tasks only — explanation task checks `FindingExplanation.objects.filter(finding_hash=..., model_version=...)` before calling Anthropic.
 
 ### 2.5 Tenancy Model
 
-**Single-tenant logical isolation.** Every row has `org_id` (one organization = one customer). RLS policies enforce `org_id = current_setting('app.org_id')` at the DB layer. Pool deployment (everyone shares one cloud-api + one Postgres).
-
-Notice this is NOT multi-tenant SaaS in the BACKLOG-017 sense — there is no SSO, no SAML, no audit-log-export, no enterprise gates. It is **pool tenancy** as an implementation detail, hidden behind Clerk's basic OAuth. The Studio tier (Q3) extends this with shared org accounts but still no SSO/SAML.
+**User-level isolation.** Every model row is owned by `user` (UUID FK). `IsAuthenticated` + `require_feature()` is the auth/permission stack — already enforced on every view. This is not multi-tenant SaaS in the BACKLOG-017 sense — no SSO, no SAML, no audit-log export. The Studio tier (Q3) extends this with shared org accounts but still no SSO/SAML.
 
 ### 2.6 Caching
 
 | Cache | TTL | Notes |
 |---|---|---|
-| AI explanations by `(finding_hash, model_version)` | forever | Same finding gets same explanation; cost win |
-| Anthropic prompt cache (provider-native) | 5min default | Critical for cost — Section 4 |
-| EPSS/KEV | 24h | Daily refresh |
-| Dashboard list pages | 30s in Cloudflare | Reduces DB load |
+| AI explanations by `(finding_hash, model_version)` | forever (DB row) | Same finding gets same explanation; cost win |
+| Anthropic prompt cache (provider-native) | 5 min default | Critical for cost — Section 4 |
+| EPSS/KEV | 24h | Daily Celery Beat refresh (Q2) |
+| DRF list responses | 30s via Cloudflare (in front of nginx) | Reduces DB load |
 
 ### 2.7 Failure Handling (solo-grade, not enterprise-grade)
 
-- **Idempotency:** `POST /v1/findings` accepts `Idempotency-Key`; 24h dedup window in Postgres.
-- **Retries:** All LLM calls retry 3× with exponential backoff.
-- **Degraded mode:** LLM down → "AI explanation temporarily unavailable; we'll generate when service returns" (cron sweeps stuck jobs).
-- **No circuit breakers needed yet.** Pre-mature complexity for one external dep (Anthropic).
-- **No multi-AZ, no DR.** Fly.io is single-region in year 1. Daily Postgres snapshot to R2. RTO 4 hours, RPO 24 hours — acceptable for a $20/dev/month product.
+- **Idempotency:** `FindingExplanation` has a `UniqueConstraint(fields=["finding_hash", "model_version"])`. Celery task checks existence before calling Anthropic — safe to retry.
+- **Retries:** All LLM Celery tasks use `autoretry_for=(Exception,)` with exponential backoff, max 3 retries.
+- **Degraded mode:** Anthropic down → explanation task stays in Celery retry queue; user sees "generating…" in dashboard. No scan blocking.
+- **No multi-AZ, no DR.** Single region (existing deployment). Daily Postgres backup. RTO 4 hours, RPO 24 hours — acceptable for a $20/dev/month product.
 
 ### 2.8 Observability (solo-grade)
 
-- Logs: Fly.io's bundled log aggregation (free).
-- Metrics: Fly.io's bundled (free) + Sentry (free tier) for errors.
+- Logs: existing `logs/` Django app + structured logging already in place.
+- Errors: Sentry (already configured in `config/settings/_helpers/sentry_config.py`).
+- Metrics: existing `monitoring/` app + health-check views.
 - Traces: skip until 5+ engineers.
-- Alerts: PagerDuty *free* solo plan (until $50/month tier becomes worth it).
-- Uptime monitoring: Better Stack free tier or UptimeRobot.
+- Uptime: Better Stack free tier or UptimeRobot.
 
-### 2.9 What's Explicitly Cut (vs my prior draft)
+### 2.9 What's Explicitly Cut (vs. original draft's proposed fendix-cloud)
 
-- Temporal → Postgres SKIP LOCKED
-- NATS JetStream → Postgres job queue
-- ClickHouse → Postgres (logs to flat files in R2 for analytics)
-- Qdrant → none in year 1 (RAG defers to Q3+ if at all)
+- New Go monorepo → Django already exists; don't rewrite what works
+- Clerk for auth → simplejwt RS256 + API keys already exist in `accounts/`
+- htmx dashboard → Next.js 16 frontend already consumes the DRF OpenAPI contract
+- Postgres SKIP LOCKED job queue → Celery + Redis already wired
+- Supabase / Fly.io managed Postgres → existing Postgres deployment already runs
+- Cloudflare R2 for artifacts → `ReportArtifact` stores bytes in Postgres `bytea` (fine at solo scale; migrate to S3 if >10 MB average)
 - Firecracker microVMs → no sandbox, because no auto-PR (ADR-008 forbids)
-- gRPC → JSON-over-HTTPS
-- Multi-region → single Fly.io region
+- Multi-region → single region in year 1
 - BYOK → not until enterprise (not in plan)
-- Multi-agent orchestration framework → no agents (ADR-008 forbids auto-PR; without that, agents are over-engineering)
+- Multi-agent orchestration → no agents (ADR-008 forbids auto-PR)
 
-This list is **the value of the rewrite**.
+This list is **the value of the correction**: you are not starting over, you are extending what already works.
 
 ---
 
@@ -686,7 +708,7 @@ ADR-008 forbids the autonomous-PR endpoint that justifies a multi-agent system. 
 - One function: `Explain(finding) → Explanation`
 - One function (Q2): `Suggest(finding) → SuggestedFixText`
 
-Both are stateless. Both are gRPC-shaped APIs in `cloud-api`. Neither is "an agent" in the multi-agent-system sense.
+Both are stateless DRF views in `fendix-backend`. Neither is "an agent" in the multi-agent-system sense.
 
 The multi-agent architecture in my prior draft (Detection / Correlation / Remediation / Runtime / Compliance / Governance / Learning / Exploit Simulation / Security Copilot) is **all cut**. It belongs in a year-2-team-of-5 plan, not a year-1-solo plan.
 
@@ -775,7 +797,7 @@ This is the entire onboarding moat. If you nail these three moments, the user co
 
 ### 8.6 Local Scans (preserved verbatim from today)
 
-Engine runs offline. `fendix scan --offline` continues to work. Engine does not talk to cloud unless `--cloud-token` is set. No-telemetry promise unchanged.
+Engine runs offline. `fendix scan --offline` continues to work. Engine does not talk to the backend — ever. Scans reach the cloud only when the user configures the GitHub App or triggers a scan from the dashboard. No-telemetry promise unchanged. There is no `--cloud-token` upload path (see Technical Debt Trap #5).
 
 ### 8.7 Policy-as-Code (already exists)
 
@@ -834,7 +856,7 @@ Even without SOC2, you can build trust capital:
 - **MIT-licensed source** of the engine (already exists).
 - **Signed releases** (cosign keyless, already exists).
 - **Public security.txt + responsible disclosure** (Q1, 1 day).
-- **Public threat model** (`docs/threat-model.md` — already exists for the engine; extend for cloud-api in Q1).
+- **Public threat model** (`docs/threat-model.md` — already exists for the engine; extend for `fendix-backend` in Q1).
 - **Quarterly transparency report**: "we received N security questionnaires, we don't have SOC2, here's why and our roadmap" — owns the conversation rather than ducking it.
 
 ### 9.3 The "Trust Without Compliance" Positioning
@@ -973,12 +995,12 @@ Position Fendix as the trustworthy, read-only alternative to autonomous-AI secur
 1. **One Postgres is a single point of failure.** Year 1 = single region, single primary. One Fly.io regional outage = product down. Acceptable at $20K MRR; document the limitation; revisit when one customer outage costs more than read-replica setup.
 2. **Anthropic-only LLM.** No fallback provider. A 24-hour Anthropic outage takes "AI Explanation" feature down. Mitigate by caching aggressively and degrading gracefully — never let it block finding ingestion.
 3. **Postgres adjacency will run out of legs** somewhere around 50M+ edges. Year 1 target is 5-20M — plenty of headroom. But if you onboard a single 5000-repo customer in Q3, you skip the headroom in a week.
-4. **htmx-based dashboard limits.** Will hit UX ceiling at ~10K users. That's fine for year 1; will need a real frontend rewrite in year 2 if MRR justifies it.
-5. **No background worker isolation.** Goroutine pool in `cloud-api` means a stuck LLM call can pile up. Use context deadlines aggressively; cap goroutines per pool.
+4. **Next.js frontend is an OpenAPI contract consumer.** Every backend schema change must be propagated via `make schema` → `npm run codegen`. Schema drift causes silent type errors in the frontend — the CI `schema-check` target guards this but only if CI is green before deploy.
+5. **No Celery task isolation per tenant.** A stuck LLM explanation task for one user can exhaust the Celery worker pool if concurrency is uncapped. Set `CELERYD_CONCURRENCY` and use `task_time_limit` + `task_soft_time_limit` on explanation tasks from day one.
 
 ### 13.2 Biggest Execution Risks
 
-1. **Founder burnout.** One person, 18 months, 46 days of solo engineering work in Q1 alone. Build in vacation. Build in non-product Saturdays. If you can't sustain 35 hrs/week of Fendix work without resentment, the plan is too aggressive.
+1. **Founder burnout.** One person, 18 months. Q1 is ~23 days — manageable. But Q2 adds cross-scanner ingest + AI fix-as-text on top of community management, customer support, and Marketplace operations. Build in vacation. Build in non-product Saturdays. If you can't sustain 35 hrs/week of Fendix work without resentment, the plan is too aggressive.
 2. **Scope creep is the killer.** Every community user, every paying customer, every Twitter reply asks for one more thing. Discipline: OSS gets bug fixes + one new feature per quarter. Cloud gets the roadmap. Everything else goes to BACKLOG.
 3. **Skipping the Q0 launch.** The temptation will be to start the Q1 cloud work before the marketplace listing is live. Don't. Q0 is the funnel; no funnel = no users for Q1's features.
 4. **Q1 cloud backend being too ambitious.** If you find yourself slipping past 50% of Q1 day budget by week 6, cut scope: drop Stripe integration to Q2; ship dashboard with hardcoded "free for everyone" entitlement first.
@@ -990,13 +1012,13 @@ Position Fendix as the trustworthy, read-only alternative to autonomous-AI secur
 2. **Building Studio (multi-user) too early.** Premature org features tax solo bandwidth. Single-user Pro should prove out first.
 3. **Adding a feature because Aikido shipped it.** Fendix differentiation is "trustworthy alternative," not "feature parity." Resist.
 4. **Trying to support GitLab + Bitbucket in year 1.** Three SCM providers = 3× webhook bugs.
-5. **Letting OSS engine and cloud-api versions drift.** Versioned NDJSON contract; every cloud-api version supports the last 2 engine versions; engine releases never break compatibility.
+5. **Letting OSS engine and backend versions drift.** The backend's `FendixEngine` subprocess wrapper pins which engine fields it reads. When the engine adds a new field (e.g., `taint_chain`), the backend migration + parser update must ship in the same release window. Track this in `CURRENT_SPRINT.md`.
 
 ### 13.4 Biggest Scaling Risks (solo-grade)
 
 1. **One customer with a 10K-repo monorepo overwhelms shared Postgres.** Per-org rate limit on uploads from day 1.
 2. **Runaway LLM bill from one user repeatedly clicking "explain" on the same finding.** Cache by `(finding_hash, model_version)` forever; per-org daily token cap.
-3. **One viral HN/Twitter moment overwhelms cloud-api.** Cloudflare in front of everything; aggressive read caching; auto-scale via Fly.io (manual flip; not Karpenter).
+3. **One viral HN/Twitter moment overwhelms the backend.** Cloudflare in front of nginx; existing rate limiting (anon 20/min, user 100/min, scan_create 10/hr) already in place. Vertical-scale the Fly.io machine manually if needed — this is a one-click operation.
 
 ### 13.5 Biggest AI Risks
 
@@ -1030,7 +1052,7 @@ Most don't apply yet (solo). The one that *can* apply:
 ### 13.9 What Must Happen for Fendix to Survive 18 Months
 
 1. **Q0 launch produces ≥250 stars and ≥20 GitHub App installs within 2 weeks.**
-2. **Q1 ships cloud-api + AI explanation by month 3** with ≥5 paying users.
+2. **Q1 ships Stripe self-serve + AI explanation by month 3** with ≥5 paying users.
 3. **Q2 priority inbox + cross-scanner ingest converts at ≥10% free→paid** by month 6.
 4. **Month 12 MRR ≥ $10K** (default-alive runway for solo founder).
 5. **Founder doesn't quit by month 9 from burnout.** This is the single biggest risk and it doesn't show up in product metrics.
@@ -1102,19 +1124,34 @@ By quarter, the plan is verified if these hold:
 
 ---
 
-## Critical Files (current repo) — Modification Index
+## Critical Files — Modification Index
+
+### fendix-engine (OSS, MIT)
 
 | Concern | Files | Notes |
 |---|---|---|
 | Finding schema evolution | [go/internal/models/finding.go](go/internal/models/finding.go) | Extend with `epss`, `kev`, `cloud_uploaded_at`. Keep wire-compatible. |
 | Correlator + reachability | [go/internal/engine/correlator.go](go/internal/engine/correlator.go) | Reference implementation; do not break existing tests. |
-| Plugin / NDJSON contract | [go/internal/plugin/plugin.go](go/internal/plugin/plugin.go), [python/engine.py](python/engine.py) | Versioned contract that cloud-api ingests. |
-| GitHub App | [go/internal/ghapp/handler.go](go/internal/ghapp/handler.go) | Add optional cloud-POST step after local scan, behind feature flag. |
-| Reporters | [go/internal/reporters/](go/internal/reporters/) | Add NDJSON streaming reporter for cloud upload. |
-| ADRs | [docs/adr/](docs/adr/) | New: ADR-008 (BACKLOG-017 supersession); ADR-009 (cloud-vs-OSS split); ADR-010 (no-runtime-agent policy retained). |
-| Strategic plan | [tasks/PHASES.md](tasks/PHASES.md) | Add Phase 17 (Q0 closeout), Phase 18-21 (Q1-Q4 from this plan). Old Phase 16 (Architecture v2) stays as year-2+ horizon. |
-| Sprint state | [tasks/CURRENT_SPRINT.md](tasks/CURRENT_SPRINT.md) | After Q0 completes, replace active phase with "Phase 17 — Cloud Foundations + AI Explanation". |
+| Plugin / NDJSON contract | [go/internal/plugin/plugin.go](go/internal/plugin/plugin.go), [python/engine.py](python/engine.py) | Versioned contract; backend `FendixEngine` subprocess wrapper parses the JSON report output. |
+| GitHub App | [go/internal/ghapp/handler.go](go/internal/ghapp/handler.go) | No change needed — GitHub App already posts scan results via `POST /api/scans` to the backend. The engine runs inside the backend's Celery task, not locally. |
+| Reporters | [go/internal/reporters/](go/internal/reporters/) | No new format needed — backend already reads the existing JSON report. |
+| ADRs | [docs/adr/](docs/adr/) | New: ADR-008 (BACKLOG-017 supersession); ADR-009 (backend-vs-OSS split); ADR-010 (no-runtime-agent policy retained). |
+| Strategic plan | [tasks/PHASES.md](tasks/PHASES.md) | Add Phase 17 (Q0 closeout), Phase 18-21 (Q1-Q4 from this plan). Phase 16 (Architecture v2) stays as year-2+ horizon. |
+| Sprint state | [tasks/CURRENT_SPRINT.md](tasks/CURRENT_SPRINT.md) | After Q0 completes, replace active phase with "Phase 17 — Stripe + AI Explanation". |
 | Session memory | [tasks/MEMORY.md](tasks/MEMORY.md) | Add an entry for this strategic session: ADR-008 trigger, plan reference, key decisions. |
+
+### fendix-backend (proprietary, cloud)
+
+| Concern | Files | Notes |
+| --- | --- | --- |
+| AI explanation | `backend/explain/` (new Django app) | `FindingExplanation` model + Celery task + DRF view. `UniqueConstraint(finding_hash, model_version)` for cache. |
+| AI explanation quota | `backend/subscriptions/models.py` | Add `ai_explanations_used` to `UsageRecord`. Mirror `scans_used` pattern. |
+| Reachability storage | `backend/scanning/models.py` | Add `reachable BooleanField` + `taint_chain JSONField` to `ScanFinding`. One migration. |
+| Engine parser | `backend/scanning/services.py` | Update `FendixEngine` to parse and persist `reachable` + `taint_chain` from engine JSON report. |
+| Stripe wiring | `backend/billing/` | Add webhook handler for `checkout.session.completed`, `customer.subscription.updated/deleted`. Wire `UpgradeRequest` → Stripe Checkout self-serve flow. |
+| Feature gate for AI | `backend/subscriptions/permissions.py` | Add `"ai_explanation"` feature key to Pro+ plan seed (`seed_plans.py`). |
+| Cross-scanner ingest | `backend/ingest/` (new Django app, Q2) | SARIF import adapters for Trivy, Gitleaks, Semgrep, Snyk. Maps to `ScanFinding` model. |
+| EPSS/KEV enrichment | `backend/enrich/` (new Django app, Q2) | Daily Celery Beat task. Adds `epss_score` + `kev_listed` fields to `ScanFinding`. |
 
 ---
 
