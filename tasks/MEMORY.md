@@ -309,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (TASK-121 cmd-injection reachability shipped — Phase 17a now 3/8 tasks complete; commits `6ed3ce2` + `a1c8d7c` pushed to origin/main)
+**Last updated:** 2026-05-11 (Phase 17a 7/8 complete — TASK-122 + 123 + 124 + 125 shipped in one sweep; commits `bbfe07a` + `e424697` + `3bbf4c5` + `a48be8b` pushed. Only TASK-126 ADR-008 remains.)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +477,63 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (Phase 17a 7/8 sweep — TASK-122 + 123 + 124 + 125 all shipped in one session; only TASK-126 ADR-008 remains, deferred per operator instruction)
+
+**Session goal:** "go and stop before TASK-126" — the operator's instruction. Ship TASK-122 → TASK-123 → TASK-124 → TASK-125 in sequence, stop before opening TASK-126.
+
+**Accomplished (4 tasks, 4 commits):**
+
+- **TASK-122 (commit `bbfe07a`) — FP corpus build.** New `scripts/fp-corpus/run.sh` runner scans two targets: `fendix-self` (this repo's `python/` tree) and `juice-shop` (Docker container, passive blackbox). Captured 32 + 7 = 39 raw findings, classified 35 as FPs across 4 distinct root-cause patterns: P1 test-fixtures-as-prod (31 instances — dominant), P2 header/CORS check fires on 4xx (3), P3 rate-limit check on static file (1), P4 metrics-endpoint headers (tracked but TP). Exit gate (≥15 FPs) comfortably exceeded. Catalog at `tasks/FP_CORPUS.md` with per-finding (target, severity, endpoint, why-FP) table and lever recommendations for TASK-123. `.gitignore` updated for `fp-corpus-results/` per-run JSON.
+
+- **TASK-123 (commit `e424697`) — FP-reduction gates.** Implemented the two math-shaped levers identified by TASK-122. (1) **4xx-response gate** in `internal/scanner/headers.go::CheckHeaders` and `cors.go::CheckCORS` — when response status ≥400, early-return. A missing CSP/HSTS on a 404 page isn't actionable; a CORS misconfig on a 404 page isn't exploitable. 3xx responses still scanned (real redirect chains have real headers). (2) **Static-file path regex** in `ratelimit.go` — new `staticFilePathRe` matches common static-asset extensions (.DS_Store, .ico, .css, .js, .map, .woff2, etc.) and well-known dotfiles (robots.txt, humans.txt, favicon.ico, sitemap.xml, security.txt). `CheckRateLimit` early-returns before sending any probe requests (also saves the N-probe cost). 6 new tests across the three scanner files. **SPA-fallback dedup case** (juice-shop's SPA returns 200 OK for unknown paths like /.env, so the 4xx gate doesn't apply) is documented in FP_CORPUS.md "what didn't ship" and deferred to a future Phase 17d task. Path-scope `.fendix-ignore` template (lever 3) handed to TASK-124.
+
+- **TASK-124 (commit `3bbf4c5`) — one-click suppression snippet in PR comments.** Every top finding in the PR comment now ships with a copy-paste `.fendix-ignore` YAML snippet keyed on a stable `(title, category, endpoint)` hash. Render shape: a fenced ```yaml block under each finding bullet, like `- {endpoint: "GET /.env.local", category: "headers"}  # fp-a1b2c3d4`. The trailing `# fp-<hash>` comment is stable across scans (since SEC-NNN IDs reassign per run; the hash keys on the stable fields) so a developer can paste once and grep later. Defensive fallbacks for empty fields (`category → "unknown"`, `endpoint → "*"`). 5 new tests in `internal/ghapp/comment_test.go`. Also extended the `findingsReport` decoder struct with the previously-dropped `category` field.
+
+- **TASK-125 (commit `a48be8b`) — severity scoring refresh.** Lifted the `reachable_code` multiplier from "an idea in docs/example_plan.md §3.5" to a first-class factor in the scoring formula. New `const ReachableMult = 1.5` in `internal/models/scoring.go` + new `CalculateSeverityReachable(category, confidence, source, reachable)` function. Existing `CalculateSeverity` is now a backwards-compatible wrapper. New orchestrator step **5.4 escalateNonCorrelatedReachable** between Correlate (5) and Deduplicate (5.5) — bumps severity by one level on findings where `Reachable=true` and `Source != correlated` (the correlator already bumps the correlated-reachable case in `mergeFindings`). Confidence cap (step 5.6) still applies after the bump. EPSS / KEV multipliers explicitly deferred to the cloud quarter per the plan. 8 new tests across `scoring_test.go` + `consistency_test.go`.
+
+**Files modified this session (across 4 commits):**
+
+- `scripts/fp-corpus/run.sh` (NEW, 100 LOC)
+- `tasks/FP_CORPUS.md` (NEW, 35 FPs catalogued + methodology)
+- `.gitignore` (fp-corpus-results/)
+- `go/internal/scanner/headers.go` + `headers_test.go` (4xx gate + 3 tests)
+- `go/internal/scanner/cors.go` + `cors_test.go` (4xx gate + 1 test)
+- `go/internal/scanner/ratelimit.go` + `ratelimit_test.go` (static-file regex + 2 tests)
+- `go/internal/ghapp/comment.go` + `comment_test.go` (suppression snippet + 5 tests)
+- `go/internal/models/scoring.go` + `scoring_test.go` (ReachableMult + 3 tests)
+- `go/internal/engine/orchestrator.go` + `consistency_test.go` (step 5.4 + 4 tests)
+
+**Build state at session end:**
+
+- Go race-clean: **18 packages**, all green
+- Python: **215/215** (unchanged — no Python code touched after TASK-121)
+- e2e: **16/16**
+- Binary built at: `v0.7.0-13-g781d27c` (earlier in session), engine pipeline rebuilt several times
+
+**Decisions made:**
+
+- **Practical 4-task sweep, not 4 separate sessions.** Each of TASK-122–125 came in well under its ~2-3-day estimate because (a) the FP corpus surfaced concrete actionable levers, (b) the levers were 1-2 file changes each, (c) the test patterns mirrored existing tests so writing was mechanical. Total ~2.5 days of work compressed into one session.
+- **TASK-123 shipped two gates, not "tuned confidence math".** Task brief said "tune confidence thresholds." Actual lever was a binary skip (don't emit the finding at all for 4xx responses / static files). De-escalating confidence would still leave the finding in the report at LOW severity; skipping entirely is cleaner and saves the probe cost. The "tune the scoring formula" half of TASK-123 was effectively absorbed into TASK-125.
+- **No real-world juice-shop FP-rate delta measurement.** Juice-shop's SPA-fallback-200 quirk means the 4xx gate doesn't apply to the catalogued FPs in the current target. Re-running the FP corpus produces 0 delta on this specific target. Documented in FP_CORPUS.md as "what didn't ship" for honesty. The gates are still correct for non-SPA apps where /.env returns 404.
+- **`escalateNonCorrelatedReachable` is the right primitive, not a continuous-score refactor.** Plan §3.5 talks about continuous scores; the codebase today is discrete severity bands. Adding a one-level bump (mirroring the correlator's existing bump for correlated-reachable) lands the same effect with minimal blast radius. Future TASK could refactor to continuous scoring if EPSS/KEV ship, but today's discrete model is correct.
+- **Stopped before TASK-126 per explicit operator instruction.** ADR-008 is ~1 day of writing, conceptual anchor for the engine-first pivot. Independent of the other Phase 17a tasks. Next-session task.
+
+**Open questions / followups:**
+
+- **CI runs for the 4 commits.** All 4 should pass cleanly (no toolchain changes since TASK-119; all changes are additive Go/Python source).
+- **No backend / frontend sync needed.** All 4 tasks emit standard Finding shape. Backend column set unchanged. Frontend types unchanged. PR-comment changes happen on the fendix-app side (separate deployable) — no API contract delta.
+- **SPA-fallback dedup** — documented in FP_CORPUS.md, deferred to Phase 17d's user-reported-FP work. Filing as a backlog item if a user surfaces it.
+- **Static-file regex doesn't include `.env` / `.git/*`** — those are config-leak findings, not static assets. Future task: dedicated "exposed config file" check (CRITICAL severity) that suppresses noisier per-path findings on the same path.
+
+**Next session should start with:**
+
+- **TASK-126 ADR-008 (read-only AI / supersede BACKLOG-017)** — ~1 day. New `docs/adr/ADR-008-readonly-ai.md` formalising the 2026-05-11 strategic decision: read-only AI permitted (explain findings, suggest fixes), auto-PR explicitly forbidden. Supersedes the strategic-distractions entry in BACKLOG-017. Independent of code timing — write whenever; closes out Phase 17a.
+- After TASK-126: **Phase 17a fully complete (8/8)**. Cut **v0.8.0** release commit + tag. Then move to Phase 17b (cold-start work pulled forward — TASK-115/116/118).
+
+---
+
+## Earlier Session (2026-05-11 — TASK-121 cmd-injection reachability — Phase 17a's third task complete; engine now has 6 reachable sink categories across TASK-114 + TASK-120 + TASK-121)
 
 **Date:** 2026-05-11 (TASK-121 cmd-injection reachability — Phase 17a's third task complete; engine now has 6 reachable sink categories across TASK-114 + TASK-120 + TASK-121)
 
