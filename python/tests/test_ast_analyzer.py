@@ -352,6 +352,157 @@ class TestTaintChain:
             assert any("request.args" in link["expr"] for link in redir[0]["taint_chain"])
 
 
+class TestXSSHTMLSink:
+    """TASK-120 — reachable XSS taint chains.
+
+    The Python AST analyzer recognises three HTML-render sinks that
+    bypass auto-escaping: `Markup` (Flask/MarkupSafe), `mark_safe`
+    (Django), and `render_template_string` (Flask/Jinja2). When user
+    input flows into the first argument, the chain is recorded and
+    `reachable: true` is set — same shape as TASK-114's SQLi/SSRF/
+    open-redirect chains.
+    """
+
+    def test_markup_with_request_arg_emits_chain(self) -> None:
+        """Markup(request.args.get('x')) — reflective XSS with chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import Markup, request\n"
+                "def handler():\n"
+                "    return Markup(request.args.get('msg'))\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            assert len(xss) == 1, f"got {[f['id'] for f in findings]}"
+            assert xss[0].get("reachable") is True
+            assert any("request.args" in link["expr"] for link in xss[0]["taint_chain"])
+
+    def test_mark_safe_with_request_arg_emits_chain(self) -> None:
+        """Django mark_safe(request.GET['x']) — XSS bypassing auto-escape."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from django.utils.safestring import mark_safe\n"
+                "def handler(request):\n"
+                "    return mark_safe(request.GET['msg'])\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            assert len(xss) == 1
+            assert xss[0].get("reachable") is True
+            assert any("request.GET" in link["expr"] for link in xss[0]["taint_chain"])
+
+    def test_render_template_string_with_request_arg_emits_chain(self) -> None:
+        """render_template_string(user_input) — SSTI + XSS path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import render_template_string, request\n"
+                "def handler():\n"
+                "    return render_template_string(request.args.get('tpl'))\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            assert len(xss) == 1
+            assert xss[0].get("reachable") is True
+
+    def test_multi_step_assignment_resolves(self) -> None:
+        """msg = request.args.get('x'); html = Markup(msg) — chain across hop."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import Markup, request\n"
+                "def handler():\n"
+                "    msg = request.args.get('msg')\n"
+                "    return Markup(msg)\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            assert len(xss) == 1
+            assert xss[0].get("reachable") is True
+            # Chain should have at least 2 links: source assignment + sink.
+            assert len(xss[0]["taint_chain"]) >= 2
+
+    def test_attribute_form_flask_markup_detected(self) -> None:
+        """flask.Markup(request.args['x']) — attribute call form."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import flask\n"
+                "def handler():\n"
+                "    return flask.Markup(flask.request.args['msg'])\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            # Attribute-form call resolves the sink name; the request
+            # input is recognised via flask.request.args reference.
+            assert len(xss) == 1, f"expected 1 XSS finding, got {[f['id'] for f in findings]}"
+
+    def test_constant_arg_not_flagged(self) -> None:
+        """Markup('<b>static</b>') — literal-only, no flow → no finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import Markup\n"
+                "def banner():\n"
+                "    return Markup('<b>welcome</b>')\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_XSS_HTML_SINK" not in _ids(findings)
+
+    def test_variable_resolving_to_constant_not_flagged(self) -> None:
+        """html = '<b>static</b>'; Markup(html) — still safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import Markup\n"
+                "def banner():\n"
+                "    html = '<b>welcome</b>'\n"
+                "    return Markup(html)\n"
+            )
+            findings = _collect(tmpdir)
+            # Constant-only chain isn't flagged: the variable resolves
+            # to a Constant in scope, so _is_xss_html_sink returns False.
+            assert "SEC-PY_XSS_HTML_SINK" not in _ids(findings)
+
+    def test_no_user_input_chain_emits_finding_without_reachable(self) -> None:
+        """Markup(other_func()) — non-literal arg → finding, but no chain.
+
+        Matches the SQLi/SSRF/open-redirect posture: a non-literal arg
+        to a known sink is suspicious regardless of whether we can trace
+        the source. The finding fires; `reachable: true` is only set
+        when the chain traces all the way back to a request source.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import Markup\n"
+                "def render(x):\n"
+                "    return Markup(some_helper(x))\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            assert len(xss) == 1
+            # No request source traced — finding fires but isn't escalated.
+            assert xss[0].get("reachable") is not True
+            assert xss[0].get("taint_chain") is None or xss[0]["taint_chain"] == []
+
+    def test_finding_shape_matches_other_reachable_findings(self) -> None:
+        """XSS finding has the same fields as SQLi/SSRF/open-redirect."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import Markup, request\n"
+                "def handler():\n"
+                "    return Markup(request.args.get('x'))\n"
+            )
+            findings = _collect(tmpdir)
+            xss = [f for f in findings if f["id"] == "SEC-PY_XSS_HTML_SINK"]
+            assert len(xss) == 1
+            f = xss[0]
+            assert f["severity"] == "HIGH"
+            assert f["confidence"] == "MEDIUM"
+            assert f["source"] == "whitebox"
+            assert f["category"] == "injection"
+            assert "CWE-79" in f["references"]
+            assert f["reachable"] is True
+            assert isinstance(f["taint_chain"], list)
+            for link in f["taint_chain"]:
+                assert set(link.keys()) >= {"file", "line", "expr"}
+
+
 class TestSQLConcatViaAssignment:
     """TASK-087 closes the multi-step SQLi gap.
 

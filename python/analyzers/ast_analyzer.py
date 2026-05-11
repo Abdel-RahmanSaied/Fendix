@@ -453,6 +453,45 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 taint_chain=chain,
             )
 
+        # XSS HTML-render sinks (TASK-120). Three patterns:
+        #   - Markup(x) / flask.Markup(x) / markupsafe.Markup(x) — bypasses
+        #     Jinja2 auto-escaping; equivalent to inserting `|safe` in a
+        #     template. When `x` is user input, the rendered HTML executes
+        #     attacker-controlled markup.
+        #   - mark_safe(x) — same idea on the Django side
+        #     (django.utils.safestring.mark_safe). Bypasses {{ }} escaping.
+        #   - render_template_string(x) — Jinja2 server-side template
+        #     injection (SSTI) when the template body itself is
+        #     user-controlled; reflective XSS in the typical case.
+        # The HTML emitted from any of these flows back to the browser, so
+        # proven user-input dataflow into the call site implies a real
+        # reachable XSS path — the correlator escalates severity per
+        # TASK-114.
+        elif self._is_xss_html_sink(node):
+            chain = None
+            if node.args:
+                sink_name = self._xss_sink_name(node)
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"{sink_name}({_ast_expr_text(node.args[0])})",
+                )
+            self._emit_finding(
+                "PY_XSS_HTML_SINK",
+                "Reflected XSS — user input passed to HTML render sink",
+                "HIGH",
+                "MEDIUM",
+                "CWE-79",
+                (
+                    "Sanitize user input before passing to Markup/mark_safe/"
+                    "render_template_string. Prefer template auto-escaping "
+                    "(remove the Markup wrapper) or html.escape() the value "
+                    "before marking it safe."
+                ),
+                node.lineno,
+                taint_chain=chain,
+            )
+
         # requests.get/post/etc. with non-literal first arg → potential SSRF.
         # MEDIUM confidence because legitimate HTTP-client use is common; the
         # signal is that the URL itself is dynamic.
@@ -654,6 +693,51 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     return False
         return True
 
+    def _is_xss_html_sink(self, node: ast.Call) -> bool:
+        """Return True if node is a known HTML-render sink with a non-literal arg.
+
+        Recognises:
+          - Markup(x) / flask.Markup(x) / markupsafe.Markup(x)
+          - mark_safe(x) / django.utils.safestring.mark_safe(x)
+          - render_template_string(x)
+
+        A constant string arg is fine — that's a developer marking a
+        literal block of HTML as safe, not a flow from user input.
+        Variable args (Name, Call, BinOp, JoinedStr) are the dangerous
+        case; let `_collect_taint_chain` decide whether the variable
+        actually traces back to a request source.
+        """
+        if not node.args:
+            return False
+        if not self._xss_sink_name(node):
+            return False
+        first = node.args[0]
+        # Constant literal is safe — `Markup("<b>static</b>")` is fine.
+        if isinstance(first, ast.Constant):
+            return False
+        # Name that resolves to a constant in scope is also safe.
+        if isinstance(first, ast.Name):
+            for scope in reversed(self._scopes):
+                if first.id in scope and isinstance(scope[first.id], ast.Constant):
+                    return False
+        return True
+
+    def _xss_sink_name(self, node: ast.Call) -> str:
+        """Return the canonical sink-function name, or '' if not an XSS sink.
+
+        Accepts both bare-name calls (`Markup(x)`, `mark_safe(x)`) and
+        attribute calls (`flask.Markup(x)`, `markupsafe.Markup(x)`,
+        `django.utils.safestring.mark_safe(x)`). Returned as the leaf
+        function name only — callers use it for the taint-chain expr.
+        """
+        if isinstance(node.func, ast.Name):
+            if node.func.id in _XSS_HTML_SINK_NAMES:
+                return node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if node.func.attr in _XSS_HTML_SINK_NAMES:
+                return node.func.attr
+        return ""
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (no visitor state required)
@@ -663,6 +747,15 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
 # Python objects). Compared by attribute or name, not value.
 _SAFE_LOADER_NAMES: frozenset[str] = frozenset({
     "SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader",
+})
+
+
+# HTML-render sinks recognised by `_is_xss_html_sink` (TASK-120). Compared
+# by attribute or bare name so both `Markup(x)` and `flask.Markup(x)` /
+# `markupsafe.Markup(x)` match. Same applies to `mark_safe` (Django) and
+# `render_template_string` (Flask/Jinja2 SSTI + reflective XSS).
+_XSS_HTML_SINK_NAMES: frozenset[str] = frozenset({
+    "Markup", "mark_safe", "render_template_string",
 })
 
 
