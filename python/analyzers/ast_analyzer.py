@@ -313,13 +313,23 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     node.lineno,
                 )
 
-        # os.system()
+        # os.system() — extended in TASK-121 to capture taint chains
+        # when user input flows in. The sink fires unconditionally (same
+        # posture as before) — the chain is metadata that the correlator
+        # uses to escalate severity per TASK-114.
         elif (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "system"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "os"
         ):
+            chain = None
+            if node.args:
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"os.system({_ast_expr_text(node.args[0])})",
+                )
             self._emit_finding(
                 "PY_OS_SYSTEM",
                 "Unsafe os.system() call — command injection risk",
@@ -331,10 +341,51 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     "and shell=False."
                 ),
                 node.lineno,
+                taint_chain=chain,
             )
 
-        # subprocess with shell=True
+        # os.popen() — same shape as os.system; deprecated form that's
+        # still common in older codebases. Reads a shell command and
+        # returns a pipe, but the shell-injection surface is identical.
+        # New in TASK-121.
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "popen"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+        ):
+            chain = None
+            if node.args:
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"os.popen({_ast_expr_text(node.args[0])})",
+                )
+            self._emit_finding(
+                "PY_OS_POPEN",
+                "Unsafe os.popen() call — command injection risk",
+                "HIGH",
+                "HIGH",
+                "CWE-78",
+                (
+                    "Replace os.popen() with subprocess.run(..., shell=False) using a list "
+                    "of arguments. os.popen is deprecated and equivalent to a shell call."
+                ),
+                node.lineno,
+                taint_chain=chain,
+            )
+
+        # subprocess with shell=True — extended in TASK-121 to capture
+        # taint chains. The first positional arg is the command string
+        # when shell=True; that's where user input flows in.
         elif self._is_subprocess_shell_true(node):
+            chain = None
+            if node.args:
+                chain = self._collect_taint_chain(
+                    node.args[0],
+                    node.lineno,
+                    f"subprocess(shell=True, cmd={_ast_expr_text(node.args[0])})",
+                )
             self._emit_finding(
                 "PY_SUBPROCESS_SHELL",
                 "subprocess called with shell=True — command injection risk",
@@ -346,6 +397,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     "Never build shell commands from user input."
                 ),
                 node.lineno,
+                taint_chain=chain,
             )
 
         # cursor.execute() with string formatting (or with a variable assigned

@@ -503,6 +503,133 @@ class TestXSSHTMLSink:
                 assert set(link.keys()) >= {"file", "line", "expr"}
 
 
+class TestCmdInjectionReachable:
+    """TASK-121 — reachable command-injection taint chains.
+
+    Extends the existing os.system / subprocess(shell=True) sinks and
+    adds os.popen as a third sink, each recording a taint_chain +
+    reachable: true when intra-function dataflow proves a request
+    source reaches the sink.
+    """
+
+    def test_os_system_with_request_arg_emits_chain(self) -> None:
+        """os.system(request.args.get('cmd')) — cmd injection with chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    os.system(request.args.get('cmd'))\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_OS_SYSTEM"]
+            assert len(cmd) == 1, f"got {[f['id'] for f in findings]}"
+            assert cmd[0].get("reachable") is True
+            assert any("request.args" in link["expr"] for link in cmd[0]["taint_chain"])
+
+    def test_os_system_with_literal_no_chain(self) -> None:
+        """os.system('ls') — literal arg, finding fires, no chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\ndef listdir():\n    os.system('ls')\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_OS_SYSTEM"]
+            # The finding still fires (os.system is dangerous regardless),
+            # but reachable is not set.
+            assert len(cmd) == 1
+            assert cmd[0].get("reachable") is not True
+
+    def test_subprocess_shell_true_with_request_arg_emits_chain(self) -> None:
+        """subprocess.run(req.args['cmd'], shell=True) — chain captured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import subprocess\n"
+                "def handler(request):\n"
+                "    subprocess.run(request.args['cmd'], shell=True)\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_SUBPROCESS_SHELL"]
+            assert len(cmd) == 1, f"got {[f['id'] for f in findings]}"
+            assert cmd[0].get("reachable") is True
+            assert any("request.args" in link["expr"] for link in cmd[0]["taint_chain"])
+
+    def test_subprocess_shell_true_with_literal_no_chain(self) -> None:
+        """subprocess.run('ls', shell=True) — literal, no chain."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import subprocess\n"
+                "def f():\n"
+                "    subprocess.run('ls', shell=True)\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_SUBPROCESS_SHELL"]
+            assert len(cmd) == 1
+            assert cmd[0].get("reachable") is not True
+
+    def test_os_popen_with_request_arg_emits_chain(self) -> None:
+        """os.popen(request.GET['x']) — new sink in TASK-121, chain captured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "def handler(request):\n"
+                "    return os.popen(request.GET['cmd']).read()\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_OS_POPEN"]
+            assert len(cmd) == 1, f"got {[f['id'] for f in findings]}"
+            assert cmd[0].get("reachable") is True
+            assert any("request.GET" in link["expr"] for link in cmd[0]["taint_chain"])
+
+    def test_os_popen_with_literal_emits_finding_without_chain(self) -> None:
+        """os.popen('ls') — finding fires, but reachable is not set."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\ndef listdir():\n    os.popen('ls').read()\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_OS_POPEN"]
+            assert len(cmd) == 1
+            assert cmd[0].get("reachable") is not True
+
+    def test_multi_step_assignment_resolves_for_cmd_injection(self) -> None:
+        """cmd = request.args['x']; os.system(cmd) — chain across hop."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    cmd = request.args['cmd']\n"
+                "    os.system(cmd)\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_OS_SYSTEM"]
+            assert len(cmd) == 1
+            assert cmd[0].get("reachable") is True
+            assert len(cmd[0]["taint_chain"]) >= 2
+
+    def test_cmd_injection_finding_shape(self) -> None:
+        """Cmd-injection findings have the same shape as XSS/SQLi/SSRF/redirect."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    os.system(request.args.get('cmd'))\n"
+            )
+            findings = _collect(tmpdir)
+            cmd = [f for f in findings if f["id"] == "SEC-PY_OS_SYSTEM"]
+            assert len(cmd) == 1
+            f = cmd[0]
+            assert f["severity"] == "HIGH"
+            assert f["confidence"] == "HIGH"  # cmd-injection is HIGH confidence (vs MEDIUM for XSS)
+            assert f["source"] == "whitebox"
+            assert f["category"] == "injection"
+            assert "CWE-78" in f["references"]
+            assert f["reachable"] is True
+            assert isinstance(f["taint_chain"], list)
+
+
 class TestSQLConcatViaAssignment:
     """TASK-087 closes the multi-step SQLi gap.
 
