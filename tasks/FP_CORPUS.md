@@ -147,3 +147,21 @@ Confidence-math levers identified above:
 3. **Path-scope `.fendix-ignore` template** in `fendix init` (addresses P1 — 31 FPs collapsable to 1 ignore rule)
 
 TASK-123 should ship levers 1 + 2 (confidence-math changes) and document 3 as a follow-up for TASK-124 (one-click suppression) since it's a UX/CLI change not a math change.
+
+---
+
+## TASK-123 follow-up — what shipped, what didn't (2026-05-11)
+
+**Shipped (commit `<pending>`):**
+
+- ✅ **Lever 1: 4xx-response gate** — `internal/scanner/headers.go::CheckHeaders` and `internal/scanner/cors.go::CheckCORS` early-return when the response status is ≥400. Tested with httptest fakes (200/301/404/500 cases). 3xx responses still scanned (real redirect chains have real headers).
+- ✅ **Lever 2: static-file path regex** — new `staticFilePathRe` in `internal/scanner/ratelimit.go` matches common static-asset extensions (`.DS_Store`, `.ico`, `.css`, `.js`, `.map`, `.woff2`, `.png`, etc.) and well-known dotfiles (`robots.txt`, `humans.txt`, `security.txt`, `favicon.ico`, `sitemap.xml`). `CheckRateLimit` early-returns before sending any probe requests (also saves the N probe-cost per static file).
+
+**Observed in re-scan (2026-05-11):** juice-shop's SPA returns **200 OK** for `/.env`, `/.env.local`, and `/.DS_Store` (SPA fallback to index.html). The 4xx gate correctly doesn't apply to a 200 response — the gate is doing what it's supposed to. The `/.DS_Store` rate-limit finding was eliminated by lever 2 (path regex skipped the check entirely). The headers/CORS findings on `/.env` and `/.env.local` are now technically about the SPA index.html response (since the SPA serves it for all unknown routes).
+
+**Not shipped (deferred to future Phase 17d task):**
+
+- ❌ **SPA-fallback dedup** — when multiple crawler-discovered paths return byte-identical responses (typical SPA: any unknown URL → index.html), header/CORS findings on those should dedup to one finding. Today's dedup keys on (title, category, severity) which already collapses across endpoints, but the `affected_endpoints` list becomes a wall of SPA-fallback paths. Acceptable cost for now; relevant when a real user reports it.
+- ❌ **Static-file regex doesn't include `.env` / `.git/*` / `.htaccess`** — those are config leaks, not static assets. The right finding for those is "exposed config file" (CRITICAL), not "no rate limiting" (MEDIUM). Leaving them out of the rate-limit gate so the existing detection still fires; a future task should add a dedicated dotfile-config-leak check that suppresses the noisier headers/cors/ratelimit findings for the same path.
+
+**Lever 3 (`fendix init` `.fendix-ignore` template for `**/tests/**`)** — handed off to TASK-124. The one-click suppression snippet work is the right home for it.

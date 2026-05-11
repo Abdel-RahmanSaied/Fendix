@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,22 @@ import (
 )
 
 const rateLimitProbeCount = 20
+
+// staticFilePathRe matches endpoints that serve a static file rather
+// than an API route. Rate-limiting these is not a meaningful security
+// control — they're served by CDNs / static-file middleware, not the
+// app's API layer. TASK-123 / FP corpus pattern P3: juice-shop
+// /.DS_Store produced a noise "no rate limiting" finding.
+//
+// Conservative match: only common static-asset extensions and a handful
+// of well-known dotfiles. Misses are fine — the finding emits as
+// before; FPs are not silently introduced by an overly-permissive regex.
+var staticFilePathRe = regexp.MustCompile(
+	`(?i)(?:` +
+		`\.(?:DS_Store|map|ico|woff2?|ttf|otf|css|js|mjs|png|jpe?g|gif|svg|webp|avif|bmp|pdf|zip|gz|tar|wasm)$` +
+		`|/(?:robots|humans|security|favicon|sitemap)\.(?:txt|xml)$` +
+		`)`,
+)
 
 // rateLimitHeaders are headers that indicate rate limiting is in place.
 var rateLimitHeaders = []string{
@@ -31,6 +48,16 @@ var rateLimitHeaders = []string{
 // CheckRateLimit sends multiple rapid requests to detect rate limiting.
 // If all requests succeed with no 429 or rate-limit headers, it reports a finding.
 func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	// TASK-123: skip rate-limit check on static-file endpoints. The
+	// check costs N requests per endpoint and the finding it produces
+	// ("no rate limiting on /favicon.ico") is noise that doesn't
+	// describe a real attack surface.
+	if staticFilePathRe.MatchString(endpoint.Path) {
+		slog.Debug("rate-limit check skipped (static-file path)",
+			"endpoint", fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path))
+		return nil
+	}
+
 	client := &http.Client{
 		Timeout:   time.Duration(cfg.Timeout) * time.Second,
 		Transport: budget.Transport(),

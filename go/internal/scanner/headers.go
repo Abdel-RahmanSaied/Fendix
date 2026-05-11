@@ -191,6 +191,18 @@ func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint
 	}
 	defer resp.Body.Close()
 
+	// TASK-123: skip header checks on 4xx/5xx responses. A missing CSP
+	// on a 404 page isn't actionable — the page isn't a feature, and
+	// app-specific headers on error responses are framework-controlled
+	// not app-controlled. FP corpus pattern P2 (juice-shop /.env.local
+	// returned 404 and emitted 3 noise findings).
+	if resp.StatusCode >= 400 {
+		slog.Debug("headers check skipped (non-2xx/3xx response)",
+			"endpoint", fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path),
+			"status", resp.StatusCode)
+		return nil
+	}
+
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
 	checks := securityHeaders(epLabel)
 

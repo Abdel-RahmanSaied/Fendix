@@ -51,6 +51,52 @@ func TestCheckHeaders_AllMissing(t *testing.T) {
 	}
 }
 
+// TASK-123 / FP corpus pattern P2: missing-header findings on a 404 page
+// aren't actionable. The scanner should skip the check entirely.
+func TestCheckHeaders_SkipsOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+	ep := Endpoint{Method: "GET", Path: "/missing", FullURL: server.URL + "/missing"}
+	cfg := &models.ScanConfig{Timeout: 10}
+
+	findings := CheckHeaders(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings on 404 (header check should skip), got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckHeaders_SkipsOn500(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer server.Close()
+	ep := Endpoint{Method: "GET", Path: "/broken", FullURL: server.URL + "/broken"}
+	cfg := &models.ScanConfig{Timeout: 10}
+
+	findings := CheckHeaders(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings on 500, got %d", len(findings))
+	}
+}
+
+func TestCheckHeaders_RunsOn3xxRedirect(t *testing.T) {
+	// 3xx responses are real responses (real headers gate cross-origin
+	// requests during redirect chains). The gate is "skip 4xx+ only."
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(301)
+	}))
+	defer server.Close()
+	ep := Endpoint{Method: "GET", Path: "/redirect", FullURL: server.URL + "/redirect"}
+	cfg := &models.ScanConfig{Timeout: 10}
+
+	findings := CheckHeaders(context.Background(), cfg, ep)
+	if len(findings) == 0 {
+		t.Fatal("expected findings on 3xx (still a real response), got 0")
+	}
+}
+
 func TestCheckHeaders_AllPresent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")

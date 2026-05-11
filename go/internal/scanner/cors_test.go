@@ -111,6 +111,26 @@ func TestCheckCORS_NoCORSHeaders(t *testing.T) {
 	}
 }
 
+// TASK-123 / FP corpus pattern P2: CORS misconfig findings on a 404
+// page are unreachable — the path doesn't serve a feature. Skip.
+func TestCheckCORS_SkipsOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set a wildcard ACAO that *would* fire a CRITICAL finding — but
+		// the 404 status should gate it out.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+	ep := Endpoint{Method: "GET", Path: "/.env.local", FullURL: server.URL + "/.env.local"}
+	cfg := &models.ScanConfig{Timeout: 10}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 CORS findings on 404, got %d: %+v", len(findings), findings)
+	}
+}
+
 func TestCheckCORS_ProperConfiguration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "https://trusted.example.com")

@@ -45,6 +45,17 @@ func CheckCORS(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 	}
 	defer resp.Body.Close()
 
+	// TASK-123: skip CORS check on 4xx/5xx responses. A CORS misconfig
+	// on a 404 page is unreachable — the path doesn't serve a feature,
+	// so the headers don't gate any real cross-origin traffic. FP corpus
+	// pattern P2 (juice-shop /.env.local 404 produced a noise finding).
+	if resp.StatusCode >= 400 {
+		slog.Debug("CORS check skipped (non-2xx/3xx response)",
+			"endpoint", fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path),
+			"status", resp.StatusCode)
+		return nil
+	}
+
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
 	acao := resp.Header.Get("Access-Control-Allow-Origin")
 	acac := resp.Header.Get("Access-Control-Allow-Credentials")
