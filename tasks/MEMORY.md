@@ -309,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (TASK-119 govulncheck + pip-audit sub-deliverables shipped — 2/3 done; commits `5bf874b` + `aade7e1` pushed to origin/main)
+**Last updated:** 2026-05-11 (TASK-119 fully complete — govulncheck + pip-audit + npm-audit sub-deliverables shipped; commits `5bf874b`, `aade7e1`, `4186a0e` pushed to origin/main)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +477,63 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (TASK-119 npm-audit sub-deliverable — third of three; TASK-119 fully complete)
+
+**Session goal:** Close out TASK-119 with the npm-audit sub-deliverable. govulncheck + pip-audit landed earlier today (`5bf874b` + `aade7e1`); npm finishes Phase 17a's first task.
+
+**Accomplished:**
+
+- **New `internal/scanner/deps/npm/` package (~370 LOC).** `Scan(ctx, codePath) ([]Finding, error)` parses `package-lock.json` v2/v3, walks the flat `packages` map, deduplicates `(name, version)` pairs across nested installs, POSTs each pair to OSV.dev `/v1/query` against the `npm` ecosystem, maps the response to Findings. Cache at `~/.fendix/cache/osv-npm/<pkg>@<ver>.json` with 24h TTL (atomic via `os.CreateTemp` + `os.Rename`).
+
+- **lockfile parser scoped to v2/v3.** v1 lockfiles use a different `dependencies` tree shape and are out of scope (explicit `unsupported lockfileVersion` error surfaces to the orchestrator's slog.Warn). v2 + v3 share a flat `packages` map keyed by directory paths (`""` for root, `"node_modules/<name>"` for each install, nested `"node_modules/<parent>/node_modules/<child>"` for resolved duplicates). The full transitive tree is captured — same data `npm audit` reads.
+
+- **Scoped package handling (`@scope/name`).** `nameFromPath` extracts scoped names correctly: `node_modules/@scope/pkg` → `@scope/pkg`; `node_modules/express/node_modules/@scope/pkg` → `@scope/pkg`. Cache key replaces `/` with `_` so `@types/node` doesn't create a directory on disk.
+
+- **Behavioural parity with `python/analyzers/deps.py::_run_npm_audit`.** ID shape `SEC-DEPS-<vid-with-underscores>` (no `NPM` prefix — matches Python output exactly so dedup catches overlap). Title `Vulnerable dependency: <pkg>@<ver> (<vid>)` (note `@` separator vs pip's `==`). Refs `[osv_id, first-alias-if-present]`. Fix line `Upgrade to <pkg>@<fix> or later.` from OSV `affected[].ranges[].events[].fixed`.
+
+- **19 unit tests pass.** ErrNoLockfile path, parser (v2/v3 happy path, nested-duplicate dedup, nested-different-version both-kept, v1 rejected, malformed JSON), `nameFromPath` (8 cases incl. scoped + nested scoped + link: deps), `firstFixVersion`, `buildFinding` shape parity (incl. scoped package title), cache round-trip + TTL expiry + scoped-package filesystem safety + empty-dir no-op, end-to-end `TestScan_HappyPath_AgainstFakeOSV` against an `httptest.NewServer` returning one vuln for `lodash@4.17.20`, per-package error isolation (500 on one pkg doesn't sink the rest), empty packages map no-op, v1 lockfile error surfaced via Scan.
+
+- **Orchestrator wiring.** Added `npm.Scan` to step 3.5 right after `pip.Scan`. All three scanners (Go / PyPI / npm) gated by the same `--no-native-deps` escape hatch — one knob covers the whole TASK-119 surface. Each has its own ErrNo... sentinel for silent-skip; other errors slog.Warn and continue.
+
+- **TASK-119 fully complete.** All three sub-deliverables shipped within one calendar day. Phase 17a progresses from 0% → 12.5% (1/8 tasks done).
+
+**Files modified:**
+
+- `go/internal/scanner/deps/npm/scanner.go` (NEW — ~370 LOC)
+- `go/internal/scanner/deps/npm/scanner_test.go` (NEW — 19 tests)
+- `go/internal/engine/orchestrator.go` (npm.Scan call appended to step 3.5)
+
+**Release commit:** `4186a0e` ("feat(scanner): TASK-119 native npm dep-CVE scanner (npm-audit sub-deliverable)") pushed to `origin/main`.
+
+**Build state at session end:**
+
+- Go race-clean: 18 packages (added npm).
+- Python: 198/198.
+- e2e: 16/16 — binary at `v0.7.0-13-g781d27c`.
+
+**Decisions made:**
+
+- **package-lock.json only, no yarn.lock / pnpm-lock.yaml.** Most current projects use npm; yarn + pnpm projects can be addressed when an issue is filed. Same logic as pip-audit's "requirements.txt only, no Pipfile.lock / poetry.lock." Future delta is additive (new lockfile types add new entries to a discovered manifest list).
+- **lockfileVersion 1 explicitly rejected.** Pre-2020 lockfiles have a different shape; supporting both would double the parser surface for ~5% of projects. Error message tells the user to regenerate the lockfile with modern npm.
+- **`(name, version)` dedup, not `(name, path)`.** Two installs of `lodash@4.17.20` at different paths are the same artifact for CVE purposes — emit one Finding, not two. Different versions of the same package (`lodash@4.17.20` AND `lodash@4.17.15`) are both kept because one may be vulnerable while the other isn't.
+- **Dev deps included in scan.** The `dev` field on `lockfileV2Package` is parsed but not used to filter. pip-audit + Python deps.py do the same. Worth revisiting in TASK-125 (severity scoring refresh) — dev-only vulns are lower-impact than prod, but a code-running environment differential needs careful framing.
+
+**Open questions / followups:**
+
+- **CI run for 4186a0e.** Should pass cleanly — additive package, no toolchain or shared-state changes from this commit. govulncheck commit `5bf874b` was the load-bearing one for the Go 1.22 bump.
+- **OSV.dev rate limiting.** A large `package-lock.json` (transitive tree of ~500+ packages) will issue ~500 sequential POSTs. OSV.dev's documented rate limit is "lenient" but undocumented. If real-world scans hit rate limits, the right fix is `/v1/querybatch` (one HTTP call for up to 1000 packages). Defer until a real user reports it — premature optimisation otherwise.
+- **No backend / frontend sync needed.** All three scanners emit standard `Finding` shape (no new fields). Backend already has the columns; frontend types already cover everything.
+
+**Next session should start with:**
+
+- **TASK-120: XSS-sink reachability pattern** (~2 days). Extend `python/analyzers/ast_analyzer.py` to track "user input → HTML render context" taint chains: Jinja2 `Markup`/`|safe`, Django `mark_safe`/`{% autoescape off %}`, React/JSX `dangerouslySetInnerHTML`, raw `innerHTML`/`outerHTML`/`document.write`. Same TASK-114 pattern: emit `taint_chain` array + `reachable: true` when intra-function dataflow proves the chain. Correlator's existing `mergeFindings` already handles the second severity escalation when `reachable: true` shows up on the whitebox half.
+- **TASK-121: Command-injection-sink reachability** (~2 days, follows TASK-120). Same correlator extension — "user input → `subprocess.run` / `os.system` / `os.popen` / Go `exec.Command`". Together with TASK-120, brings the reachable-category count from 3 (SQLi/SSRF/open-redirect) to 5 — enough to justify a real findings-detail UI iteration in fendix_frontend.
+- **TASK-126 (ADR-008) in parallel** — ~1 day, conceptual anchor for the engine-first pivot, independent of feature timing.
+
+---
+
+## Earlier Session (2026-05-11 — TASK-119 pip-audit sub-deliverable — second of three)
 
 **Date:** 2026-05-11 (TASK-119 pip-audit sub-deliverable — second of three)
 
