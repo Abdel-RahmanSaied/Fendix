@@ -309,7 +309,7 @@ packaging>=23.0               — Dependency version comparison
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (TASK-119 fully complete — govulncheck + pip-audit + npm-audit sub-deliverables shipped; commits `5bf874b`, `aade7e1`, `4186a0e` pushed to origin/main)
+**Last updated:** 2026-05-11 (TASK-120 XSS reachability shipped — Phase 17a now 2/8 tasks complete; commit `6ed3ce2` pushed to origin/main)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +477,56 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-11 (TASK-120 XSS reachability — Phase 17a's second task complete; second reachability category added after TASK-114's SQLi/SSRF/open-redirect)
+
+**Session goal:** Per the prior session's "Next session" pointer, ship TASK-120 (XSS-sink reachability pattern) with Phase 17a now 1/8 done. Extend the Python AST analyzer's taint-chain framework (built in TASK-114) to recognise HTML-render sinks that bypass auto-escaping.
+
+**Accomplished:**
+
+- **3 new XSS sinks in `python/analyzers/ast_analyzer.py`.** `Markup(x)` / `flask.Markup(x)` / `markupsafe.Markup(x)` (bypasses Jinja2 auto-escaping). `mark_safe(x)` / `django.utils.safestring.mark_safe(x)` (bypasses Django's `{{ }}` escaping). `render_template_string(x)` (Flask/Jinja2 SSTI + reflective XSS). New module constant `_XSS_HTML_SINK_NAMES = frozenset({"Markup", "mark_safe", "render_template_string"})`. New helpers `_is_xss_html_sink` + `_xss_sink_name` mirror the SSRF/open-redirect pattern. New `visit_Call` branch emits `SEC-PY_XSS_HTML_SINK` (CWE-79, HIGH severity, MEDIUM confidence, category=injection) with the same `_collect_taint_chain` invocation the existing reachable sinks use.
+
+- **Bare-name + attribute-form both detected.** `_xss_sink_name` matches `Markup(...)` AND `flask.Markup(...)` — covers both `from flask import Markup` and `import flask` import styles. Lock-in test: `test_attribute_form_flask_markup_detected`.
+
+- **Constant-only args correctly skipped.** `Markup("<b>static</b>")` (Constant arg) and `html = "<b>static</b>"; Markup(html)` (Name resolving to Constant in scope) produce zero findings — same `_is_xss_html_sink` early-returns the SSRF analyser uses. Two regression tests lock in this posture.
+
+- **9 new unit tests under `TestXSSHTMLSink`.** Coverage: Markup happy path with `taint_chain` + `reachable: true`, Django mark_safe, Flask render_template_string SSTI, multi-step assignment hop (`msg = request.args.get('x'); Markup(msg)` → chain across 2 links), attribute-form Flask, constant arg not flagged, variable-resolving-to-constant not flagged, untraced non-literal arg emits finding without `reachable: true` (posture parity with SQLi/SSRF), finding-shape parity (severity / confidence / source / category / CWE / taint_chain link shape).
+
+- **Posture matches SQLi/SSRF/open-redirect exactly.** Non-literal arg to a known sink → finding fires (suspicious shape). Chain provable to a request source → `reachable: true` set + correlator escalates severity per TASK-114. Constant arg / Name resolving to Constant → no finding. This is consistent with the existing reachable patterns so users get the same signal across all five sink categories.
+
+**Files modified:**
+
+- `python/analyzers/ast_analyzer.py` (NEW: `_is_xss_html_sink`, `_xss_sink_name`, `_XSS_HTML_SINK_NAMES`; extended `visit_Call` with the XSS branch — ~70 LOC)
+- `python/tests/test_ast_analyzer.py` (NEW: `TestXSSHTMLSink` class with 9 tests — ~140 LOC)
+
+**Release commit:** `6ed3ce2` ("feat(ast): TASK-120 reachable XSS taint chains (HTML-render sinks)") pushed to `origin/main`.
+
+**Build state at session end:**
+
+- Go race-clean: 18 packages (unchanged from prior commit).
+- Python: **207/207** (was 198, +9 XSS tests).
+- e2e: 16/16 — binary at `v0.7.0-15-g0e7c492`.
+
+**Decisions made:**
+
+- **3 sinks, not 5.** Original task description mentioned JSX `dangerouslySetInnerHTML` + raw `innerHTML`. The Python AST analyzer can't parse JSX/JS — that needs a separate JS parser (out of scope for Phase 17a; the existing regex heuristics in `_JS_PATTERNS` already flag `.innerHTML =` and `document.write` at the text-match level, but without taint chains). Shipping the Python-side coverage now and deferring the JS-side to a future task that adds a JS AST parser (Phase 17d candidate). Three Python sinks cover the dominant real-world XSS surface in Flask/Django apps.
+- **`render_template_string` listed as a sink even though it's also SSTI.** Strictly speaking SSTI is a separate vuln class — but in practice they fold: user input → render_template_string is both SSTI (template execution) and reflective XSS (response goes to browser). One finding covers both; tagging it specifically as SSTI would force a categorisation choice that doesn't help triage. Current category=injection treats it like a general code-injection vuln.
+- **`category="injection"`, not `category="xss"`.** Matches the existing CWE-79 routing in the Python analyzer (no `xss` category exists in the project's taxonomy). Could split later if FP corpus (TASK-122) shows the deps + injection categories are getting too broad.
+
+**Open questions / followups:**
+
+- **JSX/innerHTML coverage.** Out of this phase. When TASK-122 builds the FP corpus, JS-side XSS findings will likely come from the existing regex `_JS_PATTERNS`. If those generate too many FPs, a future Phase 17d task could add Tree-sitter-based JS AST analysis. Not blocking.
+- **Reflected vs stored XSS.** Today's chain only proves reflected XSS (intra-function flow). Stored XSS (write to DB → read back later) needs cross-function dataflow, which is a multi-year research project. Realistic posture: ship reflected; stored is out of scope.
+
+**Next session should start with:**
+
+- **TASK-121: Command-injection-sink reachability** (~2 days). Same pattern as TASK-120. Extend `python/analyzers/ast_analyzer.py` with sinks: `subprocess.run(x, shell=True)`, `subprocess.Popen(x, shell=True)`, `os.system(x)`, `os.popen(x)`. Note: `subprocess.run` with `shell=True` is already detected by the existing `_is_subprocess_shell_true` helper but doesn't emit `taint_chain` — extend it to use `_collect_taint_chain` like the XSS/SSRF/SQLi branches. New `SEC-PY_CMD_INJECTION_REACHABLE` finding (or extend `PY_SUBPROCESS_SHELL_TRUE` with the chain). Together with TASK-119 + TASK-120, the engine will have 6 reachable sink categories.
+- **TASK-126 (ADR-008)** in parallel — ~1 day, conceptual anchor.
+- **TASK-122 (FP corpus)** is the next "exit criteria" gate for Phase 17a after TASK-121 ships — defer until then so the corpus reflects all 6 reachable categories.
+
+---
+
+## Earlier Session (2026-05-11 — TASK-119 npm-audit sub-deliverable — third of three; TASK-119 fully complete)
 
 **Date:** 2026-05-11 (TASK-119 npm-audit sub-deliverable — third of three; TASK-119 fully complete)
 
