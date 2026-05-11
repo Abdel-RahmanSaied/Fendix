@@ -5,7 +5,7 @@
 # Run:    docker run --rm fendix scan --url https://api.example.com
 
 # ---- Stage 1: Build the Go binary ----
-FROM golang:1.21-alpine AS go-builder
+FROM golang:1.22-alpine AS go-builder
 
 RUN apk add --no-cache git make
 

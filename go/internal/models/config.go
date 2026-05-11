@@ -76,4 +76,13 @@ type ScanConfig struct {
 	// blackbox/whitebox checks and feeds plugin findings through the
 	// same correlation/dedup pipeline.
 	NoPlugins bool
+	// NoNativeDeps disables the in-process Go dep-CVE scanner
+	// (TASK-119 / internal/scanner/deps/govulncheck). When false
+	// (default), the orchestrator runs the native scanner against any
+	// go.mod found under CodePath before spawning the Python whitebox
+	// engine; native findings flow through the same dedup pipeline so
+	// the transitional Python deps.py output collapses into one entry
+	// per OSV. Set true to skip the native path (debugging, or when
+	// the vuln DB is unreachable and the Python fallback is preferred).
+	NoNativeDeps bool
 }

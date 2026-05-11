@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/plugin"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/govulncheck"
 )
 
 // Orchestrator coordinates the full scan lifecycle:
@@ -167,6 +169,28 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// 3. Run checks via worker pool
 	pool := NewWorkerPool(o.cfg.Workers, o.cfg.DelayMs, checks)
 	findings := pool.Run(ctx, o.cfg, endpoints)
+
+	// 3.5. Native Go dep-CVE scan (TASK-119). Runs in-process via
+	// golang.org/x/vuln, hitting vuln.go.dev for the OSV DB and using
+	// the same call-graph reachability filter as the upstream
+	// govulncheck binary. Only fires when CodePath is set and contains
+	// a go.mod; ErrNoGoMod is the silent-skip signal. Findings flow
+	// through the same dedup pipeline as the Python deps.py output
+	// during the transition window — same SEC-DEPS-GO-<id> shape, so
+	// dedup collapses one-OSV-per-call into a single entry regardless
+	// of which path discovered it.
+	if o.cfg.CodePath != "" && !o.cfg.NoNativeDeps {
+		nativeFindings, err := govulncheck.Scan(ctx, o.cfg.CodePath)
+		switch {
+		case err == nil:
+			slog.Info("native go deps scan complete", "findings", len(nativeFindings))
+			findings = append(findings, nativeFindings...)
+		case errors.Is(err, govulncheck.ErrNoGoMod):
+			slog.Debug("no go.mod at code path, skipping native deps scan")
+		default:
+			slog.Warn("native go deps scan failed", "error", err)
+		}
+	}
 
 	// 4. Spawn Python engine for white-box analysis (if code path or spec provided)
 	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {

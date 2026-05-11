@@ -192,6 +192,7 @@ func newScanCmd() *cobra.Command {
 			respectRobots, _ := flags.GetBool("respect-robots")
 			debugBundleFlag, _ := flags.GetString("debug-bundle")
 			noPluginsFlag, _ := flags.GetBool("no-plugins")
+			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
 			configFlag, _ := flags.GetString("config")
 
 			// Resolve --config: explicit path takes precedence; if
@@ -242,6 +243,7 @@ func newScanCmd() *cobra.Command {
 				RespectRobots:        respectRobots,
 				DebugBundlePath:      debugBundleFlag,
 				NoPlugins:            noPluginsFlag,
+				NoNativeDeps:         noNativeDepsFlag,
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -332,6 +334,7 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("respect-robots", false, "Treat robots.txt Disallow as a hard restriction (default: queue as discovery hints)")
 	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
 	flags.Bool("no-plugins", false, "Disable out-of-tree plugin discovery in .fendix/plugins/ + ~/.fendix/plugins/")
+	flags.Bool("no-native-deps", false, "Disable the in-process Go dep-CVE scanner (TASK-119). Defer to the Python deps.py path instead.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
 
 	return cmd
