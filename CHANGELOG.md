@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-12
+
+**Headline:** detection depth + FP discipline. Phase 17a (P7 Engine-first
+v0.8) ships eight tasks across two workstreams: (1) detection breadth —
+native dep-CVE scanners in Go, two new reachability patterns (XSS sinks,
+command-injection sinks), and a severity-scoring refresh with a
+`reachable_code` multiplier; (2) FP reduction — a real FP corpus (35
+instances, 4 root-cause patterns), two deterministic gates (4xx-response
+skip, static-file path regex), and one-click suppression snippets in PR
+comments. ADR-008 formalises the read-only AI boundary that governs all
+future AI work: explanation + fix-as-text permitted in the cloud backend;
+auto-PR and OSS-engine LLM calls permanently forbidden.
+
+This release folds 10 commits since v0.7.0 across Phase 17a (TASK-119
+through TASK-126). Phase 17a is 8/8 complete.
+
+### Added
+
+- **Native dep-CVE scanners: govulncheck / pip-audit / npm-audit in Go
+  (TASK-119).** Three new packages under `internal/scanner/deps/`:
+  `govulncheck` (uses `golang.org/x/vuln/scan` in-process with call-graph
+  reachability — only reports vulnerabilities in code paths actually
+  called), `pip` (queries OSV.dev `/v1/query` per pinned `==` dependency,
+  24-hour cache at `~/.fendix/cache/osv-pypi/`), `npm` (parses
+  `package-lock.json` v2/v3 transitive tree, queries OSV.dev npm ecosystem,
+  24-hour cache at `~/.fendix/cache/osv-npm/`). All three behind
+  `--no-native-deps` escape hatch. Phase 17b can drop the Python `deps.py`
+  path without losing coverage.
+
+- **XSS-sink reachability pattern (TASK-120).** Python AST analyzer gains
+  three new sinks: `Markup(x)` / `flask.Markup(x)` / `markupsafe.Markup(x)`,
+  `mark_safe(x)` / `django.utils.safestring.mark_safe(x)`, and
+  `render_template_string(x)`. New finding `SEC-PY_XSS_HTML_SINK` (CWE-79,
+  HIGH/MEDIUM). Taint chains emitted when input traces to a request source.
+  9 new unit tests.
+
+- **Command-injection-sink reachability pattern (TASK-121).** Existing
+  `PY_OS_SYSTEM` and `PY_SUBPROCESS_SHELL` sinks now emit taint chains.
+  New `PY_OS_POPEN` finding (CWE-78, HIGH/HIGH). Six reachable sink
+  categories now ship: SQLi + SSRF + open-redirect (TASK-114), XSS
+  (TASK-120), os.system / subprocess(shell=True) / os.popen (TASK-121).
+  8 new unit tests.
+
+- **FP corpus and root-cause catalog (TASK-122).** `scripts/fp-corpus/run.sh`
+  runner; 35 false positives catalogued in `tasks/FP_CORPUS.md` across
+  four patterns: P1 test-fixtures-as-prod (31 instances), P2 header/CORS
+  check on 4xx (3), P3 rate-limit on static asset (1), P4 metrics endpoint
+  (true positive). Satisfies Phase 17a exit gate of ≥15 real FPs.
+
+- **FP-reduction gates (TASK-123).** Two deterministic skip rules: (1)
+  `CheckHeaders` and `CheckCORS` early-return on response status ≥ 400; (2)
+  `CheckRateLimit` early-returns for static-asset paths (`.css`, `.js`,
+  `.woff2`, `robots.txt`, `sitemap.xml`, etc.). Both gates also eliminate
+  probe cost for the skipped paths. 6 new tests.
+
+- **One-click suppression snippet in PR comments (TASK-124).** Every
+  finding in the GitHub App PR comment now ships with a fenced `.fendix-ignore`
+  YAML snippet keyed on a stable `(title, category, endpoint)` hash.
+  Stable across runs (SEC-NNN IDs reassign; the hash does not). 5 new
+  tests in `internal/ghapp/comment_test.go`.
+
+- **Severity scoring refresh — `reachable_code` multiplier (TASK-125).**
+  New `ReachableMult = 1.5` in `scoring.go`. New
+  `CalculateSeverityReachable` function; existing `CalculateSeverity` is a
+  backwards-compatible wrapper. New orchestrator step 5.4
+  `escalateNonCorrelatedReachable` bumps severity one level when
+  `Reachable=true` and source is not `correlated`. Confidence cap (step 5.6)
+  still applies. EPSS/KEV multipliers deferred to the cloud quarter. 8 new
+  tests.
+
+- **ADR-008: read-only AI permitted, auto-remediation permanently forbidden
+  (TASK-126).** New `docs/adr/ADR-008-readonly-ai.md`. The boundary: AI
+  finding explanation + fix suggestion as text delivered by the cloud backend
+  is permitted and planned for Cloud Q1. Auto-PR generation, auto-merge, and
+  any LLM calls from the OSS engine binary are permanently forbidden.
+  BACKLOG-017 annotated with the partial supersession.
+
+### Changed
+
+- BACKLOG-017 in `tasks/PHASES.md`: the "AI-driven triage / LLM fix
+  suggestions" entry now notes that read-only AI in the cloud backend is
+  permitted per ADR-008; auto-PR / auto-merge / OSS-engine LLM calls remain
+  forbidden.
+
 ## [0.7.0] - 2026-05-01
 
 **Headline:** the wedge is now defensible. Phase 14 (P4 External
