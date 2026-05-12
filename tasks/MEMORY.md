@@ -308,8 +308,8 @@ packaging>=23.0               — Dependency version comparison
 **Phase:** 17a — P7 Engine-first roadmap, v0.8 release — 🔄 **In Progress** (entered 2026-05-11). See [docs/quarter_plan.md](../docs/quarter_plan.md) for the full 4-release roadmap (v0.8 → v0.11, ~5 months) and [tasks/PHASES.md](PHASES.md) Phase 17 for exit criteria + task detail. **Cloud Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation, ~23 days) is deferred for ~5 months** in favour of widening the engine moat across four directions: detection breadth (TASK-119/120/121), FP discipline (TASK-122/123/124/125), Phase 16 cold-start (pulled forward — TASK-115/116/118), plugin ecosystem (TASK-128–131), real-world FP round 2 (TASK-132–136). Q0 Operator Rollout (Marketplace launch) runs in parallel with Phase 17a, not deferred. ADR-008 (read-only AI / supersede BACKLOG-017) is written during 17a as TASK-126. Cloud work resumes after v0.11. No paid revenue until ~month 6 — explicit trade-off.
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
-**Overall progress:** Phases 0-15 complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), **v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01)**.
-**Last updated:** 2026-05-11 (Phase 17a 7/8 complete — TASK-122 + 123 + 124 + 125 shipped in one sweep; commits `bbfe07a` + `e424697` + `3bbf4c5` + `a48be8b` pushed. Only TASK-126 ADR-008 remains.)
+**Overall progress:** Phases 0-15 + Phase 17a complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01), **v0.8.0 (Phase 17a — detection depth + FP discipline, 2026-05-12)**.
+**Last updated:** 2026-05-12 (Phase 17a 8/8 complete — TASK-126 ADR-008 shipped (`5692e5f`); v0.8.0 tagged and pushed to origin. Phase 17b next: TASK-115/116/118/127.)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -478,7 +478,49 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
-**Date:** 2026-05-11 (Phase 17a 7/8 sweep — TASK-122 + 123 + 124 + 125 all shipped in one session; only TASK-126 ADR-008 remains, deferred per operator instruction)
+**Date:** 2026-05-12 (Phase 17a 8/8 complete — TASK-126 ADR-008 shipped; v0.8.0 tagged and pushed)
+
+**Session goal:** Ship TASK-126 (ADR-008), close Phase 17a 8/8, cut v0.8.0.
+
+**Accomplished (1 task, 3 commits, 1 annotated tag):**
+
+- **TASK-126 (commit `5692e5f`) — ADR-008 read-only AI / supersede BACKLOG-017.** New `docs/adr/ADR-008-readonly-ai.md` formalising the 2026-05-11 strategic decision. Decision: read-only AI (finding explanation + fix-suggestion-as-text in the `fendix-backend` cloud product) is permitted and planned for Cloud Q1; auto-PR generation, auto-merge, and any LLM calls from the OSS engine binary are permanently forbidden. ADR covers: context (engine quality improved, backend ready, competitive shift), three options considered (keep blanket ban / full autonomous fix / read-only only), decision boundary (permitted vs. forbidden with specific rules), consequences (positive + negative + four constraints on future PRs), implementation checklist gating Cloud Q1. BACKLOG-017 in PHASES.md annotated with the partial supersession pointer. Phase 17a exit-criteria checkbox ticked.
+
+- **CHANGELOG v0.8.0 (commit `d7cefd3`)** — rolled [Unreleased] → [0.8.0] - 2026-05-12 with full Phase 17a summary (all 8 tasks: TASK-119..126).
+
+- **v0.8.0 tag** — annotated tag pushed to `origin`; release.yml triggered for linux/amd64, darwin/amd64, darwin/arm64.
+
+**Files modified this session:**
+
+- `docs/adr/ADR-008-readonly-ai.md` (NEW, ~300 LOC)
+- `tasks/PHASES.md` (BACKLOG-017 annotation + exit-criteria checkbox)
+- `tasks/CURRENT_SPRINT.md` (TASK-126 marked complete)
+- `CHANGELOG.md` (v0.8.0 entry)
+
+**Build state at session end:**
+
+- Go race-clean: **18 packages** (unchanged — no Go source touched)
+- Python: **215/215** (unchanged — no Python source touched)
+- e2e: **16/16** (unchanged)
+- Tag: `v0.8.0` on `origin/main`
+
+**Decisions made:**
+
+- **Phase 17a is complete (8/8).** ADR-008 was the final task — it closes the strategic anchor for the whole engine-first pivot. Writing it now prevents scope creep into Phase 17b/17c/17d.
+- **Read-only AI line drawn at text output.** Explanation and fix-suggestion-as-text (in PR comments, never as commits) are categorically different from write-AI. This distinction is now durable — future PRs that add `import anthropic` to the engine tree must fail review.
+- **v0.8.0 release is a documentation + strategy milestone alongside the feature work.** The ADR + CHANGELOG + tag together signal to the community that Phase 17a is a coherent release with a deliberate product position.
+
+**Next session should start with:**
+
+- **Phase 17b — v0.9: Phase 16 cold-start pulled forward.** Four tasks in order:
+  1. **TASK-115** (~5 days): Port secrets analyzer to Go — all 15 patterns + `.env` handling in a new `internal/scanner/secrets/` package. The Python `secrets.py` path stays as a fallback until TASK-118.
+  2. **TASK-116** (~4 days): Shell-out Semgrep instead of embedding it — `internal/scanner/semgrep/` calls `semgrep --json` as a subprocess; graceful fallback when semgrep is absent (same pattern as Python engine already uses). Removes the semgrep Python dep from the critical path.
+  3. **TASK-118** (~3 days): Drop the embedded Python engine from the binary distribution. Add `--python-engine` flag to opt back in. Publish p50 cold-start before/after benchmark. Update `docs/benchmarks.md`.
+  4. **TASK-127** (~2 days): Plugin wire-contract compatibility audit — verify all three reference plugins (`custom-secret-pattern`, `custom-blackbox-check`, `custom-semgrep-pack`) still work after TASK-118 drops the embedded engine. TASK-117 (AST analyzer migration via tree-sitter) remains deliberately deferred.
+
+---
+
+## Earlier Session (2026-05-11 — Phase 17a 7/8 sweep — TASK-122 + 123 + 124 + 125 all shipped in one session; only TASK-126 ADR-008 remains, deferred per operator instruction)
 
 **Session goal:** "go and stop before TASK-126" — the operator's instruction. Ship TASK-122 → TASK-123 → TASK-124 → TASK-125 in sequence, stop before opening TASK-126.
 
