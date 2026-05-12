@@ -134,45 +134,13 @@ class TestSpecParserFuzz:
 
 
 # ── Secrets Analyzer Fuzz ────────────────────────────────────────────
-
-class TestSecretsAnalyzerFuzz:
-    """Fuzz tests for SecretsAnalyzer — ensure it handles any file content."""
-
-    @given(content=st.text(max_size=5000))
-    @settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
-    def test_never_crashes_on_arbitrary_content(self, content: str) -> None:
-        """SecretsAnalyzer must not crash on any file content."""
-        from analyzers.secrets import SecretsAnalyzer
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = Path(tmpdir) / "test_file.py"
-            test_file.write_text(content, encoding="utf-8")
-
-            findings: list[dict] = []
-            analyzer = SecretsAnalyzer(tmpdir)
-            analyzer.run(findings.append)
-            # All findings must have required fields
-            for f in findings:
-                assert "title" in f
-                assert "severity" in f
-
-    @given(content=st.binary(max_size=2000))
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
-    def test_binary_files_skipped(self, content: bytes) -> None:
-        """SecretsAnalyzer must handle binary files without crashing."""
-        from analyzers.secrets import SecretsAnalyzer
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = Path(tmpdir) / "binary_file.dat"
-            test_file.write_bytes(content)
-
-            findings: list[dict] = []
-            analyzer = SecretsAnalyzer(tmpdir)
-            # Should not crash on binary content
-            try:
-                analyzer.run(findings.append)
-            except UnicodeDecodeError:
-                pass  # Acceptable — binary files may cause this
+# Removed in TASK-118: the Python SecretsAnalyzer was deleted alongside
+# its unit-test suite. Equivalent boundary coverage now lives in
+# go/internal/scanner/secrets/scanner_test.go (24 race-clean cases
+# including binary-content, large-file, and skip-dir paths). A Go-side
+# native fuzzer for the secrets scanner is a backlog candidate but
+# isn't blocking — the regex set is small enough that property-based
+# inputs aren't a meaningful coverage gap.
 
 
 # ── Engine IPC Fuzz ──────────────────────────────────────────────────

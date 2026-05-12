@@ -59,24 +59,23 @@ def main() -> None:
         counter += 1
         emit(f)
 
-    if "secrets" in checks and code_path:
-        from analyzers.secrets import SecretsAnalyzer
-
-        _run_check("secrets", lambda: SecretsAnalyzer(code_path).run(emit_finding), verbose)
+    # secrets and semgrep checks moved to native Go in TASK-115 / TASK-116
+    # (internal/scanner/secrets/, internal/scanner/semgrep/). The Python
+    # wrappers were deleted in TASK-118. Asking for them here is a no-op
+    # — the Go path runs unconditionally when --code is set, regardless
+    # of what shows up in the Python check list.
+    if ("secrets" in checks or "semgrep" in checks) and verbose:
+        print(
+            "[fendix-engine] secrets/semgrep checks now run in Go (TASK-115/TASK-116) — "
+            "ignoring Python request",
+            file=sys.stderr,
+            flush=True,
+        )
 
     if "auth" in checks and spec_path:
         from analyzers.spec_parser import SpecParser
 
         _run_check("auth (spec)", lambda: SpecParser(spec_path).check_auth(emit_finding), verbose)
-
-    if "semgrep" in checks and code_path:
-        from analyzers.semgrep_runner import SemgrepRunner
-
-        _run_check(
-            "semgrep",
-            lambda: SemgrepRunner(code_path, language).run(emit_finding),
-            verbose,
-        )
 
     if "injection" in checks and code_path:
         from analyzers.ast_analyzer import ASTAnalyzer

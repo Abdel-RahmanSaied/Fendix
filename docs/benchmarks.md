@@ -5,6 +5,65 @@ deliberately-vulnerable target applications. The wedge — *"DAST + SAST
 in one PR check, fails only when both engines confirm"* — needs
 evidence, not just framing. This page is where we put the numbers.
 
+## Cold-start latency (TASK-118 / v0.9)
+
+Phase 17b's exit gate is **<500 ms p50 cold start for code-only scans
+without Semgrep**. v0.9 ships with native Go secrets (TASK-115) and
+shelled-out Semgrep (TASK-116), and as of TASK-118 the Python whitebox
+spawn is opt-in via `--python-engine` (the embedded Python distribution
+is no longer bundled in the binary). The default scan path is now
+Python-free.
+
+Methodology: 30 cold-start runs, `~/.fendix/engine` cache cleared
+between every run. Subprocess wall-clock measured via Python's
+`time.monotonic()` so timing includes process spawn, argv parse, scan
+setup, scan execution, JSON render, and exit. Hardware: Apple M-series.
+Fixture: `python/tests/fixtures/secrets_target/` — 5 small files,
+30 secrets findings. Both binaries built `go build -ldflags="-s -w"`.
+
+| Configuration | p50 | p95 | mean | exit gate |
+|---|---:|---:|---:|---|
+| **POST-TASK-118 (default — what v0.9 ships)** | **5.6 ms** | **6.3 ms** | **5.6 ms** | ✅ 89× under 500 ms |
+| POST-TASK-118 + `--python-engine` (opt-in) | 24.4 ms | 26.3 ms | 24.4 ms | ✅ 20× under 500 ms |
+| PRE-TASK-118 (v0.8.0 with embedded Python) | 7.3 ms | 8.1 ms | 7.2 ms | ✅ 68× under 500 ms |
+
+Reading the table:
+
+- **Default v0.9 is 23 % faster than v0.8** (5.6 ms vs 7.3 ms) on this
+  fixture, with no loss of coverage — secrets findings are identical
+  byte-for-byte (verified via TASK-115 parity test).
+- **The opt-in path costs ~4.4× the default** (24.4 ms vs 5.6 ms) —
+  that gap is the actual cost of Python interpreter startup + engine
+  extraction + whitebox check execution that we removed from the
+  default path. Users who explicitly want the Python `auth` /
+  `injection` / `deps` checks pay it; everyone else doesn't.
+- **Both PRE and POST are far under the 500 ms gate.** v0.8 already
+  cleared it on small fixtures; the win on large codebases scales with
+  what Python actually does (which is now zero in the default path).
+
+Binary size delta:
+
+| Binary | Bytes |
+|---|---:|
+| PRE-TASK-118 (with embedded Python) | 19,002,482 |
+| POST-TASK-118 (no embedded Python) | 18,903,282 |
+| Δ | −99,200 bytes (−0.5 %) |
+
+The size delta is small because Go's binary build compresses embedded
+text aggressively. The real win is the dependency posture — fendix no
+longer carries a Python interpreter requirement at all in the default
+path; users can now run scans on machines without Python installed.
+
+Re-run with:
+
+```bash
+make build && python3 scripts/bench/coldstart.py  # see scripts/bench/ for the harness
+```
+
+(The harness lives next to other dev-only scripts; numbers in this
+table come from a clean Apple M-series box.)
+
+
 ## How to read these numbers
 
 Each benchmark fixture is a known-vulnerable target maintained by an

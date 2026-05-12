@@ -85,4 +85,13 @@ type ScanConfig struct {
 	// per OSV. Set true to skip the native path (debugging, or when
 	// the vuln DB is unreachable and the Python fallback is preferred).
 	NoNativeDeps bool
+	// PythonEngine opts in to spawning the Python whitebox engine
+	// (TASK-118). Default false — Phase 17b moved the secrets and
+	// semgrep checks to native Go (TASK-115/TASK-116) and dropped the
+	// embedded Python distribution from the binary, so the default
+	// scan path is Python-free. Set true to re-enable the auth /
+	// injection / deps Python checks; requires either a local
+	// `python/` source tree or an explicit FENDIX_ENGINE env var
+	// pointing at one (the binary no longer carries an embedded copy).
+	PythonEngine bool
 }

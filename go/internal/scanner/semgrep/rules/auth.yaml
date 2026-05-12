@@ -1,0 +1,91 @@
+rules:
+  # Rule 1: Flask route missing @login_required
+  - id: flask-missing-login-required
+    patterns:
+      - pattern: |
+          @$APP.route(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @login_required
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$APP.route(...)
+          @login_required
+          def $FUNC(...):
+              ...
+    message: >
+      Flask route '$FUNC' is missing @login_required decorator.
+      Any user can access this endpoint without authentication.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: auth
+      cwe: CWE-306
+      confidence: MEDIUM
+      fendix_severity: HIGH
+
+  # Rule 2: Django class-based view missing login_required mixin
+  - id: django-view-missing-login-required
+    patterns:
+      - pattern: |
+          class $VIEW(View):
+              def $METHOD(self, ...):
+                  ...
+      - pattern-not: |
+          class $VIEW(LoginRequiredMixin, ...):
+              ...
+    message: >
+      Django view '$VIEW' does not use LoginRequiredMixin.
+      Add LoginRequiredMixin or @login_required to protect this view.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: auth
+      cwe: CWE-306
+      confidence: LOW
+      fendix_severity: MEDIUM
+
+  # Rule 3: FastAPI route missing Depends(get_current_user) or OAuth2 dependency
+  - id: fastapi-route-missing-auth-dependency
+    patterns:
+      - pattern: |
+          @$ROUTER.$METHOD(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$ROUTER.$METHOD(...)
+          def $FUNC(..., $X: $T = Depends(...), ...):
+              ...
+      - pattern-not: |
+          @$ROUTER.$METHOD(...)
+          async def $FUNC(..., $X: $T = Depends(...), ...):
+              ...
+    message: >
+      FastAPI route '$FUNC' has no authentication dependency (Depends(...)).
+      Inject a dependency such as Depends(get_current_user) to enforce auth.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: auth
+      cwe: CWE-306
+      confidence: LOW
+      fendix_severity: MEDIUM
+
+  # Rule 4: jwt.decode called without verify_signature / algorithms
+  - id: python-jwt-decode-no-verification
+    patterns:
+      - pattern: jwt.decode($TOKEN, options={"verify_signature": False, ...}, ...)
+      - pattern: jwt.decode($TOKEN, algorithms=["none"], ...)
+    message: >
+      JWT decoded with signature verification disabled.
+      This allows an attacker to forge tokens.
+      Remove options={"verify_signature": False} and specify a strong algorithm.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: auth
+      cwe: CWE-347
+      confidence: HIGH
+      fendix_severity: CRITICAL

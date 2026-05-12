@@ -193,6 +193,7 @@ func newScanCmd() *cobra.Command {
 			debugBundleFlag, _ := flags.GetString("debug-bundle")
 			noPluginsFlag, _ := flags.GetBool("no-plugins")
 			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
+			pythonEngineFlag, _ := flags.GetBool("python-engine")
 			configFlag, _ := flags.GetString("config")
 
 			// Resolve --config: explicit path takes precedence; if
@@ -244,6 +245,7 @@ func newScanCmd() *cobra.Command {
 				DebugBundlePath:      debugBundleFlag,
 				NoPlugins:            noPluginsFlag,
 				NoNativeDeps:         noNativeDepsFlag,
+				PythonEngine:         pythonEngineFlag,
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -335,6 +337,7 @@ func newScanCmd() *cobra.Command {
 	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
 	flags.Bool("no-plugins", false, "Disable out-of-tree plugin discovery in .fendix/plugins/ + ~/.fendix/plugins/")
 	flags.Bool("no-native-deps", false, "Disable the in-process Go dep-CVE scanner (TASK-119). Defer to the Python deps.py path instead.")
+	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
 
 	return cmd

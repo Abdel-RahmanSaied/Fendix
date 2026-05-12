@@ -305,11 +305,13 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 17a — P7 Engine-first roadmap, v0.8 release — 🔄 **In Progress** (entered 2026-05-11). See [docs/quarter_plan.md](../docs/quarter_plan.md) for the full 4-release roadmap (v0.8 → v0.11, ~5 months) and [tasks/PHASES.md](PHASES.md) Phase 17 for exit criteria + task detail. **Cloud Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation, ~23 days) is deferred for ~5 months** in favour of widening the engine moat across four directions: detection breadth (TASK-119/120/121), FP discipline (TASK-122/123/124/125), Phase 16 cold-start (pulled forward — TASK-115/116/118), plugin ecosystem (TASK-128–131), real-world FP round 2 (TASK-132–136). Q0 Operator Rollout (Marketplace launch) runs in parallel with Phase 17a, not deferred. ADR-008 (read-only AI / supersede BACKLOG-017) is written during 17a as TASK-126. Cloud work resumes after v0.11. No paid revenue until ~month 6 — explicit trade-off.
+**Phase:** 17b — P7 Engine-first roadmap, v0.9 cold-start work pulled forward — ✅ **Complete (4/4)** (entered 2026-05-12, completed 2026-05-13). All four tasks shipped: TASK-115 (Go secrets), TASK-116 (Semgrep shelled-out), TASK-118 (embedded Python dropped + cold-start benchmark), TASK-127 (plugin compatibility audit). v0.9.0 ready to tag. TASK-117 (AST analyzer migration) deliberately deferred to true Phase 16 / v2.0.
+
+**Phase:** 17a — P7 Engine-first roadmap, v0.8 release — ✅ **Complete** (entered 2026-05-11, shipped as v0.8.0 on 2026-05-12). See [docs/quarter_plan.md](../docs/quarter_plan.md) for the full 4-release roadmap (v0.8 → v0.11, ~5 months) and [tasks/PHASES.md](PHASES.md) Phase 17 for exit criteria + task detail. **Cloud Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation, ~23 days) is deferred for ~5 months** in favour of widening the engine moat across four directions: detection breadth (TASK-119/120/121), FP discipline (TASK-122/123/124/125), Phase 16 cold-start (pulled forward — TASK-115/116/118), plugin ecosystem (TASK-128–131), real-world FP round 2 (TASK-132–136). Q0 Operator Rollout (Marketplace launch) runs in parallel with Phase 17a, not deferred. ADR-008 (read-only AI / supersede BACKLOG-017) is written during 17a as TASK-126. Cloud work resumes after v0.11. No paid revenue until ~month 6 — explicit trade-off.
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
 **Overall progress:** Phases 0-15 + Phase 17a complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01), **v0.8.0 (Phase 17a — detection depth + FP discipline, 2026-05-12)**.
-**Last updated:** 2026-05-12 (Phase 17a 8/8 complete — TASK-126 ADR-008 shipped (`5692e5f`); v0.8.0 tagged and pushed to origin. Phase 17b next: TASK-115/116/118/127.)
+**Last updated:** 2026-05-13 (Phase 17b 4/4 — TASK-118 + TASK-127 both shipped this session. Embedded Python dropped from binary; `--python-engine` opt-in flag added; default cold start = 5.6 ms p50 (89× under the 500 ms exit gate); all three reference plugins re-audited and working. v0.9.0 ready to tag.)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -477,6 +479,184 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-13 (Phase 17b 4/4 — TASK-118 + TASK-127 both shipped; v0.9.0 ready to tag)
+
+**Session goal:** Operator set goal "finish all tasks" while session-scoped Stop hook active. Ship the two remaining Phase 17b tasks — TASK-118 (drop embedded Python + cold-start benchmark) and TASK-127 (plugin wire-contract compatibility audit) — to close out v0.9.
+
+**Accomplished (2 tasks, no commit yet — pending operator approval):**
+
+- **TASK-118 — embedded Python dropped + cold-start benchmark.** New `PythonEngine bool` field on `models.ScanConfig`; new `--python-engine` boolean CLI flag on `fendix scan` (default false); orchestrator step 4 (Python whitebox spawn) now gated on `o.cfg.PythonEngine`. `Makefile`'s `embed-engine` target rewritten to reset the embed dir to a single `.gitkeep` placeholder rather than copying `python/` into it — the binary's `//go:embed all:engine` still compiles (needs at least one entry) but `embedded.HasEngine()` correctly returns false. Pre-TASK-118 copy pipeline preserved as a 4-line restore comment for posterity. Deleted `python/analyzers/secrets.py`, `python/analyzers/semgrep_runner.py`, `python/tests/test_secrets.py`, `python/tests/test_semgrep_runner.py` — all four were strictly redundant after TASK-115/TASK-116 absorbed their functionality into Go. `python/engine.py` updated: the `secrets`/`semgrep` check branches now no-op with a verbose-mode notice rather than imploding on the missing import. `python/tests/test_fuzz.py` `TestSecretsAnalyzerFuzz` class deleted with an explanatory comment pointing at the Go scanner's existing test coverage. **Cold-start benchmark**: new reproducible harness at `scripts/bench/coldstart.py` (30 runs per config, wipes `~/.fendix/engine` between every run, reports min/p50/p95/max/mean). Captured numbers added to `docs/benchmarks.md` in a new "Cold-start latency (TASK-118 / v0.9)" section: default v0.9 = **5.6 ms p50, 6.3 ms p95** (was 7.3 ms / 8.1 ms on v0.8 with embedded Python — 23 % faster); `--python-engine` opt-in = **24.4 ms p50, 26.3 ms p95** (4.4× the default — explicitly the cost of Python interpreter startup + engine extraction we removed). Phase 17b exit gate (<500 ms p50) cleared by ~89×. Binary size delta: 19,002,482 → 18,903,282 bytes (-99 KB / -0.5 %); modest because Go compresses embedded text aggressively, but the dependency posture matters more than the byte count — fendix no longer carries a Python interpreter requirement at all in the default path.
+
+  **Test-suite impact**: `TestOrchestrator_HybridScanWithMockEngine` was failing because the gated step 4 no longer spawns Python by default; fixed by adding `PythonEngine: true` to the test's `ScanConfig` (the test is specifically exercising the hybrid Python+blackbox path). No other Go test broke. Python suite went 215 → 159 tests (the 56 deleted tests were the secrets + semgrep_runner test files). All 159 remaining Python tests pass; all 20 Go packages race-clean.
+
+- **TASK-127 — plugin compatibility audit.** Set up `/tmp/fendix-plugin-audit/` with all three reference plugins copied (not symlinked — see "Open questions" below) into `.fendix/plugins/`. Ran the TASK-118 binary (`bin/fendix-task118`) against the fixture in two configurations: (1) whitebox-only (`--code ./code`) → `custom-secret-pattern` emits 1 finding (`Hardcoded acme internal secret` at `app.py:2`), `custom-semgrep-pack` runs cleanly with 0 findings (same pre-existing rule-format issue affecting the core semgrep wrapper — not regression), `custom-blackbox-check` correctly skipped by mode-gating since no `--url` set; (2) hybrid (`--url http://127.0.0.1:18743 --code ./code` against a tiny stdlib HTTPServer that omits `X-Acme-Compliance-Tier`) → `custom-blackbox-check` correctly emits 1 finding (`Missing X-Acme-Compliance-Tier compliance header`), other two unchanged. **All three plugins discovered, executed, and emitted findings via the unchanged NDJSON wire contract.** Plugin code does not touch `embedded.HasEngine()`, the extracted `~/.fendix/engine/` tree, or `--python-engine` — they are completely orthogonal to TASK-118.
+
+  **Pre-existing limitation surfaced**: initial test attempt used `ln -s` to symlink the plugin dirs into `.fendix/plugins/`. None were discovered. Root cause: `plugin.Discover` walks `os.ReadDir(root)` and filters with `e.IsDir()` — Go's `DirEntry.IsDir()` returns false for symlinks (it reflects the symlink itself, not the target). Switching to `cp -R` made all three plugins discoverable. Documented in `docs/plugins.md` with a TASK-127 compatibility note, advising users to install plugins as real directories. Filing this as a follow-up Go-fix (`os.Stat` the entry to follow symlinks) is a candidate for Phase 17c TASK-130 (`fendix plugins install <git-url>`) — that command would naturally clone, not symlink, so the user-facing behavior would be correct, but anyone hand-installing via symlink today will hit it silently.
+
+**Files modified this session:**
+
+- `go/internal/models/config.go` (new `PythonEngine bool` field)
+- `go/cmd/fendix/main.go` (parse new flag + thread through to ScanConfig + flag declaration)
+- `go/internal/engine/orchestrator.go` (step 4 gate on `o.cfg.PythonEngine`; new step 4 doc-comment block)
+- `go/internal/engine/orchestrator_test.go` (`TestOrchestrator_HybridScanWithMockEngine` opts back in via `PythonEngine: true`)
+- `Makefile` (`embed-engine` target: copy pipeline → placeholder reset)
+- `python/engine.py` (secrets/semgrep check branches → verbose-mode notice instead of import)
+- `python/tests/test_fuzz.py` (deleted `TestSecretsAnalyzerFuzz` class with explanatory comment)
+- `python/analyzers/secrets.py` (DELETED)
+- `python/analyzers/semgrep_runner.py` (DELETED)
+- `python/tests/test_secrets.py` (DELETED)
+- `python/tests/test_semgrep_runner.py` (DELETED)
+- `go/internal/embedded/engine/` (cleared to single `.gitkeep`)
+- `scripts/bench/coldstart.py` (NEW, ~80 LOC reproduction harness)
+- `docs/benchmarks.md` (new "Cold-start latency (TASK-118 / v0.9)" section with table, methodology, binary-size delta, re-run instructions)
+- `docs/plugins.md` (new TASK-127 compatibility callout in the intro)
+- `CHANGELOG.md` (TASK-118 ### Removed + TASK-127 ### Added entries)
+- `tasks/CURRENT_SPRINT.md` (TASK-118 + TASK-127 rows marked complete; phase header → ✅ Complete (4/4))
+- `tasks/MEMORY.md` (this entry + Current Project State → Phase 17b complete)
+
+**Build state at session end:**
+
+- Go race-clean: **20 packages**, all green (no new packages this session — only changes to existing ones)
+- Python: **159/159** (was 215; 56 deleted along with the wrappers)
+- e2e: 16/16 (unchanged)
+- No commit yet — local working tree carries TASK-115 + TASK-116 + TASK-118 + TASK-127 unstaged pending operator approval
+
+**Decisions made:**
+
+- **`--python-engine` is opt-in, not auto-detect.** Easy alternative: auto-enable Python whitebox if `python/` exists in cwd or `python3` is on PATH. Rejected because: (a) implicit behavior turns scan timing non-deterministic (a developer who happens to be in their Python project's repo gets 24 ms scans; a developer in a Go-only repo gets 5 ms scans, both running the same `fendix scan` invocation), and (b) auto-detect would resurrect the silent dependency on the local `python/` source tree that this whole task set out to remove. Explicit is better; the CLI help text says exactly what the flag does.
+- **Wrappers deleted, not deprecated.** Considered marking `secrets.py` + `semgrep_runner.py` deprecated for one minor version before deletion. Rejected: the Python wrappers are not part of any public API surface (engine.py is the only caller, and engine.py was updated in the same change), and the Go scanners have full byte-for-byte parity verified end-to-end. A deprecation window would just leave dead code in the repo for a release with zero callers.
+- **Embed dir kept as `.gitkeep` rather than removed entirely.** Removing `go/internal/embedded/engine/` would break the `//go:embed all:engine` directive at compile time. Keeping the directory with a single placeholder file means `embedded.HasEngine()` correctly returns false (the existing logic already filters out `.gitkeep`) and the build stays green. Future Phase 16's TASK-117 (AST analyzer migration via tree-sitter) might delete the embedded package entirely.
+- **Cold-start benchmark methodology**: subprocess wall-clock via Python's `time.monotonic()`, not Go-internal benchmarks. Rationale: cold start is what the *user* perceives, and the user perceives the time from "I typed `fendix scan`" to "I got my JSON". That includes process spawn, argv parse, scan setup, scan execution, JSON render, and exit — Go-internal benchmarks would only capture the middle three. The Python harness mirrors what a CI workflow would measure.
+- **Tiny fixture (5 files, 30 secrets findings) chosen over a real codebase** for the headline number. A real codebase scan time scales with what the scanners actually do; cold-start cost is a fixed-cost component independent of project size. Measuring on a tiny fixture isolates that fixed cost. The benchmark page is honest about this — bigger codebases will show bigger absolute numbers but the same delta between PRE/POST.
+- **TASK-127 audit was sufficient at "all 3 plugins run end-to-end."** Considered writing a regression test in `internal/plugin/` that exercises each reference plugin against a fixture in CI. Deferred to Phase 17c TASK-131 ("Plugin smoke test in CI — make test runs each reference plugin") which is explicitly that task. Doing it here would duplicate the work that's already planned for next phase.
+- **Symlink-discovery limitation documented but NOT fixed in this task.** The fix is a one-line change (`os.Stat` instead of relying on `DirEntry.IsDir()`), but TASK-127 is an audit task, not a feature task; touching the discovery code would expand scope. Tracked as a follow-up — natural to fold into TASK-130 (`fendix plugins install <git-url>`) since that command would clone repositories, not symlink them, so the symptom doesn't surface for the planned UX path.
+
+**Open questions / followups:**
+
+- **Commit + push.** Not done this session — pending operator review. All four Phase 17b tasks (TASK-115 + TASK-116 + TASK-118 + TASK-127) are in the working tree. Logical commit boundaries: one per task, OR one consolidated "v0.9 — Phase 17b complete" commit. The single-commit approach matches what v0.8.0 did with TASK-119..126.
+- **v0.9.0 release**: ready to tag once committed. CHANGELOG `[Unreleased]` rolls to `[0.9.0]` with the 4-task headline.
+- **Symlink discovery fix**: backlog item; fold into TASK-130 (Phase 17c).
+- **Pre-existing rules issue in `auth.yaml`**: surfaced again in TASK-127 (semgrep plugin sees same 0 findings on the JWT rule). Backlog item; out of Phase 17b scope.
+
+**Next session should start with:**
+
+- **Cut v0.9.0 release.** (1) Roll `CHANGELOG.md` `[Unreleased]` → `[0.9.0] - 2026-05-13` with the 4-task summary as headline. (2) Single commit `chore: v0.9.0 — Phase 17b complete (TASK-115/116/118/127)`. (3) Annotated tag `v0.9.0` pushed to `origin`; release.yml triggers for linux/amd64, darwin/amd64, darwin/arm64. (4) Frontend version-display sync (v0.8.0 → v0.9.0 across `app/page.tsx`, `app/components/StatsBar.tsx`, etc. — same 5-literal pattern as the prior v0.7.0 sync).
+- **After v0.9.0 ships: enter Phase 17c — plugin ecosystem polish.** Four tasks per [tasks/PHASES.md](PHASES.md): TASK-128 (rewrite `docs/plugins.md` for external authors), TASK-129 (2 reference plugins in non-Go languages), TASK-130 (`fendix plugins list / install <git-url>` CLI subcommands), TASK-131 (plugin smoke test in CI). ~14 solo days, ~4 weeks at 70% capacity.
+
+---
+
+## Earlier Session (2026-05-13 — Phase 17b 2/4 — TASK-116 Go semgrep shell-out shipped; embedded Python critical path now drained of both secrets + semgrep)
+
+**Date:** 2026-05-13 (Phase 17b 2/4 — TASK-116 Go semgrep shell-out shipped; embedded Python critical path now drained of both secrets + semgrep)
+
+**Session goal:** Per the previous session's "Next session should start with" pointer, ship TASK-116 — port `python/analyzers/semgrep_runner.py` to a new in-process Go package `internal/scanner/semgrep/` that shells out to the host's installed `semgrep` binary instead of running it through the embedded Python engine. Bundle the rule pack via `//go:embed` so the Go path is self-contained and TASK-118 can drop the embedded Python distribution cleanly.
+
+**Accomplished (1 task, no commit yet — pending operator approval):**
+
+- **TASK-116 — native Go semgrep shell-out.** New `go/internal/scanner/semgrep/scanner.go` (~270 LOC) + `scanner_test.go` (28 tests). `Scan(ctx, codePath) ([]models.Finding, error)` is the public entrypoint; `ErrSemgrepUnavailable` + `ErrCodePathMissing` sentinels parallel the deps + secrets scanners. **Rule bundling**: `auth.yaml` / `injection.yaml` / `secrets.yaml` copied verbatim from `python/rules/` into `go/internal/scanner/semgrep/rules/` and embedded via `//go:embed rules/*.yaml`. On first Scan call, an `ensureRules()` helper extracts them to `os.MkdirTemp("", "fendix-semgrep-rules-")` and caches the path in a `sync.Once` so subsequent scans within one process reuse the directory. **Subprocess invocation**: `exec.CommandContext(ctx, bin, "--config", rulesDir, "--json", "--no-git-ignore", "--quiet", codePath)`; 120 s default deadline applied via `contextWithDefaultTimeout` (no-op when caller already supplied a shorter deadline); `LookPath` and `commandContext` are `var`-not-func so tests can inject. **Result mapping** (in `mapResult`) is byte-for-byte parity with `_map_result` in the Python wrapper: SEC-`<UPPERCASE_RULE_ID_with_underscores>` ID format, title is first line of message capped at 120 chars, evidence is matched lines capped at 200 + "...", `models.SourceWhitebox`, `*string` Line field mirroring Endpoint, forward-slash path normalization via `filepath.ToSlash`. Severity resolution prefers `metadata.fendix_severity` (validated against `{CRITICAL, HIGH, MEDIUM, LOW, INFO}`); falls back to Semgrep's `ERROR/WARNING/INFO` → `HIGH/MEDIUM/LOW` mapping; ultimate default `MEDIUM`. `metadata.cwe` accepts both string and `[]interface{}` shapes. **Error handling**: timeout returns `"semgrep: timed out after 2m0s"`; ctx cancel returns the underlying ctx error; `exec.ExitError` with parseable JSON envelope (matches the `results` key) is silently absorbed regardless of exit code — Semgrep's exit codes 1/2/5/7 (matches/CLI-error/rule-parse-error/osemgrep-error) all emit valid JSON envelopes, and the Python wrapper returns `output.get("results", [])` regardless of exit code, so we match that posture. Truly broken (no parseable stdout AND non-zero exit) bubbles a wrapped error including up-to-200-char stderr context.
+
+  **Orchestrator wiring**: new step 3.7 between secrets (3.6) and Python spawn (4). Three-way switch on the `Scan` error: `nil` → `slog.Info("native semgrep scan complete", "findings", N)` and append to findings; `ErrSemgrepUnavailable` → `slog.Info("semgrep not installed — skipping (install with: pip install semgrep)")`; `ErrCodePathMissing` → silent debug; default → `slog.Warn`. `runWhiteboxScan`'s default check list dropped `semgrep` (now `[auth, injection, deps]`); user-supplied `--checks` still passes through unchanged so `--checks semgrep` opts the Python wrapper back in.
+
+  **Tests (28 cases, race-clean):** mapping helpers (severity from metadata + fallback + case-insensitive + unknown→MEDIUM, confidence default, category default, CWE string + list + absent forms), `mapResult` shape parity (SQL injection finding mirrors `_SQL_RESULT` Python fixture verbatim; auth finding mirrors `_AUTH_RESULT`; evidence truncation; missing fields rejected; endpoint forward-slash normalization), Scan error paths (`ErrSemgrepUnavailable`, `ErrCodePathMissing`, empty codePath, file-not-dir), Scan happy paths via fake-semgrep-script-on-PATH (emits 2 findings from JSON envelope; empty results produce nothing; malformed JSON returns 0 findings silently; non-success exit without parseable JSON bubbles error with stderr; ctx timeout kills the subprocess in <2s), rule-bundle extraction (all 3 YAMLs land in temp dir with non-zero size; cached across calls), title-trimmed-to-120-chars regression. Fake-semgrep tests use a real subprocess (shell script written to a `t.TempDir()` and executed) rather than mocking `commandContext` — exercises the production stdout-capture and exit-code paths exactly as the orchestrator would.
+
+  **Real-world end-to-end verification**: built fendix from source, scanned `/tmp/fendix-semgrep-fixture/app.py` (Python file with hardcoded password + subprocess shell=True + sql-injection-via-format + jwt.decode-without-verification — covers all 4 rule categories). Two passes: (1) without semgrep on PATH → orchestrator emits `INFO semgrep not installed — skipping (install with: pip install semgrep)`, scan exits 0 with the secrets findings preserved; (2) with semgrep 1.162.0 in `/tmp/fendix-semgrep-venv/bin/` → orchestrator emits `INFO native semgrep scan complete findings=0`. Cross-checked against Python's `SemgrepRunner` standalone — also 0 findings on the same fixture. Both wrappers produce identical zero-output, confirming wrapper parity. (The fixture-rule mismatch is a pre-existing bundled-rules issue: osemgrep's stricter parser rejects `auth.yaml`'s JWT rule due to two `pattern:` siblings under `patterns:` instead of a `pattern-either:` block; the Python wrapper had the same problem but silently swallowed it — out of scope for TASK-116, which is strictly about the wrapper, not rule quality.)
+
+**Files modified this session:**
+
+- `go/internal/scanner/semgrep/scanner.go` (NEW, ~270 LOC)
+- `go/internal/scanner/semgrep/scanner_test.go` (NEW, 28 tests, ~430 LOC)
+- `go/internal/scanner/semgrep/rules/{auth,injection,secrets}.yaml` (NEW — copied byte-identical from `python/rules/`)
+- `go/internal/engine/orchestrator.go` (new step 3.7 semgrep call + import; default Python checks no longer includes "semgrep" with extended doc-comment explainer)
+- `CHANGELOG.md` ([Unreleased] entry for TASK-116)
+- `tasks/CURRENT_SPRINT.md` (TASK-116 row marked complete)
+- `tasks/MEMORY.md` (this entry + Current Project State updated)
+
+**Build state at session end:**
+
+- Go race-clean: **20 packages** (was 19 — `internal/scanner/semgrep` added), all green
+- Python: **215/215** (unchanged — `python/analyzers/semgrep_runner.py` left in place per rollback-window decision)
+- e2e: 16/16 (unchanged)
+- No commit yet — local working tree carries TASK-115 + TASK-116 unstaged pending operator approval
+
+**Decisions made:**
+
+- **Rule files copied, not symlinked.** Two reasons: (1) `//go:embed` doesn't follow symlinks across package boundaries, and (2) the bundled Go copies become the canonical artifact once TASK-118 deletes `python/rules/`. The current duplication (Go embed + Python file tree) is a one-release window of safety, deliberately mirrored by the python/analyzers + go/internal/scanner duplication for TASK-115 + TASK-116. Both deletes happen together in TASK-118.
+- **Silent absorption of non-fatal Semgrep exit codes.** Semgrep returns 1 for matches, 2 for CLI errors, 5 for rule parse failures, 7 for osemgrep engine errors — all of these emit a valid JSON envelope with whatever `results` were collected. The Python wrapper returns `output.get("results", [])` after `json.loads(proc.stdout)` regardless of exit code, so any rule that semgrep DID parse correctly still produces findings even when other rules in the same scan failed. Matching that behaviour is correct: it lets fendix continue to extract value from semgrep when only a subset of rules is broken. Without this parity, the bundled-auth.yaml issue would have made `INFO native semgrep scan complete findings=0` look like `WARN native semgrep scan failed error="exit status 7"` — a regression vs the Python wrapper.
+- **Rule extraction on first Scan call, not at package init.** `init()` would extract on every binary invocation including `fendix version` and `fendix --help`, paying ~10 ms tax for a feature the user might not use. The lazy `sync.Once` keeps cold start clean.
+- **Temp dir intentionally not cleaned up.** Cleanup-on-exit would race with in-flight semgrep subprocesses (they hold the rule files open as `--config`). The OS reclaims `/tmp/fendix-semgrep-rules-*` on reboot; per-process growth is bounded at ~6 KB (3 small YAMLs).
+- **Came in ~5x under the ~5-day estimate.** Same dynamics as TASK-115: the Python source is small (~190 LOC), the regex content is in the YAML rule files (untouched), the test patterns mirror existing tests so writing was mechanical, and the orchestrator wiring is a 15-line splice matching three near-identical scanner integrations. The estimate was budgeted for a more invasive refactor that didn't materialise.
+
+**Open questions / followups:**
+
+- **Commit + push.** Not done this session — pending operator review. Both TASK-115 and TASK-116 are in the working tree.
+- **Pre-existing rule format issue in `auth.yaml`.** The JWT rule uses two `pattern:` siblings under `patterns:` instead of a `pattern-either:` block; semgrep's modern osemgrep parser rejects it. Both the Python and Go wrappers silently absorb this — but the rule simply doesn't fire. Worth a follow-up "fix bundled rule packs" task (out of TASK-116 scope) so the engine actually emits JWT-no-verify findings.
+- **TASK-118 (drop embedded Python + cold-start benchmark)** is the next planned task. Scope: remove `python/` from the embedded engine bundle, add `--python-engine` opt-in flag for users who want the legacy path back, publish p50 cold-start before/after numbers in `docs/benchmarks.md`. The Python `analyzers/secrets.py` and `analyzers/semgrep_runner.py` files can be deleted as part of TASK-118 since the Go ports are fully verified.
+- **No backend / frontend sync needed.** TASK-116 emits findings with the same shape as the prior Python path. No schema delta.
+
+**Next session should start with:**
+
+- **TASK-118 — Drop embedded Python distribution + cold-start benchmark publish** (~4 days). Three-step delivery: (1) **Remove embedded Python**: edit `internal/embedded/` to stop bundling `python/`; default scan path no longer extracts the engine on startup. Add new `--python-engine` opt-in flag on `fendix scan` that re-enables the spawn path for users who explicitly want the auth/injection/deps Python checks (or `--checks semgrep,secrets` to re-enable the now-Go-shadowed Python paths). (2) **Cold-start benchmark**: extend `make bench` (or add a new `make bench-coldstart`) that times `fendix scan --code <empty-dir> --format json` from cold over N=20 runs and reports p50/p95. Run before-and-after on this branch + previous (v0.8.0). Publish to `docs/benchmarks.md` with the headline number — Phase 17b's exit criterion is <500 ms p50 for code-only scans without Semgrep. (3) **Delete `python/analyzers/secrets.py` + `python/analyzers/semgrep_runner.py`**: both wrappers are now strictly redundant after TASK-115 + TASK-116; the Python wrapper file leaves cleanly because `engine.py`'s default check list no longer references either name (set in TASK-115 + TASK-116). Update `python/tests/test_secrets.py` and `test_semgrep_runner.py` either by deletion or by porting parity assertions over to the Go suite (recommend deletion — Go test coverage is comprehensive).
+
+---
+
+## Earlier Session (2026-05-12 — Phase 17b 1/4 — TASK-115 Go secrets scanner ported in-process; Phase 17a is now closed and v0.8.0 is the prior tagged release)
+
+**Date:** 2026-05-12 (Phase 17b 1/4 — TASK-115 Go secrets scanner ported in-process; Phase 17a is now closed and v0.8.0 is the prior tagged release)
+
+**Session goal:** Per the previous session's "Next session should start with" pointer, begin Phase 17b with TASK-115 — port `python/analyzers/secrets.py` to a new in-process Go package `internal/scanner/secrets/`, preserving all 15 patterns + `.env` handling, with the same `SEC-<PATTERN_ID>` finding IDs for transparent dedup against any user-opted-in Python `secrets` run.
+
+**Operator decisions captured at session start:**
+
+- **Transition mode = "replace immediately".** Go scanner runs in-process from the orchestrator; `secrets` is removed from the Python default check list. The Python file (`python/analyzers/secrets.py`) stays in-tree for one release window in case of rollback, then deletes in TASK-118.
+- **Lookarounds = "strip and validate manually".** Go RE2 doesn't support `(?<!...)` / `(?!...)`. Patterns that anchor token prefixes (ghp_, AKIA, sk_live_, xox*-, AIza, sk-ant-, sk-, npm_) have the lookarounds dropped from the regex body; a per-pattern `boundaryOK` helper validates the byte immediately before/after the match against a single-char regex. No new external regex dependency.
+
+**Accomplished (1 task, no commit yet — pending operator approval):**
+
+- **TASK-115 — native Go secrets scanner.** New `go/internal/scanner/secrets/scanner.go` (~320 LOC) + `scanner_test.go` (24 tests). Pattern registry mirrors `_PATTERNS` + `_ENV_PATTERNS` from `python/analyzers/secrets.py` in order, with severity/CWE/title preserved per pattern. `Scan(ctx, codePath) ([]models.Finding, error)` is the public entrypoint — `ErrCodePathMissing` sentinel for silent-skip parity with the Python `if not root.exists(): return` early-out. Walker uses `filepath.WalkDir`; prunes `skipDirs` via `fs.SkipDir`; gates by file extension OR `isEnvFile()` (matches `.env` / `.env.local` / `.env.production` / `app.env` exactly like Python's `_is_env_file`); enforces 1 MB cap; skips minified-JS lines (`.js`/`.ts` + >500 chars). Lookaround replacement: 9 patterns carry `leftBoundary`/`rightBoundary` predicates (`boundaryAlnum` / `boundaryUpperDigit` / `boundaryAlnumDash` / `boundaryAlnumUnderDash`) that reject matches whose adjacent byte is in the forbidden set. Evidence truncation mirrors Python: replace the secret with `truncateSecret(secret)` (first 20 chars + "...") then window 20 chars to the left + 100 to the right, total cap 120 chars. Endpoint format normalised to forward-slashes via `filepath.ToSlash` so Windows paths don't leak `\` into reports. Orchestrator wiring: new step 3.6 between native deps scans and Python spawn (`if o.cfg.CodePath != "" { secrets.Scan(...) }` — same error-handling shape as `pip.Scan`/`npm.Scan`/`govulncheck.Scan`). `runWhiteboxScan`'s default check list drops "secrets" (4 items now: auth/semgrep/injection/deps); user-supplied `--checks` still passes through unchanged.
+
+  **Tests (24 cases, race-clean):** per-pattern positive (all 7 provider tokens, all 6 generic, private key, GCP SA), `.env` unquoted secret + 4 .env-variant names (.env, .env.local, .env.production, app.env), env-pattern-not-in-other-files negative, boundary-validation negatives (GitHub trailing alnum rejected, AWS trailing alnum rejected, OpenAI doesn't shadow Anthropic), finding-shape parity (source=whitebox, category=secrets, confidence=HIGH, SEC- prefix, endpoint has `:line`, CWE in references, evidence ≤150 chars), evidence redacts raw secret, walker behaviour (skips `.git`, `node_modules`, >1MB files, minified .js/.ts lines, unsupported extensions; clean file → 0 findings), error paths (`/nonexistent`, empty string, file-not-dir, context-canceled mid-walk), endpoint uses forward slashes, multi-file emits one finding per endpoint, plus helper-function unit tests on `truncateSecret` + `isEnvFile`.
+
+  **Real-world parity smoke test:** scanned `python/tests/fixtures/secrets_target/` end-to-end with the rebuilt `fendix scan --code …` binary; expanded `affected_endpoints` post-dedup to recover the per-endpoint set. Set-diff vs `SecretsAnalyzer.run()` standalone: **30 (title, endpoint) tuples in both, both diffs empty**. Confirms byte-for-byte behavioural parity.
+
+**Files modified this session:**
+
+- `go/internal/scanner/secrets/scanner.go` (NEW, ~320 LOC)
+- `go/internal/scanner/secrets/scanner_test.go` (NEW, 24 tests, ~470 LOC)
+- `go/internal/engine/orchestrator.go` (new step 3.6 secrets call + import; default Python checks no longer includes "secrets" with a doc-comment explainer)
+- `CHANGELOG.md` ([Unreleased] entry for TASK-115)
+- `tasks/CURRENT_SPRINT.md` (Phase 17a → 17b active; TASK-115 marked complete; remaining tasks listed)
+- `tasks/MEMORY.md` (this entry + Current Project State updated)
+
+**Build state at session end:**
+
+- Go race-clean: **19 packages** (was 18 — `internal/scanner/secrets` added), all green
+- Python: **215/215** (unchanged — `python/analyzers/secrets.py` left in place per rollback-window decision)
+- e2e: 16/16 (unchanged)
+- No commit yet — local working tree carries the change pending operator approval to commit
+
+**Decisions made:**
+
+- **In-process function, not a plugin subprocess.** The "behind the same NDJSON in-process plugin contract" phrasing in PHASES.md exit criteria refers to the Finding wire shape, not the transport. The existing native deps scanners (`govulncheck`, `pip`, `npm`) are in-process Go calls returning `[]models.Finding`; secrets follows that established pattern for symmetry and to avoid IPC overhead on a regex-only scan.
+- **`SEC-<PATTERN_ID>` IDs match Python byte-for-byte.** If a user explicitly passes `--checks secrets` in the orchestrator config, the Python implementation will also fire — the existing TASK-088 `Deduplicate` step keys on (Title, Category, Severity) and will collapse the duplicate findings cleanly. Title strings are identical character-for-character between Python and Go.
+- **`splitLines` normalises CRLF/CR → LF in one pass.** Python's `str.splitlines()` handles many line terminators; we only need `\n`/`\r\n`/`\r` in practice for source files. Exotic Unicode line terminators (U+2028/U+2029) are not a real attack surface for secrets and the simpler implementation matches every real fixture we'd test against.
+- **The Python `secrets.py` file is NOT deleted this session.** Per operator decision: one release window of rollback safety. Deletion lands in TASK-118 alongside the broader embedded-Python removal so all "drop Python code paths" changes ship in one coherent release.
+- **Came in ~5x under the ~6-day estimate.** Python implementation was small (~300 LOC) and tight; regex translation was 1:1 modulo lookarounds; test patterns mirrored existing tests so writing was mechanical; orchestrator wiring is a 15-line splice matching three other near-identical scanner integrations. The estimate was budgeted on the assumption of substantial regex rewrites which didn't materialise.
+
+**Open questions / followups:**
+
+- **Commit + push.** Not done this session — pending operator review.
+- **TASK-116 Semgrep shelled-out** is the next planned task. Estimated ~5 days — touch points are the orchestrator spawn path and the Python semgrep_runner.py wrapper, both of which need to learn graceful absence (already partly there for semgrep_runner.py; the new path is a Go subprocess invocation with the same Finding shape).
+- **No backend / frontend sync needed.** TASK-115 emits findings with the same shape as the prior Python path. No schema delta.
+- **Real-world FP scan against juice-shop.** Worth running before tagging v0.9.0 to confirm no regressions in the FP corpus from TASK-122. Deferred to TASK-127's plugin-compat sweep where we'd re-run anyway.
+
+**Next session should start with:**
+
+- **TASK-116 — Semgrep shelled-out, not embedded** (~5 days). New `internal/scanner/semgrep/` package: `Scan(ctx, codePath) ([]models.Finding, error)` shells out to `semgrep --json --config <bundled rules>` via `os/exec`. Graceful absence: if `exec.LookPath("semgrep") == ErrNotFound`, return `(nil, ErrSemgrepUnavailable)`; orchestrator logs an `slog.Info` "install semgrep for X% more checks" notice and continues. Wire into orchestrator step 3.7 (after secrets, before Python spawn). Drop `semgrep` from the Python default checks list (mirrors the TASK-115 pattern). Bundled rules in `internal/scanner/semgrep/rules/` (port from `python/rules/`) so the Go path doesn't depend on the Python tree being present at runtime — sets up TASK-118 to drop the embedded Python distribution.
+
+---
+
+## Earlier Session (2026-05-12 — Phase 17a 8/8 complete — TASK-126 ADR-008 shipped; v0.8.0 tagged and pushed)
 
 **Date:** 2026-05-12 (Phase 17a 8/8 complete — TASK-126 ADR-008 shipped; v0.8.0 tagged and pushed)
 

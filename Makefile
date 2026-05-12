@@ -7,24 +7,24 @@ BIN_DIR := bin
 PYTHON ?= python3
 EMBED_DIR := $(GO_DIR)/internal/embedded/engine
 
-# embed-engine copies the Python engine files into the Go embed directory.
-# This must run before go build to bundle the Python engine into the binary.
+# embed-engine resets the embed directory to a placeholder. As of
+# TASK-118 the Go binary no longer bundles the Python engine — secrets
+# (TASK-115) and semgrep (TASK-116) are native Go, and the auth /
+# injection / deps Python checks are opt-in via `--python-engine`,
+# requiring the user to provide a local python/ tree separately. The
+# target stays in `make build`'s prereq chain so a clean repo always
+# yields a buildable embed/ tree (the //go:embed directive needs the
+# directory to exist with at least one entry).
+#
+# The pre-TASK-118 copy pipeline lives in version control history at
+# commit a48be8b — restore it by un-deleting this target's body if you
+# need the embedded path for a private build.
 embed-engine:
-	@echo "→ Bundling Python engine for embedding..."
+	@echo "→ Resetting embed dir (Python engine no longer bundled — TASK-118)..."
 	@rm -rf $(EMBED_DIR)
-	@mkdir -p $(EMBED_DIR)/analyzers $(EMBED_DIR)/rules
-	@cp $(PY_DIR)/engine.py $(EMBED_DIR)/
-	@cp $(PY_DIR)/requirements.txt $(EMBED_DIR)/
-	@cp $(PY_DIR)/analyzers/__init__.py $(EMBED_DIR)/analyzers/
-	@cp $(PY_DIR)/analyzers/ast_analyzer.py $(EMBED_DIR)/analyzers/
-	@cp $(PY_DIR)/analyzers/deps.py $(EMBED_DIR)/analyzers/
-	@cp $(PY_DIR)/analyzers/secrets.py $(EMBED_DIR)/analyzers/
-	@cp $(PY_DIR)/analyzers/semgrep_runner.py $(EMBED_DIR)/analyzers/
-	@cp $(PY_DIR)/analyzers/spec_parser.py $(EMBED_DIR)/analyzers/
-	@cp $(PY_DIR)/rules/auth.yaml $(EMBED_DIR)/rules/
-	@cp $(PY_DIR)/rules/injection.yaml $(EMBED_DIR)/rules/
-	@cp $(PY_DIR)/rules/secrets.yaml $(EMBED_DIR)/rules/
-	@echo "✓ Python engine bundled into $(EMBED_DIR)/"
+	@mkdir -p $(EMBED_DIR)
+	@echo "# Fendix Python Engine (no longer bundled — TASK-118)" > $(EMBED_DIR)/.gitkeep
+	@echo "✓ Embed dir reset; --python-engine opts in to local python/ tree"
 
 build: embed-engine
 	@echo "→ Building Go binary..."

@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-13
+
+**Headline:** cold-start under 6 ms, no Python required. Phase 17b
+(P7 Engine-first v0.9) ships four tasks that move the engine off
+embedded Python entirely: secrets detection ported to native Go
+(TASK-115), Semgrep shelled-out instead of embedded (TASK-116), the
+embedded Python distribution removed from the binary with a published
+cold-start benchmark (TASK-118), and a plugin wire-contract
+compatibility audit confirming the v0.7-era plugin ecosystem still
+works (TASK-127). Default cold start = 5.6 ms p50 (was 7.3 ms on v0.8
+— 23 % faster); `--python-engine` opt-in for users who still want the
+Python `auth` / `injection` / `deps` checks. Phase 17b exit gate
+(<500 ms p50) cleared by ~89×. fendix no longer carries a Python
+interpreter requirement at all in the default scan path.
+
+This release folds 4 tasks (TASK-115/116/118/127) into a single
+minor release. Phase 17b is 4/4 complete.
+
+### Removed
+
+- **TASK-118 — embedded Python distribution dropped from binary.** The
+  `Makefile`'s `embed-engine` target no longer copies `python/` into
+  `go/internal/embedded/engine/`; the binary's `//go:embed` directive
+  now bundles only a placeholder. The redundant Python wrappers
+  `python/analyzers/secrets.py` and `python/analyzers/semgrep_runner.py`
+  (and their test files) were deleted — the native Go scanners from
+  TASK-115 + TASK-116 cover the same surface. Python whitebox spawning
+  (auth / injection / deps checks) is now opt-in via a new
+  `--python-engine` CLI flag, requires a local `python/` source tree
+  (or explicit `FENDIX_ENGINE` env var), and is silently skipped when
+  no Python engine is resolvable. **Cold-start benchmark** captured in
+  `docs/benchmarks.md`: default v0.9 = **5.6 ms p50** (was 7.3 ms on
+  v0.8 — 23 % faster) on a tiny fixture; opt-in `--python-engine` =
+  **24.4 ms p50** (4.4× the default — that gap is the actual cost of
+  Python interpreter startup + engine extraction we removed).
+  **Phase 17b exit gate (<500 ms p50) cleared by ~89×.** New
+  reproduction script at `scripts/bench/coldstart.py`. Binary size:
+  -99 KB (-0.5 %); the real win is the dependency posture — fendix no
+  longer carries a Python interpreter requirement at all in the
+  default path.
+
+### Added
+
+- **TASK-127 — plugin wire-contract compatibility audit.** All three
+  reference plugins (`custom-secret-pattern`, `custom-blackbox-check`,
+  `custom-semgrep-pack`) re-verified end-to-end against the
+  TASK-118 binary: discovery works, NDJSON in/out works, findings
+  flow through the correlation + dedup pipeline unchanged. Plugins do
+  not depend on `embedded.HasEngine()`, the extracted
+  `~/.fendix/engine/` tree, or `--python-engine` being set. Pre-
+  existing discovery limitation surfaced and documented:
+  `os.ReadDir().IsDir()` returns false for symlinked plugin
+  directories, so plugins must be installed as real directories
+  (`cp -R` / `git clone`, not `ln -s`). Documented in `docs/plugins.md`.
+  **Phase 17b: 4/4 complete; v0.9.0 ready to tag.**
+
+- **TASK-116 — Semgrep shelled-out, not embedded.** New
+  `internal/scanner/semgrep/` package wraps the host's installed
+  `semgrep` binary instead of running it through the embedded Python
+  engine. The fendix rule pack (`auth.yaml`, `injection.yaml`,
+  `secrets.yaml`, identical bytes to `python/rules/`) is bundled into
+  the Go binary via `//go:embed` and extracted to a per-process temp
+  dir on first scan. `semgrep --config <tmpdir> --json --no-git-ignore
+  --quiet <codePath>` runs as a subprocess with a 120 s default
+  deadline (layered onto the caller's `ctx`); cancellation kills the
+  child. Result mapping mirrors the Python wrapper byte-for-byte:
+  `SEC-<RULE_ID>` IDs (uppercased, `-`/`.` → `_`), `metadata.fendix_severity`
+  preferred over Semgrep's ERROR/WARNING/INFO mapping, `metadata.confidence`
+  / `metadata.category` / `metadata.cwe` propagated, evidence truncated
+  at 200 chars, title at 120. Graceful absence: `exec.LookPath("semgrep")`
+  failure returns `ErrSemgrepUnavailable` and the orchestrator logs an
+  install hint and continues. Non-fatal exit codes (1 for matches, 2/5/7
+  for rule-parse errors that still emit valid JSON) are absorbed in
+  parity with the Python wrapper. Wired into orchestrator step 3.7
+  (after secrets, before Python spawn). `semgrep` removed from default
+  Python checks list. End-to-end verified locally: with semgrep absent
+  the orchestrator emits the install hint and continues; with semgrep
+  present (1.162.0 in a temp venv) Go and Python wrappers agree on the
+  same fixture (zero findings — pre-existing rules issue affects both
+  wrappers identically). 28 race-clean unit tests cover mapping,
+  graceful absence, ctx cancellation, fake-semgrep happy path, and rule
+  embedding extraction. **Phase 17b: 2/4 complete.**
+
+- **TASK-115 — native Go secrets scanner.** New `internal/scanner/secrets/`
+  package ports `python/analyzers/secrets.py` to Go in-process: all 15
+  patterns (7 generic + 8 provider-specific) plus the `.env`-only
+  `ENV_SECRET` regex, walker with skip-dirs / size cap / minified-JS
+  detection, and evidence truncation. Same `SEC-<PATTERN_ID>` finding
+  IDs as the Python implementation so any overlap dedupes cleanly. Go
+  RE2 lookarounds are handled by a per-pattern `boundaryOK` post-match
+  validator (Python's `(?<![A-Za-z0-9])` etc. don't compile in RE2).
+  Wired into the orchestrator as step 3.6 (between native deps scanners
+  and Python spawn). `secrets` is removed from the Python default check
+  list — users can still opt in via `--checks secrets`. Real-world
+  parity verified against the Python fixture suite: 30 unique
+  (title, endpoint) tuples emitted by both engines, set-diff empty in
+  both directions. **Phase 17b: 1/4 complete.**
+
 ## [0.8.0] - 2026-05-12
 
 **Headline:** detection depth + FP discipline. Phase 17a (P7 Engine-first

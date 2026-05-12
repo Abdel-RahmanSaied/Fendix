@@ -22,6 +22,8 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/govulncheck"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/npm"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/pip"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/secrets"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/semgrep"
 )
 
 // Orchestrator coordinates the full scan lifecycle:
@@ -221,8 +223,52 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		}
 	}
 
-	// 4. Spawn Python engine for white-box analysis (if code path or spec provided)
-	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
+	// 3.6. Native secrets scan (TASK-115). Ported in-process from
+	// python/analyzers/secrets.py; runs unconditionally when CodePath
+	// is set, regardless of Python availability. Same SEC-* IDs as the
+	// Python implementation so any overlap (e.g. user explicitly passes
+	// --checks secrets) dedupes cleanly.
+	if o.cfg.CodePath != "" {
+		secretFindings, err := secrets.Scan(ctx, o.cfg.CodePath)
+		switch {
+		case err == nil:
+			slog.Info("native secrets scan complete", "findings", len(secretFindings))
+			findings = append(findings, secretFindings...)
+		case errors.Is(err, secrets.ErrCodePathMissing):
+			slog.Debug("code path missing — skipping native secrets scan")
+		default:
+			slog.Warn("native secrets scan failed", "error", err)
+		}
+	}
+
+	// 3.7. Native semgrep scan (TASK-116). Shells out to the host's
+	// installed `semgrep` binary with the bundled rule pack; if
+	// semgrep isn't on $PATH, we log an install hint and continue —
+	// graceful absence matches the existing posture for missing
+	// Python. Same SEC-* IDs as the Python wrapper so dedup absorbs
+	// any overlap when a user opts the Python path back in.
+	if o.cfg.CodePath != "" {
+		semgrepFindings, err := semgrep.Scan(ctx, o.cfg.CodePath)
+		switch {
+		case err == nil:
+			slog.Info("native semgrep scan complete", "findings", len(semgrepFindings))
+			findings = append(findings, semgrepFindings...)
+		case errors.Is(err, semgrep.ErrSemgrepUnavailable):
+			slog.Info("semgrep not installed — skipping (install with: pip install semgrep)")
+		case errors.Is(err, semgrep.ErrCodePathMissing):
+			slog.Debug("code path missing — skipping native semgrep scan")
+		default:
+			slog.Warn("native semgrep scan failed", "error", err)
+		}
+	}
+
+	// 4. Spawn Python engine for white-box analysis. Default off as of
+	// TASK-118 — secrets (TASK-115) + semgrep (TASK-116) now run in
+	// native Go and the embedded Python distribution is no longer
+	// bundled. Set --python-engine to re-enable the Python auth /
+	// injection / deps checks; requires a usable Python source tree
+	// resolvable via EnsureEngine (local python/ or explicit FENDIX_ENGINE).
+	if o.cfg.PythonEngine && (o.cfg.CodePath != "" || o.cfg.SpecPath != "") {
 		pyStatus := CheckPython(o.spawner.pythonBin)
 		if !pyStatus.Available {
 			slog.Warn("python not available — skipping whitebox analysis")
@@ -542,8 +588,16 @@ func absPathOrEmpty(p string) string {
 }
 
 // runWhiteboxScan spawns the Python engine and collects whitebox findings.
+//
+// "secrets" and "semgrep" are no longer in the default check set as of
+// TASK-115 / TASK-116 — the native Go scanners at internal/scanner/secrets/
+// and internal/scanner/semgrep/ run in-process before this call. Users can
+// still pass --checks secrets,semgrep to opt the Python paths back in
+// (matching SEC-* IDs mean dedup collapses any overlap), but they aren't
+// on by default. The Python files stay in-tree for one release window in
+// case of rollback; TASK-118 deletes them.
 func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
-	checks := []string{"secrets", "auth", "semgrep", "injection", "deps"}
+	checks := []string{"auth", "injection", "deps"}
 	if len(o.cfg.Checks) > 0 {
 		checks = o.cfg.Checks
 	}

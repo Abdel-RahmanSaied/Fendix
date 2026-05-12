@@ -321,14 +321,15 @@ paths:
 	os.WriteFile(specPath, []byte(spec), 0644)
 
 	cfg := &models.ScanConfig{
-		URL:        server.URL,
-		SpecPath:   specPath,
-		CodePath:   engineDir, // triggers whitebox scan
-		Workers:    2,
-		Timeout:    10,
-		DelayMs:    0,
-		Format:     "json",
-		OutputPath: outputPath,
+		URL:          server.URL,
+		SpecPath:     specPath,
+		CodePath:     engineDir, // triggers whitebox scan
+		Workers:      2,
+		Timeout:      10,
+		DelayMs:      0,
+		Format:       "json",
+		OutputPath:   outputPath,
+		PythonEngine: true, // TASK-118: opt back into Python whitebox path for this hybrid test
 	}
 
 	spawner := NewPythonSpawner("python3", engineDir)

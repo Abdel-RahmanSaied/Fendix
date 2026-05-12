@@ -3,8 +3,21 @@
 The plugin system lets you extend Fendix with custom checks without
 modifying the engine source tree. Plugins ship as a directory
 containing a `plugin.yaml` manifest plus an executable entrypoint
-that speaks the same NDJSON contract the embedded Python engine
-uses (see [ADR-002](adr/ADR-002-ndjson-ipc.md)).
+that speaks the same NDJSON contract Fendix's own engine uses (see
+[ADR-002](adr/ADR-002-ndjson-ipc.md)).
+
+> **Compatibility note (TASK-127, v0.9.0):** the v0.7-era plugin wire
+> contract is unchanged in v0.9. All three reference plugins
+> (`custom-secret-pattern`, `custom-blackbox-check`,
+> `custom-semgrep-pack`) were re-audited against the TASK-118 binary
+> after the embedded Python distribution was dropped — discovery
+> works, NDJSON in/out works, findings flow through correlation +
+> dedup unchanged. Plugins do not depend on `embedded.HasEngine()`,
+> the extracted `~/.fendix/engine/` tree, or `--python-engine` being
+> set. **Known pre-existing limitation:** the discovery walk uses
+> `os.ReadDir().IsDir()` which returns `false` for symlinked plugin
+> directories — install plugins as real directories (or use
+> `cp -R`/`git clone`) rather than `ln -s`.
 
 This document covers:
 

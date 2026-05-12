@@ -1,0 +1,542 @@
+package secrets
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+)
+
+// writeFile writes content to tmpDir/relPath, creating parent dirs as
+// needed. Test helper — t.Fatal on any I/O error.
+func writeFile(t *testing.T, tmpDir, relPath, content string) string {
+	t.Helper()
+	full := filepath.Join(tmpDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", relPath, err)
+	}
+	return full
+}
+
+// idsFound returns the set of finding IDs in fs.
+func idsFound(fs []models.Finding) map[string]struct{} {
+	out := make(map[string]struct{}, len(fs))
+	for _, f := range fs {
+		out[f.ID] = struct{}{}
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// Per-pattern positive detection. One file per group keeps assertions clean.
+// ---------------------------------------------------------------------------
+
+func TestScan_DetectsAllProviderTokens(t *testing.T) {
+	dir := t.TempDir()
+	// Use the same shapes as python/tests/fixtures/secrets_target/provider_tokens.py
+	writeFile(t, dir, "tokens.py", strings.Join([]string{
+		`GITHUB_TOKEN = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"`,
+		`GITHUB_GHS = "ghs_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"`,
+		`STRIPE_LIVE = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"`,
+		`SLACK_BOT = "xoxb-1234567890-0987654321-AbCdEfGhIjKlMnOpQrStUvWx"`,
+		`SLACK_USER = "xoxp-9999999999-8888888888-AAAAAAAAAAAAAAAAAAAAAAAA"`,
+		`GOOGLE_KEY = "AIzaSyD-ExampleFakeKeyForTestingPurpose"`,
+		`ANTHROPIC_KEY = "sk-ant-api03-ExampleFakeAnthropicKeyForTesting123456"`,
+		`OPENAI_LEGACY = "sk-AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrSt"`,
+		`OPENAI_PROJ = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMn"`,
+		`NPM_TOKEN = "npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"`,
+	}, "\n"))
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	got := idsFound(fs)
+	wantAll := []string{
+		"SEC-GITHUB_TOKEN", "SEC-STRIPE_LIVE_KEY", "SEC-SLACK_TOKEN",
+		"SEC-GOOGLE_API_KEY", "SEC-ANTHROPIC_API_KEY", "SEC-OPENAI_API_KEY",
+		"SEC-NPM_TOKEN",
+	}
+	for _, id := range wantAll {
+		if _, ok := got[id]; !ok {
+			t.Errorf("missing %s; got ids=%v", id, got)
+		}
+	}
+}
+
+func TestScan_DetectsGenericPatterns(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "config.py", strings.Join([]string{
+		`AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"`,
+		`AWS_SECRET_ACCESS_KEY = "aws_secret_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`,
+		`api_key = "abc123-super-secret-api-key-value-here"`,
+		`password = "mysupersecretpassword123"`,
+		`JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"`,
+		`DB_URL = "postgresql://admin:secretpassword@db.example.com:5432/mydb"`,
+	}, "\n"))
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	got := idsFound(fs)
+	for _, id := range []string{
+		"SEC-AWS_ACCESS_KEY", "SEC-AWS_SECRET_KEY", "SEC-GENERIC_API_KEY",
+		"SEC-HARDCODED_PASSWORD", "SEC-JWT_TOKEN", "SEC-DB_CONNECTION_STRING",
+	} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("missing %s; got ids=%v", id, got)
+		}
+	}
+}
+
+func TestScan_PrivateKeyDetected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "cert.js", "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n")
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if _, ok := idsFound(fs)["SEC-PRIVATE_KEY"]; !ok {
+		t.Errorf("expected SEC-PRIVATE_KEY; got %v", idsFound(fs))
+	}
+}
+
+func TestScan_GCPServiceAccountDetected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "sa.json", `{"type": "service_account", "project_id": "x"}`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if _, ok := idsFound(fs)["SEC-GCP_SERVICE_ACCOUNT"]; !ok {
+		t.Errorf("expected SEC-GCP_SERVICE_ACCOUNT; got %v", idsFound(fs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// .env handling (TASK-085 regression).
+// ---------------------------------------------------------------------------
+
+func TestScan_EnvUnquotedSecretDetected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, ".env", strings.Join([]string{
+		`DB_PASSWORD=production-password-123`,
+		`SECRET_KEY=this-should-not-be-in-git`,
+		`# This comment line should not match`,
+		`NORMAL_VAR=harmless_string`,
+	}, "\n"))
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	var envHits []models.Finding
+	for _, f := range fs {
+		if f.ID == "SEC-ENV_SECRET" && strings.Contains(f.Endpoint, ".env") {
+			envHits = append(envHits, f)
+		}
+	}
+	if len(envHits) < 2 {
+		t.Errorf("expected ≥2 SEC-ENV_SECRET on .env, got %d (all: %v)", len(envHits), fs)
+	}
+}
+
+func TestScan_EnvVariantNames(t *testing.T) {
+	cases := []string{".env", ".env.local", ".env.production", "app.env"}
+	for _, name := range cases {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, name, "API_TOKEN=tok_unquoted_value_in_env_file_here\n")
+			fs, err := Scan(context.Background(), dir)
+			if err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			found := false
+			for _, f := range fs {
+				if f.ID == "SEC-ENV_SECRET" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: expected SEC-ENV_SECRET; got %v", name, idsFound(fs))
+			}
+		})
+	}
+}
+
+func TestScan_EnvPatternNotAppliedOutsideEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Same content as .env, but in a .py file → ENV_SECRET must not fire.
+	writeFile(t, dir, "config.py", "DB_PASSWORD=production-password-123\n")
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if _, ok := idsFound(fs)["SEC-ENV_SECRET"]; ok {
+		t.Errorf("SEC-ENV_SECRET fired outside .env file: %v", fs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Boundary validation — replaces Python (?<!...)/(?!...) lookarounds.
+// ---------------------------------------------------------------------------
+
+func TestScan_GithubTokenRejectsAlnumNeighbour(t *testing.T) {
+	dir := t.TempDir()
+	// Adjacent alnum char on the right → Python's (?![A-Za-z0-9]) would
+	// reject this; Go must reject too via boundaryOK.
+	writeFile(t, dir, "code.py", `token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if _, ok := idsFound(fs)["SEC-GITHUB_TOKEN"]; ok {
+		t.Errorf("SEC-GITHUB_TOKEN fired despite trailing alnum (longer token)")
+	}
+}
+
+func TestScan_AWSKeyRejectsAlnumNeighbour(t *testing.T) {
+	dir := t.TempDir()
+	// 17 uppercase chars after AKIA would match without the right boundary;
+	// Python's (?![A-Z0-9]) blocks this.
+	writeFile(t, dir, "code.py", `k = "AKIAIOSFODNN7EXAMPLEX"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if _, ok := idsFound(fs)["SEC-AWS_ACCESS_KEY"]; ok {
+		t.Errorf("SEC-AWS_ACCESS_KEY fired despite trailing alnum")
+	}
+}
+
+func TestScan_OpenAIDoesNotMatchAnthropicKey(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "code.py", `ANT = "sk-ant-api03-ExampleFakeAnthropicKeyForTesting123456"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	// OpenAI regex body `sk-(?:proj-|svcacct-)?[A-Za-z0-9]{32,}` forbids
+	// `-` so it can never consume the Anthropic `-ant-` prefix.
+	var anthEPs, openEPs []string
+	for _, f := range fs {
+		switch f.ID {
+		case "SEC-ANTHROPIC_API_KEY":
+			anthEPs = append(anthEPs, f.Endpoint)
+		case "SEC-OPENAI_API_KEY":
+			openEPs = append(openEPs, f.Endpoint)
+		}
+	}
+	if len(anthEPs) == 0 {
+		t.Fatal("expected anthropic key to match its own pattern")
+	}
+	for _, aep := range anthEPs {
+		for _, oep := range openEPs {
+			if aep == oep {
+				t.Errorf("OpenAI pattern incorrectly matched at anthropic endpoint %s", aep)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding structure parity with Python.
+// ---------------------------------------------------------------------------
+
+func TestScan_FindingShape(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "config.py", `AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) == 0 {
+		t.Fatal("expected at least one finding")
+	}
+	f := fs[0]
+	if f.Source != models.SourceWhitebox {
+		t.Errorf("source = %q; want whitebox", f.Source)
+	}
+	if f.Category != "secrets" {
+		t.Errorf("category = %q; want secrets", f.Category)
+	}
+	if f.Confidence != models.ConfidenceHigh {
+		t.Errorf("confidence = %q; want HIGH", f.Confidence)
+	}
+	if !strings.HasPrefix(f.ID, "SEC-") {
+		t.Errorf("id = %q; want SEC- prefix", f.ID)
+	}
+	if !strings.Contains(f.Endpoint, ":") {
+		t.Errorf("endpoint missing :line — %q", f.Endpoint)
+	}
+	if f.Line == nil || *f.Line != f.Endpoint {
+		t.Errorf("line pointer not set or mismatched endpoint; line=%v endpoint=%q", f.Line, f.Endpoint)
+	}
+	if len(f.References) == 0 || !strings.HasPrefix(f.References[0], "CWE-") {
+		t.Errorf("references missing CWE: %v", f.References)
+	}
+	if len(f.Evidence) > 150 {
+		t.Errorf("evidence too long (%d chars): %q", len(f.Evidence), f.Evidence)
+	}
+}
+
+func TestScan_EvidenceRedactsRawSecret(t *testing.T) {
+	dir := t.TempDir()
+	const rawKey = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	writeFile(t, dir, "tok.py", `GITHUB = "`+rawKey+`"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range fs {
+		if f.ID == "SEC-GITHUB_TOKEN" {
+			if strings.Contains(f.Evidence, rawKey) {
+				t.Errorf("evidence leaks raw secret: %q", f.Evidence)
+			}
+			if !strings.Contains(f.Evidence, "...") {
+				t.Errorf("evidence missing truncation ellipsis: %q", f.Evidence)
+			}
+			return
+		}
+	}
+	t.Fatal("SEC-GITHUB_TOKEN not emitted")
+}
+
+// ---------------------------------------------------------------------------
+// Walker behaviour: skip dirs, size cap, minified-JS, unsupported exts.
+// ---------------------------------------------------------------------------
+
+func TestScan_SkipsGitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, ".git/config", `password = "hardcoded_secret_12345"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("found %d findings inside .git: %v", len(fs), fs)
+	}
+}
+
+func TestScan_SkipsNodeModules(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "node_modules/pkg/index.js", `const key = "AKIAIOSFODNN7EXAMPLE";`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("found %d findings inside node_modules: %v", len(fs), fs)
+	}
+}
+
+func TestScan_SkipsLargeFile(t *testing.T) {
+	dir := t.TempDir()
+	full := writeFile(t, dir, "big.py", "x = 1\n")
+	// Append until we cross 1MB plus a buried secret on the final line.
+	f, err := os.OpenFile(full, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	junk := strings.Repeat("y = 1\n", 200_000) // ~1.2 MB
+	if _, err := f.WriteString(junk); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := f.WriteString(`AWS_KEY = "AKIAIOSFODNN7EXAMPLE"` + "\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f.Close()
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("oversized file not skipped: %v", fs)
+	}
+}
+
+func TestScan_SkipsMinifiedJSLine(t *testing.T) {
+	dir := t.TempDir()
+	// One 600-char line with the secret embedded — Python skips, Go must too.
+	line := strings.Repeat("a", 580) + ` "AKIAIOSFODNN7EXAMPLE";`
+	writeFile(t, dir, "bundle.min.js", line)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("minified line not skipped: %v", fs)
+	}
+}
+
+func TestScan_SkipsUnsupportedExtension(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "doc.md", `password = "hardcoded_secret_12345"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("unsupported ext scanned: %v", fs)
+	}
+}
+
+func TestScan_CleanFileProducesNothing(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "clean.py", strings.Join([]string{
+		`import os`,
+		`API_KEY = os.environ["API_KEY"]`,
+		`DB_URL = os.environ["DATABASE_URL"]`,
+		`SECRET = os.getenv("SECRET_KEY", "")`,
+	}, "\n"))
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("expected 0 findings on clean file, got %d: %v", len(fs), fs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error / edge-case handling.
+// ---------------------------------------------------------------------------
+
+func TestScan_NonexistentPath(t *testing.T) {
+	_, err := Scan(context.Background(), "/nonexistent/path/that/does/not/exist")
+	if !errors.Is(err, ErrCodePathMissing) {
+		t.Errorf("err = %v; want ErrCodePathMissing", err)
+	}
+}
+
+func TestScan_EmptyPath(t *testing.T) {
+	_, err := Scan(context.Background(), "")
+	if !errors.Is(err, ErrCodePathMissing) {
+		t.Errorf("err = %v; want ErrCodePathMissing", err)
+	}
+}
+
+func TestScan_FileNotDirectory(t *testing.T) {
+	dir := t.TempDir()
+	f := writeFile(t, dir, "x.py", "")
+	_, err := Scan(context.Background(), f)
+	if err == nil {
+		t.Errorf("expected error when path is a file, got nil")
+	}
+}
+
+func TestScan_ContextCanceledStopsWalk(t *testing.T) {
+	dir := t.TempDir()
+	// Spray files so the walk would visit several entries.
+	for i := 0; i < 50; i++ {
+		writeFile(t, dir, filepath.Join("sub", "f"+string(rune('a'+i%26))+".py"),
+			`x = "AKIAIOSFODNN7EXAMPLE"`)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Scan(ctx, dir)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v; want context.Canceled", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic endpoint formatting (no \\ on macOS/Linux, no os.sep leak).
+// ---------------------------------------------------------------------------
+
+func TestScan_EndpointUsesForwardSlashes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, filepath.Join("sub", "deep", "code.py"),
+		`AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) == 0 {
+		t.Fatal("expected findings")
+	}
+	for _, f := range fs {
+		if strings.ContainsRune(f.Endpoint, '\\') {
+			t.Errorf("endpoint contains backslash: %q", f.Endpoint)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helper unit tests.
+// ---------------------------------------------------------------------------
+
+func TestTruncateSecret(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"abc", "***"},
+		{"abcd", "***"},
+		{"abcdef", "abcd..."},
+		{strings.Repeat("A", 40), strings.Repeat("A", 20) + "..."},
+	}
+	for _, c := range cases {
+		got := truncateSecret(c.in)
+		if got != c.want {
+			t.Errorf("truncateSecret(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestIsEnvFile(t *testing.T) {
+	cases := map[string]bool{
+		".env":             true,
+		".env.local":       true,
+		".env.production":  true,
+		"app.env":          true,
+		"env":              false,
+		"server.env.bak":   false,
+		"config.py":        false,
+		".envfilelike":     false, // doesn't begin with .env.
+	}
+	for name, want := range cases {
+		if got := isEnvFile(name); got != want {
+			t.Errorf("isEnvFile(%q) = %v; want %v", name, got, want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multi-file walk: verify endpoints are sorted by file path post-scan
+// (callers typically dedupe/sort, but a stable in-file order eases debug).
+// ---------------------------------------------------------------------------
+
+func TestScan_MultiFileEmitsPerEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.py", `KEY = "AKIAIOSFODNN7EXAMPLE"`)
+	writeFile(t, dir, "b.py", `KEY = "AKIAIOSFODNN7EXAMPLE"`)
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	var awsHits []string
+	for _, f := range fs {
+		if f.ID == "SEC-AWS_ACCESS_KEY" {
+			awsHits = append(awsHits, f.Endpoint)
+		}
+	}
+	if len(awsHits) != 2 {
+		t.Fatalf("expected 2 SEC-AWS_ACCESS_KEY (one per file), got %d: %v", len(awsHits), awsHits)
+	}
+	sort.Strings(awsHits)
+	if !strings.HasPrefix(awsHits[0], "a.py:") || !strings.HasPrefix(awsHits[1], "b.py:") {
+		t.Errorf("expected endpoints a.py:N and b.py:N, got %v", awsHits)
+	}
+}
