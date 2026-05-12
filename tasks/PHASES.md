@@ -640,7 +640,7 @@ TASK-118  Remove embedded Python distribution; binary-size + cold-start benchmar
 - [ ] Correlator confidence math rebalanced against the FP corpus; measured FP-rate reduction documented in release notes.
 - [ ] Every finding in the PR comment ships with a copy-paste `.fendix-ignore` snippet keyed on stable hash (one-click suppression).
 - [ ] `reachable_code` severity multiplier audited and rebalanced per [docs/example_plan.md](../docs/example_plan.md) §3.5; EPSS/KEV multipliers explicitly deferred to cloud quarter.
-- [ ] ADR-008 (read-only AI / supersede BACKLOG-017) committed to [docs/adr/](../docs/adr/).
+- [x] ADR-008 (read-only AI / supersede BACKLOG-017) committed to [docs/adr/](../docs/adr/).
 - [ ] v0.8.0 tagged + release.yml run succeeds.
 
 **Tasks:**
@@ -768,5 +768,5 @@ BACKLOG-013  VS Code extension: surface findings inline in the editor pre-CI; ch
 BACKLOG-014  fendix server: web dashboard for trend reporting (severity over time, MTTR, regression alerts). Read-only over committed JSON reports — explicitly NOT multi-tenant SaaS, NOT a SOC2 dashboard. Trend-tracking only. Promote when ≥3 customers ask for it.
 BACKLOG-015  SOURCE_DATE_EPOCH-reproducible builds: every release byte-identical from git. Pairs with cosign for an end-to-end audit story. Cheap once the cosign pipeline (TASK-099) is fully ramped.
 BACKLOG-016  fendix-bench standalone benchmark CLI: lets users reproduce the README benchmark numbers locally and against their own targets. Strong proof-point for AppSec engineers evaluating the tool.
-BACKLOG-017  Strategic distractions explicitly to NOT build (decision log): AI-driven triage / LLM fix suggestions, compliance dashboards (SOC2/ISO 27001 mappings), container/infra scanning (Trivy/Aikido own this), CSPM / cloud config (Wiz/Aikido), mobile app scanning, Burp-style interactive proxy, multi-tenant SaaS with SSO/RBAC. See `tasks/MEMORY.md` "Strategic Session 2026-04-30" for the rationale on each.
+BACKLOG-017  Strategic distractions explicitly to NOT build (decision log): AI-driven triage / LLM fix suggestions [**partially superseded by ADR-008 (2026-05-11)**: read-only AI explanation + fix-as-text permitted in the cloud backend; auto-PR / auto-merge / LLM calls from the OSS engine remain permanently forbidden — see `docs/adr/ADR-008-readonly-ai.md`], compliance dashboards (SOC2/ISO 27001 mappings), container/infra scanning (Trivy/Aikido own this), CSPM / cloud config (Wiz/Aikido), mobile app scanning, Burp-style interactive proxy, multi-tenant SaaS with SSO/RBAC. See `tasks/MEMORY.md` "Strategic Session 2026-04-30" for the rationale on each.
 ```

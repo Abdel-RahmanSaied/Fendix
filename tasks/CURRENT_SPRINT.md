@@ -23,7 +23,7 @@
 | TASK-123 | Correlator confidence math pass | ✅ Complete 2026-05-11 (`e424697`) | ~0.5 day actual | Two gates shipped: 4xx-response skip on header/CORS checks (P2 eliminated), static-file regex skip on rate-limit check (P3 eliminated). SPA-fallback dedup case deferred to Phase 17d. |
 | TASK-124 | One-click suppression snippet in PR comment | ✅ Complete 2026-05-11 (`3bbf4c5`) | ~0.5 day actual | Every top finding in the PR comment ships with a copy-paste `.fendix-ignore` YAML snippet keyed on a stable (title,category,endpoint) hash. 5 new tests. |
 | TASK-125 | Severity scoring refresh | ✅ Complete 2026-05-11 (`a48be8b`) | ~0.5 day actual | New ReachableMult=1.5 in models/scoring.go + CalculateSeverityReachable() + orchestrator step 5.4 escalateNonCorrelatedReachable. EPSS/KEV deferred per plan. 16 new test cases. |
-| TASK-126 | ADR-008 — read-only AI / supersede BACKLOG-017 | 🔲 | ~1 day | New `docs/adr/ADR-008-readonly-ai.md` formalising the strategic decision from the 2026-05-11 session. Independent of feature timing — write during 17a even though no AI ships this phase. |
+| TASK-126 | ADR-008 — read-only AI / supersede BACKLOG-017 | ✅ Complete 2026-05-12 | ~1 day actual | New `docs/adr/ADR-008-readonly-ai.md` formalising the 2026-05-11 strategic decision: read-only AI (explanation + fix-as-text in cloud backend) permitted; auto-PR / auto-merge / LLM calls from OSS engine permanently forbidden. Supersedes BACKLOG-017 AI entry; BACKLOG-017 annotation + PHASES.md exit-criteria checkbox updated. Phase 17a 8/8 complete. |
 
 **Exit criteria:** see [tasks/PHASES.md](PHASES.md) Phase 17a section.
 
