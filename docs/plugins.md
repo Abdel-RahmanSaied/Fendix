@@ -1,261 +1,581 @@
-# Fendix plugin system
+# Writing a Fendix plugin
 
-The plugin system lets you extend Fendix with custom checks without
-modifying the engine source tree. Plugins ship as a directory
-containing a `plugin.yaml` manifest plus an executable entrypoint
-that speaks the same NDJSON contract Fendix's own engine uses (see
-[ADR-002](adr/ADR-002-ndjson-ipc.md)).
+Fendix plugins extend the scanner with custom checks — without
+forking the engine, without recompiling Go, and without touching the
+embedded analyzers. A plugin is a directory containing a YAML
+manifest and an executable entrypoint (any language) that speaks
+[NDJSON](https://github.com/ndjson/ndjson-spec) over stdin/stdout.
 
-> **Compatibility note (TASK-127, v0.9.0):** the v0.7-era plugin wire
-> contract is unchanged in v0.9. All three reference plugins
-> (`custom-secret-pattern`, `custom-blackbox-check`,
-> `custom-semgrep-pack`) were re-audited against the TASK-118 binary
-> after the embedded Python distribution was dropped — discovery
-> works, NDJSON in/out works, findings flow through correlation +
-> dedup unchanged. Plugins do not depend on `embedded.HasEngine()`,
-> the extracted `~/.fendix/engine/` tree, or `--python-engine` being
-> set. **Known pre-existing limitation:** the discovery walk uses
-> `os.ReadDir().IsDir()` which returns `false` for symlinked plugin
-> directories — install plugins as real directories (or use
-> `cp -R`/`git clone`) rather than `ln -s`.
+This guide is for **external authors**: people who want to ship a
+plugin against an installed `fendix` binary, not people who want to
+read the engine source. If you're hacking on the engine itself, read
+[`internal/plugin/plugin.go`](../go/internal/plugin/plugin.go)
+directly — it's small (~350 LOC) and reads cleanly.
 
-This document covers:
+> Updated for **v0.10** (Phase 17c). Wire contract is unchanged from
+> v0.7 / TASK-113. v0.9.0 / TASK-127 re-verified the three reference
+> plugins still work after the embedded Python distribution was
+> dropped from the binary; nothing about the plugin contract depends
+> on the embedded engine.
 
-1. [Discovery and execution model](#discovery-and-execution-model)
-2. [The `plugin.yaml` schema](#the-pluginyaml-schema)
-3. [The IPC contract](#the-ipc-contract)
-4. [Reference plugins](#reference-plugins)
-5. [Disabling plugins](#disabling-plugins)
-6. [Security model](#security-model)
+**Contents:**
 
----
-
-## Discovery and execution model
-
-On every scan that doesn't pass `--no-plugins`, the engine walks
-two roots in order:
-
-| Order | Root | Purpose |
-|-------|------|---------|
-| 1 | `<scan-cwd>/.fendix/plugins/` | Repo-local; takes precedence on collision |
-| 2 | `~/.fendix/plugins/`           | User-global; cross-repo defaults |
-
-Each direct child directory is treated as a candidate plugin. A
-plugin is loaded when its `plugin.yaml` parses cleanly and validates;
-plugins that fail validation are skipped at WARN log level so a
-single broken plugin can never block the scan.
-
-After discovery, every plugin whose `mode` matches the current scan
-runs in sequence. A plugin's findings flow through the same
-correlation, deduplication, severity-consistency, and ID-assignment
-pipeline as the embedded engines — so a custom-secret-pattern plugin
-that flags a hardcoded token at `src/auth.py:42` correlates against a
-blackbox finding at the same auth endpoint exactly like the built-in
-secrets analyzer would.
-
-Per-plugin runtime is capped: the manifest's `timeout` (default 30s,
-maximum 5m) bounds wall-clock time. A plugin that blows past its
-timeout is killed; partial findings emitted before the kill are
-preserved. Any non-zero exit also surfaces partial findings, with
-the scan continuing through other plugins.
+1. [Quickstart — your first plugin in 60 seconds](#quickstart)
+2. [How plugins fit into a scan](#how-plugins-fit-into-a-scan)
+3. [The `plugin.yaml` manifest](#the-pluginyaml-manifest)
+4. [Writing the entrypoint](#writing-the-entrypoint)
+5. [The wire contract](#the-wire-contract)
+6. [Testing your plugin locally](#testing-your-plugin-locally)
+7. [Common errors](#common-errors)
+8. [Distributing your plugin](#distributing-your-plugin)
+9. [Reference plugins](#reference-plugins)
+10. [Security model](#security-model)
+11. [Authoring checklist](#authoring-checklist)
 
 ---
 
-## The `plugin.yaml` schema
+## Quickstart
+
+Three files, ~30 lines, runs against any codebase. Copy this into
+`~/.fendix/plugins/hello-fendix/`:
+
+**`~/.fendix/plugins/hello-fendix/plugin.yaml`**
 
 ```yaml
-name: my-plugin                    # required; no path separators
-version: 0.1.0                     # optional
+name: hello-fendix
+version: 0.1.0
+description: Minimal example — flags every TODO comment as INFO.
+entrypoint: ./run.py
+mode: whitebox
+timeout: 10s
+```
+
+**`~/.fendix/plugins/hello-fendix/run.py`** (`chmod +x`)
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+req = json.loads(sys.stdin.read() or "{}")
+code_path = Path(req.get("code_path") or ".")
+
+total = 0
+for path in code_path.rglob("*.py"):
+    if any(p in path.parts for p in (".git", "node_modules", "__pycache__")):
+        continue
+    try:
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if "TODO" in line:
+                sys.stdout.write(json.dumps({
+                    "title": "TODO comment found",
+                    "severity": "INFO",
+                    "category": "code",
+                    "endpoint": f"{path}:{lineno}",
+                    "evidence": line.strip()[:120],
+                    "fix": "Resolve the TODO or convert it to a tracked issue.",
+                    "confidence": "HIGH",
+                    "references": ["CWE-1078"],
+                }) + "\n")
+                sys.stdout.flush()
+                total += 1
+    except OSError:
+        continue
+
+sys.stdout.write(json.dumps({"done": True, "total": total}) + "\n")
+```
+
+Run it:
+
+```bash
+fendix scan --code ./your-repo --format json | jq '.findings[] | select(.title | contains("TODO"))'
+```
+
+Your plugin's findings flow through the same correlation, dedup,
+sort, and ID-assignment pipeline as the engine's built-in checks.
+They'll show up in HTML reports, SARIF output, and the CI gate
+exactly like first-party findings.
+
+---
+
+## How plugins fit into a scan
+
+```
+fendix scan --code ./repo
+   │
+   ├─ 1. discover endpoints (crawler)
+   ├─ 2. blackbox checks (headers, CORS, exposure, rate-limit, [injection])
+   ├─ 3. native scanners (deps, secrets, semgrep)
+   ├─ 4. python whitebox engine (only if --python-engine set)
+   ├─ 4.5. PLUGINS  ← every discovered plugin runs here in sequence
+   ├─ 5. correlate blackbox + whitebox findings
+   ├─ 5.4. escalate non-correlated reachable findings
+   ├─ 5.5. dedup
+   ├─ 5.6. enforce severity↔confidence consistency
+   └─ 6. sort + assign SEC-NNN IDs + render report
+```
+
+Plugin findings are not second-class. They participate in
+correlation against blackbox findings, get deduped against built-in
+findings on the same `(title, category, severity)` tuple, and get
+elevated severity when correlated. A custom-secret-pattern plugin
+that flags a hardcoded API key at `src/auth.py:42` correlates
+against a blackbox auth-bypass at the same endpoint exactly like the
+built-in secrets analyzer would.
+
+**Discovery roots** (in precedence order):
+
+| Order | Root | Use case |
+|-------|------|----------|
+| 1 | `<scan-cwd>/.fendix/plugins/` | Repo-pinned plugins (commit them with the code) |
+| 2 | `~/.fendix/plugins/` | User-global plugins (install once, use across repos) |
+
+A plugin in root #1 with the same `name:` as one in root #2
+shadows the user-global version. Pass `--no-plugins` on any scan to
+skip plugin discovery entirely.
+
+---
+
+## The `plugin.yaml` manifest
+
+```yaml
+name: my-plugin                    # required; no path separators (a-z, 0-9, _, -)
+version: 0.1.0                     # optional; surfaced in slog
 description: |                     # optional; surfaced in slog
   What this plugin does and why.
 entrypoint: ./run.py               # required; relative to plugin dir
 mode: blackbox | whitebox | hybrid # required
-categories:                        # optional; informational
+categories:                        # optional; informational only
   - secrets
 timeout: 30s                       # optional; default 30s, max 5m
 ```
 
 Unknown fields are **rejected** with a clear error message — same
-posture as `.fendix.yaml` (TASK-109). Typos like `entry_point` or
-`Mode` surface at load time rather than silently dropping.
+strict-parse posture as `.fendix.yaml`. Typos like `entry_point` or
+`Mode` surface at load time instead of being silently dropped.
 
 ### Mode semantics
 
-| `mode`      | When the plugin runs |
-|-------------|----------------------|
-| `blackbox`  | `--url` is set |
-| `whitebox`  | `--code` or `--spec` is set |
-| `hybrid`    | Either condition holds (the plugin can ignore unset fields) |
+| `mode` | Plugin runs when |
+|--------|------------------|
+| `blackbox` | `--url` is set on the scan |
+| `whitebox` | `--code` or `--spec` is set on the scan |
+| `hybrid`   | Either condition holds (the plugin can ignore unset fields) |
 
-Plugins that don't match the current scan's mode are silently
-skipped at DEBUG level — no error.
+A plugin whose mode doesn't match the current scan is skipped
+silently at DEBUG level — no error, no warning. Pick the narrowest
+mode you can; `hybrid` is for plugins that genuinely need both.
+
+### Timeouts
+
+Per-plugin timeout (`timeout:`) is wall-clock and bounded at 5
+minutes. A plugin that exceeds its timeout is killed with `SIGKILL`
+after the manifest's deadline, but **partial findings emitted before
+the kill are preserved**. Use a generous timeout for first-pass
+plugins; the orchestrator already has its own `--max-duration` for
+overall scan-level bounds.
 
 ---
 
-## The IPC contract
+## Writing the entrypoint
 
-### Input (engine → plugin, on stdin, single JSON line)
+The entrypoint is any executable file that:
+
+1. Reads exactly one line of JSON from stdin (the scan request).
+2. Writes zero or more JSON Finding objects to stdout, one per line.
+3. Writes a terminator (`{"done": true, "total": N}`) as its **last**
+   line of stdout.
+4. Exits 0 on success or non-zero on failure.
+
+It can be Python, Bash + jq, Node, Ruby, Go (compiled binary), Rust,
+shell — anything with stdin/stdout/exit codes. Pick whatever your
+team already maintains.
+
+### Python skeleton
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+import os
+
+# Read scan request
+req = json.loads(sys.stdin.read() or "{}")
+mode = req.get("mode", "")
+code_path = req.get("code_path", "")
+url = req.get("url", "")
+
+# Plugin directory for bundled assets (rules, signatures, wordlists)
+plugin_dir = os.environ.get("FENDIX_PLUGIN_DIR", ".")
+
+def emit(finding: dict) -> None:
+    sys.stdout.write(json.dumps(finding) + "\n")
+    sys.stdout.flush()
+
+total = 0
+# ... your check logic here, calling emit() for each finding ...
+
+emit({"done": True, "total": total})
+```
+
+### Node skeleton
+
+```javascript
+#!/usr/bin/env node
+const fs = require("fs");
+
+const req = JSON.parse(fs.readFileSync(0, "utf-8") || "{}");
+const pluginDir = process.env.FENDIX_PLUGIN_DIR || ".";
+
+const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
+
+let total = 0;
+// ... your check logic here ...
+
+emit({ done: true, total });
+```
+
+### Bash + jq skeleton
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+REQ="$(cat)"
+CODE_PATH="$(printf '%s' "$REQ" | jq -r '.code_path // ""')"
+
+if [ -z "$CODE_PATH" ] || [ ! -d "$CODE_PATH" ]; then
+    printf '%s\n' '{"done":true,"total":0}'
+    exit 0
+fi
+
+TOTAL=0
+# ... your check logic here, printf each finding as JSON line ...
+
+printf '%s\n' "{\"done\":true,\"total\":$TOTAL}"
+```
+
+---
+
+## The wire contract
+
+### Input — `ScanRequest` (engine → plugin, stdin, single JSON line)
 
 ```json
 {
   "mode": "whitebox",
-  "url": "",
+  "url": "https://api.example.com",
   "spec": "./openapi.yaml",
   "code_path": "./src",
-  "auth": "Bearer ...",
+  "auth": "Bearer eyJ...",
   "auth_type": "bearer",
   "categories": ["secrets"],
   "verbose": false
 }
 ```
 
-The plugin reads this single line from stdin, parses it as JSON,
-and writes findings to stdout.
+Every field is optional. Treat absent or empty fields as "not set" —
+your plugin should fail gracefully when a field it needs is missing
+(emit `{"done": true, "total": 0}` and exit 0 rather than crashing).
 
-### Output (plugin → engine, on stdout, NDJSON)
+The `auth` field carries the user's auth value verbatim. **If your
+plugin makes HTTP requests on the user's behalf, redact `auth` from
+your own logs** — the engine masks it in scan-level logs but plugin
+output is your responsibility.
 
-Zero or more `Finding` objects, one per line:
+### Output — zero or more `Finding` lines
 
-```json
-{"id":"","title":"...","severity":"HIGH","category":"secrets","endpoint":"src/x.py:14","evidence":"...","fix":"...","confidence":"HIGH"}
-```
-
-Severity values: `CRITICAL` | `HIGH` | `MEDIUM` | `LOW` | `INFO`.
-Confidence values: `HIGH` | `MEDIUM` | `LOW`.
-
-Then a terminator:
+Each line is a single JSON object:
 
 ```json
-{"done": true, "total": 1}
+{
+  "id": "",
+  "title": "Hardcoded API key in config.py",
+  "severity": "CRITICAL",
+  "category": "secrets",
+  "endpoint": "src/config.py:14",
+  "evidence": "API_KEY = 'sk-live-...[REDACTED]'",
+  "fix": "Move to environment variable. Rotate the exposed key immediately.",
+  "references": ["CWE-798"],
+  "confidence": "HIGH",
+  "line": "src/config.py:14"
+}
 ```
 
-To signal an error and stop:
+| Field | Required | Notes |
+|-------|----------|-------|
+| `id` | — | Leave empty; the engine assigns `SEC-NNN` after sort |
+| `title` | **yes** | One-line human-readable summary, ≤120 chars |
+| `severity` | **yes** | `CRITICAL` \| `HIGH` \| `MEDIUM` \| `LOW` \| `INFO` |
+| `category` | recommended | Free-form; align with built-in categories where it fits (`secrets`, `auth`, `injection`, `cors`, `headers`, `data_exposure`, `ratelimit`, `code`) |
+| `endpoint` | **yes** | URL for blackbox findings; `path:line` for whitebox |
+| `evidence` | recommended | Redacted/truncated proof; ≤200 chars; never raw secret values |
+| `fix` | recommended | What to do about it |
+| `references` | optional | Array of CWE IDs, advisory URLs, etc. |
+| `confidence` | recommended | `HIGH` \| `MEDIUM` \| `LOW` (default `MEDIUM`) |
+| `line` | optional | Same shape as `endpoint` for whitebox; omit for blackbox |
+
+Findings missing `title` or `severity` are silently dropped at the
+engine's WARN log level. Other fields default sensibly.
+
+### Terminator (last line)
 
 ```json
-{"done": true, "total": 0, "error": "could not parse target"}
+{"done": true, "total": 5}
 ```
 
-The engine logs `error`, treats the plugin as failed, but continues
-running other plugins. Any findings emitted before the error are
-preserved.
+`total` is informational — the engine counts findings independently.
+Use it for your own observability.
+
+### Error terminator
+
+```json
+{"done": true, "total": 0, "error": "code_path is not a directory"}
+```
+
+The engine logs `error` at WARN, treats the plugin as failed, and
+continues with other plugins. Findings emitted **before** the error
+are still preserved.
 
 ### Environment variables
 
-| Variable | Value |
-|----------|-------|
-| `FENDIX_PLUGIN_NAME` | The plugin's `name:` from the manifest |
-| `FENDIX_PLUGIN_DIR`  | Absolute path to the plugin directory |
+| Variable | Value | Purpose |
+|----------|-------|---------|
+| `FENDIX_PLUGIN_NAME` | The plugin's `name:` from manifest | Useful for log prefixing |
+| `FENDIX_PLUGIN_DIR` | Absolute path to plugin directory | Use for loading bundled rule packs / signature lists |
 
-Use `FENDIX_PLUGIN_DIR` to load files (e.g. rule packs, signature
-lists) bundled alongside the entrypoint without depending on the
-caller's working directory.
+Always use `FENDIX_PLUGIN_DIR` to find your bundled assets — never
+assume the working directory. The engine spawns plugins with `cwd =
+plugin_dir` as a courtesy, but relying on it makes your plugin
+fragile to future changes.
 
 ### Provenance
 
 Every finding emitted by a plugin gets `fendix-plugin:<name>`
-appended to its `references` array. Reports and dedup logic use
-this to attribute findings to the originating plugin.
+appended to its `references` array automatically. Reports and dedup
+logic use this to attribute findings to the originating plugin —
+you don't need to (and shouldn't) add this tag yourself.
+
+---
+
+## Testing your plugin locally
+
+### Smoke-test outside the engine
+
+The plugin is just a Unix process. Pipe a fake `ScanRequest` and
+inspect stdout:
+
+```bash
+echo '{"mode":"whitebox","code_path":"./test-fixture"}' \
+  | FENDIX_PLUGIN_NAME=my-plugin \
+    FENDIX_PLUGIN_DIR=$(pwd) \
+    ./run.py
+```
+
+You should see one JSON line per finding, then the terminator.
+Anything else (uncaught exceptions, debug prints to stdout, missing
+terminator) is a bug in the plugin, not the engine.
+
+### Smoke-test inside the engine
+
+Symlink or copy your plugin into the per-repo root and run a normal
+scan:
+
+```bash
+mkdir -p .fendix/plugins
+cp -R /path/to/my-plugin .fendix/plugins/
+fendix scan --code ./src --verbose
+```
+
+> **Use `cp -R`, not `ln -s`.** The discovery walk treats symlinks as
+> regular files and skips them. `git clone` and `cp -R` produce real
+> directories that are discovered correctly. (This is a known
+> limitation tracked for fix in v0.10's `fendix plugins install`
+> subcommand — see [TASK-130](../tasks/PHASES.md).)
+
+`--verbose` will print every plugin invocation + the raw findings it
+emitted. If you see `plugin skipped (no whitebox target)`, your
+plugin's `mode:` doesn't match the scan's input flags.
+
+### What to look for in scan output
+
+| Log line | Meaning |
+|----------|---------|
+| `running plugin name=my-plugin version=0.1.0 mode=whitebox` | Found + dispatched |
+| `plugin complete name=my-plugin findings=5` | Ran cleanly |
+| `plugin failed name=my-plugin error="..."` | Non-zero exit or error terminator |
+| `plugin skipped (no whitebox target)` | Mode mismatch — not an error |
+| `plugin skipped name=my-plugin err="parse plugin.yaml: ..."` | Manifest invalid |
+| `plugin shadowed by earlier root` | Same name in `.fendix/plugins/` and `~/.fendix/plugins/` — repo-local wins |
+
+---
+
+## Common errors
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Plugin not discovered, no log lines mention it | Installed via `ln -s` | Use `cp -R` or `git clone` |
+| `parse plugin.yaml: field "entry_point" not found in type plugin.Spec` | Field name typo (e.g. `entry_point` vs `entrypoint`) | Match the [manifest schema](#the-pluginyaml-manifest) exactly |
+| Findings missing from report despite plugin running | `title` or `severity` not set on the Finding | Required fields must be present and non-empty |
+| Plugin runs but report shows zero findings | Terminator emitted before findings, or stdout buffered | Flush stdout after each finding (`sys.stdout.flush()` in Python; `process.stdout.write` is synchronous in Node) |
+| Plugin times out | Default 30s exceeded | Raise `timeout:` in manifest (max 5m) or optimize the plugin |
+| `permission denied` on entrypoint | Not executable | `chmod +x ./run.py` |
+| `ModuleNotFoundError` inside plugin | Python deps not installed in the env that runs `fendix` | Bundle deps into `FENDIX_PLUGIN_DIR` or use only stdlib |
+| Plugin works locally, fails in CI | CI image missing the language runtime (Python, Node, jq, etc.) | Add the runtime to your CI install step or compile the plugin to a static binary |
+
+---
+
+## Distributing your plugin
+
+### As a git repo (today)
+
+Push your plugin directory to GitHub / GitLab / etc. Users install it
+manually:
+
+```bash
+git clone https://github.com/you/my-fendix-plugin ~/.fendix/plugins/my-fendix-plugin
+fendix scan --code ./repo
+```
+
+### As a `fendix plugins install` target (v0.10+, TASK-130)
+
+Once v0.10 ships:
+
+```bash
+fendix plugins install https://github.com/you/my-fendix-plugin
+fendix plugins list
+```
+
+`install` clones into `~/.fendix/plugins/<repo-name>/` and validates
+the manifest. `list` enumerates every discovered plugin (name, mode,
+version, dir).
+
+### Versioning
+
+Bump `version:` in the manifest with every published change. The
+engine doesn't enforce semver, but reports surface the version
+string so consumers can correlate finding output to plugin code.
+
+### License
+
+Plugins choose their own license — the engine loads any plugin that
+implements the wire contract. The three reference plugins shipped in
+this repo are MIT to match the rest of the tree.
 
 ---
 
 ## Reference plugins
 
-Three reference plugins live under
-[`examples/plugins/`](../examples/plugins/):
+Three first-party reference plugins live under
+[`examples/plugins/`](../examples/plugins/). They're real,
+working, and small enough to read in a sitting:
 
-| Plugin | Mode | What it demonstrates |
-|--------|------|---------------------|
-| [`custom-secret-pattern`](../examples/plugins/custom-secret-pattern/) | whitebox | Custom regex-based secret detection over the source tree (Python stdlib only) |
-| [`custom-blackbox-check`](../examples/plugins/custom-blackbox-check/) | blackbox | Custom HTTP response assertion (Python stdlib `urllib`) |
-| [`custom-semgrep-pack`](../examples/plugins/custom-semgrep-pack/)     | whitebox | Wraps a custom Semgrep rule pack via shell + `jq` |
+| Plugin | Mode | Language | Demonstrates |
+|--------|------|----------|--------------|
+| [`custom-secret-pattern`](../examples/plugins/custom-secret-pattern/) | whitebox | Python (stdlib) | Custom regex-based secret detection over the source tree |
+| [`custom-blackbox-check`](../examples/plugins/custom-blackbox-check/) | blackbox | Python (stdlib `urllib`) | HTTP-response assertion against the live target |
+| [`custom-semgrep-pack`](../examples/plugins/custom-semgrep-pack/) | whitebox | Bash + `jq` | Wraps a custom Semgrep rule pack |
 
-To try a reference plugin against a real scan:
+To try one:
 
 ```bash
-# Copy a reference plugin into the user-global root
 mkdir -p ~/.fendix/plugins
-cp -r examples/plugins/custom-secret-pattern ~/.fendix/plugins/
-
-# Run a normal scan; the plugin runs alongside the embedded engines
+cp -R examples/plugins/custom-secret-pattern ~/.fendix/plugins/
 fendix scan --code ./your-repo
 ```
 
-For repo-pinned plugins, copy into `.fendix/plugins/<name>/`
-inside the repo and commit the directory.
-
----
-
-## Disabling plugins
-
-Pass `--no-plugins` on any `fendix scan` invocation to skip plugin
-discovery entirely. Useful when:
-
-- Debugging a flaky plugin that's interfering with a scan
-- Comparing scan output with vs. without third-party plugins
-- Running fendix in a sandboxed CI job that shouldn't execute
-  arbitrary plugin code
-
-`--no-plugins` defaults to `false` (plugins enabled) so that
-operators who copy plugins into the standard roots get
-plug-and-play behavior.
+Two more reference plugins in non-Go languages (Ruby/Node) are
+planned for v0.10 — see [TASK-129](../tasks/PHASES.md).
 
 ---
 
 ## Security model
 
 **Plugins are arbitrary executables.** When you copy a plugin into
-`.fendix/plugins/` or `~/.fendix/plugins/`, you are giving it the
-same privileges as your `fendix` invocation: filesystem access,
-network access, the auth token from `--auth`. Treat plugin
-installation the same as installing any other binary.
+`.fendix/plugins/` or `~/.fendix/plugins/`, you give it the same
+privileges as your `fendix` invocation: filesystem access, network
+access, the auth token from `--auth`. Treat plugin installation the
+same as installing any other binary on your system.
 
 The engine applies these guardrails:
 
 | Guardrail | Effect |
 |-----------|--------|
 | Per-plugin timeout (default 30s, max 5m) | Runaway plugins can't pin a CI job |
-| Manifest-level path validation | Entrypoint must be relative to plugin dir; no `..` traversal accepted |
-| Plugin-mode filter | Whitebox plugins don't run on blackbox-only scans |
+| Manifest path validation | Entrypoint must be relative; no `..` traversal accepted |
+| Mode filter | Whitebox plugins don't run on blackbox-only scans (less attack surface per scan) |
 | No automatic privilege escalation | Plugins inherit the engine process's UID and capabilities; the engine never `sudo`s into a plugin |
-| Stderr captured at DEBUG level | Plugin chatter doesn't pollute stdout/stderr unless `--verbose` is set |
-| Crash isolation | A plugin that exits non-zero or emits an error terminator does not abort the scan |
+| Stderr captured at DEBUG level | Plugin chatter doesn't pollute scan logs unless `--verbose` is set |
+| Crash isolation | A plugin exiting non-zero or emitting an error terminator does not abort the scan |
+| Provenance tagging | Every plugin finding carries `fendix-plugin:<name>` in its references — auditable in reports |
 
-We do **not** sandbox plugins (no seccomp, no chroot, no namespace
-isolation). If you need that, run the entire `fendix` invocation in
-a container or under your platform's existing job-isolation policy.
+The engine does **not** sandbox plugins (no seccomp, no chroot, no
+namespace isolation). If you need that, run the entire `fendix`
+invocation in a container or under your platform's existing
+job-isolation policy. Plugins shipped through the (planned)
+`fendix plugins install <git-url>` flow run with the same privileges
+as plugins you `cp -R` into the directory yourself — the engine
+makes no distinction.
+
+### Auth-token handling
+
+Plugins that consume `auth` from the ScanRequest **must** treat it
+as a secret:
+
+- Don't log `auth` to stdout or stderr (stderr is captured at DEBUG;
+  if anyone scans with `--verbose`, your plugin's stderr ends up in
+  the operator's terminal)
+- Don't include `auth` in error messages or evidence fields
+- If your plugin shells out to other tools (`curl`, `httpie`),
+  pass the auth via env var or stdin, not argv (argv is visible in
+  `ps`)
 
 ### Licensing
 
 Out-of-tree plugins choose their own license. The engine loads any
-plugin that implements the IPC contract. Plugins shipped in this
-repo (under `examples/plugins/`) are MIT to match the rest of the
-tree. See [ADR-007](adr/ADR-007-open-source.md) for the strategic
-posture.
+plugin that implements the wire contract — there's no allowlist, no
+signing, no central registry. Plugins shipped in this repo are MIT to
+match the rest of the tree. See
+[ADR-007](adr/ADR-007-open-source.md) for the strategic posture.
 
 ---
 
 ## Authoring checklist
 
-Before publishing a plugin:
+Before publishing your plugin:
 
 - [ ] `plugin.yaml` has `name`, `entrypoint`, `mode` set
-- [ ] Entrypoint is executable (`chmod +x run.py`)
+- [ ] Entrypoint is executable (`chmod +x`)
 - [ ] Entrypoint reads exactly one line from stdin and tolerates
-  malformed input (emit `{"done": true, "error": "..."}`)
-- [ ] Every finding has `title` and `severity` (other fields are
-  optional — engine discards findings missing required fields)
-- [ ] Terminator `{"done": true, "total": N}` is the **last** thing
-  written to stdout
-- [ ] Stderr only contains diagnostics — never JSON intended as
-  output
-- [ ] Plugin handles its own timeouts/cancellation — when the
-  engine kills a stuck plugin, in-flight findings are lost
-- [ ] No secrets in `evidence` — mask them like the embedded engines
-  do (`[REDACTED]`)
+      malformed input (emit error terminator, exit 0)
+- [ ] Every finding has `title` and `severity` (others optional)
+- [ ] Terminator `{"done": true, "total": N}` is the **last** stdout line
+- [ ] Stdout flushed after every emit (`sys.stdout.flush()`, etc.)
+- [ ] Stderr only contains diagnostics — never JSON intended as output
+- [ ] No raw secret values in `evidence` — redact like the built-in
+      scanners (`[REDACTED]`, `secret[:4] + "..."`)
+- [ ] Plugin handles its own cancellation — when the engine kills a
+      stuck plugin, in-flight findings are lost; don't hold long
+      transactions open
+- [ ] No `auth` value in plugin logs / stderr / evidence
+- [ ] `FENDIX_PLUGIN_DIR` used for bundled assets (not the cwd)
+- [ ] README in the plugin dir explains: what it detects, what to do
+      about findings, what runtime / deps are needed, what license
+      it ships under
+- [ ] Manifest `version:` bumped before every published change
+
+---
 
 ## References
 
-- [ADR-002 — Newline-delimited JSON IPC](adr/ADR-002-ndjson-ipc.md)
-- [ADR-007 — Open-source license + single-repo posture](adr/ADR-007-open-source.md)
-- [`docs/schema.md`](schema.md) — full Finding schema
-- [`internal/plugin/plugin.go`](../go/internal/plugin/plugin.go) — engine-side discovery + execution
+- [ADR-002 — Newline-delimited JSON IPC](adr/ADR-002-ndjson-ipc.md) —
+  why this contract was chosen over gRPC, sockets, etc.
+- [ADR-007 — Open-source license + single-repo posture](adr/ADR-007-open-source.md) —
+  why plugins can ship under any license
+- [`docs/schema.md`](schema.md) — full Finding schema (the engine's
+  authoritative wire format; plugins emit a strict subset)
+- [`internal/plugin/plugin.go`](../go/internal/plugin/plugin.go) —
+  engine-side discovery + execution (reads cleanly in one sitting)
+- [`tasks/PHASES.md`](../tasks/PHASES.md) — Phase 17c
+  (TASK-128–131) tracks the v0.10 plugin-ecosystem polish sprint
