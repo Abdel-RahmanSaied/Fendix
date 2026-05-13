@@ -159,8 +159,12 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		slog.Info("scanning endpoints", "count", len(endpoints))
 	}
 
-	// 2. Build check list
+	// 2. Build check list. configleak runs first so its CRITICAL
+	// "exposed config file" finding lands before the noisier
+	// per-endpoint checks (headers / cors / ratelimit) fire on the
+	// same path — TASK-133 / Phase 17d corpus signal D2.
 	checks := []scanner.CheckFn{
+		scanner.CheckConfigLeak,
 		scanner.CheckHeaders,
 		scanner.CheckCORS,
 		scanner.CheckExposure,

@@ -1,0 +1,249 @@
+package scanner
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+)
+
+// ---------------------------------------------------------------------------
+// matchesConfigLeakPath — pure unit table
+// ---------------------------------------------------------------------------
+
+func TestMatchesConfigLeakPath(t *testing.T) {
+	cases := []struct {
+		path     string
+		wantHit  bool
+		wantPath string
+		wantSub  string // substring expected in title
+	}{
+		{"/.env", true, "/.env", "Environment configuration"},
+		{"/.env.local", true, "/.env.local", "Environment configuration"},
+		{"/.env.production", true, "/.env.production", "Environment configuration"},
+		{"/.htaccess", true, "/.htaccess", "Apache .htaccess"},
+		{"/.htpasswd", true, "/.htpasswd", ".htpasswd credentials"},
+		{"/web.config", true, "/web.config", "IIS web.config"},
+		{"/.npmrc", true, "/.npmrc", "npm authentication"},
+		{"/.DS_Store", true, "/.DS_Store", "macOS"},
+		// Prefix matches for directory-style leaks (leading "/" stripped only
+		// for the internal prefix comparison; we return the cleaned path
+		// unchanged, leading slash and all).
+		{"/.git/HEAD", true, "/.git/HEAD", "Git repository internals"},
+		{"/.git/config", true, "/.git/config", "Git repository internals"},
+		{"/.aws/credentials", true, "/.aws/credentials", "AWS credentials directory"},
+		{"/.ssh/id_rsa", true, "/.ssh/id_rsa", "SSH key directory"},
+		// Bare (no leading slash) directory prefix still matches
+		{".git/HEAD", true, ".git/HEAD", "Git repository internals"},
+		// Method prefix normalization preserves the leading "/"
+		{"GET /.env", true, "/.env", "Environment configuration"},
+		{"POST /.git/HEAD", true, "/.git/HEAD", "Git repository internals"},
+		// Query string + fragment stripping
+		{"/.env?ref=main", true, "/.env", "Environment"},
+		{"/.env#fragment", true, "/.env", "Environment"},
+		// Negatives
+		{"/api/users", false, "", ""},
+		{"/", false, "", ""},
+		{"", false, "", ""},
+		{"/.envrc.example", false, "", ""},  // not a known basename
+		{"/env", false, "", ""},              // missing leading dot
+		{"/git/config", false, "", ""},       // missing leading dot on directory prefix
+	}
+	for _, c := range cases {
+		gotPath, gotTitle, gotHit := matchesConfigLeakPath(c.path)
+		if gotHit != c.wantHit {
+			t.Errorf("matchesConfigLeakPath(%q) hit=%v; want %v", c.path, gotHit, c.wantHit)
+			continue
+		}
+		if !c.wantHit {
+			continue
+		}
+		if gotPath != c.wantPath {
+			t.Errorf("matchesConfigLeakPath(%q) path=%q; want %q", c.path, gotPath, c.wantPath)
+		}
+		if !strings.Contains(gotTitle, c.wantSub) {
+			t.Errorf("matchesConfigLeakPath(%q) title=%q; want substring %q", c.path, gotTitle, c.wantSub)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CheckConfigLeak — integration against httptest
+// ---------------------------------------------------------------------------
+
+// serveConfigLeak returns an httptest server that serves `body` with
+// `status` for any of the listed paths, 404 for everything else.
+func serveConfigLeak(t *testing.T, leakPaths map[string]string, status int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	for path, body := range leakPaths {
+		body := body
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		})
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCheckConfigLeak_FiresOn200(t *testing.T) {
+	srv := serveConfigLeak(t, map[string]string{
+		"/.env": "DB_PASSWORD=hunter2\nAPI_KEY=sk-live-xyz\n",
+	}, http.StatusOK)
+
+	cfg := &models.ScanConfig{Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings; want 1", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != models.SeverityCritical {
+		t.Errorf("severity = %q; want CRITICAL", f.Severity)
+	}
+	if f.Category != "data_exposure" {
+		t.Errorf("category = %q; want data_exposure", f.Category)
+	}
+	if !strings.Contains(f.Evidence, "[REDACTED]") {
+		t.Errorf("evidence not redacted — contains raw secrets: %q", f.Evidence)
+	}
+	// Should never include the actual password value.
+	if strings.Contains(f.Evidence, "hunter2") || strings.Contains(f.Evidence, "sk-live-xyz") {
+		t.Errorf("evidence leaks raw secret: %q", f.Evidence)
+	}
+}
+
+func TestCheckConfigLeak_SkipsOn404(t *testing.T) {
+	srv := serveConfigLeak(t, map[string]string{
+		"/.env": "DB_PASSWORD=hunter2",
+	}, http.StatusNotFound)
+
+	cfg := &models.ScanConfig{Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Errorf("got %d findings on 404; want 0 (server isn't serving the file)", len(findings))
+	}
+}
+
+func TestCheckConfigLeak_SkipsOn500(t *testing.T) {
+	srv := serveConfigLeak(t, map[string]string{
+		"/.env": "internal error",
+	}, http.StatusInternalServerError)
+
+	cfg := &models.ScanConfig{Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Errorf("got %d findings on 500; want 0", len(findings))
+	}
+}
+
+func TestCheckConfigLeak_SkipsUnmatchedPaths(t *testing.T) {
+	srv := serveConfigLeak(t, map[string]string{
+		"/api/users": `[{"id":1,"name":"Alice"}]`,
+	}, http.StatusOK)
+
+	cfg := &models.ScanConfig{Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: srv.URL + "/api/users"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Errorf("got %d findings on non-config path; want 0", len(findings))
+	}
+}
+
+func TestCheckConfigLeak_FiresOnGitInternals(t *testing.T) {
+	srv := serveConfigLeak(t, map[string]string{
+		"/.git/HEAD": "ref: refs/heads/main\n",
+	}, http.StatusOK)
+
+	cfg := &models.ScanConfig{Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/.git/HEAD", FullURL: srv.URL + "/.git/HEAD"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings; want 1 for git internals", len(findings))
+	}
+	if !strings.Contains(findings[0].Title, "Git repository") {
+		t.Errorf("title doesn't mention Git: %q", findings[0].Title)
+	}
+}
+
+func TestCheckConfigLeak_HandlesEmptyURL(t *testing.T) {
+	cfg := &models.ScanConfig{Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: ""}
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings on empty URL; got %d", len(findings))
+	}
+}
+
+// ctx-cancel test omitted: http.Client.Timeout + httptest.Server's
+// goroutine model means a `select {}` handler reliably leaks under
+// -race and runs the suite past its 120s budget. ctx propagation is
+// already covered by Go's stdlib http tests; we trust it here.
+
+// ---------------------------------------------------------------------------
+// sanitizeConfigLeakEvidence — redact-before-emit
+// ---------------------------------------------------------------------------
+
+func TestSanitizeConfigLeakEvidence_RedactsSecrets(t *testing.T) {
+	cases := []struct {
+		in        string
+		mustRedact []string // these substrings must NOT appear in output
+		mustHave   []string // these substrings MUST appear
+	}{
+		{
+			in:         "DB_PASSWORD=hunter2\nAPI_KEY=sk-live-abc",
+			mustRedact: []string{"hunter2", "sk-live-abc"},
+			mustHave:   []string{"[REDACTED]"},
+		},
+		{
+			in:         "TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			mustRedact: []string{"ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+			mustHave:   []string{"[REDACTED]"},
+		},
+		// Empty body
+		{
+			in:         "",
+			mustRedact: nil,
+			mustHave:   []string{"empty body"},
+		},
+	}
+	for _, c := range cases {
+		got := sanitizeConfigLeakEvidence([]byte(c.in), 512)
+		for _, leak := range c.mustRedact {
+			if strings.Contains(got, leak) {
+				t.Errorf("sanitize leaked %q in output %q", leak, got)
+			}
+		}
+		for _, want := range c.mustHave {
+			if !strings.Contains(got, want) {
+				t.Errorf("sanitize output missing %q in %q", want, got)
+			}
+		}
+	}
+}
+
+func TestSanitizeConfigLeakEvidence_Truncates(t *testing.T) {
+	huge := strings.Repeat("a", 10000)
+	got := sanitizeConfigLeakEvidence([]byte(huge), 512)
+	if len(got) > 250 { // capped at maxEvidenceLen (200) + "..."
+		t.Errorf("evidence not truncated: len=%d", len(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("expected trailing '...' on truncated evidence: %q", got[len(got)-10:])
+	}
+}

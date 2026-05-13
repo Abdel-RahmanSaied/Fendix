@@ -165,3 +165,40 @@ TASK-123 should ship levers 1 + 2 (confidence-math changes) and document 3 as a 
 - ❌ **Static-file regex doesn't include `.env` / `.git/*` / `.htaccess`** — those are config leaks, not static assets. The right finding for those is "exposed config file" (CRITICAL), not "no rate limiting" (MEDIUM). Leaving them out of the rate-limit gate so the existing detection still fires; a future task should add a dedicated dotfile-config-leak check that suppresses the noisier headers/cors/ratelimit findings for the same path.
 
 **Lever 3 (`fendix init` `.fendix-ignore` template for `**/tests/**`)** — handed off to TASK-124. The one-click suppression snippet work is the right home for it.
+
+---
+
+## TASK-132 re-triage — 2026-05-13 (Phase 17d, synthetic input)
+
+**Input:** the 35-instance corpus above (no fresh post-launch user reports
+yet — v0.10.0 just shipped). TASK-132's mandate to "triage real user FPs"
+becomes "re-triage the existing corpus through the lens of what TASK-123
++ TASK-124 + TASK-125 actually shipped, and identify what's left."
+
+**Status of each pattern after Phase 17a:**
+
+| Pattern | Status post-17a | TASK-133 work? |
+|---|---|---|
+| P1 (test fixtures, 31 FPs) | Addressed by TASK-105 (default `.fendix-ignore`) + TASK-124 (one-click suppress) | No engine change; mature |
+| P2 (4xx-gate, 3 FPs) | Addressed by TASK-123 lever 1 (eliminated) | None — done |
+| P3 (static-file path, 1 FP) | Addressed by TASK-123 lever 2 (eliminated) | None — done |
+| P4 (metrics endpoint) | Non-FP class (correctly flagged as TP) | None — done |
+
+**Real remaining work (deferred from TASK-123 follow-up notes):**
+
+| FP-shape | Engine fix | Priority |
+|---|---|---|
+| **D1: SPA-fallback response duplication** — N crawler-discovered paths returning byte-identical responses (typical SPA serving `index.html` for every unknown URL) produce N×K findings before dedup; `affected_endpoints` becomes a wall of SPA-fallback paths | New step in orchestrator: hash response bodies during the worker pool pass; collapse endpoints with identical hashes (modulo whitespace) into one canonical endpoint + a `spa_fallback: true` marker on the response. Then the existing TASK-088 dedup naturally consolidates. | **HIGH** — affects every SPA we scan |
+| **D2: Dotfile-config-leak collision** — `.env`, `.git/HEAD`, `.htaccess` returning 200 produce noisy headers/cors/ratelimit findings instead of one CRITICAL "exposed config file" finding | New check `internal/scanner/exposedconfig.go` that fires CRITICAL on `200` responses to a known config-file dotfile list; suppress the other 4 noise checks on the same path. | **HIGH** — high signal-to-noise inversion |
+
+**Out of scope for TASK-133 (correlator-math only):**
+
+- New reachability pattern (TASK-134, separate decision)
+- Suppression UX iteration (TASK-135)
+- Benchmark refresh (TASK-136)
+
+TASK-133 ships D1 + D2 as orchestrator + scanner changes; both are
+deterministic rule additions (not heuristics), so they don't need
+post-launch user data to validate — synthetic SPA + dotfile fixtures
+suffice.
+
