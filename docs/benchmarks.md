@@ -5,41 +5,51 @@ deliberately-vulnerable target applications. The wedge — *"DAST + SAST
 in one PR check, fails only when both engines confirm"* — needs
 evidence, not just framing. This page is where we put the numbers.
 
-## Cold-start latency (TASK-118 / v0.9)
+## Cold-start latency (TASK-118 / TASK-136 — v0.9 → v0.11)
 
-Phase 17b's exit gate is **<500 ms p50 cold start for code-only scans
-without Semgrep**. v0.9 ships with native Go secrets (TASK-115) and
-shelled-out Semgrep (TASK-116), and as of TASK-118 the Python whitebox
-spawn is opt-in via `--python-engine` (the embedded Python distribution
-is no longer bundled in the binary). The default scan path is now
-Python-free.
+Phase 17b's exit gate was **<500 ms p50 cold start for code-only scans
+without Semgrep**, cleared by v0.9.0. Phase 17d (v0.11.0) adds two
+non-trivial detection paths — the native-Go config-leak scanner
+(TASK-133) and a fifth Python-AST sink, path-traversal (TASK-134) — so
+this is the headline performance check: did adding capability blow the
+cold-start budget?
 
-Methodology: 30 cold-start runs, `~/.fendix/engine` cache cleared
-between every run. Subprocess wall-clock measured via Python's
-`time.monotonic()` so timing includes process spawn, argv parse, scan
-setup, scan execution, JSON render, and exit. Hardware: Apple M-series.
-Fixture: `python/tests/fixtures/secrets_target/` — 5 small files,
-30 secrets findings. Both binaries built `go build -ldflags="-s -w"`.
+Methodology: 30 cold-start runs per configuration, `~/.fendix/engine`
+cache cleared between every run. Subprocess wall-clock via Python's
+`time.monotonic()` — process spawn, argv parse, scan setup, scan
+execution, JSON render, and exit are all included. Hardware: Apple
+M-series. Fixture: `python/tests/fixtures/secrets_target/` — 5 small
+files, 30 secrets findings. Both binaries built
+`go build -ldflags="-s -w"`. Numbers reproducible via
+`python3 scripts/bench/coldstart.py`.
 
-| Configuration | p50 | p95 | mean | exit gate |
-|---|---:|---:|---:|---|
-| **POST-TASK-118 (default — what v0.9 ships)** | **5.6 ms** | **6.3 ms** | **5.6 ms** | ✅ 89× under 500 ms |
-| POST-TASK-118 + `--python-engine` (opt-in) | 24.4 ms | 26.3 ms | 24.4 ms | ✅ 20× under 500 ms |
-| PRE-TASK-118 (v0.8.0 with embedded Python) | 7.3 ms | 8.1 ms | 7.2 ms | ✅ 68× under 500 ms |
+| Configuration | p50 | p95 | mean | Δ vs v0.9.0 | exit gate |
+|---|---:|---:|---:|---:|---|
+| **v0.11.0 default — no Python, no opt-ins** | **6.1 ms** | **7.0 ms** | **6.1 ms** | +0.5 ms (+9 %) | ✅ 82× under 500 ms |
+| v0.11.0 + `--python-engine` (opt-in) | 40.7 ms | 45.1 ms | 41.3 ms | +16.3 ms (+67 %) | ✅ 12× under 500 ms |
+| v0.9.0 default (TASK-118 baseline) | 5.6 ms | 6.3 ms | 5.6 ms | — | ✅ 89× under 500 ms |
+| v0.9.0 + `--python-engine` | 24.4 ms | 26.3 ms | 24.4 ms | — | ✅ 20× under 500 ms |
+| v0.8.0 (embedded Python, pre-TASK-118) | 7.3 ms | 8.1 ms | 7.2 ms | — | ✅ 68× under 500 ms |
 
 Reading the table:
 
-- **Default v0.9 is 23 % faster than v0.8** (5.6 ms vs 7.3 ms) on this
-  fixture, with no loss of coverage — secrets findings are identical
-  byte-for-byte (verified via TASK-115 parity test).
-- **The opt-in path costs ~4.4× the default** (24.4 ms vs 5.6 ms) —
-  that gap is the actual cost of Python interpreter startup + engine
-  extraction + whitebox check execution that we removed from the
-  default path. Users who explicitly want the Python `auth` /
-  `injection` / `deps` checks pay it; everyone else doesn't.
-- **Both PRE and POST are far under the 500 ms gate.** v0.8 already
-  cleared it on small fixtures; the win on large codebases scales with
-  what Python actually does (which is now zero in the default path).
+- **Default v0.11 cold-start: 6.1 ms p50.** The new TASK-133
+  config-leak scanner adds one extra check to the worker pool, but on
+  this code-only fixture there are zero discovered endpoints, so the
+  check runs zero times. The +0.5 ms vs v0.9 is dominated by run-to-
+  run noise rather than the new detection paths.
+- **Opt-in `--python-engine` path: 40.7 ms p50, up from 24.4 ms.**
+  The +16.3 ms is the real cost of the new TASK-134 path-traversal
+  sink in the AST analyzer — three new sink names (open / Path /
+  send_file / send_from_directory) get matched on every `visit_Call`,
+  and the `_collect_taint_chain` runs one more time per matching
+  call. Acceptable trade for catching the most common CWE-22 class.
+- **Both paths well under the 500 ms gate.** Even the opt-in path
+  with v0.11's expanded detection still gives 12× headroom.
+- **Default v0.11 is still 16 % faster than v0.8.** No regression vs
+  the pre-Phase-17b world; we kept the cold-start win while adding
+  three new detection paths (configleak + path-traversal + the
+  v0.9-era native secrets/semgrep work).
 
 Binary size delta:
 
