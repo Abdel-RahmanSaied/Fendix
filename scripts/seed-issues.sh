@@ -22,106 +22,139 @@ gh label create "plugin" --repo "$REPO" --color d4c5f9 --description "Plugin sys
 echo ""
 
 gh issue create --repo "$REPO" \
-  --title "rule: detect subprocess.run(shell=True) without input validation" \
-  --label "good first issue,semgrep-rule,help wanted" \
+  --title "engine: add LDAP injection as the 8th reachable taint-chain sink class" \
+  --label "good first issue,help wanted" \
   --body "$(cat <<'EOF'
-## Rule summary
+## Summary
 
-Detect `subprocess.run(..., shell=True)` where the command string includes
-an f-string or `.format()` interpolation of a variable that isn't validated.
+Fendix v0.11 ships 7 reachable taint-chain sink classes (SQLi / SSRF /
+open-redirect / XSS / cmd-injection / path-traversal / insecure deserialization).
+LDAP injection is the natural 8th — well-defined surface, narrow attack
+shape, parity with everything else.
 
-## Language(s)
+## Why this is a good first issue
 
-Python
+- **Self-contained:** one new helper method + one new branch in
+  ``visit_Call``. No cross-package refactor.
+- **Pattern-by-mirror:** copy the structure from any of the existing
+  reachable sinks (``_is_xss_html_sink``, ``_is_path_traversal_sink``,
+  ``_is_ssrf``). Each is ~40 LOC + a sink-names ``frozenset`` + a couple
+  of emit-site lines.
+- **Clear scope:** sinks are ``ldap3.Connection.search`` /
+  ``ldap.search_s`` / ``ldap.search_ext_s`` with a non-literal filter
+  string. Skip Constant args; rely on ``_collect_taint_chain`` to set
+  ``reachable: true`` when the filter traces back to a request source.
 
 ## Example vulnerable code
 
 ```python
-def run_cmd(user_input):
-    subprocess.run(f"grep {user_input} /var/log/app.log", shell=True)
+import ldap
+def find_user():
+    username = request.args.get("u")
+    filter_str = f"(uid={username})"
+    return ldap.search_s(base_dn, ldap.SCOPE_SUBTREE, filter_str)
 ```
 
 ## Example safe code
 
 ```python
-def run_cmd(user_input):
-    subprocess.run(["grep", user_input, "/var/log/app.log"])
+import ldap, ldap.filter
+def find_user():
+    username = request.args.get("u")
+    filter_str = ldap.filter.filter_format("(uid=%s)", [username])
+    return ldap.search_s(base_dn, ldap.SCOPE_SUBTREE, filter_str)
 ```
 
 ## CWE / OWASP reference
 
-CWE-78: Improper Neutralization of Special Elements used in an OS Command
+CWE-90: LDAP Injection
 
-## Suggested severity
+## Suggested severity / confidence
 
-HIGH
+HIGH severity, MEDIUM confidence (matching SSRF/XSS/path-traversal posture).
 
 ## Implementation notes
 
-- Add to `python/rules/injection.yaml`
-- Similar to the existing `dangerous-subprocess` rule but tighter (only shell=True + interpolation)
-- Reference: `examples/plugins/custom-semgrep-pack/rules/subprocess-shell.yaml`
+- Files to touch:
+  - ``python/analyzers/ast_analyzer.py`` — new ``_is_ldap_injection`` /
+    ``_ldap_sink_name`` helpers + emit branch in ``visit_Call``; new
+    ``_LDAP_SINK_NAMES`` frozenset at module level
+  - ``python/tests/test_ast_analyzer.py`` — new ``TestLDAPInjectionReachable``
+    class mirroring ``TestPathTraversalReachable`` (TASK-134)
+- Don't forget: the second positional arg in some ldap3 APIs is the filter;
+  others take it via kwarg. ``_is_path_traversal_sink``'s
+  ``_path_traversal_arg_index`` is the precedent for handling that.
 
 ### Contribution checklist
 
-- [ ] Rule YAML added to `python/rules/injection.yaml`
-- [ ] At least 1 true-positive test case in `python/tests/fixtures/`
-- [ ] At least 1 true-negative test case
-- [ ] `python -m pytest python/tests/test_semgrep_runner.py` passes
+- [ ] New ``_LDAP_SINK_NAMES`` frozenset added
+- [ ] ``_is_ldap_injection`` + ``_ldap_sink_name`` helpers added
+- [ ] Emit branch added to ``visit_Call``
+- [ ] At least 5 unit tests (TP positive / multi-hop / Constant-safe / Name-in-scope-safe / shape-parity)
+- [ ] ``python -m pytest python/tests/test_ast_analyzer.py`` passes
+- [ ] Update ``docs/accuracy.md`` "Categories not in the corpus" — drop LDAP from the list, add new corpus file at ``scripts/accuracy/corpus/ldap.py``
 EOF
 )"
 
-echo "  [1/5] subprocess shell=True rule"
+echo "  [1/5] LDAP injection as 8th reachable sink"
 
 gh issue create --repo "$REPO" \
-  --title "rule: detect Django raw SQL queries without parameterization" \
-  --label "good first issue,semgrep-rule,help wanted" \
+  --title "eval: build a PyGoat ground-truth manifest for real-world precision/recall" \
+  --label "good first issue,documentation,help wanted" \
   --body "$(cat <<'EOF'
-## Rule summary
+## Summary
 
-Detect Django's `cursor.execute()` or `RawSQL()` where the query string
-uses f-strings, `.format()`, or `%` interpolation instead of parameterized queries.
+The ``/accuracy`` page (and ``docs/accuracy.md``) publishes a 3-track
+engine evaluation. Track 3 — scanning PyGoat — reports **category
+coverage** (every OWASP Top 10 class PyGoat advertises was detected)
+but **NOT precision/recall** on a real codebase, because PyGoat doesn't
+ship a machine-readable line manifest.
 
-## Language(s)
+This issue: triage each of PyGoat's 147 findings as TP / FP / not-
+applicable, file the result as ``scripts/accuracy/pygoat-manifest.json``,
+and update the harness so it can score Track 3 the same way Track 1 is
+scored.
 
-Python
+## Why this is a good first issue
 
-## Example vulnerable code
+- **No engine code required.** Pure classification work — read each
+  finding, look at the source location, decide.
+- **Real-world calibration.** Currently we only have synthetic
+  precision/recall (F1 = 1.000); a real-codebase number is what
+  potential users actually care about.
+- **Bounded scope.** 147 findings × ~30 seconds of human triage each
+  = ~75 minutes of focused work.
 
-```python
-cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+## Reproduce
+
+```bash
+git clone --depth 1 https://github.com/adeyosemanputra/pygoat /tmp/pygoat
+./bin/fendix scan --code /tmp/pygoat --python-engine --format json --output /tmp/pygoat.json
 ```
 
-## Example safe code
+## Acceptance criteria
 
-```python
-cursor.execute("SELECT * FROM users WHERE id = %s", [user_id])
-```
+- [ ] ``scripts/accuracy/pygoat-manifest.json`` lists every (file, line, category)
+      from the scan with one of: ``TP`` (real vulnerability PyGoat
+      teaches), ``FP`` (engine flagged a non-issue), ``NA`` (test
+      fixture / lab solution / fendix-self FP-style)
+- [ ] ``scripts/accuracy/run.py`` extended with a ``--pygoat-manifest``
+      mode that scores Track 3 the same way Track 1 is scored
+- [ ] ``docs/accuracy.md`` Track 3 section updated with the resulting
+      precision / recall / F1 numbers (replacing the current
+      "category coverage only" caveat)
+- [ ] Numbers reproduced + published on the ``/accuracy`` frontend page
 
-## CWE / OWASP reference
+## Reference
 
-CWE-89: SQL Injection
-
-## Suggested severity
-
-CRITICAL
-
-## Implementation notes
-
-- Add to `python/rules/injection.yaml`
-- The existing AST analyzer catches generic `cursor.execute(sql)` patterns;
-  this Semgrep rule adds Django-specific coverage (`connection.cursor()`, `RawSQL`)
-
-### Contribution checklist
-
-- [ ] Rule YAML added to `python/rules/injection.yaml`
-- [ ] At least 1 true-positive test case in `python/tests/fixtures/`
-- [ ] At least 1 true-negative test case
-- [ ] `python -m pytest python/tests/test_semgrep_runner.py` passes
+- ``scripts/accuracy/manifest.json`` — the synthetic-corpus ground-truth
+  manifest. Mirror its structure (file + line + label).
+- ``docs/accuracy.md`` Track 3 section — currently honest about not
+  having this number; replace the caveat with the actual measurement.
 EOF
 )"
 
-echo "  [2/5] Django raw SQL rule"
+echo "  [2/5] PyGoat ground-truth manifest"
 
 gh issue create --repo "$REPO" \
   --title "rule: detect Express.js response without helmet() middleware" \

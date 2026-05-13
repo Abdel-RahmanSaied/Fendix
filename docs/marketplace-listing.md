@@ -18,11 +18,13 @@ DAST + SAST as one PR check. Correlated findings get elevated severity.
 
 Fendix scans every pull request with two engines working together:
 
-**Black-box (DAST):** Probes your running API for real vulnerabilities — SQL injection, auth bypass, CORS misconfiguration, missing security headers.
+**Black-box (DAST):** Probes your running API for real vulnerabilities — SQL injection, auth bypass, CORS misconfiguration, missing security headers, exposed config files (.env / .git / .htaccess / .htpasswd at known paths).
 
-**White-box (SAST):** Analyzes your source code for hardcoded secrets, unsafe patterns, dependency CVEs, and taint-source-to-sink flows.
+**White-box (SAST):** Analyzes your source code for hardcoded secrets, dependency CVEs (real call-graph reachability for Go via `golang.org/x/vuln`, OSV.dev for PyPI and npm), and taint chains across 7 sink classes — SQL injection, SSRF, open redirect, XSS, command injection, path traversal, and insecure deserialization.
 
-**The key insight:** When both engines agree on the same vulnerability, Fendix escalates severity and confidence — correlated findings rise above the noise. You control the `fail_on` threshold, so you can choose to only block merges on high-confidence correlated findings.
+**The key insight:** When both engines agree on the same vulnerability, Fendix escalates severity and confidence — correlated findings rise above the noise. When taint analysis also proves data flows from a request source to a dangerous sink, severity escalates a second time (e.g., MEDIUM → CRITICAL). You control the `fail_on` threshold, so you can choose to only block merges on high-confidence correlated findings.
+
+**Measured accuracy (v0.11.0, May 2026):** F1 = 1.000 on the labeled synthetic corpus (38 TPs / 0 FPs / 0 FNs across 7 detection categories). Real-world tests: +5 CRITICAL detections on OWASP Juice Shop vs the v0.6.1 baseline; 147 findings in 17 s on PyGoat covering every OWASP Top 10 category it advertises. Full methodology + caveats published at the project's `/accuracy` page.
 
 ### What happens on every PR
 
@@ -36,8 +38,11 @@ Fendix scans every pull request with two engines working together:
 
 - Zero configuration — install and it works on the next PR
 - Correlated findings with severity escalation (DAST + SAST + reachability proof)
+- 7 reachable taint-chain sink classes (SQLi / SSRF / open-redirect / XSS / cmd-injection / path-traversal / insecure-deserialization)
+- 15 native-Go secret patterns + 32 exposed-config-file detections (CWE-538)
 - SARIF integration with GitHub Code Scanning
-- Plugin system for custom checks (`~/.fendix/plugins/`)
+- Plugin system for custom checks — `fendix plugins install <git-url>` for any-language plugin (NDJSON contract)
+- Suppression tooling — `fendix ignore list / validate / prune` for .fendix-ignore lifecycle
 - Supports `.fendix.yaml` policy files for per-repo customization
 - MIT licensed, fully open source
 

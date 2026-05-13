@@ -10,7 +10,8 @@
 - [ ] `gh` CLI authenticated (`gh auth status`)
 - [ ] `fly` CLI authenticated (`fly auth login`) — or substitute your preferred platform
 - [ ] Repo is public on GitHub (required for Marketplace)
-- [ ] v0.7.0 release artifacts built successfully (check `gh run list -w release.yml`)
+- [ ] v0.11.0 release artifacts built successfully (`gh run list -w release.yml | head -2` shows the v0.11.0 run as `completed success`)
+- [ ] Accuracy scorecard verified locally — `make build && python3 scripts/accuracy/run.py --python-engine` should report `OVERALL  1.000  1.000  1.000` (a value below ~0.95 means a regression and submission should wait)
 
 ---
 
@@ -121,6 +122,8 @@ Draft in [`docs/launch-post.md`](launch-post.md). Three versions:
 - r/golang (architecture-focused)
 
 **Timing:** Post after the Marketplace listing is approved (shows "Install" button works).
+
+**Headline angle (v0.11.0):** Lead with the F1 = 1.000 labeled-corpus result and the "6.1 ms cold start, no Python required" cold-start number — those are the two concrete, falsifiable claims that distinguish fendix from the field. Avoid "fast" and "accurate" as standalone adjectives; numbers do the work.
 
 ---
 

@@ -1,11 +1,12 @@
 # Fendix — Open Source Launch Post
 
 > Draft for HN / r/devops / r/golang / r/netsec.
-> Adapt tone per platform. HN version below (Show HN format).
+> Adapt tone per platform. HN version first (Show HN format).
+> **Updated for v0.11.0 + Phase 17 complete (2026-05-13).**
 
 ---
 
-## Show HN: Fendix — DAST + SAST in one scan, correlated findings (MIT, Go + Python)
+## Show HN: Fendix — DAST + SAST in one PR check, F1 = 1.000 on the labeled corpus (MIT, single Go binary)
 
 **Link:** https://github.com/Abdel-RahmanSaied/Fendix
 
@@ -17,13 +18,24 @@ I built Fendix because I was tired of running three separate security tools in C
 
 **The problem:** SAST tools find patterns that look dangerous but might be dead code. DAST tools confirm exploitability but can't tell you which line to fix. Running both means two reports, two triage workflows, and no connection between them.
 
-**The solution:** Fendix runs both engines in a single `fendix scan` invocation and cross-correlates the results. When both engines find the same vulnerability, Fendix merges them into a correlated finding with escalated severity and confidence. When taint analysis also proves data flows from source to sink, it escalates two severity levels (e.g., MEDIUM → CRITICAL). You configure `--fail-on` to set your threshold — set it to CRITICAL and only confirmed, correlated findings block your build.
+**The solution:** Fendix runs both engines in a single `fendix scan` invocation and cross-correlates the results. When both engines find the same vulnerability, Fendix merges them into a correlated finding with escalated severity and confidence. When taint analysis also proves data flows from a request source to a dangerous sink, severity escalates a second time (e.g., MEDIUM → CRITICAL). Set `--fail-on CRITICAL` and only confirmed, correlated, reachable findings block your build.
 
 **What it does:**
-- Black-box: auth bypass, SQLi (time/error/boolean-based), CORS, headers, secrets in responses, rate limit detection
-- White-box: secrets (15 provider patterns), AST-based taint analysis, Semgrep rules, dependency CVEs (pip-audit/npm audit/govulncheck)
-- Correlation: matching findings get elevated confidence; reachability-proven findings get double severity escalation
-- Output: JSON, HTML (self-contained single file), SARIF (GitHub Code Scanning compatible)
+- **Black-box:** auth bypass, SQLi (time/error/boolean-based), CORS, headers, secrets in responses, rate-limit detection, exposed config files (.env / .git / .htaccess at known paths)
+- **White-box:** 15 secret patterns (native Go, no Python required) + 7 reachable taint-chain sink classes — SQLi, SSRF, open-redirect, XSS (`Markup` / `mark_safe` / `render_template_string`), cmd-injection (`os.system` / `subprocess(shell=True)` / `os.popen`), path-traversal (`open` / `pathlib.Path` / `send_file` / `send_from_directory`), insecure deserialization
+- **Dependency CVEs:** native Go scanners against `go.mod` (call-graph reachability via `golang.org/x/vuln`), `requirements.txt` (OSV.dev), `package-lock.json` (OSV.dev, full transitive)
+- **Correlation:** matching findings get elevated confidence; reachability-proven findings get double severity escalation
+- **Output:** JSON, HTML (self-contained single file), SARIF (GitHub Code Scanning compatible)
+
+**Numbers (v0.11.0):**
+
+| Metric | Value | What it means |
+|---|---:|---|
+| Default cold start | **6.1 ms p50** | Process spawn → JSON-on-stdout. 82× under our internal exit gate (<500 ms). |
+| Labeled-corpus F1 | **1.000** | 38/38 TPs, 0 FPs, 0 FNs across 7 detection categories on a 56-case synthetic corpus. Methodology in docs/accuracy.md. |
+| Juice Shop scan | 12 findings, 27 s | 5 CRITICAL (exposed config files), 4 MEDIUM, 2 LOW, 1 INFO. +5 CRITICALs vs v0.6.1. |
+| PyGoat scan | 147 findings, 17 s | Every OWASP Top 10 class PyGoat advertises was detected. 1 CRITICAL (pickle), 9 injection patterns, 133 real CVE-tagged deps. |
+| Binary | **single Go binary**, ~19 MB | No Python required by default. `--python-engine` opt-in for legacy AST/spec auth checks. |
 
 **How to use it:**
 ```
@@ -35,31 +47,38 @@ fendix scan --code ./ --url https://your-api.dev --format html --output report.h
 Or install the GitHub App for zero-config PR scanning.
 
 **Technical details:**
-- Go for the CLI + HTTP scanner + orchestrator
-- Python for the static analysis engine
-- Communication via NDJSON over stdin/stdout (no gRPC, no sockets)
-- Plugin system: drop a script in `~/.fendix/plugins/`, receive ScanRequest on stdin, emit findings on stdout
-- Single distributable binary (Python engine bundled via `go:embed`, extracted at first run; requires Python 3.x on PATH)
+- **Pure Go default path** — secrets, semgrep (shells out to host), and dep-CVE scanning all run in-process. v0.9 dropped the embedded Python distribution; v0.11 made the orchestrator default Python-free.
+- **Plugin system** — drop a script in `~/.fendix/plugins/` (or `<repo>/.fendix/plugins/`), receive ScanRequest on stdin, emit findings on stdout. NDJSON contract; same wire format the engine's own IPC uses. 5 reference plugins under `examples/plugins/` covering Python (×2), Bash (×1), Node (×1), Ruby (×1) — proves the contract is language-agnostic. `fendix plugins install <git-url>` clones from a URL with manifest validation.
+- **Communication** — newline-delimited JSON over stdin/stdout (no gRPC, no sockets) for both the optional Python engine and every plugin
+- **Architecture** — Go for CLI + HTTP scanner + orchestrator + 4 native scanners; Python is opt-in via `--python-engine` for AST taint analysis on `auth` / `injection` / `deps` checks against the source tree
 
 **What it's NOT:**
-- Not a SaaS. Self-hosted only. No telemetry, no cloud dependency.
+- Not a SaaS. Self-hosted only. No telemetry, no cloud dependency, no phone-home.
 - Not a container scanner (Trivy does that better).
 - Not a compliance dashboard.
 - Not trying to replace Burp Suite for manual pentesting.
 
-MIT licensed. The strategic rationale for open-sourcing is documented in ADR-007 — TLDR: closed-source protects nothing at this stage and costs trust + contributions + auditability.
+**Read-only AI explanation** is the only cloud-side feature on the roadmap (planned for Q1 in a separate `fendix-backend`); ADR-008 documents the rationale and the permanent ban on LLM calls from the OSS engine binary. Auto-PR generation is explicitly forbidden.
 
-I'd love feedback on the correlation approach and the plugin contract. The plugin system is intentionally minimal (NDJSON in/out, same as the internal engine IPC) — is that too minimal for real-world custom checks, or is the simplicity the point?
+MIT licensed. ADR-007 documents the strategic rationale for open-sourcing — TL;DR: closed-source protects nothing at this stage and costs trust + contributions + auditability.
+
+I'd love feedback on the correlation approach and the plugin contract. Is NDJSON in/out too minimal for real-world custom checks, or is the simplicity the point?
 
 ---
 
 ## r/devops version (shorter)
 
-**Title:** We open-sourced our security scanner — DAST + SAST in one PR check, correlated findings get elevated severity
+**Title:** We open-sourced our security scanner — DAST + SAST in one PR check, F1 = 1.000 on the labeled corpus, no Python required to install
 
 Fendix is a hybrid API and code security scanner that runs both a black-box probe and static analysis in a single invocation, then cross-correlates the results.
 
 The key insight: when both engines find the same vulnerability, the finding gets escalated severity and confidence. Set `--fail-on CRITICAL` and only double-confirmed findings block your build. This kills false-positive fatigue without missing confirmed exploitable bugs.
+
+**Headline numbers (v0.11.0):**
+- 6.1 ms p50 cold start (no Python required in the default path)
+- F1 = 1.000 on the labeled accuracy corpus (38 TPs / 0 FPs / 0 FNs across 7 categories)
+- +5 CRITICALs on Juice Shop vs the v0.6.1 baseline (every classic config-leak surface flagged)
+- 147 findings in 17 s on PyGoat (every OWASP Top 10 category covered)
 
 **Quick start:**
 ```
@@ -70,8 +89,10 @@ fendix scan --code ./ --url https://your-staging-api.dev
 Or install the GitHub App → zero-config, automatic PR comments + SARIF annotations.
 
 - MIT licensed, fully open source
-- Single distributable binary (Go + embedded Python; requires Python 3.x on PATH)
-- Plugin system for custom checks
+- Single Go binary (~19 MB); `--python-engine` opt-in if you want the AST taint-analysis path
+- Plugin system for custom checks (5 reference plugins across Python / Bash / Node / Ruby)
+- `fendix plugins install <git-url>` for git-hosted plugins
+- `fendix ignore list/validate/prune` to manage suppression files without manual YAML editing
 - No telemetry, no cloud dependency
 
 GitHub: https://github.com/Abdel-RahmanSaied/Fendix
@@ -82,22 +103,67 @@ Feedback welcome — especially on the correlation approach and whether the plug
 
 ## r/golang version (technical focus)
 
-**Title:** Fendix: Hybrid security scanner in Go — plugin system, NDJSON IPC, embedded Python (MIT)
+**Title:** Fendix v0.11: Hybrid security scanner in Go — 22 packages race-clean, F1 = 1.000 on labeled corpus, no embedded Python (MIT)
 
-Built a security scanner that uses Go for the HTTP/DAST layer and shells out to an embedded Python engine for SAST. Sharing because the architecture might be interesting to other Go developers building hybrid-language tools.
+Built a security scanner where Go handles the entire default path: HTTP scanning, secret detection, dependency CVEs, plugin orchestration, output rendering. Python is opt-in (`--python-engine`) for the AST taint-analysis path; v0.11 dropped the embedded Python distribution entirely so the binary works on machines without Python installed.
 
 **Interesting Go patterns used:**
-- `go:embed` to bundle the entire Python engine into the binary
-- NDJSON over stdin/stdout as the IPC contract (no gRPC, no sockets — just `bufio.Scanner`)
-- Plugin system that discovers executables in `~/.fendix/plugins/` and speaks the same NDJSON contract
-- `sync.Once` + atomic counter for scan budget enforcement across goroutines
+- `//go:embed` for the (optional) bundled Semgrep rule pack — extracted to a per-process temp dir on first scan via `sync.Once`
+- NDJSON over stdin/stdout as the IPC contract for both the optional Python engine and every plugin — no gRPC, no sockets, just `bufio.Scanner`
+- Plugin system that walks `<scan-cwd>/.fendix/plugins/` + `~/.fendix/plugins/` with shadow precedence; `os.Stat` to follow symlinks
+- `sync.Once` + atomic counter for scan budget enforcement (`--max-requests N`) across goroutines
 - Worker pool with fuzz-tested cancellation (native Go fuzzer, 4000+ corpus entries)
 - Single-flight token cache for GitHub App installation tokens
+- 22 packages, race-clean across the whole tree
 
 **What it does:** DAST + SAST in one `fendix scan`, cross-correlates findings, outputs SARIF for Code Scanning. Findings only fail CI when both engines confirm.
 
-The Python embedding was a pragmatic choice (Semgrep + pip-audit + AST analysis), but the roadmap includes porting regex-based checks to native Go and making Python optional. The plugin system (Phase 15, just shipped) means community checks don't need to be in either language.
+**v0.11 highlights:**
+- Native Go secrets scanner (15 patterns, byte-for-byte parity with the deprecated Python wrapper)
+- Native Go config-leak detector (32 patterns covering .env / .git/* / .htaccess / .htpasswd / etc.)
+- 7 reachable taint-chain sink classes including the new path-traversal sink (TASK-134)
+- `fendix plugins list / install <git-url>` subcommand tree
+- `fendix ignore list / validate / prune` for .fendix-ignore lifecycle management
+
+The labeled accuracy corpus (`scripts/accuracy/corpus/`) scores F1 = 1.000 against v0.11.0; the harness (`scripts/accuracy/run.py`) is reproducible and produces JSON for CI gating. Three Go bugs surfaced during the evaluation: `_is_open_redirect` was missing taint-chain posture (0/3 recall → 3/3 after fix), cmdi was firing on literal-string args (0.833 precision → 1.000), orchestrator code_path was relative when the spawner cwd was elsewhere (silent zero-finding bug on real codebases).
 
 https://github.com/Abdel-RahmanSaied/Fendix
 
-Would love feedback on the NDJSON IPC approach vs alternatives (gRPC, Unix sockets, Wasm). We chose NDJSON for debuggability (`| jq .`) but curious about performance tradeoffs at scale.
+Would love feedback on the NDJSON IPC approach vs alternatives (gRPC, Unix sockets, Wasm). We chose NDJSON for debuggability (`| jq .`) and language-agnostic plugin authoring; the 5 reference plugins (Python / Bash / Node / Ruby) demonstrate the contract is genuinely minimal.
+
+---
+
+## r/netsec version (offensive-security framing)
+
+**Title:** Fendix v0.11 — open-source DAST+SAST scanner, taint chains across 7 sink classes, MIT
+
+Built a security scanner I'd actually use for my own audit work. Open-sourcing it because closed-source protects nothing at this stage.
+
+**Detection surface (v0.11.0):**
+
+| Class | How fendix catches it |
+|---|---|
+| SQLi | Active probing (time-based / error-based / boolean-based across MySQL / Postgres / MSSQL / SQLite / Oracle) AND AST taint chains from `request.*` to `cursor.execute` / SQLAlchemy `text()` |
+| SSRF | AST taint from `request.*` to `requests.get` / `urllib.urlopen` / `httpx` |
+| Open redirect | AST taint to `flask.redirect` / `HttpResponseRedirect` |
+| XSS (server-side) | AST taint to `Markup` / `mark_safe` / `render_template_string` |
+| Cmd-injection | AST taint to `os.system` / `subprocess(shell=True)` / `os.popen` |
+| Path-traversal | AST taint to `open` / `pathlib.Path` / `send_file` / `send_from_directory` |
+| Insecure deserialization | `pickle.loads` / `yaml.unsafe_load` patterns |
+| Hardcoded credentials | 15 native-Go regex patterns covering AWS / GitHub / Stripe / Slack / Google / Anthropic / OpenAI / npm / GCP / generic API keys / DB connection strings / JWTs / private keys / .env files |
+| Exposed config files | Native scanner for `.env*` / `.git/*` / `.htaccess` / `.htpasswd` / `.npmrc` / `.aws/*` / `.ssh/*` at 32 known paths |
+| CORS misconfigurations | Probe + classify (allow-credentials + wildcard, reflected origin, etc.) |
+| Auth bypass | JWT none-alg, missing-decorator detection via Semgrep + Spec parser |
+| Dep CVEs | govulncheck (call-graph reachable), OSV.dev for PyPI and npm |
+
+**On a real third-party API (TwiScope deepin, public spec, with operator authorization):** 803 endpoints, 23,242 active-probe requests, 5 unique deduped findings (CORS-allow-any-origin + no-rate-limiting, both on all 803 endpoints; 3 disclosure findings on the auth-free OAuth callback). Caveat: the API authenticates 99% of endpoints with JWT, so probes hit 401 before reaching vulnerable code paths — real coverage requires `--auth "Bearer <token>"`.
+
+**On juice-shop (vulnerable-by-design):** 12 findings in 27 s. 5 CRITICAL config-leak detections (CWE-538). Caveat: juice-shop's SPA returns 200 for unknown paths, so the CRITICALs could be SPA-fallback responses — still a real issue (cache poisoning, WAF confusion).
+
+**On PyGoat (Django, vulnerable-by-design):** 147 findings in 17 s. Every OWASP Top 10 class PyGoat advertises: pickle deserialization (CRITICAL), eval, subprocess(shell), yaml.unsafe_load, SSRF, innerHTML XSS, open-redirect (9 sites), hardcoded JWT/password/API key, 133 real CVE-tagged dependencies.
+
+MIT, self-hosted, no telemetry. Plugin contract is NDJSON over stdin/stdout — write a custom check in any language with 30 lines of code, drop it in `~/.fendix/plugins/`, it runs alongside the embedded engines and participates in correlation + dedup + ID assignment.
+
+https://github.com/Abdel-RahmanSaied/Fendix
+
+Feedback welcome on the taint-chain shapes and the corpus methodology. Adversarial inputs especially appreciated.
