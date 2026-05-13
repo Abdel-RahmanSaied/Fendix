@@ -35,13 +35,23 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator creates an orchestrator from scan config.
-// It resolves the Python engine directory using EnsureEngine:
-// embedded extraction → local fallback → error.
+//
+// The Python engine directory is resolved lazily: only when --python-engine
+// is set do we call EnsureEngine. Pre-TASK-118 we resolved eagerly and
+// logged a WARN if no engine was found, but with the embedded distribution
+// dropped that WARN now fires on every scan for the default path — exactly
+// the "Python interpreter not required" promise broken at the log level.
+// Skip the resolution entirely when the flag is off; runWhiteboxScan never
+// gets called in that case so the spawner's empty engineDir is harmless.
 func NewOrchestrator(cfg *models.ScanConfig, version string) *Orchestrator {
-	engineDir, err := EnsureEngine("", version)
-	if err != nil {
-		slog.Warn("python engine not available — whitebox scanning disabled", "error", err)
-		engineDir = "" // spawner will fail gracefully if whitebox is requested
+	engineDir := ""
+	if cfg.PythonEngine {
+		dir, err := EnsureEngine("", version)
+		if err != nil {
+			slog.Warn("python engine not available — whitebox scanning disabled", "error", err)
+		} else {
+			engineDir = dir
+		}
 	}
 
 	return &Orchestrator{

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-13
+
+**Patch.** v0.9.0 introduced a regression: every `fendix scan` invocation
+emitted `WARN python engine not available — whitebox scanning disabled`
+even when `--python-engine` was not set. With TASK-118 dropping the
+embedded Python distribution, `EnsureEngine()` now always fails for
+users without a local `python/` source tree, but `NewOrchestrator` was
+calling it eagerly regardless of the flag — so the WARN spammed every
+scan and contradicted v0.9's "no Python required by default" promise at
+the log level. Fixed by gating the `EnsureEngine` resolution on
+`cfg.PythonEngine`. Caught while validating that every command example
+on the `/docs/getting-started` page actually works against the v0.9
+binary; all 14 examples now run cleanly with no spurious WARN.
+
+### Fixed
+
+- **Spurious `python engine not available` WARN on every scan.**
+  `internal/engine/orchestrator.go::NewOrchestrator` now skips the
+  `EnsureEngine` call entirely when `--python-engine` is off (the
+  default). Previously it ran on every orchestrator construction and
+  logged a misleading WARN for users who had no intention of using the
+  Python whitebox engine.
+
 ## [0.9.0] - 2026-05-13
 
 **Headline:** cold-start under 6 ms, no Python required. Phase 17b
