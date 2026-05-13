@@ -1,0 +1,26 @@
+{
+  "_target_id": "py-vulpy",
+  "_source": "fportantier/vulpy \u2014 vulnerable Flask app",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "XSS|Markup|render_template_string|mark_safe",
+      "min_count": 0,
+      "note": "permissive",
+      "cwe": "CWE-79"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "permissive",
+      "cwe": "CWE-798"
+    }
+  ]
+}

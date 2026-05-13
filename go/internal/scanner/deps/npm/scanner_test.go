@@ -21,6 +21,22 @@ func TestScan_NoLockfile_ReturnsErrNoLockfile(t *testing.T) {
 	}
 }
 
+// TestScan_PackageJsonNoLock_ReturnsAdvisoryError covers the case
+// surfaced by the Track 4 heavy-eval: directory has package.json but
+// no package-lock.json (vulnerable OSS app didn't ship a lock file).
+// We want a different sentinel so the orchestrator can emit an INFO
+// advisory finding rather than silently skip.
+func TestScan_PackageJsonNoLock_ReturnsAdvisoryError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"x","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	_, err := Scan(context.Background(), dir)
+	if !errors.Is(err, ErrLockfileMissingButPackageJsonPresent) {
+		t.Fatalf("expected ErrLockfileMissingButPackageJsonPresent, got %v", err)
+	}
+}
+
 func TestParseLockfile_V2HappyPath(t *testing.T) {
 	lockfile := []byte(`{
   "name": "myapp",

@@ -1,0 +1,13 @@
+{
+  "_target_id": "dast-dvwa",
+  "_source": "Damn Vulnerable Web App",
+  "expected": [
+    {
+      "category": "headers",
+      "title_re": "Missing",
+      "min_count": 1,
+      "note": "DVWA ships without security headers by default",
+      "cwe": "CWE-693"
+    }
+  ]
+}

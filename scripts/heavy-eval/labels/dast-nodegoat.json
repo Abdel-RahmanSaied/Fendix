@@ -1,0 +1,12 @@
+{
+  "_target_id": "dast-nodegoat",
+  "_source": "OWASP NodeGoat",
+  "expected": [
+    {
+      "category": "headers_missing",
+      "title_re": ".",
+      "min_count": 1,
+      "cwe": "CWE-693"
+    }
+  ]
+}

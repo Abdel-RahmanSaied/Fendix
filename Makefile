@@ -73,6 +73,22 @@ benchmark:
 	@echo "→ Running juice-shop benchmark..."
 	@bash scripts/benchmark/run-juice-shop.sh
 
+# heavy-eval — Track 4 of docs/accuracy.md. Runs fendix against a
+# multi-stage labeled corpus + real-world repos + DAST targets + a
+# perf profile. Full sweep takes ~30–60 min (DAST images + perf
+# repeats are the long pole). See scripts/heavy-eval/ for stage
+# definitions and labels.
+HEAVY_EVAL_BIN := $(BIN_DIR)/fendix
+heavy-eval: build
+	@echo "→ Running heavy-eval (all stages, ~30–60 min)..."
+	$(PYTHON) scripts/heavy-eval/run.py --binary $(HEAVY_EVAL_BIN) --python-engine --all
+
+# heavy-eval-fast — SAST stages only (4a–4d). ~5 min wall-clock.
+# No docker, no perf sweep. Use for CI smoke runs.
+heavy-eval-fast: build
+	@echo "→ Running heavy-eval (SAST stages only, ~5 min)..."
+	$(PYTHON) scripts/heavy-eval/run.py --binary $(HEAVY_EVAL_BIN) --python-engine --fast
+
 test-python:
 	@echo "→ Running Python tests..."
 	$(PYTHON) -m pytest $(PY_DIR)/tests/ -v

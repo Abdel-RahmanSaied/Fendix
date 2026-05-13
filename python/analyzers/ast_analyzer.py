@@ -188,6 +188,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # to resolve `cursor.execute(name)` to the value `name` was assigned —
         # closes the multi-step string-concat SQLi gap (TASK-087).
         self._scopes: list[dict[str, ast.AST]] = [{}]
+        # Stack of enclosing FunctionDef nodes — used by the whitelist-
+        # sanitiser scan to find membership guards earlier in the same
+        # function body. Top of stack is the innermost function being
+        # visited.
+        self._func_stack: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
 
     def _line_text(self, lineno: int) -> str:
         """Return the source line (1-indexed), or empty string."""
@@ -294,6 +299,169 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     def _link(self, lineno: int, expr: str) -> dict:
         return {"file": self._rel, "line": int(lineno), "expr": expr}
 
+    # ─── sanitiser recognition (surfaced by Track 4 heavy-eval) ─────
+    #
+    # Two real-world sanitiser shapes the engine learned to recognise:
+    #
+    #   shape 1 — dict-lookup whitelist:
+    #       allowed = {"a": "/A", "b": "/B"}
+    #       return open(allowed.get(name, "/dev/null")).read()    # SAFE
+    #       return redirect(allowed[user_choice])                  # SAFE
+    #
+    #   shape 2 — set-membership guard:
+    #       allowed = {"/home", "/profile"}
+    #       if target not in allowed:
+    #           return redirect("/")
+    #       return redirect(target)                                # SAFE
+    #
+    # Both forms are flagged-as-tainted by the pure-taint-chain
+    # detector because user input does flow to the sink. The
+    # sanitiser pass below recognises the explicit AST shape of the
+    # whitelist and suppresses the finding.
+    #
+    # We deliberately keep the recognition narrow — only literal
+    # set/dict/list collections count as whitelists. A whitelist
+    # built from an env var or another function call would still
+    # flag, because we can't prove it's bounded.
+
+    def _arg_is_whitelisted_lookup(self, arg: ast.AST) -> bool:
+        """Return True if `arg` is `<const_collection>.get(x[, default])`
+        or `<const_collection>[x]` and the collection resolves to a
+        literal dict/list in the current scope chain (or `arg` is a
+        literal dict/list construction itself).
+        """
+        # Direct: allowed.get(name) or allowed[name]
+        target_name: str | None = None
+        if (
+            isinstance(arg, ast.Call)
+            and isinstance(arg.func, ast.Attribute)
+            and arg.func.attr == "get"
+            and isinstance(arg.func.value, ast.Name)
+        ):
+            target_name = arg.func.value.id
+        elif (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Name)
+        ):
+            target_name = arg.value.id
+        if target_name is None:
+            return False
+        # Resolve through scope chain — innermost wins
+        for scope in reversed(self._scopes):
+            if target_name in scope:
+                assigned = scope[target_name]
+                return isinstance(assigned, (ast.Dict, ast.Set, ast.List, ast.Tuple))
+        return False
+
+    def _name_is_membership_guarded(self, name: str) -> bool:
+        """Return True if the innermost enclosing FunctionDef body
+        contains an early-return guard of the shape ``if <name> not in
+        <const_collection>: return/raise/abort`` BEFORE we're called.
+
+        Heuristic but precise: we walk the function body looking for
+        any `if X not in C` where C resolves to a literal collection in
+        scope, and where the `if` body's first statement is a Return,
+        Raise, or a call to abort()/sys.exit(). If found, we trust
+        that subsequent uses of X are constrained.
+
+        This doesn't check ORDERING — it assumes the guard runs before
+        the sink, which is true for the canonical idiom. A guard that
+        appears AFTER the sink would falsely sanitise; we accept that
+        precision loss because the false-suppression risk is bounded
+        (the developer wrote a guard that says "this is a whitelist").
+        """
+        if not self._func_stack:
+            return False
+        func = self._func_stack[-1]
+        for stmt in ast.walk(func):
+            if not isinstance(stmt, ast.If):
+                continue
+            test = stmt.test
+            # `if X not in C:` or `if not (X in C):` shape
+            checked_name: str | None = None
+            collection: ast.AST | None = None
+            if (
+                isinstance(test, ast.Compare)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.NotIn)
+                and isinstance(test.left, ast.Name)
+            ):
+                checked_name = test.left.id
+                collection = test.comparators[0] if test.comparators else None
+            elif (
+                isinstance(test, ast.UnaryOp)
+                and isinstance(test.op, ast.Not)
+                and isinstance(test.operand, ast.Compare)
+                and len(test.operand.ops) == 1
+                and isinstance(test.operand.ops[0], ast.In)
+                and isinstance(test.operand.left, ast.Name)
+            ):
+                checked_name = test.operand.left.id
+                collection = test.operand.comparators[0] if test.operand.comparators else None
+            if checked_name != name or collection is None:
+                continue
+            if not self._collection_is_literal(collection):
+                continue
+            # Check the if-body ends control flow — return/raise/abort
+            if any(
+                isinstance(s, (ast.Return, ast.Raise))
+                or (
+                    isinstance(s, ast.Expr)
+                    and isinstance(s.value, ast.Call)
+                    and (
+                        (isinstance(s.value.func, ast.Name) and s.value.func.id in {"abort", "exit"})
+                        or (isinstance(s.value.func, ast.Attribute) and s.value.func.attr in {"abort", "exit"})
+                    )
+                )
+                for s in stmt.body
+            ):
+                return True
+        return False
+
+    def _collection_is_literal(self, expr: ast.AST) -> bool:
+        """Return True if `expr` is a literal dict/set/list/tuple, or a
+        Name that resolves to one in the scope chain.
+        """
+        if isinstance(expr, (ast.Dict, ast.Set, ast.List, ast.Tuple)):
+            return True
+        if isinstance(expr, ast.Name):
+            for scope in reversed(self._scopes):
+                if expr.id in scope:
+                    return isinstance(scope[expr.id], (ast.Dict, ast.Set, ast.List, ast.Tuple))
+        return False
+
+    def _arg_is_sanitised(self, arg: ast.AST) -> bool:
+        """Composite check: dict-lookup whitelist OR membership-guarded Name.
+
+        Called by the sink predicates (_is_ssrf / _is_open_redirect /
+        path-traversal / XSS) to suppress findings where user input has
+        been narrowed through a recognised sanitiser pattern.
+
+        Handles three shapes:
+          1. arg IS the dict-lookup or guarded Name itself
+          2. arg is a Name that was assigned a sanitised expr earlier
+             in the same scope (e.g., `base = allowed.get(t); requests.get(base + "/p")`)
+          3. arg is a BinOp where every Name/Subscript operand is sanitised
+             (e.g., `requests.get(allowed.get(t) + "/p")`)
+        """
+        if self._arg_is_whitelisted_lookup(arg):
+            return True
+        if isinstance(arg, ast.Name):
+            if self._name_is_membership_guarded(arg.id):
+                return True
+            # Resolve through scope and check the assigned expr is sanitised.
+            for scope in reversed(self._scopes):
+                if arg.id in scope:
+                    return self._arg_is_whitelisted_lookup(scope[arg.id])
+            return False
+        if isinstance(arg, ast.BinOp):
+            # Every non-Constant subexpression must itself be sanitised.
+            return all(
+                isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub)
+                for sub in (arg.left, arg.right)
+            )
+        return False
+
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         """Detect dangerous function calls."""
         # eval() and exec()
@@ -349,34 +517,37 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 taint_chain=chain,
             )
 
-        # os.popen() — same shape as os.system; deprecated form that's
-        # still common in older codebases. Reads a shell command and
-        # returns a pipe, but the shell-injection surface is identical.
-        # New in TASK-121; constant-arg skip parity added during the
-        # 2026-05-13 accuracy evaluation.
+        # os.popen() / popen2 / popen3 / popen4 — same shape as
+        # os.system; deprecated forms that's still common in older
+        # codebases. Reads a shell command and returns a pipe, but the
+        # shell-injection surface is identical. Track 4 heavy-eval
+        # (bandit examples) surfaced os.popen2/3/4 as a gap — those
+        # are deprecated but real in legacy code; same CWE, same fix.
         elif (
             isinstance(node.func, ast.Attribute)
-            and node.func.attr == "popen"
+            and node.func.attr in {"popen", "popen2", "popen3", "popen4"}
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "os"
             and self._cmdi_arg_is_dangerous(node)
         ):
+            popen_variant = node.func.attr
             chain = None
             if node.args:
                 chain = self._collect_taint_chain(
                     node.args[0],
                     node.lineno,
-                    f"os.popen({_ast_expr_text(node.args[0])})",
+                    f"os.{popen_variant}({_ast_expr_text(node.args[0])})",
                 )
             self._emit_finding(
                 "PY_OS_POPEN",
-                "Unsafe os.popen() call — command injection risk",
+                f"Unsafe os.{popen_variant}() call — command injection risk",
                 "HIGH",
                 "HIGH",
                 "CWE-78",
                 (
-                    "Replace os.popen() with subprocess.run(..., shell=False) using a list "
-                    "of arguments. os.popen is deprecated and equivalent to a shell call."
+                    f"Replace os.{popen_variant}() with subprocess.run(..., shell=False) "
+                    "using a list of arguments. The os.popen family is deprecated "
+                    "and equivalent to a shell call."
                 ),
                 node.lineno,
                 taint_chain=chain,
@@ -428,6 +599,40 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 (
                     "Use parameterized queries: cursor.execute('SELECT ... WHERE x = %s', (val,)). "
                     "Never build SQL with % formatting or f-strings."
+                ),
+                node.lineno,
+                taint_chain=chain,
+            )
+
+        # Django ORM SQL-injection sinks — bandit B610/B611. Surfaced by
+        # Track 4 (PyGoat advertised SQLi labs but fendix returned zero).
+        # Three Django-specific shapes feed raw SQL fragments past the ORM:
+        #   <qs>.raw("SELECT ... " + tainted)
+        #   <qs>.extra(where=[tainted], select={"x": tainted}, tables=[tainted])
+        #   RawSQL(tainted, [])  /  django.db.models.expressions.RawSQL
+        # Suppression posture matches cursor.execute: literal strings /
+        # literal collections are safe; non-literal first arg or non-literal
+        # kwarg value emits.
+        elif self._is_django_orm_sql_sink(node):
+            sink_label = self._django_orm_sql_sink_label(node)
+            tainted_arg = self._django_orm_sql_tainted_arg(node)
+            chain = None
+            if tainted_arg is not None:
+                chain = self._collect_taint_chain(
+                    tainted_arg,
+                    node.lineno,
+                    f"{sink_label}({_ast_expr_text(tainted_arg)})",
+                )
+            self._emit_finding(
+                "PY_SQL_INJECTION",
+                f"Django ORM SQL injection — {sink_label} with non-literal SQL",
+                "CRITICAL",
+                "HIGH",
+                "CWE-89",
+                (
+                    "Pass parameters via the ORM's params= kwarg or use parameterized "
+                    "RawSQL. Never interpolate user input into raw SQL strings, "
+                    "extra(where=[...]), or extra(select={...}) values."
                 ),
                 node.lineno,
                 taint_chain=chain,
@@ -553,16 +758,17 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 taint_chain=chain,
             )
 
-        # requests.get/post/etc. with non-literal first arg → potential SSRF.
+        # HTTP-client sink with non-literal first arg → potential SSRF.
         # MEDIUM confidence because legitimate HTTP-client use is common; the
         # signal is that the URL itself is dynamic.
         elif self._is_ssrf(node):
             chain = None
+            sink_name = self._ssrf_sink_name(node) or f"requests.{getattr(node.func, 'attr', '?')}"
             if node.args:
                 chain = self._collect_taint_chain(
                     node.args[0],
                     node.lineno,
-                    f"requests.{node.func.attr}({_ast_expr_text(node.args[0])})",
+                    f"{sink_name}({_ast_expr_text(node.args[0])})",
                 )
             self._emit_finding(
                 "PY_SSRF",
@@ -638,7 +844,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         """Push a new scope for assignment tracking, recurse, then pop."""
         self._scopes.append({})
+        self._func_stack.append(node)
         self.generic_visit(node)
+        self._func_stack.pop()
         self._scopes.pop()
 
     # async def is the same shape — share the implementation.
@@ -747,6 +955,99 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     return isinstance(assigned, (ast.BinOp, ast.JoinedStr, ast.Call))
         return False
 
+    # ─── Django ORM SQL-injection sinks (bandit B610/B611) ──────────
+
+    def _is_django_orm_sql_sink(self, node: ast.Call) -> bool:
+        """Return True if the call is a Django-ORM raw-SQL sink with
+        a non-literal SQL argument.
+
+        Three shapes:
+          1. `<qs>.raw(<expr>)`            — Django Manager.raw()
+          2. `<qs>.extra(where=[...], select={...}, tables=[...])` with non-literal value
+          3. `RawSQL(<expr>, [...])` or `<mod>.RawSQL(...)` — raw SQL expression
+        """
+        return self._django_orm_sql_tainted_arg(node) is not None
+
+    def _django_orm_sql_tainted_arg(self, node: ast.Call) -> ast.AST | None:
+        """Return the AST node of the tainted SQL fragment, or None if safe.
+
+        We return the FIRST non-literal SQL fragment we find so taint-chain
+        reconstruction has something concrete to walk back from.
+        """
+        # Shape 3: RawSQL(sql, params) — bare-name or attribute call.
+        is_rawsql = (
+            (isinstance(node.func, ast.Name) and node.func.id == "RawSQL")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "RawSQL")
+        )
+        if is_rawsql:
+            # First positional, or sql= kwarg, must be non-literal.
+            sql_arg: ast.AST | None = None
+            if node.args:
+                sql_arg = node.args[0]
+            for kw in node.keywords:
+                if kw.arg == "sql":
+                    sql_arg = kw.value
+                    break
+            if sql_arg is None:
+                return None
+            if self._sql_value_is_safe(sql_arg):
+                return None
+            return sql_arg
+
+        # Shape 1: <qs>.raw(<sql>)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "raw" and node.args:
+            sql_arg = node.args[0]
+            if self._sql_value_is_safe(sql_arg):
+                return None
+            return sql_arg
+
+        # Shape 2: <qs>.extra(...) — any of select/where/tables non-literal
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "extra":
+            for kw in node.keywords:
+                if kw.arg not in {"select", "where", "tables"}:
+                    continue
+                value = kw.value
+                # `where=` and `tables=` take a list; if the list is a List
+                # literal we have to check every element.
+                if isinstance(value, ast.List):
+                    for elt in value.elts:
+                        if not self._sql_value_is_safe(elt):
+                            return elt
+                    continue
+                # `select=` takes a dict; check every value.
+                if isinstance(value, ast.Dict):
+                    for v in value.values:
+                        if v is not None and not self._sql_value_is_safe(v):
+                            return v
+                    continue
+                # Bare Name/Call/BinOp/etc — fall through to the value-safety check.
+                if not self._sql_value_is_safe(value):
+                    return value
+        return None
+
+    def _sql_value_is_safe(self, value: ast.AST) -> bool:
+        """Return True if `value` is a literal-shape SQL fragment.
+
+        Mirrors the suppression posture used by every other reachable
+        sink: a constant string, or a Name that resolves to a constant
+        in the current scope chain, is safe. Anything else (Call, BinOp,
+        JoinedStr, .format(), %) is non-literal and counts as tainted.
+        """
+        if isinstance(value, ast.Constant):
+            return True
+        if isinstance(value, ast.Name):
+            for scope in reversed(self._scopes):
+                if value.id in scope:
+                    return isinstance(scope[value.id], ast.Constant)
+        return False
+
+    def _django_orm_sql_sink_label(self, node: ast.Call) -> str:
+        if isinstance(node.func, ast.Name) and node.func.id == "RawSQL":
+            return "RawSQL"
+        if isinstance(node.func, ast.Attribute):
+            return f"<qs>.{node.func.attr}"
+        return "django_orm"
+
     def _is_pickle_load(self, node: ast.Call) -> bool:
         """Return True if the call is pickle.load() or pickle.loads()."""
         return (
@@ -829,15 +1130,36 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             for scope in reversed(self._scopes):
                 if first.id in scope and isinstance(scope[first.id], ast.Constant):
                     return False
+        # Whitelisted dict lookup / set-membership guard → sanitised.
+        if self._arg_is_sanitised(first):
+            return False
         return True
 
+    # SSRF sinks the engine recognises. Each entry is the
+    # display name we use in the finding title.
+    _SSRF_REQUESTS_METHODS = {"get", "post", "put", "delete", "head", "patch", "options", "request"}
+    _SSRF_URLLIB_METHODS = {"urlopen", "urlretrieve"}
+
     def _is_ssrf(self, node: ast.Call) -> bool:
-        """Return True if requests.<method>() is called with a non-literal URL."""
+        """Return True if an HTTP-client sink is called with a non-literal URL.
+
+        Sanitisers: dict-lookup whitelists (`allowed[name]`,
+        `allowed.get(name)`) and set-membership guards (`if name not in
+        allowed: return ...`) suppress the finding. Both surfaced as
+        FP sources in the Track 4 heavy-eval; both shapes are real
+        production sanitiser idioms.
+
+        Recognised sinks:
+          - requests.get / post / put / delete / head / patch / options / request
+          - urllib.request.urlopen / urlretrieve
+          - six.moves.urllib.request.urlopen / urlretrieve  (Python 2 compat shim)
+
+        A constant string first arg is correctly suppressed (mirrors
+        the cmdi / path-traversal / open-redirect / XSS sink posture).
+        """
         if not isinstance(node.func, ast.Attribute):
             return False
-        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "requests"):
-            return False
-        if node.func.attr not in {"get", "post", "put", "delete", "head", "patch", "options", "request"}:
+        if not self._ssrf_sink_name(node):
             return False
         if not node.args:
             return False
@@ -850,7 +1172,47 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             for scope in reversed(self._scopes):
                 if first.id in scope and isinstance(scope[first.id], ast.Constant):
                     return False
+        if self._arg_is_sanitised(first):
+            return False
         return True
+
+    def _ssrf_sink_name(self, node: ast.Call) -> str | None:
+        """Return a display name for the SSRF sink (e.g. 'requests.get',
+        'urllib.request.urlopen'), or None if `node` is not a recognised sink.
+        """
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        # requests.<method>
+        if (
+            isinstance(func.value, ast.Name)
+            and func.value.id == "requests"
+            and func.attr in self._SSRF_REQUESTS_METHODS
+        ):
+            return f"requests.{func.attr}"
+        # urllib.request.<method>  — Attribute(Attribute(Name('urllib'), 'request'), 'X')
+        if (
+            func.attr in self._SSRF_URLLIB_METHODS
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "request"
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "urllib"
+        ):
+            return f"urllib.request.{func.attr}"
+        # six.moves.urllib.request.<method>
+        if (
+            func.attr in self._SSRF_URLLIB_METHODS
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "request"
+            and isinstance(func.value.value, ast.Attribute)
+            and func.value.value.attr == "urllib"
+            and isinstance(func.value.value.value, ast.Attribute)
+            and func.value.value.value.attr == "moves"
+            and isinstance(func.value.value.value.value, ast.Name)
+            and func.value.value.value.value.id == "six"
+        ):
+            return f"six.moves.urllib.request.{func.attr}"
+        return None
 
     def _is_xss_html_sink(self, node: ast.Call) -> bool:
         """Return True if node is a known HTML-render sink with a non-literal arg.
@@ -879,6 +1241,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             for scope in reversed(self._scopes):
                 if first.id in scope and isinstance(scope[first.id], ast.Constant):
                     return False
+        # Whitelisted dict lookup / set-membership guard → sanitised.
+        if self._arg_is_sanitised(first):
+            return False
         return True
 
     def _xss_sink_name(self, node: ast.Call) -> str:
@@ -932,6 +1297,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             for scope in reversed(self._scopes):
                 if target.id in scope and isinstance(scope[target.id], ast.Constant):
                     return False
+        # Whitelisted dict lookup / set-membership guard → sanitised.
+        if self._arg_is_sanitised(target):
+            return False
         return True
 
     def _path_traversal_sink_name(self, node: ast.Call) -> str:

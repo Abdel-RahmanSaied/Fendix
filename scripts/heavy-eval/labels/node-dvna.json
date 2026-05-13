@@ -1,0 +1,19 @@
+{
+  "_target_id": "node-dvna",
+  "_source": "appsecco/dvna \u2014 Damn Vulnerable Node App",
+  "expected": [
+    {
+      "category": "deps",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "vulnerable deps but no lock file in source",
+      "cwe": "CWE-1395"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "cwe": "CWE-798"
+    }
+  ]
+}

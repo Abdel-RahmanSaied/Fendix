@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Engine quality lift driven by Track 4 heavy-eval (2026-05-14)
+
+**Headline:** the v0.11.0 "Track 4" evaluation surfaced 7 real engine
+gaps that the synthetic Track 1 corpus couldn't see (because Track 1
+was built around the canonical shapes the engine was originally
+designed for). All 7 are fixed in lockstep; Track 4a F1 moved from
+**0.921 → 0.987** (95% bootstrap CI **[0.953, 1.000]**), Track 4b
+expectation-recall from **0.938 → 1.000**, Track 4c from "5/5 with
+silent-deps-skip caveat" to **8/8 with operator-visible advisory**.
+
+#### Eval rigor (Phase 1)
+
+- SHA-pinned every CVE-anchored repo in `scripts/heavy-eval/corpus.py`
+  (10 repos captured 2026-05-14; reruns are now bit-identical, not
+  HEAD-drift-dependent).
+- Per-CWE roll-up added to the category-count scorer
+  (`scripts/heavy-eval/score.py`): every label expectation carries a
+  `cwe:` tag; the scorer aggregates hit/miss per CWE for honest
+  cross-category breakdown.
+- Bootstrap 95% CI on Track 4a F1 — 1000 iterations, fixed seed, see
+  `_bootstrap_f1_ci` in `score.py`.
+- External bandit-`examples/` cross-validator added as `bandit-examples`
+  target (91 files, SHA-pinned at `8309bc39`). NIST SARD has no
+  Python suite; bandit's maintainer-curated corpus is the closest
+  authoritative ground truth for Python SAST.
+- New `.github/workflows/heavy-eval.yml` runs the SAST sweep on
+  every PR; new `scripts/heavy-eval/gate.py` gates CI on
+  F1 ≥ 0.95, bandit-recall ≥ 0.95, aggregate-real-repo-recall ≥ 0.95.
+
+#### Engine fixes (Phase 2)
+
+- **SSRF: `urllib.request.urlopen` / `urlretrieve` / `six.moves.urllib.*`
+  added as sinks.** Pre-fix the AST analyser only matched
+  `requests.<method>()`. New helper `_ssrf_sink_name` resolves the
+  attribute chain; constant-arg suppression parity preserved.
+  4 new unit tests in `test_ast_analyzer.py::TestSSRF`.
+- **Whitelist-via-dict-lookup recognised as a sanitiser.**
+  `<const_dict>.get(name)` / `<const_dict>[name]` now suppresses
+  reachable findings when the dict resolves to a literal collection
+  in scope.
+- **Whitelist-via-set-membership guard recognised as a sanitiser.**
+  `if name not in <const_collection>: return/raise/abort` followed by
+  use of `name` is treated as constrained. The pass walks the
+  enclosing FunctionDef for guards; heuristic but precise.
+- **BinOp-aware sanitiser propagation.** `requests.get(allowed.get(t) + "/p")`
+  recursively checks every BinOp operand. Closed the last SSRF FP on
+  the corpus.
+- **AWS secret-key regex accepts short prefix.** Pre-fix required
+  `aws...secret...key` together; production code often writes
+  `aws_secret = "<40-char>"`. Relaxed prefix to
+  `aws[_\-\s]*secret(?:[_\-\s]*(?:access[_\-\s]*)?key)?` while
+  keeping the 40-char base64 value shape (FP guard). 4 new test
+  sub-cases.
+- **Django ORM raw-SQL sinks added (bandit B610/B611 parity).**
+  `<qs>.raw(<non-literal>)`, `<qs>.extra(where=[non-literal], …)`,
+  `RawSQL(<non-literal>, …)` now flag under `SEC-PY_SQL_INJECTION`.
+  Closed the PyGoat-SQLi miss that Track 3 had silently accepted.
+  7 new unit tests in `test_ast_analyzer.py::TestDjangoORMSQLInjection`.
+- **`os.popen2 / popen3 / popen4` added as cmdi sinks.** Deprecated
+  but real in legacy Python-2 code paths; surfaced by bandit's
+  `examples/os-popen.py`. 1 new parametric test covering all 3 variants.
+- **npm-audit emits INFO advisory when `package-lock.json` missing.**
+  Pre-fix the scanner silently skipped; many vulnerable-app OSS
+  repos ship only `package.json`. New sentinel
+  `ErrLockfileMissingButPackageJsonPresent` + orchestrator emits
+  `SEC-NPM_LOCKFILE_MISSING` pointing the user at `npm install`.
+  1 new test in `internal/scanner/deps/npm/scanner_test.go`.
+
+#### Test counts
+
+- Python: 168 → **180 passed** (12 net new tests).
+- Go: existing suite green; 2 new tests
+  (`TestScan_AWSSecretShortPrefix`, `TestScan_PackageJsonNoLock_ReturnsAdvisoryError`).
+
 ## [0.11.0] - 2026-05-13
 
 **Headline:** FP discipline round 2 + a seventh reachable sink class.

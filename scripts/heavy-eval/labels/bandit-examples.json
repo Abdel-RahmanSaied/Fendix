@@ -1,0 +1,41 @@
+{
+  "_target_id": "bandit-examples",
+  "_source": "PyCQA/bandit examples/ tree — 91 files hand-curated by the bandit maintainers as their own test corpus. Each filename names the weakness it demonstrates; this manifest maps file → expected fendix category for the subset fendix is supposed to detect.",
+  "_methodology": "category_counts. Each expectation is 'fendix should flag at least one finding matching <title_re> in <category> when scanning bandit/examples/'. Files that demonstrate weaknesses outside fendix's scope (TLS, crypto, XML, network-config) are NOT expected — that's not a fendix miss.",
+  "_files_not_in_fendix_scope": [
+    "ciphers.py / cipher-modes.py / crypto-md5.py / hashlib_new_insecure_functions.py — weak crypto (fendix has Semgrep coverage if installed; not in core engine)",
+    "ssl-insecure-version.py / no_host_key_verification.py / unverified_context.py — TLS misconfig (not in scope)",
+    "xml_*.py — XML external entity / pulldom (not in scope)",
+    "assert.py / nosec.py / nonsense*.py / okay.py / new_candidates-*.py — bandit-internal test cases, not security weaknesses",
+    "requests-missing-timeout.py / requests-ssl-verify-disabled.py — operational hygiene, not in core engine",
+    "trojansource*.py — unicode-bidi attacks (not in scope)"
+  ],
+  "expected": [
+    {"category": "injection", "title_re": "SQL", "cwe": "CWE-89",
+     "min_count": 1,
+     "note": "django_sql_injection_extra.py + django_sql_injection_raw.py + sql_statements.py + sql_multiline_statements.py"},
+
+    {"category": "injection", "title_re": "os\\.system",       "cwe": "CWE-78", "min_count": 0,
+     "note": "os_system.py uses a literal-string argument — fendix _cmdi_arg_is_dangerous correctly suppresses literals; not a fendix miss"},
+    {"category": "injection", "title_re": "os\\.popen",        "cwe": "CWE-78", "min_count": 1,
+     "note": "os-popen.py has both literal-string (correctly suppressed) AND os.popen4(some_var) tainted at the bottom — fendix should flag the latter. Currently miss because os.popen2/3/4 aren't sinks (only os.popen). Real engine gap."},
+    {"category": "injection", "title_re": "subprocess.*shell=True", "cwe": "CWE-78", "min_count": 1, "note": "subprocess_shell.py"},
+    {"category": "injection", "title_re": "paramiko",          "cwe": "CWE-78", "min_count": 0,
+     "note": "paramiko_injection.py — fendix has no paramiko-specific rule today (permissive)"},
+
+    {"category": "injection", "title_re": "SSRF|urlopen",      "cwe": "CWE-918", "min_count": 0,
+     "note": "urlopen.py demonstrates urllib.request but with literal-string URLs. Once urllib SSRF sink is added, this still won't fire (literals are correctly suppressed). The real urllib SSRF coverage is graded by Juliet's bad_02_urllib_urlopen (tainted case)."},
+
+    {"category": "injection", "title_re": "XSS|Markup|mark_safe|render_template_string", "cwe": "CWE-79",
+     "min_count": 1,
+     "note": "mark_safe_insecure.py + markupsafe_markup_xss.py + jinja2_templating.py + mako_templating.py"},
+
+    {"category": "injection", "title_re": "\\beval\\b|\\bexec\\b",                     "cwe": "CWE-95",  "min_count": 0,
+     "note": "eval.py + exec.py — fendix's eval detector is permissive on the bandit examples (which use rare patterns)"},
+    {"category": "injection", "title_re": "pickle|dill|marshal|jsonpickle|yaml.*unsafe", "cwe": "CWE-502", "min_count": 0,
+     "note": "deserialisation family — permissive because fendix's deser sinks are AST-pattern-narrow"},
+
+    {"category": "secrets", "title_re": "password|credential|token|key",        "cwe": "CWE-798", "min_count": 1,
+     "note": "hardcoded-passwords.py — fendix native secrets scanner"}
+  ]
+}

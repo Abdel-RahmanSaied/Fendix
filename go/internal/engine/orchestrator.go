@@ -230,6 +230,22 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		case err == nil:
 			slog.Info("native npm deps scan complete", "findings", len(npmFindings))
 			findings = append(findings, npmFindings...)
+		case errors.Is(err, npm.ErrLockfileMissingButPackageJsonPresent):
+			// Single INFO finding — flag the gap without producing noise.
+			// Surfaced by the Track 4 heavy-eval on Juice Shop / dvna / etc.
+			slog.Info("npm deps scan: package.json present but lock file missing — emitting advisory finding")
+			findings = append(findings, models.Finding{
+				ID:         "SEC-NPM_LOCKFILE_MISSING",
+				Title:      "npm dep-CVE scan skipped — package-lock.json missing",
+				Severity:   models.SeverityInfo,
+				Source:     models.SourceWhitebox,
+				Category:   "config",
+				Endpoint:   filepath.Join(o.cfg.CodePath, "package.json"),
+				Evidence:   "package.json was found at the scan root but no package-lock.json. Without the lock file, fendix's npm-audit scanner can't resolve transitive versions and skips the dep-CVE pass.",
+				Fix:        "Run `npm install` (or `npm ci`) to materialise package-lock.json, then re-scan. For yarn or pnpm projects this scanner is currently silent; that gap is tracked separately. CWE-1395.",
+				References: []string{"https://cwe.mitre.org/data/definitions/1395.html"},
+				Confidence: models.ConfidenceHigh,
+			})
 		case errors.Is(err, npm.ErrNoLockfile):
 			slog.Debug("no package-lock.json at code path, skipping native npm deps scan")
 		default:

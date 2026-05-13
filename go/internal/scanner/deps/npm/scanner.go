@@ -42,6 +42,15 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
+// ErrLockfileMissingButPackageJsonPresent is returned when the
+// directory contains `package.json` (so it IS a Node project) but no
+// `package-lock.json` was checked into source control. Surfaced by
+// the Track 4 heavy-eval — many vulnerable-app OSS repos ship only
+// package.json and expect users to run `npm install` to materialise
+// the lock. Caller can emit a single INFO finding to flag the gap
+// without producing a noisy multi-CVE report.
+var ErrLockfileMissingButPackageJsonPresent = errors.New("npm: package.json present but package-lock.json missing — run `npm install` to enable dep-CVE scanning")
+
 // ErrNoLockfile is returned when codePath has no package-lock.json. The
 // orchestrator skips silently — not every Node project commits a
 // lockfile (yarn / pnpm projects), and not every codePath is a Node
@@ -68,6 +77,12 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	lockfile := filepath.Join(abs, "package-lock.json")
 	if _, err := os.Stat(lockfile); err != nil {
 		if os.IsNotExist(err) {
+			// If there's a package.json sitting next to the missing
+			// lock, the user has a Node project but didn't `npm
+			// install` — that's a real gap worth flagging once.
+			if _, perr := os.Stat(filepath.Join(abs, "package.json")); perr == nil {
+				return nil, ErrLockfileMissingButPackageJsonPresent
+			}
 			return nil, ErrNoLockfile
 		}
 		return nil, fmt.Errorf("npm: stat package-lock.json: %w", err)

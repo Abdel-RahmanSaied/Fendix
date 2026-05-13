@@ -112,9 +112,15 @@ var patterns = []pattern{
 		rightBoundary: boundaryUpperDigit,
 	},
 	{
+		// Recognises both the canonical `aws_secret_access_key = "..."`
+		// and the shorter `aws_secret = "..."` / `aws_secret_key = "..."`
+		// variants. The 40-char value shape is what AWS issues — we
+		// require it to limit FP risk on arbitrary base64 strings.
+		// Track 4 heavy-eval surfaced the short-prefix variant as a
+		// real-world miss on customer codebases.
 		id:       "AWS_SECRET_KEY",
 		title:    "AWS Secret Access Key hardcoded",
-		regex:    regexp.MustCompile(`(?i)aws[_\-\s]*secret[_\-\s]*(?:access[_\-\s]*)?key["\s]*[=:]["\s]*([A-Za-z0-9/+=]{40})`),
+		regex:    regexp.MustCompile(`(?i)aws[_\-\s]*secret(?:[_\-\s]*(?:access[_\-\s]*)?key)?["\s]*[=:]["\s]*([A-Za-z0-9/+=]{40})`),
 		severity: models.SeverityCritical,
 		cwe:      "CWE-798",
 	},

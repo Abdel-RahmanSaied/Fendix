@@ -98,6 +98,35 @@ func TestScan_DetectsGenericPatterns(t *testing.T) {
 	}
 }
 
+// TestScan_AWSSecretShortPrefix exercises the short-prefix variants of
+// the AWS secret-key pattern, surfaced as a real-world miss by the Track 4
+// heavy-eval: customer code often writes `aws_secret = "..."` without the
+// trailing `_access_key` / `_key`. Regex relaxed in lockstep.
+func TestScan_AWSSecretShortPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"canonical-long", `aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
+		{"medium-_key",    `aws_secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
+		{"short-aws-secret", `aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
+		{"upper-AWS-Secret", `AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "app.py", c.line+"\n")
+			fs, err := Scan(context.Background(), dir)
+			if err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			if _, ok := idsFound(fs)["SEC-AWS_SECRET_KEY"]; !ok {
+				t.Errorf("expected SEC-AWS_SECRET_KEY for %q; got %v", c.line, idsFound(fs))
+			}
+		})
+	}
+}
+
 func TestScan_PrivateKeyDetected(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "cert.js", "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n")

@@ -1,0 +1,20 @@
+{
+  "_target_id": "node-nodegoat",
+  "_source": "OWASP/NodeGoat \u2014 Express app with OWASP Top-10 vulns",
+  "expected": [
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 1,
+      "note": "NodeGoat has hardcoded creds in config/",
+      "cwe": "CWE-798"
+    },
+    {
+      "category": "deps",
+      "title_re": ".",
+      "min_count": 1,
+      "note": "NodeGoat ships old package.json with known CVEs",
+      "cwe": "CWE-1395"
+    }
+  ]
+}

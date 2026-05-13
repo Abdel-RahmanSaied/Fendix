@@ -1,0 +1,24 @@
+{
+  "_target_id": "py-django-vuln",
+  "_source": "nVisium/django.nV \u2014 Django training app",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "XSS|Markup|mark_safe|render_template_string",
+      "min_count": 1,
+      "cwe": "CWE-79"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "cwe": "CWE-798"
+    }
+  ]
+}

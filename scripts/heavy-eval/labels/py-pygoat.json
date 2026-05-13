@@ -1,0 +1,77 @@
+{
+  "_target_id": "py-pygoat",
+  "_source": "OWASP-Top-10 Django demo (adeyosemanputra/pygoat). Track 3 reported 147 findings; this label set hand-picks the OWASP-Top-10 categories the project advertises in its README so the harness can grade by 'did fendix surface every advertised class?'",
+  "_methodology": "category_counts. Each row is an expectation. 'hit' if observed_count >= min_count.",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "note": "PyGoat has SQLi labs",
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "command injection|os\\.system|subprocess|os\\.popen",
+      "min_count": 1,
+      "note": "cmdi labs",
+      "cwe": "CWE-78"
+    },
+    {
+      "category": "injection",
+      "title_re": "Path traversal",
+      "min_count": 1,
+      "note": "path-traversal labs",
+      "cwe": "CWE-22"
+    },
+    {
+      "category": "injection",
+      "title_re": "SSRF",
+      "min_count": 1,
+      "note": "SSRF labs",
+      "cwe": "CWE-918"
+    },
+    {
+      "category": "injection",
+      "title_re": "Open redirect|open redirect",
+      "min_count": 1,
+      "note": "open-redirect labs",
+      "cwe": "CWE-601"
+    },
+    {
+      "category": "injection",
+      "title_re": "XSS|Markup|mark_safe|render_template_string",
+      "min_count": 1,
+      "note": "XSS labs",
+      "cwe": "CWE-79"
+    },
+    {
+      "category": "injection",
+      "title_re": "deseriali|pickle|yaml\\.unsafe",
+      "min_count": 1,
+      "note": "insecure deserialisation labs",
+      "cwe": "CWE-502"
+    },
+    {
+      "category": "injection",
+      "title_re": "eval",
+      "min_count": 1,
+      "note": "eval/exec labs",
+      "cwe": "CWE-95"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 1,
+      "note": "PyGoat has hardcoded creds in settings.py",
+      "cwe": "CWE-798"
+    },
+    {
+      "category": "deps",
+      "title_re": ".",
+      "min_count": 1,
+      "note": "vulnerable requirements.txt",
+      "cwe": "CWE-1395"
+    }
+  ]
+}

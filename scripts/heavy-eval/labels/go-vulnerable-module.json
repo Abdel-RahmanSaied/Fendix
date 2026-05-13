@@ -1,0 +1,19 @@
+{
+  "_target_id": "go-vulnerable-module",
+  "_source": "Generated tiny Go module that imports two known-vulnerable deps so we can grade fendix's govulncheck-based dep scanner end-to-end (TASK-119).",
+  "_expected_cves": [
+    "GO-2022-0956 / GO-2021-0061 / GO-2020-0036 (yaml.v2 v2.2.2) \u2014 three reachable yaml DoS / resource-consumption CVEs"
+  ],
+  "_unreachable_present_but_correctly_filtered": [
+    "CVE-2020-26160 / dgrijalva/jwt-go \u2014 present in go.mod but govulncheck call-graph filters it out because my main.go does not call the specific vulnerable surface. Reachability filter is doing its job; fendix mirrors that behaviour 1:1."
+  ],
+  "expected": [
+    {
+      "category": "deps",
+      "title_re": "yaml|GO-2020-0036|GO-2021-0061|GO-2022-0956",
+      "min_count": 1,
+      "note": "reachable yaml CVEs (govulncheck call-graph confirmed)",
+      "cwe": "CWE-1395"
+    }
+  ]
+}

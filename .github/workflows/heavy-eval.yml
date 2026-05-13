@@ -1,0 +1,91 @@
+name: Heavy-eval
+
+# Track 4 accuracy + perf regression check.
+#
+# On PRs and push to main: runs the FAST sweep (SAST stages 4a–4d only,
+# ~5 min of runner time, no docker). Gates on:
+#   - stage 4a F1 >= 0.90 (line-anchored Juliet-style corpus)
+#   - bandit-examples expectation_recall >= 0.85
+#   - aggregate cat-recall >= 0.90 across stages 4b–4d
+#
+# Manually-triggered FULL run: includes DAST stage 4e + perf stage 4f.
+# Runs on ubuntu-latest; docker images are pulled inline so first-run
+# wall-clock is ~30 min. Subsequent runs benefit from runner image cache.
+#
+# Artifacts:
+#   - results.json   (machine-readable, one per stage)
+#   - stage-*.json
+#   - perf-logs/     (full run only)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Run the FULL sweep including DAST (4e) and perf (4f). Otherwise SAST-only."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  heavy-eval:
+    name: Heavy-eval ${{ github.event.inputs.full == 'true' && '(full)' || '(fast)' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event.inputs.full == 'true' && 60 || 15 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          # The harness itself uses only stdlib. The python engine
+          # (--python-engine) needs the deps in python/requirements.txt.
+          pip install -r python/requirements.txt
+
+      - name: Build fendix binary
+        run: make build
+
+      - name: Run heavy-eval (fast SAST stages 4a–4d)
+        if: github.event.inputs.full != 'true'
+        run: |
+          python3 scripts/heavy-eval/run.py \
+            --binary ./bin/fendix \
+            --python-engine \
+            --fast
+
+      - name: Run heavy-eval (full sweep including DAST + perf)
+        if: github.event.inputs.full == 'true'
+        run: |
+          python3 scripts/heavy-eval/run.py \
+            --binary ./bin/fendix \
+            --python-engine \
+            --all \
+            --perf-repeats 3
+
+      - name: Apply quality gates
+        run: |
+          python3 scripts/heavy-eval/gate.py \
+            "$(ls -td bench-results/heavy/* | head -1)"
+
+      - name: Upload heavy-eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heavy-eval-results-${{ github.run_id }}
+          path: bench-results/heavy/
+          retention-days: 30

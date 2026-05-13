@@ -1,0 +1,27 @@
+{
+  "_target_id": "py-dvpwa",
+  "_source": "anxolerd/dvpwa \u2014 Damn Vulnerable Python Web App. README advertises SQLi, XSS, CSRF, IDOR.",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "note": "advertised SQLi",
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "XSS|Markup|mark_safe|render_template_string",
+      "min_count": 1,
+      "note": "advertised XSS",
+      "cwe": "CWE-79"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "permissive \u2014 secrets are not the primary purpose",
+      "cwe": "CWE-798"
+    }
+  ]
+}

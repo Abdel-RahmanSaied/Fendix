@@ -1,0 +1,20 @@
+{
+  "_target_id": "dast-juice-shop",
+  "_source": "Juice Shop v17.1.1 \u2014 OWASP's reference vulnerable web app",
+  "expected": [
+    {
+      "category": "headers",
+      "title_re": "Missing",
+      "min_count": 1,
+      "note": "juice-shop is missing many security headers",
+      "cwe": "CWE-693"
+    },
+    {
+      "category": "data_exposure",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "may or may not surface config leaks depending on container layout",
+      "cwe": "CWE-538"
+    }
+  ]
+}

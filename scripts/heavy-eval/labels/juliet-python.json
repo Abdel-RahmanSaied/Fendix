@@ -1,0 +1,142 @@
+{
+  "_target_id": "juliet-python",
+  "_source": "NIST SARD Juliet-style Python labeled corpus (curated subset that mirrors fendix's detection surface — taint-chain SQLi/cmdi/path-traversal/SSRF/XSS/open-redirect + native secrets scanner).",
+  "_methodology": "Line-anchored TP/TN scoring identical to scripts/accuracy/manifest.json. LINE_TOLERANCE=6. Lines point at sink lines, not def-lines.",
+  "_match_strategy": "Findings matched to categories by (a) category field exact + (b) any title-substring match. Engine collapses category for taint-chain detectors under 'injection'; 'secrets' is separate.",
+  "categories": {
+    "sqli": {
+      "title_substrings": ["SQL query built", "SQL injection"],
+      "expected_category": "injection",
+      "file": "labels/juliet-python/CWE89_sqli.py",
+      "tp_lines": [
+        {"line": 24, "case": "bad_01_concat"},
+        {"line": 31, "case": "bad_02_fstring"},
+        {"line": 38, "case": "bad_03_percent"},
+        {"line": 45, "case": "bad_04_format"},
+        {"line": 54, "case": "bad_05_multi_hop"},
+        {"line": 61, "case": "bad_06_form_field"},
+        {"line": 69, "case": "bad_07_json_body"}
+      ],
+      "tn_lines": [
+        {"line": 76, "case": "good_01_parameterised"},
+        {"line": 82, "case": "good_02_constant"},
+        {"line": 86, "case": "good_03_orm_filter"},
+        {"line": 94, "case": "good_04_named_params"}
+      ]
+    },
+    "cmdi": {
+      "title_substrings": ["os.system", "subprocess called with shell=True", "os.popen", "command injection"],
+      "expected_category": "injection",
+      "file": "labels/juliet-python/CWE78_cmdi.py",
+      "tp_lines": [
+        {"line": 19, "case": "bad_01_os_system"},
+        {"line": 25, "case": "bad_02_subprocess_shell"},
+        {"line": 31, "case": "bad_03_os_popen"},
+        {"line": 37, "case": "bad_04_subprocess_popen_shell"},
+        {"line": 45, "case": "bad_05_multi_hop"},
+        {"line": 51, "case": "bad_06_check_output_shell"}
+      ],
+      "tn_lines": [
+        {"line": 57, "case": "good_01_argv_list"},
+        {"line": 62, "case": "good_02_constant"},
+        {"line": 68, "case": "good_03_check_output_list"},
+        {"line": 74, "case": "good_04_popen_constant"}
+      ]
+    },
+    "path_traversal": {
+      "title_substrings": ["Path traversal"],
+      "expected_category": "injection",
+      "file": "labels/juliet-python/CWE22_path_traversal.py",
+      "tp_lines": [
+        {"line": 14, "case": "bad_01_open_request"},
+        {"line": 21, "case": "bad_02_pathlib"},
+        {"line": 27, "case": "bad_03_send_file"},
+        {"line": 33, "case": "bad_04_send_from_directory"},
+        {"line": 41, "case": "bad_05_multi_hop"},
+        {"line": 47, "case": "bad_06_os_path_join_user"}
+      ],
+      "tn_lines": [
+        {"line": 55, "case": "good_01_basename"},
+        {"line": 62, "case": "good_02_whitelist"},
+        {"line": 67, "case": "good_03_constant"}
+      ]
+    },
+    "ssrf": {
+      "title_substrings": ["SSRF"],
+      "expected_category": "injection",
+      "file": "labels/juliet-python/CWE918_ssrf.py",
+      "_label_decision_good_03": "good_03 (line 58) is `requests.get('https://api.internal/' + path)` — concat onto a literal host. Real-world this is ambiguous (URL parsers anchor host, but the path can still encode traversal). We label this as TP-or-acceptable: engine flagging it is defensible. NOT included in tn_lines.",
+      "tp_lines": [
+        {"line": 14, "case": "bad_01_requests_get"},
+        {"line": 20, "case": "bad_02_urllib_urlopen"},
+        {"line": 28, "case": "bad_03_multi_hop"},
+        {"line": 34, "case": "bad_04_requests_post"}
+      ],
+      "tn_lines": [
+        {"line": 39, "case": "good_01_constant"},
+        {"line": 52, "case": "good_02_whitelist"}
+      ]
+    },
+    "open_redirect": {
+      "title_substrings": ["open redirect", "Open redirect"],
+      "expected_category": "injection",
+      "file": "labels/juliet-python/CWE601_open_redirect.py",
+      "tp_lines": [
+        {"line": 12, "case": "bad_01_direct"},
+        {"line": 19, "case": "bad_02_multi_hop"},
+        {"line": 25, "case": "bad_03_form_field"}
+      ],
+      "tn_lines": [
+        {"line": 30, "case": "good_01_constant"},
+        {"line": 39, "case": "good_02_whitelist"}
+      ]
+    },
+    "xss": {
+      "title_substrings": ["XSS", "Markup", "render_template_string", "mark_safe"],
+      "expected_category": "injection",
+      "file": "labels/juliet-python/CWE79_xss.py",
+      "tp_lines": [
+        {"line": 13, "case": "bad_01_markup"},
+        {"line": 19, "case": "bad_02_render_template_string"},
+        {"line": 26, "case": "bad_03_multi_hop"},
+        {"line": 33, "case": "bad_04_mark_safe"}
+      ],
+      "tn_lines": [
+        {"line": 39, "case": "good_01_escape"},
+        {"line": 44, "case": "good_02_constant"}
+      ]
+    },
+    "secrets": {
+      "title_substrings": [
+        "AWS access key",
+        "AWS Access Key",
+        "AWS secret",
+        "GitHub token",
+        "Slack token",
+        "Stripe",
+        "API key",
+        "Private key",
+        "RSA private key",
+        "Generic",
+        "Hardcoded"
+      ],
+      "expected_category": "secrets",
+      "file": "labels/juliet-python/CWE798_secrets.py",
+      "tp_lines": [
+        {"line": 16, "case": "BAD_01_AWS_KEY"},
+        {"line": 21, "case": "BAD_02_AWS_SECRET_KEY"},
+        {"line": 24, "case": "BAD_03_GITHUB_TOKEN"},
+        {"line": 27, "case": "BAD_04_SLACK_TOKEN"},
+        {"line": 30, "case": "BAD_05_STRIPE"},
+        {"line": 33, "case": "BAD_06_GENERIC"},
+        {"line": 36, "case": "BAD_07_PRIVATE_KEY"}
+      ],
+      "tn_lines": [
+        {"line": 43, "case": "GOOD_01_FROM_ENV"},
+        {"line": 45, "case": "GOOD_02_FROM_FILE"},
+        {"line": 47, "case": "GOOD_03_PLACEHOLDER"},
+        {"line": 49, "case": "GOOD_04_TEMPLATE"}
+      ]
+    }
+  }
+}

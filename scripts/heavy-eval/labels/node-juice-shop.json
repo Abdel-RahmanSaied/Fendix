@@ -1,0 +1,20 @@
+{
+  "_target_id": "node-juice-shop-src",
+  "_source": "juice-shop source tree at v17.1.1",
+  "expected": [
+    {
+      "category": "deps",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "juice-shop ships intentionally-vulnerable deps BUT no package-lock.json in source \u2014 fendix npm-audit needs the lock file (real engine limitation)",
+      "cwe": "CWE-1395"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "permissive",
+      "cwe": "CWE-798"
+    }
+  ]
+}

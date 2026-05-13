@@ -1,0 +1,20 @@
+{
+  "_target_id": "go-vulnerable-app",
+  "_source": "gosec source tree \u2014 contains both the gosec scanner itself and the testdata/ corpus used to exercise its rules. We grade by 'does fendix surface anything in this Go-heavy codebase?'",
+  "expected": [
+    {
+      "category": "deps",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "gosec pins its own deps tightly; permissive",
+      "cwe": "CWE-1395"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "gosec testdata may contain test secrets",
+      "cwe": "CWE-798"
+    }
+  ]
+}

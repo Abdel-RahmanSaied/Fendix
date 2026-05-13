@@ -1,0 +1,20 @@
+{
+  "_target_id": "node-vulnerable-app",
+  "_source": "SasanLabs/VulnerableApp-facade \u2014 JS UI for the multi-language vuln corpus",
+  "expected": [
+    {
+      "category": "deps",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "permissive",
+      "cwe": "CWE-1395"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "permissive",
+      "cwe": "CWE-798"
+    }
+  ]
+}

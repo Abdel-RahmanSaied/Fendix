@@ -1,0 +1,12 @@
+{
+  "_target_id": "dast-vulnerableapp",
+  "_source": "SasanLabs/owasp-vulnerableapp",
+  "expected": [
+    {
+      "category": "headers",
+      "title_re": "Missing",
+      "min_count": 1,
+      "cwe": "CWE-693"
+    }
+  ]
+}

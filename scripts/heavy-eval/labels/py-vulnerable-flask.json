@@ -1,0 +1,24 @@
+{
+  "_target_id": "py-bad-python-flask",
+  "_source": "Flask app with hand-rolled SQLi + path-traversal + cmd-injection",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "Path traversal",
+      "min_count": 1,
+      "cwe": "CWE-22"
+    },
+    {
+      "category": "injection",
+      "title_re": "os\\.system|subprocess|os\\.popen|command injection",
+      "min_count": 1,
+      "cwe": "CWE-78"
+    }
+  ]
+}

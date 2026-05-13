@@ -219,6 +219,58 @@ class TestSSRF:
             findings = _collect(tmpdir)
             assert "SEC-PY_SSRF" not in _ids(findings)
 
+    def test_ssrf_urllib_request_urlopen_tainted(self) -> None:
+        """urllib.request.urlopen(tainted) is SSRF — gap surfaced by Track 4 (Juliet)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "bad.py").write_text(
+                "import urllib.request\n"
+                "from flask import request\n"
+                "def fetch():\n"
+                "    u = request.args.get('u')\n"
+                "    return urllib.request.urlopen(u).read()\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SSRF" in _ids(findings)
+            ssrf = next(f for f in findings if f["id"] == "SEC-PY_SSRF")
+            assert "urllib.request.urlopen" in ssrf.get("evidence", "") + ssrf.get("title", "") + str(ssrf.get("metadata", {}))
+
+    def test_ssrf_urllib_request_urlretrieve_tainted(self) -> None:
+        """urllib.request.urlretrieve(tainted) is SSRF."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "bad.py").write_text(
+                "import urllib.request\n"
+                "from flask import request\n"
+                "def fetch():\n"
+                "    u = request.args.get('u')\n"
+                "    return urllib.request.urlretrieve(u, '/tmp/out')\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SSRF" in _ids(findings)
+
+    def test_ssrf_urllib_literal_url_not_flagged(self) -> None:
+        """urllib.request.urlopen('https://...') with a literal URL is not SSRF."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "ok.py").write_text(
+                "import urllib.request\n"
+                "def fetch():\n"
+                "    return urllib.request.urlopen('https://api.example.com/x').read()\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SSRF" not in _ids(findings)
+
+    def test_ssrf_six_moves_urllib_request_urlopen_tainted(self) -> None:
+        """six.moves.urllib.request.urlopen(tainted) is SSRF (Python 2 compat shim)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "bad.py").write_text(
+                "import six\n"
+                "from flask import request\n"
+                "def fetch():\n"
+                "    u = request.args.get('u')\n"
+                "    return six.moves.urllib.request.urlopen(u).read()\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SSRF" in _ids(findings)
+
 
 class TestAuthHeaderTrust:
     def test_auth_header_trust_detected(self) -> None:
@@ -604,6 +656,30 @@ class TestCmdInjectionReachable:
             cmd = [f for f in findings if f["id"] == "SEC-PY_OS_POPEN"]
             assert cmd == [], f"expected no findings on literal os.popen; got {cmd}"
 
+    def test_os_popen2_3_4_variants_all_detected(self) -> None:
+        """os.popen2/3/4(tainted) — all deprecated variants are cmdi sinks.
+
+        Surfaced by Track 4 heavy-eval (bandit examples corpus).
+        """
+        for variant in ("popen2", "popen3", "popen4"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                Path(tmpdir, f"h_{variant}.py").write_text(
+                    f"import os\n"
+                    f"from flask import request\n"
+                    f"def handler():\n"
+                    f"    cmd = request.args.get('cmd')\n"
+                    f"    os.{variant}(cmd)\n"
+                )
+                findings = _collect(tmpdir)
+                hits = [f for f in findings if f["id"] == "SEC-PY_OS_POPEN"]
+                assert len(hits) == 1, (
+                    f"os.{variant}(request.args.get('cmd')) should fire SEC-PY_OS_POPEN; "
+                    f"got {[f['id'] for f in findings]}"
+                )
+                assert variant in hits[0]["title"], (
+                    f"expected '{variant}' in title; got: {hits[0]['title']}"
+                )
+
     def test_multi_step_assignment_resolves_for_cmd_injection(self) -> None:
         """cmd = request.args['x']; os.system(cmd) — chain across hop."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -663,6 +739,98 @@ class TestSQLConcatViaAssignment:
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "ok.py").write_text(
                 "def f(cursor):\n    sql = 'SELECT * FROM users'\n    cursor.execute(sql)\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SQL_INJECTION" not in _ids(findings)
+
+
+class TestDjangoORMSQLInjection:
+    """Track 4 / bandit B610/B611: Django ORM raw-SQL sinks.
+
+    PyGoat had SQLi labs that fendix wasn't catching because the AST
+    matcher only looked at cursor.execute(). The three Django-specific
+    shapes added in lockstep:
+      - <qs>.raw("..." + tainted)
+      - <qs>.extra(where=[tainted], select={"x": tainted}, tables=[tainted])
+      - RawSQL(tainted, [...])
+    """
+
+    def test_qs_raw_with_concat_emits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def view(request):\n"
+                "    name = request.GET['u']\n"
+                "    User.objects.raw('SELECT * FROM auth_user WHERE name=' + name)\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"expected SEC-PY_SQL_INJECTION; got {[f['id'] for f in findings]}"
+            assert "raw" in sql[0]["title"].lower()
+
+    def test_qs_raw_with_literal_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "ok.py").write_text(
+                "def view():\n"
+                "    User.objects.raw('SELECT * FROM auth_user')\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SQL_INJECTION" not in _ids(findings)
+
+    def test_extra_where_with_tainted_list_elem_emits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def view(request):\n"
+                "    where_clause = request.GET['w']\n"
+                "    User.objects.filter(username='admin').extra(where=[where_clause])\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"expected SEC-PY_SQL_INJECTION; got {[f['id'] for f in findings]}"
+
+    def test_extra_select_with_tainted_dict_value_emits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def view(request):\n"
+                "    expr = '%secure' % request.GET['x']\n"
+                "    User.objects.filter(username='admin').extra(select={'test': expr})\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"expected SEC-PY_SQL_INJECTION; got {[f['id'] for f in findings]}"
+
+    def test_extra_all_literal_safe(self) -> None:
+        """extra(where=['1=1'], select={'x': 'safe'}) — all literals; no finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "ok.py").write_text(
+                "def view():\n"
+                "    User.objects.filter(username='admin').extra(\n"
+                "        select={'test': 'secure'},\n"
+                "        where=['secure'],\n"
+                "        tables=['secure']\n"
+                "    )\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_SQL_INJECTION" not in _ids(findings)
+
+    def test_rawsql_with_tainted_first_arg_emits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from django.db.models.expressions import RawSQL\n"
+                "def view(request):\n"
+                "    raw = '%secure' % request.GET['x']\n"
+                "    User.objects.annotate(val=RawSQL(raw, []))\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"expected SEC-PY_SQL_INJECTION; got {[f['id'] for f in findings]}"
+            assert "RawSQL" in sql[0]["title"]
+
+    def test_rawsql_with_literal_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "ok.py").write_text(
+                "from django.db.models.expressions import RawSQL\n"
+                "def view():\n"
+                "    User.objects.annotate(val=RawSQL('secure', []))\n"
             )
             findings = _collect(tmpdir)
             assert "SEC-PY_SQL_INJECTION" not in _ids(findings)

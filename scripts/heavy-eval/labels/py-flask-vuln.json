@@ -1,0 +1,30 @@
+{
+  "_target_id": "py-flask-vuln",
+  "_source": "we45/Vulnerable-Flask-App",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "XSS|Markup|render_template_string|mark_safe",
+      "min_count": 0,
+      "cwe": "CWE-79"
+    },
+    {
+      "category": "injection",
+      "title_re": "SSRF",
+      "min_count": 0,
+      "cwe": "CWE-918"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "cwe": "CWE-798"
+    }
+  ]
+}

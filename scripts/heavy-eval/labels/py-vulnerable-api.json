@@ -1,0 +1,27 @@
+{
+  "_target_id": "py-vulnerable-api",
+  "_source": "snoopysecurity/Vulnerable-Api \u2014 vulnerable Flask API (OWASP API Top-10)",
+  "expected": [
+    {
+      "category": "injection",
+      "title_re": "SQL",
+      "min_count": 1,
+      "note": "expected per README",
+      "cwe": "CWE-89"
+    },
+    {
+      "category": "injection",
+      "title_re": "os\\.system|subprocess|command injection",
+      "min_count": 0,
+      "note": "permissive \u2014 may not be present",
+      "cwe": "CWE-78"
+    },
+    {
+      "category": "secrets",
+      "title_re": ".",
+      "min_count": 0,
+      "note": "permissive",
+      "cwe": "CWE-798"
+    }
+  ]
+}
