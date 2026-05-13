@@ -17,6 +17,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/pluginscmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/policy"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/spf13/cobra"
@@ -67,6 +68,7 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newDemoCmd())
+	root.AddCommand(pluginscmd.NewCmd())
 
 	return root
 }

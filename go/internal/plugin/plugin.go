@@ -127,10 +127,20 @@ func Discover(roots []string) ([]Plugin, error) {
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			dir := filepath.Join(root, e.Name())
+			// Follow symlinks: e.IsDir() returns false for a symlinked
+			// directory because the DirEntry reflects the symlink itself,
+			// not the target. Stat the entry so symlinked plugin dirs
+			// (e.g. `ln -s ../my-plugin .fendix/plugins/`) discover too.
+			// TASK-130 / surfaced during TASK-127 audit.
+			info, err := os.Stat(dir)
+			if err != nil {
+				slog.Debug("plugin entry unstable", "dir", dir, "err", err)
 				continue
 			}
-			dir := filepath.Join(root, e.Name())
+			if !info.IsDir() {
+				continue
+			}
 			p, err := loadPlugin(dir)
 			if err != nil {
 				slog.Warn("plugin skipped", "dir", dir, "err", err)
@@ -145,6 +155,14 @@ func Discover(roots []string) ([]Plugin, error) {
 		}
 	}
 	return out, nil
+}
+
+// LoadPlugin parses plugin.yaml under dir and validates the result.
+// Exported wrapper around loadPlugin so the `fendix plugins install`
+// subcommand (internal/pluginscmd, TASK-130) can validate a freshly-
+// cloned tree without re-implementing the manifest parser.
+func LoadPlugin(dir string) (Plugin, error) {
+	return loadPlugin(dir)
 }
 
 // loadPlugin parses plugin.yaml under dir and validates the result.
