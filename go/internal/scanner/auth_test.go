@@ -171,9 +171,32 @@ func TestCheckAuth_NoAuthConfig_Skips(t *testing.T) {
 	}
 }
 
+// newJWTOnlyServer mocks a server that DOES check for the
+// Authorization header (rejects no-auth with 401) but fails to
+// validate JWT structure (accepts everything including malformed,
+// expired, alg:none). This is the legitimate JWT-bypass vulnerability
+// shape — distinct from a fully-public endpoint, which is handled by
+// `Missing authentication on endpoint` and dedupes the JWT findings.
+func newJWTOnlyServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			// No Authorization header → 401 (so missing-auth probe sees 401 and skips)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Any Authorization header value → 200 (no actual validation)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+}
+
 func TestCheckAuth_MalformedJWT_Vulnerable(t *testing.T) {
-	// Server accepts everything — malformed JWT goes through
-	server := newAuthTestServer("", true)
+	// Server REQUIRES auth header but doesn't validate JWT — real JWT-bypass.
+	// (Using a fully-accept-everything server would dedup these findings as
+	// FPs of the "missing authentication" root cause; see the Track 4
+	// FP-dedup posture in auth.go::CheckAuth.)
+	server := newJWTOnlyServer()
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
@@ -237,8 +260,8 @@ func TestCheckAuth_MalformedJWT_Secure(t *testing.T) {
 }
 
 func TestCheckAuth_ExpiredJWT_Vulnerable(t *testing.T) {
-	// Server accepts everything including expired tokens
-	server := newAuthTestServer("", true)
+	// Real JWT-bypass shape: server requires header but doesn't check exp.
+	server := newJWTOnlyServer()
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
@@ -302,8 +325,8 @@ func TestCheckAuth_ExpiredJWT_Secure(t *testing.T) {
 }
 
 func TestCheckAuth_AlgNone_Vulnerable(t *testing.T) {
-	// Server accepts everything including alg:none
-	server := newAuthTestServer("", true)
+	// Real JWT-bypass shape: server requires header but doesn't validate alg.
+	server := newJWTOnlyServer()
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
@@ -452,8 +475,66 @@ func TestBuildAlgNoneJWT(t *testing.T) {
 	}
 }
 
-func TestCheckAuth_AllFindingsForVulnerableServer(t *testing.T) {
+// TestCheckAuth_PublicEndpointEmitsOnlyMissingAuth verifies the FP-dedup
+// posture surfaced by the Track 4 heavy-eval (TwiScope-backend /metrics
+// scan). When an endpoint accepts ALL Authorization values — no header,
+// garbage Bearer, real JWT — it's fully public. The previous behaviour
+// emitted 4 CRITICALs (Missing-auth + 3 JWT-bypass). The new behaviour
+// emits only the root cause (Missing-auth); the 3 JWT findings are
+// downstream byproducts of the same fix and add no operational signal.
+func TestCheckAuth_PublicEndpointEmitsOnlyMissingAuth(t *testing.T) {
 	server := newAuthTestServer("", true)
+	defer server.Close()
+
+	cfg := &models.ScanConfig{
+		Timeout: 5,
+		Auth: &models.AuthContext{
+			Header: "Authorization",
+			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+			Type:   models.AuthTypeBearer,
+		},
+	}
+
+	endpoint := Endpoint{
+		Method:  "GET",
+		Path:    "/metrics",
+		FullURL: server.URL + "/metrics",
+	}
+
+	findings := CheckAuth(context.Background(), cfg, endpoint)
+
+	titles := map[string]bool{}
+	for _, f := range findings {
+		titles[f.Title] = true
+		if f.Source != models.SourceBlackbox {
+			t.Errorf("finding %q source = %s, want blackbox", f.Title, f.Source)
+		}
+	}
+
+	// Missing-auth fires (the root cause)
+	if !titles["Missing authentication on endpoint"] {
+		t.Error("expected 'Missing authentication on endpoint' to fire on fully-public endpoint")
+	}
+	// The 3 JWT-bypass findings are suppressed as FPs of the root cause
+	for _, suppressed := range []string{
+		"JWT not validated",
+		"Expired JWT accepted",
+		"JWT algorithm confusion (alg:none accepted)",
+	} {
+		if titles[suppressed] {
+			t.Errorf("Track 4 FP-dedup: %q should be suppressed on fully-public endpoint (root cause is missing-auth)", suppressed)
+		}
+	}
+}
+
+// TestCheckAuth_JWTBypassEndpointEmitsAllJWTFindings is the contrast
+// case: when the endpoint DOES require an Authorization header but
+// fails to validate the JWT structure, the missing-auth check does
+// NOT fire, and the JWT-bypass findings should ALL fire because each
+// is an independent vulnerability. This proves the dedup only kicks
+// in on the public-endpoint shape, not on real JWT-bypass surfaces.
+func TestCheckAuth_JWTBypassEndpointEmitsAllJWTFindings(t *testing.T) {
+	server := newJWTOnlyServer()
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
@@ -473,25 +554,23 @@ func TestCheckAuth_AllFindingsForVulnerableServer(t *testing.T) {
 
 	findings := CheckAuth(context.Background(), cfg, endpoint)
 
-	expectedTitles := map[string]bool{
-		"Missing authentication on endpoint":          false,
-		"JWT not validated":                           false,
-		"Expired JWT accepted":                        false,
-		"JWT algorithm confusion (alg:none accepted)": false,
-	}
-
+	titles := map[string]bool{}
 	for _, f := range findings {
-		if _, ok := expectedTitles[f.Title]; ok {
-			expectedTitles[f.Title] = true
-		}
-		if f.Source != models.SourceBlackbox {
-			t.Errorf("finding %q source = %s, want blackbox", f.Title, f.Source)
-		}
+		titles[f.Title] = true
 	}
 
-	for title, found := range expectedTitles {
-		if !found {
-			t.Errorf("missing expected finding: %s", title)
+	// Missing-auth should NOT fire (server returns 401 to no-auth)
+	if titles["Missing authentication on endpoint"] {
+		t.Error("missing-auth should not fire when server returns 401 to no-Authorization request")
+	}
+	// All 3 JWT-bypass findings should fire (independent vulnerabilities)
+	for _, expected := range []string{
+		"JWT not validated",
+		"Expired JWT accepted",
+		"JWT algorithm confusion (alg:none accepted)",
+	} {
+		if !titles[expected] {
+			t.Errorf("expected JWT-bypass finding %q to fire on header-checks-only server", expected)
 		}
 	}
 }

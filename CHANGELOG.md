@@ -28,6 +28,42 @@ lockstep with a unit test. See `docs/accuracy.md` Track 4 §9.
   5 new Go tests (`TestFindRequirementsManifests_*`,
   `TestScanRecursive_*`).
 
+- **Gap 3 — auth-probe suppresses JWT-bypass FPs on fully-public
+  endpoints.** Previously, a public endpoint like Prometheus
+  `/metrics` (returns 200 to no-auth + 200 to garbage Bearer
+  values) generated 4 CRITICAL findings: `Missing authentication
+  on endpoint` PLUS `JWT not validated`, `Expired JWT accepted`,
+  `JWT algorithm confusion (alg:none accepted)` — but the latter
+  three were all downstream byproducts of the same root cause.
+  TwiScope-backend's `/metrics` scan produced exactly this 4-CRIT
+  cluster where only 1 finding was actionable.
+
+  New posture in `internal/scanner/auth.go::CheckAuth`: when
+  `Missing authentication on endpoint` fires AND a follow-up
+  probe with a deliberately-garbage Authorization header
+  (`Bearer fendix-auth-probe-not-a-real-token`) also returns 2xx,
+  the endpoint is fully unauthenticated — suppress the JWT-bypass
+  probes for THAT endpoint. The conservative two-probe gate means
+  endpoints that DO require a header but fail to validate it
+  (the legitimate JWT-bypass shape) still emit all relevant
+  findings unchanged.
+
+  Two new unit tests:
+  `TestCheckAuth_PublicEndpointEmitsOnlyMissingAuth` (asserts the
+  4→1 collapse on a public endpoint) and
+  `TestCheckAuth_JWTBypassEndpointEmitsAllJWTFindings` (asserts
+  the JWT findings still fire on a header-checks-only server).
+  Two pre-existing tests updated:
+  `TestCheckAuth_{Malformed,Expired,AlgNone}_Vulnerable` now use
+  `newJWTOnlyServer()` instead of `newAuthTestServer("", true)`,
+  exercising the real JWT-bypass surface where the FP-dedup
+  doesn't kick in.
+
+  Verified end-to-end against TwiScope-backend `/metrics`:
+  authenticated DAST went from 10 findings (4 auth_bypass, 4 MED,
+  2 INFO) to **7 findings (1 auth_bypass, 4 MED, 2 INFO)** — the
+  one real CRITICAL preserved, the 3 derivative FPs gone.
+
 - **Gap 2 — `fendix verify <id>` shipped (was a Phase-4 stub).**
   Previously the subcommand was documented in `fendix --help`
   but printed `verify: not yet implemented (Phase 4)`. Now reads

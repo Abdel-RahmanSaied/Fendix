@@ -160,6 +160,13 @@ func TestIntegration_SecureJWTServer_NoFindings(t *testing.T) {
 	}
 }
 
+// TestIntegration_VulnerableServer_AcceptsEverything is the
+// fully-public endpoint shape. Under the Track 4 FP-dedup posture
+// (auth.go: when missing-auth fires AND a garbage Authorization
+// header also yields 200, suppress JWT-bypass findings on this
+// endpoint), the only finding here is the root-cause Missing-auth.
+// The 3 JWT findings would have been emitted by the pre-fix code
+// but are derivative byproducts of the same defect.
 func TestIntegration_VulnerableServer_AcceptsEverything(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -184,26 +191,22 @@ func TestIntegration_VulnerableServer_AcceptsEverything(t *testing.T) {
 
 	findings := CheckAuth(context.Background(), cfg, endpoint)
 
-	expectedTitles := []string{
-		"Missing authentication on endpoint",
+	titles := map[string]bool{}
+	for _, f := range findings {
+		titles[f.Title] = true
+	}
+
+	if !titles["Missing authentication on endpoint"] {
+		t.Error("expected 'Missing authentication on endpoint' (root cause)")
+	}
+	for _, suppressed := range []string{
 		"JWT not validated",
 		"Expired JWT accepted",
 		"JWT algorithm confusion (alg:none accepted)",
-	}
-
-	foundTitles := make(map[string]bool)
-	for _, f := range findings {
-		foundTitles[f.Title] = true
-	}
-
-	for _, title := range expectedTitles {
-		if !foundTitles[title] {
-			t.Errorf("missing expected finding: %s", title)
+	} {
+		if titles[suppressed] {
+			t.Errorf("Track 4 FP-dedup: %q should be suppressed on fully-public endpoint", suppressed)
 		}
-	}
-
-	if len(findings) < len(expectedTitles) {
-		t.Errorf("expected at least %d findings, got %d", len(expectedTitles), len(findings))
 	}
 }
 
