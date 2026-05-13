@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-13
+
+**Headline:** FP discipline round 2 + a seventh reachable sink class.
+Phase 17d (P7 Engine-first v0.11) ships five tasks that close the
+engine-first roadmap: re-triaged the existing FP corpus through the
+post-Phase-17a lens (TASK-132); added a native-Go exposed-config-file
+detector that inverts the noisy `missing-CSP-on-/.env` story into one
+CRITICAL "exposed config file" finding (TASK-133); added path-
+traversal as the seventh reachable taint-chain sink class (TASK-134);
+shipped `fendix ignore list / validate / prune` so suppression
+bookkeeping is no longer write-once / pile-up-forever (TASK-135);
+refreshed the cold-start benchmark numbers and showed the new
+detection paths cost no more than the noise floor on default-mode
+scans (TASK-136).
+
+Plus one pre-existing-bug fix surfaced during TASK-134's end-to-end
+validation: the Python spawner's `engineDir` could resolve to a
+doubled relative path (`python/python/engine.py`) when the local
+fallback was used. Latent since TASK-118 made the relative-path
+branch the default-non-embedded path; fixed by `filepath.Abs` before
+spawn.
+
+This release folds 5 tasks (TASK-132/133/134/135/136) plus the
+spawner fix into a single minor release. Phase 17d is 5/5 complete.
+The engine-first roadmap (`docs/quarter_plan.md` Phase 17a→17d) is
+now done; next-planned work is Cloud Q1 (Stripe + AI explanation
+from `docs/example_plan.md`).
+
+### Added
+
+- **TASK-133 — exposed-config-file detection** (`internal/scanner/configleak.go`,
+  ~280 LOC). New `CheckConfigLeak` worker-pool scanner: 27 basename-
+  exact patterns covering env files, web-server config (.htaccess,
+  .htpasswd, web.config), package-manager creds (.npmrc, .pypirc,
+  .netrc), Docker, IDE/OS leftovers; 5 prefix patterns for directory-
+  style leaks (.git/, .aws/, .ssh/, .idea/, .vscode/). Fires CRITICAL
+  with CWE-538 on any 2xx response to a known config-file path.
+  Body sample (capped 512 bytes) gets `[REDACTED]` masking of common
+  secret-shape tokens before landing in evidence — no engine leak
+  of leaked credentials. 9 race-clean unit tests.
+
+- **TASK-134 — path-traversal reachable taint chains** (`python/analyzers/ast_analyzer.py`).
+  New `SEC-PY_PATH_TRAVERSAL` finding (CWE-22, HIGH severity, MEDIUM
+  confidence, category=injection). Four filesystem-path sinks:
+  `open(x)`, `Path(x)` / `pathlib.Path(x)`, `send_file(x)`,
+  `send_from_directory(safe_dir, x)` (user-controlled arg at index
+  1 — handled in `_path_traversal_arg_index`). When user input flows
+  to the path argument, `_collect_taint_chain` records the chain and
+  sets `reachable: true`; correlator escalation (TASK-114) and step
+  5.4 escalation (TASK-125) both apply. Brings the engine's reachable
+  sink categories to **7** across SQLi / SSRF / open-redirect / XSS
+  / cmd-injection / now path-traversal. 9 new Python tests.
+
+- **TASK-135 — `fendix ignore` subcommand tree** (`internal/ignorecmd/`,
+  ~300 LOC). Three subcommands close the "I have 30 ignore rules
+  accumulated over a year and no way to see what's still useful" gap:
+  `fendix ignore list` renders a tabular view of all rules with
+  EXPIRED / expiring-soon (within 30 days) / active / no-expiry /
+  INVALID-DATE status; `fendix ignore validate` reports schema and
+  date errors with non-zero exit for CI gating; `fendix ignore
+  prune [--dry-run]` removes expired rules and rewrites the file
+  (preserves rules with invalid dates — `validate` surfaces those).
+  All three default to `.fendix-ignore` in cwd; `--file <path>`
+  targets a different file. 14 race-clean unit tests.
+
+### Documented
+
+- **TASK-132 — FP corpus re-triage.** `tasks/FP_CORPUS.md` extended
+  with a "2026-05-13 (Phase 17d, synthetic input)" addendum
+  recording which corpus patterns are now addressed (P1/P2/P3/P4
+  all closed by Phase 17a's TASK-105/123/124) and which deferred
+  follow-ups landed in TASK-133 vs got deferred to a future round
+  with real post-launch data (D1 SPA-fallback dedup deferred; D2
+  dotfile-config-leak shipped).
+
+- **TASK-136 — cold-start benchmark refresh.** `docs/benchmarks.md`
+  "Cold-start latency" section rewritten with the v0.11 row added
+  and a v0.9 → v0.11 delta column. Default v0.11 = 6.1 ms p50
+  (+0.5 ms vs v0.9, within noise — configleak doesn't run with
+  zero endpoints discovered); `--python-engine` v0.11 = 40.7 ms p50
+  (+16.3 ms vs v0.9 — real cost of TASK-134's path-traversal sink
+  in the AST analyzer). Phase 17b's <500 ms exit gate still
+  cleared by 82× on default / 12× on opt-in. Default v0.11 is
+  still 16 % faster than v0.8.0 (pre-Phase-17b).
+
+### Fixed
+
+- **Spawner double-relative-path bug** (`internal/engine/spawner.go`).
+  Latent since TASK-118: when `engineDir` was the relative local
+  fallback `python`, `cmd.Dir = engineDir` + relative `enginePath`
+  composed to `python/python/engine.py` in the child's working dir,
+  causing exit 2 on every `--python-engine` invocation that didn't
+  set `FENDIX_ENGINE` explicitly. Surfaced during TASK-134's
+  end-to-end validation. Fixed by resolving via `filepath.Abs`
+  before composing the script path or setting `cmd.Dir`.
+
 ## [0.10.0] - 2026-05-13
 
 **Headline:** the plugin ecosystem is genuinely usable now. Phase 17c
