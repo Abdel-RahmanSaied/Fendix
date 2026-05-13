@@ -305,13 +305,13 @@ packaging>=23.0               — Dependency version comparison
 
 ## Current Project State
 
-**Phase:** 17b — P7 Engine-first roadmap, v0.9 cold-start work pulled forward — ✅ **Complete (4/4)** (entered 2026-05-12, completed 2026-05-13). All four tasks shipped: TASK-115 (Go secrets), TASK-116 (Semgrep shelled-out), TASK-118 (embedded Python dropped + cold-start benchmark), TASK-127 (plugin compatibility audit). v0.9.0 ready to tag. TASK-117 (AST analyzer migration) deliberately deferred to true Phase 16 / v2.0.
+**Phase:** 17b — P7 Engine-first roadmap, v0.9 cold-start work pulled forward — ✅ **Shipped as v0.9.0 + v0.9.1 (2026-05-13)**. All four tasks shipped: TASK-115 (Go secrets), TASK-116 (Semgrep shelled-out), TASK-118 (embedded Python dropped + cold-start benchmark), TASK-127 (plugin compatibility audit). Engine commit `de9bdca` + tag `v0.9.0` pushed; release.yml run 25769433324 succeeded. v0.9.1 patch (`92c3d97`) shipped same day for the spurious-WARN regression caught while validating frontend page examples. Both satellite repos synced: `fendix_frontend` (`968e60c` v0.9 sync + `329a17f` architecture/getting-started/performance pages), `fendix-backend` (`a3ef802` drift-tracker docstring; no schema delta needed). End-to-end live integration validated. TASK-117 (AST analyzer migration) deliberately deferred to true Phase 16 / v2.0.
 
 **Phase:** 17a — P7 Engine-first roadmap, v0.8 release — ✅ **Complete** (entered 2026-05-11, shipped as v0.8.0 on 2026-05-12). See [docs/quarter_plan.md](../docs/quarter_plan.md) for the full 4-release roadmap (v0.8 → v0.11, ~5 months) and [tasks/PHASES.md](PHASES.md) Phase 17 for exit criteria + task detail. **Cloud Q1 of [docs/example_plan.md](../docs/example_plan.md) (Stripe + AI explanation, ~23 days) is deferred for ~5 months** in favour of widening the engine moat across four directions: detection breadth (TASK-119/120/121), FP discipline (TASK-122/123/124/125), Phase 16 cold-start (pulled forward — TASK-115/116/118), plugin ecosystem (TASK-128–131), real-world FP round 2 (TASK-132–136). Q0 Operator Rollout (Marketplace launch) runs in parallel with Phase 17a, not deferred. ADR-008 (read-only AI / supersede BACKLOG-017) is written during 17a as TASK-126. Cloud work resumes after v0.11. No paid revenue until ~month 6 — explicit trade-off.
 
 **Phase:** 15 — P5 Open & Extensible (v1.2) — ✅ Complete and shipped as **v0.7.0 on 2026-05-01**. v0.7.0 folds 8 commits since v0.6.1 (`5855dc4..1d739cf`) into a single minor release: Phase 14 closeout (TASK-106 numbers, TASK-107 GitHub App scaffold, TASK-107b business logic, TASK-108 demo, TASK-109 policy file) + Phase 15 (TASK-112 ADR-007 open-source ratification, TASK-113 plugin system, TASK-114 reachability/dataflow correlation). Headline framing: "the wedge is now defensible" — the correlator distinguishes "DAST + SAST agreed" from "DAST + SAST agreed AND we can prove the path", with a double severity escalation in the latter case. Release commit `e5ef2f3` + annotated tag `v0.7.0` pushed to `origin/main`; release.yml run 25227704658 picked it up at 2026-05-01T18:41Z. **Phase 16 (v2.0 — make Python optional, Trivy-fast cold start)** is the next phase per PHASES.md — explicitly year+ out, do not pull forward.
-**Overall progress:** Phases 0-15 + Phase 17a complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01), **v0.8.0 (Phase 17a — detection depth + FP discipline, 2026-05-12)**.
-**Last updated:** 2026-05-13 (Phase 17b 4/4 — TASK-118 + TASK-127 both shipped this session. Embedded Python dropped from binary; `--python-engine` opt-in flag added; default cold start = 5.6 ms p50 (89× under the 500 ms exit gate); all three reference plugins re-audited and working. v0.9.0 ready to tag.)
+**Overall progress:** Phases 0-15 + Phase 17a + Phase 17b complete. Versions: v0.1.0, v0.2.0, v0.4.0, v0.4.1, v0.4.2, v0.5.0, v0.6.0-rc1, v0.6.0-rc2, v0.6.0 (first stable signed release, 2026-04-30), v0.6.1 (install.sh fix + Phase 14 partial-folded patch, 2026-05-01), v0.7.0 (Phase 14 closeout + Phase 15 — open + extensible, 2026-05-01), v0.8.0 (Phase 17a — detection depth + FP discipline, 2026-05-12), **v0.9.0 (Phase 17b — cold start under 6 ms, no Python required, 2026-05-13)**, **v0.9.1 (post-tag spurious-WARN patch, 2026-05-13)**.
+**Last updated:** 2026-05-13 (post-v0.9 release-day omnibus: v0.9.0 tagged + pushed; frontend v0.9 sync + 3 new/refreshed docs pages including new /performance page surfacing the 5.6 ms p50 cold-start number; backend v0.9 drift-tracker docstring (no schema delta); live end-to-end integration validated against running Django + Celery + frontend stack; v0.9.1 spurious-WARN patch shipped after validating every getting-started page command example caught a real regression; sample scan against TwiScope deepin spec executed end-to-end with HTML/JSON/SARIF reports exported.)
 
 ### Completed tasks
 - TASK-001: Initialize Go module and directory structure
@@ -479,6 +479,92 @@ packaging>=23.0               — Dependency version comparison
 ---
 
 ## Last Session Summary
+
+**Date:** 2026-05-13 (post-v0.9 release-day omnibus: tagged v0.9.0, synced both satellite repos, validated every getting-started example end-to-end which caught a real spurious-WARN regression, shipped v0.9.1 patch, ran live full-stack integration test, and exported a real-world TwiScope-API scan report)
+
+**Session goal:** Operator's `/goal active` directive after v0.9.0 was tagged. Three deliverable streams: (a) sync the two satellite repos (`fendix_frontend` + `fendix-backend`) to v0.9.0 — version literals, changelog, and any drift-tracker reconciliation; (b) prove the release works end-to-end against the running Django + Celery + frontend stack; (c) anything else the operator surfaces. Stream (c) ended up dominating: validating frontend page examples, refreshing stale docs pages, building a new `/performance` marketing page, catching + patching a v0.9.0 regression, and running a full third-party API scan.
+
+**Accomplished — 5 commits across 3 repos + 2 release tags + extensive validation:**
+
+- **Cut v0.9.0 release** (`Fendix` repo). Rolled `CHANGELOG.md` `[Unreleased]` → `[0.9.0] - 2026-05-13` with the 4-task summary as headline. Single commit `de9bdca chore: v0.9.0 — Phase 17b complete (TASK-115/116/118/127)` (25 files / +2727 / −1076 LOC); annotated tag `v0.9.0` pushed to `origin`. `release.yml` run 25769433324 picked it up at 2026-05-12T23:59:48Z and built linux/amd64 + darwin/amd64 + darwin/arm64 binaries with sha256s + cosign sidecars. Build state at ship: 20 Go packages race-clean, 159/159 Python tests, e2e 16/16.
+
+- **`fendix_frontend` v0.9.0 sync** (commit `968e60c chore(frontend): v0.9.0 sync`). Bumped 7 version-display literals (StatsBar, LandingFooter, page hero, releases.ts, StatsBar.test.tsx) from v0.8.0 → v0.9.0; new full v0.9.0 changelog entry prepended above v0.8.0 (4 highlights covering TASK-115/116/118/127 + the "no schema delta" rationale); changelog page intro + footer prose blocks refreshed to cite v0.9.0 + Phase 17b; new `--python-engine` row added to `cli-reference/page.tsx` between `--no-native-deps` and `--verbose` documenting opt-in semantics + ~24 ms cold-start cost; `docs/checks/page.tsx` Dependencies row's "transition window" prose replaced with v0.9 "embedded Python no longer bundled" framing. 198/198 vitest tests pass after the bump.
+
+- **`fendix-backend` v0.9.0 sync** (commit `a3ef802 docs(scanning): v0.9.0 drift-tracker reconciliation`). Single docstring update to `backend/scanning/tests/test_engine_drift.py` adding the v0.9.0 entry alongside the existing v0.7.0/v0.8.0 entries. Records that TASK-115/116/118/127 land **zero** schema delta on the API surface (same SEC-* IDs, same Finding fields, the existing `0006_finding_reachability` migration's `affected_endpoints` / `taint_chain` / `reachable` columns keep doing their job). Adds `--python-engine` to the explicitly-not-exposed list with rationale: "whether the worker container has a usable python/ source tree is a deployment-time / Dockerfile decision (operator's Dockerfile.app either bundles Python or doesn't), not a per-scan user choice." File ast-parsed cleanly (16 test functions intact); didn't run the full pytest suite because docker stack wasn't running locally and the diff is strictly docstring.
+
+- **Pushed both satellite repos to origin** when explicitly authorised: `fendix_frontend` `1dd1db8..968e60c`, `fendix-backend` `5b215bf..a3ef802`.
+
+- **Live end-to-end integration validation.** Built linux/arm64 cross-compiled engine binary at `bin/fendix-linux-arm64` (12 MB ELF aarch64, statically linked); created symlink `fendix-services/fendix-engine -> Fendix` so the backend dev compose's mount paths resolve; brought up the full backend stack via `make dev` (django + nginx + postgres + redis + celery + celery-beat — 6 containers, all healthy after migrations applied); started Next.js dev server on `localhost:3000`. Then exercised:
+  - `/health-check/` → 200 OK
+  - `/api/schema/` → 200 OK, 63 KB OpenAPI 3.0.3 envelope; verified `no_native_deps`, `reachable`, `taint_chain`, `affected_endpoints` all present
+  - `/api/auth/login` → JWT minted; `/api/auth/me` → 200; `/api/scans` GET → 200 (empty list)
+  - `POST /api/scans` against `https://httpbin.org` (blackbox, --max-duration 30s, --max-endpoints 3) → 201, scan ID returned, status `running`
+  - 30s later: `GET /api/scans/{id}` → status `completed`, duration 30,047 ms; `GET /api/scans/{id}/report?format=html` → 200, 6.3 KB; `?format=sarif` → 200, 504 B (valid SARIF 2.1.0 envelope)
+  - `docker compose exec celery /usr/local/bin/fendix version` → `v0.9.0-dev (linux/arm64)` — confirms the worker is executing the Phase 17b binary
+  - All 5 frontend pages (`/`, `/changelog`, `/cli-reference`, `/docs/checks`, `/integrations`) render 200; v0.9.0 content ("cold start under 6 ms", "no Python required", "Phase 17b") reaches the DOM
+
+- **Refreshed two stale docs pages + added one new page** (commit `329a17f docs(site): refresh architecture + getting-started for v0.9; add /performance page`). Two pre-existing pages still carried the v0.7-era "Python is a default-spawned subprocess" mental model:
+  - `/docs/architecture` — ASCII system diagram redrawn showing native Go scanners + opt-in Python; ADR-001 status flipped to "Accepted (Phase 0); evolved in v0.9 / Phase 17b"; new emerald "Evolution in v0.9" callout under ADR-001 explaining why the embedded-Python decision paid for itself then was outgrown; trade-offs refreshed (Go 1.22+ requirement; Python only for opt-in path); ADR-002 (NDJSON IPC) preserved unchanged because it's still load-bearing for plugins and the opt-in Python path.
+  - `/docs/getting-started` — build-from-source step says Python is opt-in; Docker description honest about default coverage; white-box example progressive form (default → with `--spec` → with `--python-engine`); hybrid example clarifies Go-side scanners produce whitebox-source findings so correlation works without Python; `--spec` semantics clarified (always feeds endpoint discovery, but spec-derived auth checks need `--python-engine`); new emerald "v0.9 / Phase 17b note" callout in install section linking to `/performance`.
+  - `/performance` (NEW, ~330 LOC) — hero with v0.9 framing; cold-start latency table comparing PRE-v0.8 (7.3 ms p50) vs default v0.9 (5.6 ms p50) vs `--python-engine` opt-in (24.4 ms p50); three stat tiles (23 % faster vs v0.8; 4.4× gap vs opt-in; 89× under exit gate); methodology section (fixture, sample size, hardware); binary-size table (-99 KB / -0.5 %); reproduction harness reference (`scripts/bench/coldstart.py`); deep-link block to changelog/cli-reference/architecture/upstream `docs/benchmarks.md`. 198/198 vitest tests pass after the additions.
+
+- **Validated every getting-started command example against the v0.9 binary, caught a real regression, shipped v0.9.1 patch.** Operator pushed back on the page review with "did u test the examples?" — they were right. First-pass test harness was buggy (`head -1` swallowed exit codes) but uncovered a real v0.9.0 regression: every scan invocation logged `WARN python engine not available — whitebox scanning disabled` regardless of `--python-engine`. Root cause: `NewOrchestrator` called `EnsureEngine` eagerly. With TASK-118 dropping the embedded distribution, `EnsureEngine` now always fails for users without a local python tree, so the WARN spammed every scan and contradicted v0.9's "no Python required by default" promise at the log level. Fix: gate `EnsureEngine` resolution on `cfg.PythonEngine`. Re-validated all 14 documented examples (Quick Start, Black-box, White-box ×3, Hybrid, Auth ×3, Active probing, CI/CD gating, Baseline ×2, fendix report) against `https://httpbin.org` — every example exits 0, produces expected output files, no spurious WARN. Shipped as commit `92c3d97 fix(orchestrator): v0.9.1 — drop spurious python-not-available WARN` + annotated tag `v0.9.1` pushed to `origin`. `release.yml` triggered for the new tag.
+
+- **Sample real-world scan against `https://gateway.twiscope.net/specs/deepin.json`** at operator's request, exported all three formats. TwiScope API v4.0.0, OpenAPI 3.0.3, 424 paths / 803 operations, server `https://gateway.twiscope.net/deepin`. Two scan passes: (1) bounded `--max-endpoints 50` (17.97 s, 1,150 HTTP requests, 2 unique findings); (2) deeper `--max-endpoints 0 --enable-active --max-probes-per-endpoint 5 --workers 20 --max-duration 15m` (2m14.956s, 23,242 HTTP requests, 5 unique findings: 3 MEDIUM + 2 INFO). Findings: SEC-001 CORS-allows-any-origin (CWE-942, all 803 endpoints), SEC-002 software-version-disclosure on the LinkedIn callback (CWE-200, 1 endpoint), SEC-003 missing-CSP on the LinkedIn callback (CWE-693, 1 endpoint), SEC-004 server-version-in-header on the LinkedIn callback (CWE-200, 1 endpoint), SEC-005 no-rate-limiting (CWE-770, all 803 endpoints). Reports written to `~/twiscope-scan/{report.html,report.json,report.sarif}` (111 KB / 107 KB / 380 KB after the deeper scan). Diagnosis explained to operator: thin findings are not a fendix gap — every active probe got `status=401` because no auth token was supplied; TASK-123's 4xx-gate then suppresses CORS/header findings on those responses by design. The 4 LinkedIn-callback findings exist precisely because that endpoint is the only one that returned 200 (OAuth callback, no pre-auth required). To unlock real coverage, operator was offered: `--auth "Bearer <jwt>"`, `--auth "<key>" --auth-type apikey`, dual-token `--auth-user2`, or `--code <path>` for static analysis.
+
+**Files modified this session (across 3 repos):**
+
+`Fendix` engine:
+- `CHANGELOG.md` (Unreleased → 0.9.0 - 2026-05-13 + new 0.9.1 patch entry)
+- `go/internal/engine/orchestrator.go` (v0.9.1 — `NewOrchestrator` lazy `EnsureEngine` gate)
+- `+ tag v0.9.0`, `+ tag v0.9.1` pushed to origin
+- `tasks/MEMORY.md` (this entry + Current Project State header bumped)
+
+`fendix_frontend`:
+- `app/changelog/page.tsx` (new v0.9.0 entry + intro/footer refresh)
+- `app/cli-reference/page.tsx` (--python-engine row added)
+- `app/components/StatsBar.tsx` + `tests/components/StatsBar.test.tsx` (v0.8.0 → v0.9.0)
+- `app/components/LandingFooter.tsx` (footer subtext bump)
+- `app/page.tsx` (hero badge text)
+- `app/lib/releases.ts` (JSDoc filename examples)
+- `app/docs/checks/page.tsx` (Dependencies row prose update)
+- `app/docs/architecture/page.tsx` (ASCII diagram redrawn + ADR-001 evolution callout)
+- `app/docs/getting-started/page.tsx` (build-from-source/docker/whitebox/hybrid examples + Phase 17b note callout)
+- `app/performance/page.tsx` (NEW, ~330 LOC)
+
+`fendix-backend`:
+- `backend/scanning/tests/test_engine_drift.py` (v0.9.0 reconciliation docstring)
+
+**Build state at session end:**
+
+- Engine: 20 Go packages race-clean, 159/159 Python; v0.9.1 tag pushed; release.yml in flight
+- Frontend: 198/198 vitest passing; 3 commits ahead of where the day started, all pushed
+- Backend: docstring-only delta committed + pushed; the remote subsequently received 3 unrelated commits from someone else's workflows work (`7840416`, `f5216f6` merge, `54f88d0`) which are now beneath my `a3ef802` in history but don't touch the v0.9 reconciliation
+- Live stack: backend (6 containers, all healthy) + frontend (`localhost:3000`) still running for any follow-up validation
+
+**Decisions made:**
+
+- **Single consolidated `chore: v0.9.0` commit, not one-per-task.** Same pattern v0.8.0 used (`d7cefd3 chore: v0.8.0 — Phase 17a complete (TASK-119..126)`). Per-task commits would be cleaner-looking in `git log` but the tasks are coherent as a single Phase 17b release; splitting them would imply they could ship independently, which they can't (TASK-118 depends on TASK-115 + TASK-116 having absorbed the secrets/semgrep functionality first).
+- **v0.9.1 patch shipped same day.** The spurious-WARN regression isn't a hard breakage — scans still complete correctly — but it directly contradicts the v0.9.0 marketing claim of "no Python required". Sitting on it for a week would mean every CI run from today's release would have the misleading WARN in its log. Same-day patch with the explanation of what it fixes is honest and respects users who'll grep their logs.
+- **Stale-page refresh treated as a release-correctness bug, not new feature work.** `/docs/architecture` saying "Python runs as a subprocess spawned by Go" was *true* in v0.8 but *misleading* in v0.9. Letting it stay would mean new users land on a docs page that contradicts the binary's actual behavior. Same logic for `/docs/getting-started` "Requires Go 1.21+ and Python 3.9+" line. Refresh is non-optional once the underlying behaviour shifts.
+- **`/performance` page added rather than just linking out to `docs/benchmarks.md`.** The benchmark numbers are genuinely the most marketable thing about v0.9 (the "5.6 ms" figure is concrete and impressive). Surfacing them on the marketing site means the hero claim "cold start under 6 ms" has a verifiable destination one click away. An external link to GitHub's rendered markdown would do the job functionally but loses the design polish.
+- **Backend drift-tracker docstring-only commit was sufficient.** Considered adding the new `--python-engine` flag to the API serializer's not-exposed list in `serializers.py` (parallel to `--profile`, `--debug-bundle`, etc. that already live there). Decided against: the docstring captures the rationale, and the actual not-exposed list in `serializers.py` is "everything not declared as a serializer field" — adding inline comments to a deny-by-default list creates noise without adding enforcement. The drift-tracker docstring is the canonical source of "why this isn't here."
+- **TwiScope scan: explicit "I'm assuming you have authorization" disclaimer in operator-facing output.** The spec is publicly hosted and the gateway URL is public, but active probing a third-party API requires explicit consent. Disclaimer + offer to stop made the consent assumption transparent without slowing the operator down.
+
+**Open questions / followups:**
+
+- **Symlink-discovery limitation in `internal/plugin`** documented in `docs/plugins.md` during TASK-127 audit, but not fixed. The fix is one line (`os.Stat(filepath.Join(root, e.Name())).IsDir()` instead of `e.IsDir()`). Natural to fold into Phase 17c TASK-130 (`fendix plugins install <git-url>`) since `git clone` produces real directories so the symptom doesn't surface for the planned UX path.
+- **Pre-existing rule-format issue in `auth.yaml`** (the JWT rule uses two `pattern:` siblings under `patterns:` instead of `pattern-either:`). Both Python and Go semgrep wrappers silently absorb the parse failure and produce zero JWT findings. Surfaced again during TASK-127 plugin audit. Worth a follow-up "fix bundled rule packs" task — out of Phase 17c scope but a candidate for a quick patch release.
+- **Live backend + frontend stack still running locally.** `docker compose down` not invoked at session end; both containers + dev server are alive for any next-session validation. Operator can `make down` at fendix-backend repo root + `kill` the frontend PID when done.
+
+**Next session should start with:**
+
+- **Begin Phase 17c — plugin ecosystem polish.** Four tasks per [tasks/PHASES.md](PHASES.md): TASK-128 (rewrite `docs/plugins.md` for external authors), TASK-129 (2 reference plugins in non-Go languages — Python + Ruby/Node), TASK-130 (`fendix plugins list / install <git-url>` CLI subcommands; fold the symlink-discovery fix from TASK-127's audit into this), TASK-131 (plugin smoke test in CI — `make test` runs each reference plugin against a fixture, asserts findings shape, guards wire-contract regressions). ~14 solo days, ~4 weeks at 70% capacity. Sequencing rationale (from PHASES.md): doing plugin docs/examples before v0.9 ships would have meant rewriting them; after v0.9 the contract is stable and the documentation work is wasted-effort-free.
+- **Decision gate at end of Phase 17c:** plugin breakage rate. If v0.10 broke >1–2 reference plugins, add a hotfix sprint before Phase 17d.
+
+---
+
+## Earlier Session (2026-05-13 — Phase 17b 4/4 — TASK-118 + TASK-127 both shipped; v0.9.0 ready to tag)
 
 **Date:** 2026-05-13 (Phase 17b 4/4 — TASK-118 + TASK-127 both shipped; v0.9.0 ready to tag)
 

@@ -4,7 +4,29 @@
 
 ---
 
-## Active Phase: 17b — v0.9 Cold-start work pulled forward — ✅ Complete (4/4; v0.9.0 ready to tag)
+## Active Phase: 17c — v0.10 Plugin ecosystem polish — 🔄 In Progress (entered 2026-05-13)
+
+**Sprint goal:** Take the plugin system shipped in TASK-113 (Phase 15 / v0.7.0) and polished by TASK-127's compatibility audit (Phase 17b / v0.9.0) and turn it into something an external author can actually pick up. Four tasks: rewrite `docs/plugins.md` for external authors (TASK-128), ship 2 reference plugins in non-Go languages to prove the wire contract is language-agnostic (TASK-129), add `fendix plugins list` / `fendix plugins install <git-url>` CLI subcommands (TASK-130; folds in the symlink-discovery fix surfaced in TASK-127), CI smoke test that runs each reference plugin against a fixture in `make test` (TASK-131).
+
+**Source of plan:** [tasks/PHASES.md](PHASES.md) Phase 17c exit criteria + task list.
+
+**Sprint shape:** ~14 solo days with 25% buffer (~4 weeks at 70% capacity). Sequencing rationale (from PHASES.md): doing plugin docs/examples before v0.9 ships would have meant rewriting them; after v0.9 the contract is stable and the documentation work is wasted-effort-free.
+
+| ID | Task | Status | Estimate | Notes |
+| --- | --- | --- | --- | --- |
+| TASK-128 | Plugin authoring docs — rewrite `docs/plugins.md` for external authors | 🔲 | ~3 days | NDJSON wire contract with worked examples, plugin lifecycle, error handling, packaging, installation. Existing `docs/plugins.md` is internally-shaped (talks about discovery/IPC/security); rewrite for an outside contributor who has never opened the engine source. |
+| TASK-129 | 2 reference plugins in non-Go languages | 🔲 | ~3 days | Pick from {Python, Ruby, Node}. The 3 existing reference plugins are 2 Python + 1 shell — adding Ruby + Node (or similar) proves the wire contract is language-agnostic. Live under `examples/plugins/`. Each plugin needs: realistic check (not contrived), honest README pointing at `docs/plugins.md`, copy-pasteable CI snippet. |
+| TASK-130 | `fendix plugins list` + `fendix plugins install <git-url>` CLI | 🔲 | ~3 days | New `internal/pluginscmd/` package + `cmd/fendix` cobra subcommands. `list` enumerates discovered plugins (name, mode, version, dir). `install` clones a git repo into `~/.fendix/plugins/<name>/`. **Fold in the symlink-discovery fix** surfaced during TASK-127 — `os.Stat(filepath.Join(root, e.Name())).IsDir()` instead of `e.IsDir()` so symlinked plugin dirs work too. |
+| TASK-131 | Plugin smoke test in CI — `make test` runs each reference plugin | 🔲 | ~2 days | New `internal/plugin/refplugins_test.go` (build-tag `e2e`?) that invokes each `examples/plugins/*` against a deterministic fixture and asserts findings shape. Guards wire-contract regressions for any future change to the orchestrator's plugin runner. |
+
+**Exit criteria:** see [tasks/PHASES.md](PHASES.md) Phase 17c section. v0.10.0 tag at sprint end.
+
+**Cross-repo coordination this phase:**
+- `fendix-backend` / `fendix_frontend`: no expected API-shape changes. `fendix plugins install` is host-filesystem only — no backend exposure (consistent with the existing `--no-plugins` posture). Frontend may want to surface plugin docs in `/docs` when TASK-128 lands; flag at TASK-128 ship time.
+
+---
+
+## Prior Active Phase: 17b — v0.9 Cold-start work pulled forward — ✅ Complete (4/4; shipped as v0.9.0 + v0.9.1 on 2026-05-13)
 
 **Sprint goal:** Ship v0.9.0 with secrets analyzer ported to Go (TASK-115), Semgrep shelled-out instead of embedded (TASK-116), the embedded Python distribution dropped from the binary with a published p50 cold-start before/after benchmark (TASK-118), and a plugin wire-contract compatibility audit covering the three reference plugins (TASK-127). TASK-117 (AST analyzer migration via tree-sitter) is deliberately deferred to true Phase 16 / v2.0.
 
