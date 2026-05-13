@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-13
+
+**Headline:** the plugin ecosystem is genuinely usable now. Phase 17c
+(P7 Engine-first v0.10) ships four tasks that turn the plugin system
+from "exists" into "a third party can ship a plugin against an
+installed binary in 60 seconds." The wire contract from TASK-113
+(v0.7) is unchanged; what changed is the surface around it —
+external-author docs, two new reference plugins in Node + Ruby
+proving the contract is language-agnostic, a `fendix plugins`
+CLI subcommand tree, and a CI smoke test that catches wire-contract
+regressions automatically.
+
+This release folds 4 tasks (TASK-128/129/130/131) into a single
+minor release. Phase 17c is 4/4 complete.
+
+### Added
+
+- **TASK-128 — `docs/plugins.md` rewritten for external authors.**
+  Restructured around the outside-contributor audience: 60-second
+  copy-paste quickstart (TODO-finder, ~30 LOC) before any conceptual
+  content; new "How plugins fit into a scan" pipeline diagram
+  showing where plugins (step 4.5) sit in the orchestrator;
+  Python / Node / Bash skeleton entrypoints; "Testing your plugin
+  locally" section with smoke-test recipes inside and outside the
+  engine; "Common errors" 8-row diagnosis table; "Distributing your
+  plugin" covering both `git clone` and the new `fendix plugins
+  install`; tightened security model with explicit auth-token
+  handling guidance; authoring checklist expanded 8 → 13 items.
+  ~580 LOC total.
+
+- **TASK-129 — two new reference plugins in non-Go languages.**
+  `examples/plugins/license-header-check/` (Node, stdlib-only,
+  ~150 LOC): walks the source tree, flags files lacking an
+  `SPDX-License-Identifier` header in the first 30 lines.
+  Configurable via `FENDIX_LICENSE_HEADER_REGEX`.
+  `examples/plugins/dockerfile-best-practices/` (Ruby, stdlib-only,
+  ~210 LOC): walks for `Dockerfile` / `Dockerfile.*`, emits up to 5
+  distinct findings per file (`:latest` tag, `curl | sh`,
+  `ADD <url>`, root-by-default, missing HEALTHCHECK) with CWE refs.
+  Both plugins ship with a README. Reference-plugin shelf in
+  `docs/plugins.md` updated 3 → 5 plugins; language spread is now
+  Python ×2, Bash ×1, Node ×1, Ruby ×1.
+
+- **TASK-130 — `fendix plugins list` + `fendix plugins install`
+  CLI.** New `internal/pluginscmd/` package (~280 LOC) and
+  `fendix plugins` cobra subcommand tree. `fendix plugins list`
+  enumerates discovered plugins (NAME / VERSION / MODE / DIR) using
+  the same discovery roots a real scan uses, so what's printed is
+  exactly what would run. `fendix plugins install <git-url>` is a
+  thin wrapper over `git clone --depth=1`: derives the on-disk
+  name from the URL, refuses to overwrite preexisting directories,
+  validates the cloned tree's `plugin.yaml` after clone, and
+  removes the directory on validation failure so you never end up
+  with a half-installed plugin that WARNs every scan. URL-to-name
+  derivation handles `.git` suffix, scp-style `git@host:org/repo`,
+  query strings, and trailing slashes. **Folded in the symlink-
+  discovery fix from TASK-127's audit**: plugin discovery now
+  `os.Stat`s each entry before `IsDir()`-checking, so symlinked
+  plugin dirs (`ln -s ../my-plugin .fendix/plugins/`) work too.
+
+- **TASK-131 — plugin smoke test in CI.** New
+  `internal/e2e/refplugins_test.go` (build-tag `e2e`, ~330 LOC)
+  under the existing `make e2e` umbrella. One subtest per
+  reference plugin (5 total) that copies the plugin into a temp
+  scan root, runs `fendix scan` against a deterministic fixture,
+  and asserts the expected findings flow through with the
+  engine-attached `fendix-plugin:<name>` provenance tag. Each
+  subtest skips cleanly when its required runtime (node, ruby,
+  python3, bash + jq) isn't installed on the CI runner — so the
+  test still passes on minimal images while exercising every
+  plugin on full ones. Catches wire-contract regressions: anything
+  that breaks `orchestrator.runPlugins`, NDJSON terminator
+  parsing, finding validation, or provenance attachment will fail
+  this test on every PR.
+
 ## [0.9.1] - 2026-05-13
 
 **Patch.** v0.9.0 introduced a regression: every `fendix scan` invocation
