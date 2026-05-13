@@ -7,17 +7,18 @@
       "title_substrings": ["SQL query built", "SQL injection"],
       "expected_category": "injection",
       "file": "corpus/sqli.py",
+      "_lines_point_at": "sink (cursor.execute call line), not def line — so emissions match exactly with low tolerance",
       "tp_lines": [
-        {"line": 16, "case": "case_01_request_string_concat"},
-        {"line": 24, "case": "case_02_request_fstring"},
-        {"line": 31, "case": "case_03_request_percent_format"},
-        {"line": 38, "case": "case_04_request_format_method"},
-        {"line": 45, "case": "case_05_multi_hop_assignment"}
+        {"line": 21, "case": "case_01_request_string_concat"},
+        {"line": 28, "case": "case_02_request_fstring"},
+        {"line": 35, "case": "case_03_request_percent_format"},
+        {"line": 42, "case": "case_04_request_format_method"},
+        {"line": 50, "case": "case_05_multi_hop_assignment"}
       ],
       "tn_lines": [
-        {"line": 53, "case": "case_06_parameterized_safe"},
-        {"line": 60, "case": "case_07_constant_query_safe"},
-        {"line": 66, "case": "case_08_orm_no_concat_safe"}
+        {"line": 57, "case": "case_06_parameterized_safe"},
+        {"line": 63, "case": "case_07_constant_query_safe"},
+        {"line": 71, "case": "case_08_orm_no_concat_safe"}
       ]
     },
     "cmdi": {

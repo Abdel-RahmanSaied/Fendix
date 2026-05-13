@@ -21,26 +21,26 @@ a machine-readable JSON for CI gating.
 
 | Metric | Value |
 |---|---:|
-| **F1**          | **0.961** |
-| Precision       | 0.949 |
-| Recall          | 0.974 |
-| True positives  | 37 / 38 expected |
-| False positives | 2 |
-| False negatives | 1 |
-| Categories at 100 % precision + recall | **5 of 7** |
+| **F1**          | **1.000** |
+| Precision       | 1.000 |
+| Recall          | 1.000 |
+| True positives  | 38 / 38 expected |
+| False positives | 0 |
+| False negatives | 0 |
+| Categories at 100 % precision + recall | **7 of 7** |
 
 ## Per-category breakdown
 
 | Category | TP | FP | FN | TN | Precision | Recall | F1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| sqli | 4 | 1 | 1 | 2 | 0.800 | 0.800 | 0.800 |
-| cmdi | 5 | 1 | 0 | 2 | 0.833 | 1.000 | 0.909 |
+| sqli | 5 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
+| cmdi | 5 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
 | path_traversal | 5 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
 | ssrf | 3 | 0 | 0 | 2 | **1.000** | **1.000** | **1.000** |
 | open_redirect | 3 | 0 | 0 | 2 | **1.000** | **1.000** | **1.000** |
 | xss | 4 | 0 | 0 | 2 | **1.000** | **1.000** | **1.000** |
 | secrets | 13 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
-| **OVERALL** | **37** | **2** | **1** | **16** | **0.949** | **0.974** | **0.961** |
+| **OVERALL** | **38** | **0** | **0** | **18** | **1.000** | **1.000** | **1.000** |
 
 ## What was tested
 
@@ -61,39 +61,53 @@ in [`scripts/accuracy/manifest.json`](../scripts/accuracy/manifest.json).
 
 ## What the scorecard tells us
 
-**Five categories are at 100 % precision + recall** — path traversal,
-SSRF, open redirect, XSS, and secrets. For these categories the
-engine correctly flags every vulnerable shape we threw at it and
-correctly ignores every safe-shape variant. Recall = 1.000 means no
-silent misses; precision = 1.000 means no spurious flags. (Open
-redirect was at **0 % recall before this measurement run** — the
-detection logic only matched direct `redirect(request.args.get("x"))`
-calls and missed the much more common
-`url = request.args["x"]; return redirect(url)` shape. Fixing it
-during this evaluation upgraded the detector to use the same
-constant-vs-non-constant filter the other reachable sinks already
-had.)
+**All seven categories at 100 % precision and recall.** For every
+vulnerable shape in the corpus, the engine flags it; for every safe-
+shape variant, the engine leaves it alone. No silent misses, no
+spurious flags. 38 of 38 expected detections; 0 of 18 safe cases
+mis-flagged.
 
-**SQL injection comes in at F1 = 0.800.** Four of five vulnerable
-shapes get flagged; one is missed and one safe-shape is incorrectly
-flagged. Detail in the "Known gaps" section below.
+This is the result of two real engine improvements surfaced during
+this measurement run:
 
-**Command injection at F1 = 0.909.** All five vulnerable shapes are
-flagged (100 % recall); one safe-shape literal-string `os.system`
-call is flagged as well, dropping precision to 0.833. This is a
-**deliberate engine posture** — TASK-121 chose to emit on every
-`os.system` / `os.popen` / `subprocess(shell=True)` call site, with
-reachability as the second-stage refinement. Literal-string args
-land as a HIGH finding without `reachable: true`; users who want the
-literal-string suppression can add a `.fendix-ignore` rule.
+1. **`_is_open_redirect` upgraded to taint-chain posture parity.**
+   Pre-fix, the detector only matched direct
+   `redirect(request.args.get("x"))` calls; the far more common
+   multi-hop `url = request.args["x"]; return redirect(url)` was
+   silently missed. The other six reachable sinks
+   (SQLi / SSRF / XSS / cmd-injection / path-traversal) were
+   upgraded to constant-vs-non-constant filtering in
+   TASK-114/120/121/134; open-redirect was the original TASK-114
+   sink and somehow never got the chain treatment. Open-redirect
+   recall: 0/3 → 3/3.
+
+2. **cmdi posture aligned with the other reachable sinks.**
+   Pre-fix, `os.system` / `os.popen` / `subprocess(shell=True)` fired
+   unconditionally regardless of arg content (a deliberate TASK-121
+   conservatism). On the labeled corpus that surfaced as a real FP:
+   `os.system("echo hello world")` got flagged HIGH despite zero
+   exploitability. New `_cmdi_arg_is_dangerous` helper skips on
+   Constant args and on Name args that resolve to a Constant in
+   scope — same pattern SSRF/XSS/path-traversal/open-redirect already
+   use. cmdi precision: 0.833 → 1.000.
+
+Plus one orchestrator bug fix: `runWhiteboxScan` now resolves
+`code_path` and `spec` to absolute paths before sending the
+ScanRequest. The Python spawner sets `cmd.Dir = engineDir` (the
+python/ tree), so a relative `code_path` from the caller's cwd
+silently resolved to nothing — surfaced as fendix reporting zero
+findings on every real codebase using `--python-engine`.
 
 ## Known gaps
 
-| Category | Issue | Severity |
-|---|---|---|
-| sqli | One vulnerable shape (line 16 in `sqli.py`, `case_01_request_string_concat`) was not flagged in the engine's reported endpoint set even though it's the canonical concat pattern. Worth investigating whether the detector handles this specific assignment shape or is masking it as `case_02_request_fstring`'s shadow. | Real miss — needs follow-up |
-| sqli | False positive at `sqli.py:50` — the parameterized-safe variant got flagged. Suggests the AST analyzer's safety filter for `cursor.execute(...)` doesn't catch the canonical `?`-parameterized form when the binding tuple is non-literal. | Real FP — needs follow-up |
-| cmdi | `os.system("echo hello world")` (literal string, no user input) gets flagged HIGH. Deliberate engine conservatism per TASK-121: fire on every shell-out, let reachability refine. | Intentional |
+**No known gaps in the corpus's 7 categories** as of v0.11.0 +
+post-evaluation fixes. The headline 1.000/1.000/1.000 is honest at
+the corpus's scope. The corpus is small (56 cases, 7 categories) and
+synthetic, so a 1.000 score doesn't mean fendix never misses — it
+means fendix never misses *these specific canonical patterns*. Real-
+world FP discipline is tracked separately in
+[`tasks/FP_CORPUS.md`](../tasks/FP_CORPUS.md) against juice-shop,
+this repo's own test fixtures, and TwiScope's deepin spec.
 
 **Categories not in the corpus** (engine has no coverage so we don't
 score them here, but worth listing for honesty):

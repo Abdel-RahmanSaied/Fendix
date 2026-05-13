@@ -527,18 +527,23 @@ class TestCmdInjectionReachable:
             assert cmd[0].get("reachable") is True
             assert any("request.args" in link["expr"] for link in cmd[0]["taint_chain"])
 
-    def test_os_system_with_literal_no_chain(self) -> None:
-        """os.system('ls') — literal arg, finding fires, no chain."""
+    def test_os_system_with_literal_no_finding(self) -> None:
+        """os.system('ls') — literal arg is safe-shape; no finding emitted.
+
+        Updated 2026-05-13 during the accuracy evaluation: pre-fix the
+        finding fired on every os.system call regardless of arg content
+        (a deliberate TASK-121 conservatism). That surfaced as a real
+        false positive against the labeled corpus, so cmdi now follows
+        the same posture as SSRF/XSS/path-traversal — skip on Constant
+        args, only emit when the arg is variable.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "h.py").write_text(
                 "import os\ndef listdir():\n    os.system('ls')\n"
             )
             findings = _collect(tmpdir)
             cmd = [f for f in findings if f["id"] == "SEC-PY_OS_SYSTEM"]
-            # The finding still fires (os.system is dangerous regardless),
-            # but reachable is not set.
-            assert len(cmd) == 1
-            assert cmd[0].get("reachable") is not True
+            assert cmd == [], f"expected no cmdi findings on literal-string os.system; got {cmd}"
 
     def test_subprocess_shell_true_with_request_arg_emits_chain(self) -> None:
         """subprocess.run(req.args['cmd'], shell=True) — chain captured."""
@@ -554,8 +559,13 @@ class TestCmdInjectionReachable:
             assert cmd[0].get("reachable") is True
             assert any("request.args" in link["expr"] for link in cmd[0]["taint_chain"])
 
-    def test_subprocess_shell_true_with_literal_no_chain(self) -> None:
-        """subprocess.run('ls', shell=True) — literal, no chain."""
+    def test_subprocess_shell_true_with_literal_no_finding(self) -> None:
+        """subprocess.run('ls', shell=True) — literal arg is safe-shape; no finding.
+
+        Updated 2026-05-13: cmdi posture aligned with the other reachable
+        sinks per the accuracy evaluation. A literal-string command isn't
+        exploitable; emitting HIGH for it was a real false positive.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "h.py").write_text(
                 "import subprocess\n"
@@ -564,8 +574,7 @@ class TestCmdInjectionReachable:
             )
             findings = _collect(tmpdir)
             cmd = [f for f in findings if f["id"] == "SEC-PY_SUBPROCESS_SHELL"]
-            assert len(cmd) == 1
-            assert cmd[0].get("reachable") is not True
+            assert cmd == [], f"expected no findings on literal subprocess(shell=True); got {cmd}"
 
     def test_os_popen_with_request_arg_emits_chain(self) -> None:
         """os.popen(request.GET['x']) — new sink in TASK-121, chain captured."""
@@ -581,16 +590,19 @@ class TestCmdInjectionReachable:
             assert cmd[0].get("reachable") is True
             assert any("request.GET" in link["expr"] for link in cmd[0]["taint_chain"])
 
-    def test_os_popen_with_literal_emits_finding_without_chain(self) -> None:
-        """os.popen('ls') — finding fires, but reachable is not set."""
+    def test_os_popen_with_literal_no_finding(self) -> None:
+        """os.popen('ls') — literal arg is safe-shape; no finding emitted.
+
+        Updated 2026-05-13: cmdi posture aligned with the other reachable
+        sinks per the accuracy evaluation.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "h.py").write_text(
                 "import os\ndef listdir():\n    os.popen('ls').read()\n"
             )
             findings = _collect(tmpdir)
             cmd = [f for f in findings if f["id"] == "SEC-PY_OS_POPEN"]
-            assert len(cmd) == 1
-            assert cmd[0].get("reachable") is not True
+            assert cmd == [], f"expected no findings on literal os.popen; got {cmd}"
 
     def test_multi_step_assignment_resolves_for_cmd_injection(self) -> None:
         """cmd = request.args['x']; os.system(cmd) — chain across hop."""

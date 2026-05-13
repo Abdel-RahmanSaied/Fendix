@@ -314,14 +314,19 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 )
 
         # os.system() — extended in TASK-121 to capture taint chains
-        # when user input flows in. The sink fires unconditionally (same
-        # posture as before) — the chain is metadata that the correlator
-        # uses to escalate severity per TASK-114.
+        # when user input flows in. Constant-arg skip added during the
+        # 2026-05-13 accuracy evaluation to match the posture of the
+        # other reachable sinks (SSRF/XSS/path-traversal/open-redirect):
+        # a literal-string `os.system("echo hello")` isn't exploitable
+        # and was flagging as HIGH for no benefit. Variable args
+        # (Name, Call, BinOp, JoinedStr) still emit; the chain decides
+        # whether the variable traces back to a request source.
         elif (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "system"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "os"
+            and self._cmdi_arg_is_dangerous(node)
         ):
             chain = None
             if node.args:
@@ -347,12 +352,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # os.popen() — same shape as os.system; deprecated form that's
         # still common in older codebases. Reads a shell command and
         # returns a pipe, but the shell-injection surface is identical.
-        # New in TASK-121.
+        # New in TASK-121; constant-arg skip parity added during the
+        # 2026-05-13 accuracy evaluation.
         elif (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "popen"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "os"
+            and self._cmdi_arg_is_dangerous(node)
         ):
             chain = None
             if node.args:
@@ -377,8 +384,10 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
 
         # subprocess with shell=True — extended in TASK-121 to capture
         # taint chains. The first positional arg is the command string
-        # when shell=True; that's where user input flows in.
-        elif self._is_subprocess_shell_true(node):
+        # when shell=True; that's where user input flows in. Constant-
+        # arg skip parity added during the 2026-05-13 accuracy
+        # evaluation.
+        elif self._is_subprocess_shell_true(node) and self._cmdi_arg_is_dangerous(node):
             chain = None
             if node.args:
                 chain = self._collect_taint_chain(
@@ -665,6 +674,36 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 category="auth_bypass",
             )
         self.generic_visit(node)
+
+    def _cmdi_arg_is_dangerous(self, node: ast.Call) -> bool:
+        """Return True if the first positional arg to a cmdi sink is non-literal.
+
+        Parity helper for os.system / os.popen / subprocess(shell=True).
+        A literal-string argument (or a Name that resolves to a Constant
+        in the local scope) is the safe shape — `os.system("echo hi")` is
+        not exploitable. Variable args (Name not-in-scope, Call, BinOp,
+        JoinedStr) are the dangerous case; `_collect_taint_chain`
+        decides whether the variable actually traces back to a request
+        source.
+
+        Added 2026-05-13 during the accuracy evaluation — pre-fix all
+        os.system/popen/subprocess(shell=True) calls fired unconditionally,
+        which surfaced as a false positive on safe literal-string calls.
+        Brings cmdi posture into line with SSRF / XSS / path-traversal /
+        open-redirect (all of which already skip Constant args).
+        """
+        if not node.args:
+            return False
+        first = node.args[0]
+        # Constant literal is safe (e.g. `os.system("echo hello")`)
+        if isinstance(first, ast.Constant):
+            return False
+        # Name that resolves to a constant in the local scope is also safe.
+        if isinstance(first, ast.Name):
+            for scope in reversed(self._scopes):
+                if first.id in scope and isinstance(scope[first.id], ast.Constant):
+                    return False
+        return True
 
     def _is_subprocess_shell_true(self, node: ast.Call) -> bool:
         """Return True if the call is subprocess.<fn>(..., shell=True)."""
