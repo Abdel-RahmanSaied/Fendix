@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Engine UX gaps surfaced by the TwiScope-backend e2e scan (2026-05-14)
+
+Three real product gaps the TwiScope scan exposed; each fixed in
+lockstep with a unit test. See `docs/accuracy.md` Track 4 §9.
+
+- **Gap 1 — pip-audit now walks subdirectories.** Previously, the
+  pip scanner only checked `<code-path>/requirements.txt` and
+  silently skipped multi-service monorepos. On TwiScope-backend
+  this hid 8 dep-CVEs (7× `cryptography==41.0.7` + 1×
+  `python-dotenv==1.0.1`) because the manifests lived at
+  `Twiscope_Main_App/requirements.txt` etc., not the repo root.
+  New `pip.ScanRecursive(ctx, root, depth)` walks up to depth=3
+  (`pip.DefaultRecurseDepth`) and stamps the relative manifest
+  path on each finding's endpoint so users can tell which service
+  owns each CVE. Skips vendored/cache dirs (`.venv`, `venv`,
+  `node_modules`, `.git`, `site-packages`, `__pycache__`, `.tox`,
+  `.mypy_cache`, `.pytest_cache`, `build`, `dist`) at any depth.
+  Orchestrator switched from `pip.Scan` to `pip.ScanRecursive`;
+  5 new Go tests (`TestFindRequirementsManifests_*`,
+  `TestScanRecursive_*`).
+
 ### Engine quality lift driven by Track 4 heavy-eval (2026-05-14)
 
 **Headline:** the v0.11.0 "Track 4" evaluation surfaced 7 real engine

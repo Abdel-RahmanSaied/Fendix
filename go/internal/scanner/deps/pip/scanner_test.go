@@ -345,3 +345,197 @@ func TestScan_EmptyRequirements(t *testing.T) {
 		t.Errorf("want 0 findings, got %d", len(findings))
 	}
 }
+
+// ─── ScanRecursive / findRequirementsManifests (Track 4 gap fix) ────
+
+func TestFindRequirementsManifests_DepthZero(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("django==1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subdir := filepath.Join(dir, "service")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "requirements.txt"), []byte("flask==1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findRequirementsManifests(dir, 0)
+	if err != nil {
+		t.Fatalf("findRequirementsManifests: %v", err)
+	}
+	// Depth 0 = current dir only — should find the root one, not the subdir one.
+	if len(got) != 1 {
+		t.Fatalf("want 1 manifest at depth=0; got %d: %v", len(got), got)
+	}
+	if !strings.HasSuffix(got[0], filepath.Join(dir, "requirements.txt")) {
+		t.Errorf("want root requirements.txt; got %v", got)
+	}
+}
+
+func TestFindRequirementsManifests_RecursesIntoSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	// Multi-service repo shape — like TwiScope-backend.
+	for _, svc := range []string{"service_a", "service_b", "deep/nested/service_c"} {
+		path := filepath.Join(dir, svc)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "requirements.txt"), []byte("foo==1.0\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := findRequirementsManifests(dir, DefaultRecurseDepth)
+	if err != nil {
+		t.Fatalf("findRequirementsManifests: %v", err)
+	}
+	// service_a + service_b at depth 1, service_c at depth 3 (deep/nested/service_c).
+	// DefaultRecurseDepth=3 includes all of them.
+	if len(got) != 3 {
+		t.Fatalf("want 3 manifests; got %d: %v", len(got), got)
+	}
+	// Verify ordering is deterministic (alphabetical by path).
+	for i := 1; i < len(got); i++ {
+		if got[i] < got[i-1] {
+			t.Errorf("manifests not sorted: %v", got)
+		}
+	}
+}
+
+func TestFindRequirementsManifests_SkipsVendoredDirs(t *testing.T) {
+	dir := t.TempDir()
+	// Put a manifest in a real service dir and a fake-out dir inside .venv.
+	for _, p := range []string{"app", ".venv/lib", "node_modules/foo", ".git/info"} {
+		full := filepath.Join(dir, p)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(full, "requirements.txt"), []byte("x==1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := findRequirementsManifests(dir, DefaultRecurseDepth)
+	if err != nil {
+		t.Fatalf("findRequirementsManifests: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 manifest (vendored dirs skipped); got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], filepath.Join("app", "requirements.txt")) {
+		t.Errorf("want app/requirements.txt; got %v", got[0])
+	}
+}
+
+func TestFindRequirementsManifests_DepthCap(t *testing.T) {
+	dir := t.TempDir()
+	// Place a manifest at depth=5; cap at 2 should exclude it.
+	deep := filepath.Join(dir, "a", "b", "c", "d", "e")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "requirements.txt"), []byte("x==1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Also place one at depth 2 (a/b/) so we know the cap is correct, not a no-match.
+	if err := os.WriteFile(filepath.Join(dir, "a", "b", "requirements.txt"), []byte("x==1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findRequirementsManifests(dir, 2)
+	if err != nil {
+		t.Fatalf("findRequirementsManifests: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 manifest at depth<=2; got %d: %v", len(got), got)
+	}
+}
+
+func TestScanRecursive_EmptyDirReturnsEmptySlice(t *testing.T) {
+	dir := t.TempDir()
+	findings, err := ScanRecursive(context.Background(), dir, DefaultRecurseDepth)
+	if err != nil {
+		t.Fatalf("ScanRecursive: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("want empty findings; got %d", len(findings))
+	}
+}
+
+func TestScanRecursive_MultiServiceManifestsStampPath(t *testing.T) {
+	// Track-4 regression test: scan finds CVEs in BOTH a root manifest AND a
+	// nested service manifest, and each finding's endpoint reports the
+	// relative manifest path.
+	ts := newFakeOSVServer(t, map[string][]osvVuln{
+		"django": {{
+			ID:      "GHSA-test-django",
+			Summary: "Test Django vuln",
+			Aliases: []string{"CVE-9999-9999"},
+			Affected: []osvAffected{{
+				Ranges: []osvRange{{Events: []osvEvent{{Fixed: "5.0.0"}}}},
+			}},
+		}},
+		"flask": {{
+			ID:      "GHSA-test-flask",
+			Summary: "Test Flask vuln",
+			Aliases: []string{"CVE-9999-1000"},
+			Affected: []osvAffected{{
+				Ranges: []osvRange{{Events: []osvEvent{{Fixed: "3.0.0"}}}},
+			}},
+		}},
+	})
+	defer ts.Close()
+	prev := osvAPIBase
+	osvAPIBase = ts.URL
+	defer func() { osvAPIBase = prev }()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("django==4.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "svc_b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "svc_b", "requirements.txt"), []byte("flask==2.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := ScanRecursive(context.Background(), dir, DefaultRecurseDepth)
+	if err != nil {
+		t.Fatalf("ScanRecursive: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("want 2 findings (django+flask); got %d: %v", len(findings), findings)
+	}
+	// Each finding's endpoint should report the relative manifest path.
+	gotEndpoints := map[string]bool{}
+	for _, f := range findings {
+		gotEndpoints[f.Endpoint] = true
+	}
+	if !gotEndpoints["requirements.txt"] {
+		t.Errorf("want endpoint 'requirements.txt' for root django finding; got %v", gotEndpoints)
+	}
+	if !gotEndpoints[filepath.Join("svc_b", "requirements.txt")] {
+		t.Errorf("want endpoint 'svc_b/requirements.txt' for nested flask finding; got %v", gotEndpoints)
+	}
+}
+
+// newFakeOSVServer is a small httptest server that returns canned OSV
+// responses keyed by `package.name` from the query body. Mirrors the
+// pattern from TestScan_HappyPath_AgainstFakeOSV without coupling.
+func newFakeOSVServer(t *testing.T, vulnsByPkg map[string][]osvVuln) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var q struct {
+			Package osvPackage `json:"package"`
+			Version string     `json:"version"`
+		}
+		if err := json.Unmarshal(body, &q); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		vulns := vulnsByPkg[q.Package.Name]
+		_ = json.NewEncoder(w).Encode(struct {
+			Vulns []osvVuln `json:"vulns"`
+		}{vulns})
+	}))
+}

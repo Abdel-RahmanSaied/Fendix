@@ -214,13 +214,23 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			slog.Warn("native go deps scan failed", "error", err)
 		}
 
-		pipFindings, err := pip.Scan(ctx, o.cfg.CodePath)
+		// pip-audit walks the scan root recursively up to
+		// pip.DefaultRecurseDepth levels to catch multi-service repos
+		// where requirements.txt lives in a subdir. Track 4 heavy-eval
+		// surfaced this on TwiScope-backend: 8 dep-CVEs were invisible
+		// to a root-only scan because requirements.txt was at
+		// Twiscope_Main_App/, not the repo root. Vendored / cache dirs
+		// (.venv, node_modules, .git, etc.) are skipped regardless of
+		// depth — see recurseSkipDirs in the pip package.
+		pipFindings, err := pip.ScanRecursive(ctx, o.cfg.CodePath, pip.DefaultRecurseDepth)
 		switch {
 		case err == nil:
-			slog.Info("native pypi deps scan complete", "findings", len(pipFindings))
-			findings = append(findings, pipFindings...)
-		case errors.Is(err, pip.ErrNoRequirements):
-			slog.Debug("no requirements.txt at code path, skipping native pypi deps scan")
+			if len(pipFindings) > 0 {
+				slog.Info("native pypi deps scan complete", "findings", len(pipFindings))
+				findings = append(findings, pipFindings...)
+			} else {
+				slog.Debug("native pypi deps scan found no manifests under code path")
+			}
 		default:
 			slog.Warn("native pypi deps scan failed", "error", err)
 		}
