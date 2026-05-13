@@ -28,6 +28,29 @@ lockstep with a unit test. See `docs/accuracy.md` Track 4 §9.
   5 new Go tests (`TestFindRequirementsManifests_*`,
   `TestScanRecursive_*`).
 
+- **Gap 2 — `fendix verify <id>` shipped (was a Phase-4 stub).**
+  Previously the subcommand was documented in `fendix --help`
+  but printed `verify: not yet implemented (Phase 4)`. Now reads
+  a baseline `findings.json` (saved from a prior scan), locates
+  the requested finding, and re-tests just that one against the
+  current state. Three finding shapes covered in the MVP:
+  - URL-anchored (DAST): re-issues the request with same auth and
+    re-applies the per-title check (missing headers, permissive
+    CORS, version disclosure, missing-authentication, software-
+    version-in-body). Status reasoning is per-check, not generic.
+  - File-anchored secrets (`category=secrets`): re-runs the native
+    secrets scanner against the file's directory and looks for the
+    same title at the same path.
+  - Dep-CVE (`category=deps`): re-runs `pip.Scan` / `npm.Scan`
+    against the manifest's directory and matches by ID tail.
+  CLI: `fendix verify <id> --baseline findings.json --url <base>
+  [--code <root>] [--auth "Bearer ..."] [--json]`. Returns
+  `still-present` / `resolved` / `unknown` / `not-found-in-baseline`.
+  Verified end-to-end against TwiScope-backend: `SEC-002`
+  (missing CSP) → `still-present`, `SEC-009` (missing auth on
+  `/metrics`) → `still-present` with the correct evidence string.
+  New `internal/verifycmd/` package (~470 LOC) + 12 unit tests.
+
 ### Engine quality lift driven by Track 4 heavy-eval (2026-05-14)
 
 **Headline:** the v0.11.0 "Track 4" evaluation surfaced 7 real engine

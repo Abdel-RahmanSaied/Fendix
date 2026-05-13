@@ -21,6 +21,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/pluginscmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/policy"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/verifycmd"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -404,14 +405,64 @@ func newReportCmd() *cobra.Command {
 }
 
 func newVerifyCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "verify [finding-id]",
-		Short: "Re-run a single finding by ID",
-		Long:  "Re-test a specific finding to verify it still exists.",
-		Args:  cobra.ExactArgs(1),
+		Short: "Re-run a single finding by ID and report still-present / resolved",
+		Long: `Re-test a specific finding from a saved scan report and report
+whether it is still present, resolved, or unverifiable.
+
+Supports three finding shapes:
+
+  - URL-anchored (DAST) findings: re-issues the same request with the
+    same auth and re-applies the per-title check (missing headers,
+    permissive CORS, version disclosure, missing auth, etc.).
+
+  - File-anchored secrets findings: re-runs the native secrets scanner
+    against the file's directory.
+
+  - Dep-CVE findings (category=deps): re-runs the pip / npm scanner
+    against the manifest's directory.
+
+The user passes --baseline pointing at a previously saved
+findings.json from "fendix scan --output ...", plus the same --url
+and/or --code that the original scan used.
+
+Output is JSON (machine-readable) when --json is set; otherwise a
+short human-readable summary.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("verify: not yet implemented (Phase 4) — finding %s\n", args[0])
-			return nil
+			baseline, _ := cmd.Flags().GetString("baseline")
+			targetURL, _ := cmd.Flags().GetString("url")
+			codePath, _ := cmd.Flags().GetString("code")
+			auth, _ := cmd.Flags().GetString("auth")
+			emitJSON, _ := cmd.Flags().GetBool("json")
+			timeoutSec, _ := cmd.Flags().GetInt("timeout")
+
+			if baseline == "" {
+				return fmt.Errorf("--baseline <findings.json> is required")
+			}
+			if targetURL == "" && codePath == "" {
+				return fmt.Errorf("at least one of --url or --code must be set (matching the original scan)")
+			}
+
+			result, err := verifycmd.Run(cmd.Context(), args[0], verifycmd.Options{
+				BaselinePath: baseline,
+				URL:          targetURL,
+				CodePath:     codePath,
+				Auth:         auth,
+				Timeout:      time.Duration(timeoutSec) * time.Second,
+			})
+			if err != nil {
+				return err
+			}
+			return verifycmd.Render(os.Stdout, result, emitJSON)
 		},
 	}
+	cmd.Flags().String("baseline", "", "Path to the saved findings.json from the original scan (required)")
+	cmd.Flags().String("url", "", "Target URL (re-test URL-anchored findings; same as original --url)")
+	cmd.Flags().String("code", "", "Source code path (re-test file-anchored / dep findings; same as original --code)")
+	cmd.Flags().String("auth", "", "Authorization header value (e.g. \"Bearer ...\")")
+	cmd.Flags().Bool("json", false, "Emit JSON instead of the human-readable summary")
+	cmd.Flags().Int("timeout", 15, "HTTP timeout in seconds (URL-anchored verify only)")
+	return cmd
 }
