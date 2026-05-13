@@ -736,3 +736,146 @@ class TestEdgeCases:
             nm.mkdir(parents=True)
             (nm / "index.js").write_text("eval(userInput);\n")
             assert _collect(tmpdir) == []
+
+
+class TestPathTraversalReachable:
+    """TASK-134 / Phase 17d — path-traversal reachable taint chains.
+
+    Recognises four filesystem-path sinks: `open`, `Path` / `pathlib.Path`,
+    `send_file`, `send_from_directory`. When user input flows into the
+    path argument, the chain is recorded and `reachable: true` is set —
+    same shape as TASK-114/120/121.
+    """
+
+    def test_open_with_request_arg_emits_chain(self) -> None:
+        """open(request.args['name']) — direct path traversal."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import request\n"
+                "def handler():\n"
+                "    with open(request.args['name']) as f:\n"
+                "        return f.read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1, f"got {[f['id'] for f in findings]}"
+            assert pt[0].get("reachable") is True
+            assert any("request.args" in link["expr"] for link in pt[0]["taint_chain"])
+
+    def test_pathlib_path_with_request_arg_emits_chain(self) -> None:
+        """Path(request.GET['file']) — pathlib-style traversal."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from pathlib import Path\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    return Path(request.GET['file']).read_text()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            assert pt[0].get("reachable") is True
+
+    def test_send_file_with_request_arg_emits_chain(self) -> None:
+        """flask.send_file(request.args.get('p')) — Flask file-serve traversal."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import send_file, request\n"
+                "def download():\n"
+                "    return send_file(request.args.get('p'))\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            assert pt[0].get("reachable") is True
+
+    def test_send_from_directory_uses_second_arg(self) -> None:
+        """send_from_directory(safe_dir, request.args['f']) — arg index 1."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import send_from_directory, request\n"
+                "UPLOAD_DIR = '/var/uploads'\n"
+                "def download():\n"
+                "    return send_from_directory(UPLOAD_DIR, request.args['f'])\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            assert pt[0].get("reachable") is True
+            # The chain should reference the user-controlled SECOND arg.
+            assert any("request.args" in link["expr"] for link in pt[0]["taint_chain"])
+
+    def test_open_literal_arg_no_finding(self) -> None:
+        """open('config.yaml') — constant string is safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def load():\n"
+                "    with open('config.yaml') as f:\n"
+                "        return f.read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert pt == []
+
+    def test_open_constant_in_scope_no_finding(self) -> None:
+        """open(name) where name resolves to constant in scope is safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def load():\n"
+                "    name = 'config.yaml'\n"
+                "    with open(name) as f:\n"
+                "        return f.read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert pt == []
+
+    def test_open_with_non_literal_no_traced_source_still_emits(self) -> None:
+        """open(func()) — non-literal but no request source emits finding without reachable=true."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def get_name(): return 'x'\n"
+                "def load():\n"
+                "    with open(get_name()) as f:\n"
+                "        return f.read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            # Suspicious shape emits; reachable=true requires proven chain
+            # back to a request source.
+            assert len(pt) >= 1
+            assert not pt[0].get("reachable")
+
+    def test_multi_step_assignment_hop(self) -> None:
+        """name = request.args['f']; open(name) — chain across 2 hops."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import request\n"
+                "def handler():\n"
+                "    name = request.args['file']\n"
+                "    return open(name).read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            assert pt[0].get("reachable") is True
+            # At least 2 links: the open() sink and the request.args source.
+            assert len(pt[0]["taint_chain"]) >= 2
+
+    def test_finding_shape_parity(self) -> None:
+        """Severity / confidence / category / CWE match TASK-114/120/121 shape."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "from flask import request\n"
+                "def handler():\n"
+                "    return open(request.args['f']).read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            f = pt[0]
+            assert f["severity"] == "HIGH"
+            assert f["confidence"] == "MEDIUM"
+            assert f["category"] == "injection"
+            assert f["source"] == "whitebox"
+            assert "CWE-22" in f["references"]

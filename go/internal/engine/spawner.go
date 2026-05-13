@@ -65,10 +65,20 @@ type SpawnResult struct {
 // Run spawns the Python engine, sends the ScanRequest, and collects findings.
 // It respects context cancellation and kills the subprocess if cancelled.
 func (ps *PythonSpawner) Run(ctx context.Context, req ScanRequest) SpawnResult {
-	enginePath := filepath.Join(ps.engineDir, "engine.py")
+	// Resolve to absolute paths up front. engineDir is often the local
+	// fallback "python" (relative), and we set cmd.Dir = engineDir; if
+	// enginePath were also relative, the spawned process resolves it
+	// against cmd.Dir → "python/python/engine.py". Pre-existing latent
+	// bug surfaced once TASK-118 made the relative-path branch the
+	// default-non-embedded path.
+	absEngineDir, err := filepath.Abs(ps.engineDir)
+	if err != nil {
+		return SpawnResult{Err: fmt.Errorf("resolving engine dir: %w", err)}
+	}
+	enginePath := filepath.Join(absEngineDir, "engine.py")
 
 	cmd := exec.CommandContext(ctx, ps.pythonBin, enginePath)
-	cmd.Dir = ps.engineDir
+	cmd.Dir = absEngineDir
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

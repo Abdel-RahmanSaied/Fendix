@@ -570,6 +570,56 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 taint_chain=chain,
             )
 
+        # Path-traversal sinks (TASK-134 / Phase 17d). Recognises:
+        #   - open(x), open(x, "r") / open(x, "w") / ...
+        #   - pathlib.Path(x) — the resulting Path is typically passed to
+        #     open() or used as send_from_directory arg
+        #   - flask.send_file(x), flask.send_from_directory(safe_dir, x)
+        #   - django.http.FileResponse(open(x, "rb"))  — caught via the
+        #     inner open() match
+        #
+        # When `x` comes from request input, the attacker can read (or
+        # depending on mode, overwrite) arbitrary paths on the server's
+        # filesystem with `../` traversal. CWE-22.
+        #
+        # Conservative posture (parity with SQLi/SSRF/XSS):
+        #   - Constant string arg → safe, skip
+        #   - Name resolving to constant in scope → safe, skip
+        #   - Anything else → emit; if `_collect_taint_chain` proves a
+        #     flow back to a request source, mark reachable: true. The
+        #     correlator then escalates severity for the
+        #     correlated-reachable case (TASK-114) and step 5.4
+        #     escalates the non-correlated-reachable case (TASK-125).
+        elif self._is_path_traversal_sink(node):
+            chain = None
+            if node.args:
+                # The user-controlled arg is usually the FIRST positional
+                # except for send_from_directory(safe_dir, x) where it's
+                # the second. _path_traversal_arg_index handles that.
+                arg_idx = self._path_traversal_arg_index(node)
+                if arg_idx < len(node.args):
+                    sink_name = self._path_traversal_sink_name(node)
+                    chain = self._collect_taint_chain(
+                        node.args[arg_idx],
+                        node.lineno,
+                        f"{sink_name}({_ast_expr_text(node.args[arg_idx])})",
+                    )
+            self._emit_finding(
+                "PY_PATH_TRAVERSAL",
+                "Path traversal — user input flows to filesystem path",
+                "HIGH",
+                "MEDIUM",
+                "CWE-22",
+                (
+                    "Validate the path against an allow-list of permitted filenames or a "
+                    "base directory. Use pathlib.Path.resolve() and confirm the resolved "
+                    "path is still under the intended root before opening. Reject any "
+                    "input containing '..' or absolute paths."
+                ),
+                node.lineno,
+                taint_chain=chain,
+            )
+
         self.generic_visit(node)
 
     # ------------------------------------------------------------------
@@ -790,6 +840,70 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 return node.func.attr
         return ""
 
+    def _is_path_traversal_sink(self, node: ast.Call) -> bool:
+        """Return True if node is a path-handling sink with a non-literal path arg.
+
+        Recognises (TASK-134):
+          - open(x[, mode]) — stdlib file open
+          - Path(x) / pathlib.Path(x) — pathlib constructor (the resulting
+            Path is typically opened or sent next; flagging the construct
+            site lets the chain prove user-input flow regardless of where
+            the actual filesystem access happens)
+          - send_file(x) / flask.send_file(x) — Flask file response
+          - send_from_directory(safe_dir, x) / flask.send_from_directory —
+            Flask file-by-name; the path arg is the SECOND positional
+
+        A constant string arg is safe — `open("config.yaml")` is fine.
+        Variable args (Name, Call, BinOp, JoinedStr) are the dangerous
+        case; `_collect_taint_chain` decides whether the variable
+        actually traces back to a request source.
+        """
+        sink_name = self._path_traversal_sink_name(node)
+        if not sink_name:
+            return False
+        if not node.args:
+            return False
+        arg_idx = self._path_traversal_arg_index(node)
+        if arg_idx >= len(node.args):
+            return False
+        target = node.args[arg_idx]
+        # Constant literal is safe.
+        if isinstance(target, ast.Constant):
+            return False
+        # Name that resolves to a constant in scope is also safe.
+        if isinstance(target, ast.Name):
+            for scope in reversed(self._scopes):
+                if target.id in scope and isinstance(scope[target.id], ast.Constant):
+                    return False
+        return True
+
+    def _path_traversal_sink_name(self, node: ast.Call) -> str:
+        """Return the canonical path-traversal sink-function name, or ''.
+
+        Accepts bare-name calls (`open(x)`, `Path(x)`, `send_file(x)`)
+        and attribute calls (`pathlib.Path(x)`, `flask.send_file(x)`).
+        Returned as the leaf function name only — callers use it for
+        the taint-chain expr.
+        """
+        if isinstance(node.func, ast.Name):
+            if node.func.id in _PATH_TRAVERSAL_SINK_NAMES:
+                return node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if node.func.attr in _PATH_TRAVERSAL_SINK_NAMES:
+                return node.func.attr
+        return ""
+
+    def _path_traversal_arg_index(self, node: ast.Call) -> int:
+        """Return the positional-arg index of the path argument.
+
+        `send_from_directory(safe_dir, filename)` puts the user-controlled
+        component at index 1; everything else is at index 0.
+        """
+        sink_name = self._path_traversal_sink_name(node)
+        if sink_name == "send_from_directory":
+            return 1
+        return 0
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (no visitor state required)
@@ -808,6 +922,18 @@ _SAFE_LOADER_NAMES: frozenset[str] = frozenset({
 # `render_template_string` (Flask/Jinja2 SSTI + reflective XSS).
 _XSS_HTML_SINK_NAMES: frozenset[str] = frozenset({
     "Markup", "mark_safe", "render_template_string",
+})
+
+
+# Path-traversal sinks recognised by `_is_path_traversal_sink` (TASK-134).
+# Bare-name `open(x)` is the stdlib builtin; attribute form `pathlib.Path(x)`
+# or `flask.send_file(x)` are also matched. send_from_directory's path arg
+# is the SECOND positional — see `_path_traversal_arg_index`.
+_PATH_TRAVERSAL_SINK_NAMES: frozenset[str] = frozenset({
+    "open",
+    "Path",
+    "send_file",
+    "send_from_directory",
 })
 
 
