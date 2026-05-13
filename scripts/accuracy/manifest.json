@@ -1,0 +1,126 @@
+{
+  "_description": "Ground-truth labels for the accuracy corpus. Each entry maps (file, line) to the expected verdict. EXPECT_TP cases the engine should flag; EXPECT_TN cases it should leave alone.",
+  "_methodology": "Per category, we count: TP = an EXPECT_TP case got flagged; FP = an EXPECT_TN case got flagged; FN = an EXPECT_TP case got NOT flagged. TN is implied. Precision = TP / (TP + FP); Recall = TP / (TP + FN). Line numbers point at the `def case_NN_*():` line; the actual sink line is 2-4 lines later but the harness uses LINE_TOLERANCE=6.",
+  "_match_strategy": "Findings are matched to categories by (a) category field equals expected_category AND (b) any title_substring matches the title. The engine renumbers finding IDs to SEC-NNN at scan-end so we can't match on ID prefix; title is stable.",
+  "categories": {
+    "sqli": {
+      "title_substrings": ["SQL query built", "SQL injection"],
+      "expected_category": "injection",
+      "file": "corpus/sqli.py",
+      "tp_lines": [
+        {"line": 16, "case": "case_01_request_string_concat"},
+        {"line": 24, "case": "case_02_request_fstring"},
+        {"line": 31, "case": "case_03_request_percent_format"},
+        {"line": 38, "case": "case_04_request_format_method"},
+        {"line": 45, "case": "case_05_multi_hop_assignment"}
+      ],
+      "tn_lines": [
+        {"line": 53, "case": "case_06_parameterized_safe"},
+        {"line": 60, "case": "case_07_constant_query_safe"},
+        {"line": 66, "case": "case_08_orm_no_concat_safe"}
+      ]
+    },
+    "cmdi": {
+      "title_substrings": ["os.system", "subprocess called with shell=True", "os.popen", "command injection"],
+      "expected_category": "injection",
+      "file": "corpus/cmdi.py",
+      "tp_lines": [
+        {"line": 8, "case": "case_01_os_system_request"},
+        {"line": 14, "case": "case_02_subprocess_shell_true"},
+        {"line": 20, "case": "case_03_os_popen_request"},
+        {"line": 26, "case": "case_04_subprocess_popen_shell_true"},
+        {"line": 32, "case": "case_05_multi_hop"}
+      ],
+      "tn_lines": [
+        {"line": 39, "case": "case_06_subprocess_list_safe"},
+        {"line": 45, "case": "case_07_constant_safe"},
+        {"line": 50, "case": "case_08_subprocess_check_output_safe"}
+      ]
+    },
+    "path_traversal": {
+      "title_substrings": ["Path traversal"],
+      "expected_category": "injection",
+      "file": "corpus/path_traversal.py",
+      "tp_lines": [
+        {"line": 10, "case": "case_01_open_request_arg"},
+        {"line": 17, "case": "case_02_pathlib_request_arg"},
+        {"line": 23, "case": "case_03_send_file_request_arg"},
+        {"line": 28, "case": "case_04_send_from_directory_user_arg"},
+        {"line": 33, "case": "case_05_multi_hop"}
+      ],
+      "tn_lines": [
+        {"line": 40, "case": "case_06_constant_safe"},
+        {"line": 45, "case": "case_07_name_from_scope_safe"},
+        {"line": 51, "case": "case_08_validated_safe"}
+      ]
+    },
+    "ssrf": {
+      "title_substrings": ["SSRF"],
+      "expected_category": "injection",
+      "file": "corpus/ssrf.py",
+      "tp_lines": [
+        {"line": 7, "case": "case_01_requests_get_request_arg"},
+        {"line": 13, "case": "case_02_requests_post_request_form"},
+        {"line": 19, "case": "case_03_multi_hop"}
+      ],
+      "tn_lines": [
+        {"line": 26, "case": "case_04_constant_url_safe"},
+        {"line": 31, "case": "case_05_name_from_scope_safe"}
+      ]
+    },
+    "open_redirect": {
+      "title_substrings": ["Open redirect"],
+      "expected_category": "injection",
+      "file": "corpus/open_redirect.py",
+      "tp_lines": [
+        {"line": 6, "case": "case_01_flask_redirect_request_arg"},
+        {"line": 12, "case": "case_02_django_redirect_request_get"},
+        {"line": 18, "case": "case_03_multi_hop"}
+      ],
+      "tn_lines": [
+        {"line": 25, "case": "case_04_constant_safe"},
+        {"line": 30, "case": "case_05_name_from_scope_safe"}
+      ]
+    },
+    "xss": {
+      "title_substrings": ["Reflected XSS", "XSS"],
+      "expected_category": "injection",
+      "file": "corpus/xss.py",
+      "tp_lines": [
+        {"line": 6, "case": "case_01_markup_request_arg"},
+        {"line": 12, "case": "case_02_mark_safe_request_arg"},
+        {"line": 18, "case": "case_03_render_template_string_request_arg"},
+        {"line": 24, "case": "case_04_multi_hop"}
+      ],
+      "tn_lines": [
+        {"line": 31, "case": "case_05_constant_safe"},
+        {"line": 36, "case": "case_06_name_from_scope_safe"}
+      ]
+    },
+    "secrets": {
+      "title_substrings": ["hardcoded", "Hardcoded", "JWT token", "API key", "connection string", "credential"],
+      "expected_category": "secrets",
+      "file": "corpus/secrets_corpus.py",
+      "tp_lines": [
+        {"line": 12, "case": "AWS_ACCESS_KEY"},
+        {"line": 13, "case": "AWS_SECRET_KEY"},
+        {"line": 14, "case": "GITHUB_TOKEN"},
+        {"line": 15, "case": "STRIPE_LIVE_KEY"},
+        {"line": 16, "case": "SLACK_BOT_TOKEN"},
+        {"line": 17, "case": "GOOGLE_API_KEY"},
+        {"line": 18, "case": "ANTHROPIC_API_KEY"},
+        {"line": 19, "case": "OPENAI_API_KEY"},
+        {"line": 20, "case": "NPM_TOKEN"},
+        {"line": 21, "case": "DB_CONNECTION"},
+        {"line": 22, "case": "HARDCODED_PASSWORD"},
+        {"line": 24, "case": "JWT_TOKEN"},
+        {"line": 29, "case": "GENERIC_API_KEY"}
+      ],
+      "tn_lines": [
+        {"line": 33, "case": "SAFE_API_KEY"},
+        {"line": 34, "case": "SAFE_DB_URL"},
+        {"line": 35, "case": "SAFE_SECRET"}
+      ]
+    }
+  }
+}

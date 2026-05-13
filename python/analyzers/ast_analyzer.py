@@ -762,7 +762,16 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         return _arg_subtree_looks_like_password(data_arg)
 
     def _is_open_redirect(self, node: ast.Call) -> bool:
-        """Return True if redirect(...)/HttpResponseRedirect(...) gets request input."""
+        """Return True if redirect(...)/HttpResponseRedirect(...) gets non-literal input.
+
+        Posture upgraded to match SSRF/XSS/path-traversal (surfaced by
+        the accuracy corpus, 2026-05-13): emit on any non-literal arg,
+        and let `_collect_taint_chain` decide reachability. Pre-upgrade
+        only direct `redirect(request.args.get("x"))` was caught; the
+        far more common `next_url = request.args.get("x"); return
+        redirect(next_url)` pattern was silently missed because the
+        first arg was a Name, not a request-access subtree.
+        """
         is_redirect_func = (
             isinstance(node.func, ast.Name)
             and node.func.id in {"redirect", "HttpResponseRedirect"}
@@ -772,7 +781,16 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         )
         if not (is_redirect_func and node.args):
             return False
-        return _references_request_input(node.args[0])
+        first = node.args[0]
+        # Constant literal redirect target is safe.
+        if isinstance(first, ast.Constant):
+            return False
+        # Name that resolves to a constant in scope is also safe.
+        if isinstance(first, ast.Name):
+            for scope in reversed(self._scopes):
+                if first.id in scope and isinstance(scope[first.id], ast.Constant):
+                    return False
+        return True
 
     def _is_ssrf(self, node: ast.Call) -> bool:
         """Return True if requests.<method>() is called with a non-literal URL."""

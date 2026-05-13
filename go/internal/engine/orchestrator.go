@@ -616,10 +616,17 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
 		checks = o.cfg.Checks
 	}
 
+	// Resolve code_path + spec to absolute paths before handing to the
+	// Python subprocess. The spawner sets cmd.Dir = engineDir (the
+	// python/ tree), so a relative path from the caller's cwd would
+	// resolve under engineDir instead — the same family of bug as
+	// the spawner's enginePath fix (TASK-134). Surfaces as the
+	// Python engine reporting 0 findings on a real codebase because
+	// it never finds the source files.
 	req := ScanRequest{
 		Mode:     "whitebox",
-		Spec:     o.cfg.SpecPath,
-		CodePath: o.cfg.CodePath,
+		Spec:     absPathOrEmpty(o.cfg.SpecPath),
+		CodePath: absPathOrEmpty(o.cfg.CodePath),
 		Checks:   checks,
 		Verbose:  o.cfg.Verbose,
 	}
