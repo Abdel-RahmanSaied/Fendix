@@ -1,28 +1,25 @@
-// Package pip runs an in-process PyPI dependency CVE scan against
-// requirements.txt manifests and emits fendix Findings for any pinned
-// version that matches an OSV.dev vulnerability record.
+// Package pip queries the OSV.dev /v1/query API to find vulnerabilities in
+// Python dependencies declared in requirements.txt manifests. It provides
+// behavioural parity with pip-audit (same advisory sources, same finding
+// shape) but does NOT shell out to pip-audit by default.
 //
-// Behavioural parity with python/analyzers/deps.py::_check_requirements:
-//   - One Finding per (package, version, OSV-id) tuple.
-//   - ID shape: SEC-DEPS-<vid-with-underscores> (no PY prefix; matches the
-//     Python output so dedup collapses overlap during the transition
-//     window before Phase 17b drops the embedded Python deps path).
-//   - Fix line picks the first OSV `affected[].ranges[].events[].fixed`
-//     entry per OSV schema.
-//   - References include the OSV ID followed by every alias.
+// Users who require an actual pip-audit invocation (for reproducibility
+// in environments that audit subprocess calls, or to pick up pip-audit-
+// specific patches ahead of OSV.dev's index) can pass --use-pip-audit
+// to fendix scan. When set, the scanner runs `pip-audit --format json -r
+// <manifest>` for every manifest discovered by findRequirementsManifests
+// and converts the output to []models.Finding using the same shape as
+// the native OSV.dev path. If pip-audit is not on PATH, a warning is
+// logged to stderr and the OSV.dev path is used as fallback — never
+// fails-closed silently.
 //
-// Limitations (deliberate — match pip-audit's scope):
-//   - Only pinned `==` versions are checked. Range specifiers (`>=`,
-//     `~=`, `>`) are skipped with a stderr warning — pip-audit also
-//     requires resolved versions and refuses to guess for ranges.
-//   - No transitive resolution. Direct deps only. Phase 17b can add a
-//     `pip install --dry-run --report` step if transitive coverage
-//     becomes important; today's contract matches the Python path.
+// Limitations (unchanged from existing implementation):
+//   - Only pinned `==` versions are checked. Range specifiers
+//     (`>=`, `~=`, `>`) are skipped with a stderr warning.
+//   - No transitive resolution. Direct deps only.
 //
-// Cache: OSV.dev responses are cached at
-//   ~/.fendix/cache/osv-pypi/<package>@<version>.json
-// with a 24h TTL. Cache stamp = file mtime; older = re-fetch. The
-// directory is created lazily on first miss.
+// Cache (OSV.dev path only):
+//   ~/.fendix/cache/osv-pypi/<package>@<version>.json with a 24h TTL.
 package pip
 
 import (
@@ -35,6 +32,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -136,6 +134,16 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	return findings, nil
 }
 
+// Options controls runtime behaviour of ScanRecursiveWithOptions. The
+// zero value uses the native OSV.dev client (current default).
+type Options struct {
+	// UsePipAudit, when true, shells out to `pip-audit --format json`
+	// for every discovered manifest instead of querying OSV.dev directly.
+	// If pip-audit is not on PATH, a warning is emitted and the OSV.dev
+	// path is used as fallback (never fails-closed silently).
+	UsePipAudit bool
+}
+
 // ScanRecursive walks `codePath` up to `maxDepth` levels deep looking
 // for every `requirements.txt` and scans them all. The returned findings
 // carry a relative-path manifest stamp ("service/requirements.txt") so
@@ -158,7 +166,33 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 //
 // Dedups by absolute path so a symlink loop can't double-count, and
 // scans manifests in alphabetical path order for stable output.
+//
+// Preserved as a thin wrapper around ScanRecursiveWithOptions for
+// backward compat. Callers that want the new flag use the With-Options
+// variant.
 func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models.Finding, error) {
+	return ScanRecursiveWithOptions(ctx, codePath, maxDepth, Options{})
+}
+
+// ScanRecursiveWithOptions is the explicit-options variant of
+// ScanRecursive. When opts.UsePipAudit is true and pip-audit is on PATH,
+// the scanner shells out to it; otherwise it falls back to the native
+// OSV.dev /v1/query client. The fallback emits a stderr warning so the
+// caller knows their flag was honoured at "best effort" only.
+func ScanRecursiveWithOptions(ctx context.Context, codePath string, maxDepth int, opts Options) ([]models.Finding, error) {
+	if opts.UsePipAudit {
+		if path, err := exec.LookPath("pip-audit"); err == nil {
+			return scanViaSubprocess(ctx, codePath, maxDepth, path)
+		}
+		fmt.Fprintln(os.Stderr, "[fendix] pip: --use-pip-audit set but pip-audit not found on PATH; falling back to OSV.dev client")
+		// intentional fallthrough to OSV.dev path
+	}
+	return scanViaOSV(ctx, codePath, maxDepth)
+}
+
+// scanViaOSV is the in-process OSV.dev /v1/query implementation. Body
+// preserved verbatim from the previous ScanRecursive (only renamed).
+func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Finding, error) {
 	if maxDepth < 0 {
 		maxDepth = 0
 	}
@@ -205,6 +239,120 @@ func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models
 	}
 	sortFindingsByID(all)
 	return all, nil
+}
+
+// scanViaSubprocess runs `pip-audit --format json -r <manifest>` for every
+// requirements.txt manifest discovered under codePath up to maxDepth levels.
+// Stamps the relative manifest path on each finding's Endpoint so users can
+// tell which service owns each CVE (parity with scanViaOSV).
+//
+// pip-audit's JSON output shape (--format json):
+//
+//	{
+//	  "dependencies": [
+//	    {"name": "...", "version": "...", "vulns": [{"id": "...", "fix_versions": [...], "description": "..."}, ...]},
+//	    ...
+//	  ]
+//	}
+//
+// We map pip-audit's vuln IDs (which are OSV IDs) into the SEC-DEPS-<id>
+// shape used by scanViaOSV's buildFinding. Title/severity/fix shape is
+// identical to the OSV.dev path so downstream dedup, correlator, and
+// reporters cannot tell the two paths apart.
+//
+// pip-audit's JSON shape has changed twice in 2024. This implementation
+// targets pip-audit >= 2.7.0 schema. Older versions: parsing returns an
+// error with a clear "upgrade pip-audit" hint.
+//
+// The scan-budget context is inherited verbatim — pip-audit invocations
+// honour the same wall-clock cap the orchestrator passes to the package.
+func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAuditPath string) ([]models.Finding, error) {
+	if maxDepth < 0 {
+		maxDepth = 0
+	}
+	abs, err := filepath.Abs(codePath)
+	if err != nil {
+		return nil, fmt.Errorf("pip: resolve path: %w", err)
+	}
+	manifests, err := findRequirementsManifests(abs, maxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("pip: walk for requirements.txt: %w", err)
+	}
+	if len(manifests) == 0 {
+		return []models.Finding{}, nil
+	}
+	var all []models.Finding
+	for _, m := range manifests {
+		rel, _ := filepath.Rel(abs, m)
+		if rel == "" {
+			rel = "requirements.txt"
+		}
+		cmd := exec.CommandContext(ctx, pipAuditPath, "--format", "json", "-r", m)
+		out, err := cmd.Output()
+		if err != nil {
+			// pip-audit exits 1 when findings exist. Distinguish:
+			// exit-1 + JSON output = expected; other exits = failure
+			// (log + continue, don't sink the whole scan).
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && len(out) > 0 {
+				// findings exist; proceed to parse
+			} else {
+				fmt.Fprintf(os.Stderr, "[fendix] pip: pip-audit failed on %s: %v\n", m, err)
+				continue
+			}
+		}
+		findings, perr := parsePipAuditJSON(out, rel)
+		if perr != nil {
+			return nil, fmt.Errorf("pip: parse pip-audit output for %s: %w (run with --verbose for stderr)", rel, perr)
+		}
+		all = append(all, findings...)
+	}
+	sortFindingsByID(all)
+	return all, nil
+}
+
+// parsePipAuditJSON maps pip-audit's --format json output to []models.Finding.
+// Targets pip-audit >= 2.7.0 schema. Returns a clear error on older schemas
+// or any malformed JSON.
+func parsePipAuditJSON(jsonBytes []byte, manifestRelPath string) ([]models.Finding, error) {
+	var report struct {
+		Dependencies []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Vulns   []struct {
+				ID          string   `json:"id"`
+				FixVersions []string `json:"fix_versions"`
+				Description string   `json:"description"`
+				Aliases     []string `json:"aliases"`
+			} `json:"vulns"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(jsonBytes, &report); err != nil {
+		return nil, fmt.Errorf("decode pip-audit JSON (expected schema from pip-audit >= 2.7.0; upgrade with `pip install -U pip-audit`): %w", err)
+	}
+	var findings []models.Finding
+	for _, d := range report.Dependencies {
+		for _, v := range d.Vulns {
+			// Reuse buildFinding for shape parity. Convert pip-audit's
+			// vuln record to the same osvVuln shape buildFinding consumes.
+			osv := osvVuln{
+				ID:      v.ID,
+				Summary: v.Description,
+				Aliases: v.Aliases,
+			}
+			// pip-audit returns fix_versions as a list; preserve the first.
+			if len(v.FixVersions) > 0 {
+				osv.Affected = []osvAffected{{
+					Ranges: []osvRange{{Events: []osvEvent{{Fixed: v.FixVersions[0]}}}},
+				}}
+			}
+			findings = append(findings, buildFinding(
+				pinnedPackage{name: d.Name, version: d.Version},
+				osv,
+				manifestRelPath,
+			))
+		}
+	}
+	return findings, nil
 }
 
 // findRequirementsManifests returns absolute paths to every

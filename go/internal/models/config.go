@@ -85,6 +85,13 @@ type ScanConfig struct {
 	// per OSV. Set true to skip the native path (debugging, or when
 	// the vuln DB is unreachable and the Python fallback is preferred).
 	NoNativeDeps bool
+	// UsePipAudit, when true, makes the Python dep-CVE pass shell out
+	// to the pip-audit binary instead of using the native OSV.dev
+	// /v1/query client. Falls back to OSV.dev with a stderr warning
+	// if pip-audit is not on PATH (never fails-closed silently).
+	// Surfaced by Sprint 01 of the enterprise-readiness plan to close
+	// the audit's §15.5 trust gap (pip-audit naming vs. implementation).
+	UsePipAudit bool
 	// PythonEngine opts in to spawning the Python whitebox engine
 	// (TASK-118). Default false — Phase 17b moved the secrets and
 	// semgrep checks to native Go (TASK-115/TASK-116) and dropped the

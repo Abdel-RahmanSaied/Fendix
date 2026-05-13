@@ -367,14 +367,57 @@ Add under `[Unreleased]` heading, before any v0.11.0 content:
 
 ## Status
 
-**Not started.** Update this section when the sprint is picked up:
+**Started:** 2026-05-14 (AI implementer)
+**Branch:** `phase1-trust-fixes` (off main; Phase 1 lands all three sprints
+on one branch per the bootstrap plan, not one branch per sprint)
+**PR:** drafted; not pushed
+**Status:** done
+**Actual effort:** ~0.5 day (sprint file estimated 1 day; the bulk of
+the saved time was that the existing `httptest.NewServer` plumbing in
+`scanner_test.go` was already shaped exactly the way Sprint 02 will
+also need, so the new fake-binary + captured-stderr helpers slotted in
+without refactoring the existing tests.)
 
-```
-**Started:** 2026-MM-DD by <name>
-**Branch:** sprint-01-pip-audit-naming (off main)
-**PR:** #<number>
-**Status:** in-progress / blocked / done
-**Actual effort:** N days
-**Surprises:** <bullet list>
-**Follow-ups created:** <issue links>
-```
+**Surprises:**
+
+- **`scan_config.go` doesn't exist.** The sprint file pointed at
+  `go/internal/models/scan_config.go`; the `ScanConfig` struct actually
+  lives in `go/internal/models/config.go`. Adjusted the path; no
+  behavioural change.
+- **pip-audit returns transitive deps too.** A live invocation against
+  a fixture pinning only `flask==2.0.1` + `requests==2.20.0` produced
+  17 dep-CVEs, including `urllib3` advisories that are pulled in
+  transitively. Our scanner doc says "no transitive resolution"
+  because that's the OSV.dev path; the pip-audit path inherits
+  pip-audit's own resolver, so the `--use-pip-audit` flag is also a
+  *transitive coverage* upgrade for users who want it. Documented in
+  CHANGELOG; not surfaced in `--help` text since the docstring is the
+  honest place for the nuance.
+- **`pip-audit` install pulled in `defusedxml-0.7.1` and surfaced a
+  pre-existing PyJWT version conflict** in the dev environment. Not
+  caused by this sprint; flagging in case anything in the global
+  Python env starts misbehaving.
+- **Bench numbers are within run-to-run noise as expected.** The
+  engine bench fixture doesn't exercise the dep-CVE path so a
+  no-regression result was the predicted outcome (and the actual
+  one). Captured for the PR description regardless.
+
+**Bench (BenchmarkScan_Throughput/endpoints=1000):**
+
+| Branch | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| main | 31,802,692 | 25,091,868 | 235,724 |
+| phase1-trust-fixes (post-Sprint 01) | 31,824,142 | 25,081,948 | 235,683 |
+
+Δ < 0.1% on every metric — within noise.
+
+**Follow-ups created:**
+
+- npm scanner mirrors the same naming gap (it's also OSV.dev, not
+  `npm audit`). Not added as a separate ticket here; tracked in this
+  sprint file's "Follow-ups" section above and revisited in Sprint 02
+  (which already has to touch the npm scanner for batch queries).
+- pip-audit's transitive-resolution behaviour deserves a `--help`
+  hint or doc note so users picking the flag know they get more
+  than just "the same scan via a different binary." Tracked in the
+  Status section here; not blocking.

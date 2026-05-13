@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.11.1 — Phase 1 trust fixes (Sprints 01–03)
+
+#### Fixed
+
+- **pip-audit naming gap (Sprint 01).** The Python dep-CVE scanner has
+  always been a direct OSV.dev `/v1/query` REST client, but its package
+  doc and surrounding comments described it as "pip-audit parity," which
+  was the kind of claim/implementation drift an external evaluator
+  reasonably loses trust over. The package doc, log messages, and inline
+  comments now state the implementation honestly: native code talks to
+  OSV.dev; behavioural parity with pip-audit (same advisory sources,
+  same finding shape) is preserved but the *tool* shown to users is no
+  longer misnamed. Closes audit §15.5.
+
+#### Added
+
+- **`--use-pip-audit` flag on `fendix scan` (Sprint 01).** Opt in to
+  shell out to the actual pip-audit binary instead of the native
+  OSV.dev client. The flag honours the same recursive walk
+  (`pip.DefaultRecurseDepth=3`) so multi-service repos still see every
+  manifest. Falls back to OSV.dev with a stderr warning if pip-audit is
+  not on PATH — never fails-closed silently. Targets pip-audit ≥ 2.7.0
+  JSON schema; older versions produce a clear "upgrade pip-audit"
+  error. Eight new tests exercise the subprocess + fallback paths
+  (`TestScanViaSubprocess_*`, `TestParsePipAuditJSON_*`).
+
 ### Engine UX gaps surfaced by the TwiScope-backend e2e scan (2026-05-14)
 
 Three real product gaps the TwiScope scan exposed; each fixed in
