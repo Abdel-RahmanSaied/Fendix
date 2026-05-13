@@ -15,6 +15,7 @@ import (
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/democmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/ignorecmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/pluginscmd"
@@ -69,6 +70,7 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newDemoCmd())
 	root.AddCommand(pluginscmd.NewCmd())
+	root.AddCommand(ignorecmd.NewCmd())
 
 	return root
 }
