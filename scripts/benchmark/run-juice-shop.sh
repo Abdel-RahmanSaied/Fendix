@@ -91,8 +91,12 @@ SCAN_START=$(date +%s)
 # We capture to JSON for parseability. HTML is generated separately
 # from the JSON via `fendix report` if the consumer wants it.
 set +e
-timeout "$SCAN_TIMEOUT" "$FENDIX_BIN" scan \
+# Use fendix's own --max-duration instead of `timeout` so this works
+# on macOS without coreutils (`timeout` is GNU-only; macOS ships
+# `gtimeout` if coreutils is installed, but not by default).
+"$FENDIX_BIN" scan \
     --url "http://localhost:${JS_PORT}" \
+    --max-duration "${SCAN_TIMEOUT}s" \
     --format json \
     --output "$OUTPUT_DIR/findings.json" \
     >"$OUTPUT_DIR/scan.stdout" \

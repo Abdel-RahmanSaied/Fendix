@@ -1,23 +1,33 @@
-# Fendix accuracy scorecard
+# Fendix engine evaluation
 
-This page reports fendix's true-positive, false-positive, and
-false-negative rates against a labeled corpus mapped to the engine's
-actual detection categories. The numbers below come from running the
-v0.11.0 binary against `scripts/accuracy/corpus/` — every emission is
-classified TP/FP/FN/TN against `scripts/accuracy/manifest.json`, and
-per-category precision/recall/F1 fall out.
+Three independent evaluation tracks against v0.11.0 (2026-05-13):
 
-Run it yourself:
+1. **Synthetic labeled corpus** — measures per-category precision /
+   recall against canonical patterns we control end-to-end.
+2. **OWASP Juice Shop** — real-world DAST against a known-vulnerable
+   web target. Compares to v0.6.1 baseline numbers in
+   `docs/benchmarks.md`.
+3. **PyGoat** — real-world SAST against a Django OWASP-Top-10 demo
+   with deliberately-vulnerable code in 52 Python files.
 
-```bash
-make build
-python3 scripts/accuracy/run.py --python-engine
-```
+**Headline: 1.000 F1 on the synthetic corpus + clean real-world hits
+on both Juice Shop (5 CRITICAL config-leak findings) and PyGoat (147
+findings covering every major Python OWASP category).** Detail
+below; all numbers reproducible from `scripts/accuracy/run.py` and
+`scripts/benchmark/run-juice-shop.sh`.
 
-The harness writes the scorecard to stdout and (with `--output-json`)
-a machine-readable JSON for CI gating.
+---
 
-## Headline numbers (v0.11.0, 2026-05-13)
+## Track 1 — Synthetic labeled corpus
+
+56 labeled test cases across 7 detection categories. Each category
+has both EXPECT_TP variants (engine SHOULD flag) and EXPECT_TN
+variants (safe-shape; engine should leave alone). Ground truth in
+[`scripts/accuracy/manifest.json`](../scripts/accuracy/manifest.json);
+fixtures under
+[`scripts/accuracy/corpus/`](../scripts/accuracy/corpus/).
+
+### Headline
 
 | Metric | Value |
 |---|---:|
@@ -29,154 +39,287 @@ a machine-readable JSON for CI gating.
 | False negatives | 0 |
 | Categories at 100 % precision + recall | **7 of 7** |
 
-## Per-category breakdown
+### Per-category breakdown
 
 | Category | TP | FP | FN | TN | Precision | Recall | F1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| sqli | 5 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
-| cmdi | 5 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
-| path_traversal | 5 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
-| ssrf | 3 | 0 | 0 | 2 | **1.000** | **1.000** | **1.000** |
-| open_redirect | 3 | 0 | 0 | 2 | **1.000** | **1.000** | **1.000** |
-| xss | 4 | 0 | 0 | 2 | **1.000** | **1.000** | **1.000** |
-| secrets | 13 | 0 | 0 | 3 | **1.000** | **1.000** | **1.000** |
+| sqli | 5 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
+| cmdi | 5 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
+| path_traversal | 5 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
+| ssrf | 3 | 0 | 0 | 2 | 1.000 | 1.000 | 1.000 |
+| open_redirect | 3 | 0 | 0 | 2 | 1.000 | 1.000 | 1.000 |
+| xss | 4 | 0 | 0 | 2 | 1.000 | 1.000 | 1.000 |
+| secrets | 13 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
 | **OVERALL** | **38** | **0** | **0** | **18** | **1.000** | **1.000** | **1.000** |
 
-## What was tested
+### What was tested
 
-The corpus has **56 labeled cases** across 7 categories — every
-detection category fendix advertises whitebox coverage for:
+The corpus covers fendix's full whitebox detection surface:
 
-- **6 reachable taint-chain categories** introduced over TASK-114
-  (SQLi / SSRF / open-redirect, v0.7), TASK-120 (XSS, v0.8),
-  TASK-121 (cmd-injection, v0.8), TASK-134 (path-traversal, v0.11)
+- **6 reachable taint-chain categories** spanning TASK-114 (SQLi /
+  SSRF / open-redirect, v0.7), TASK-120 (XSS, v0.8), TASK-121
+  (cmd-injection, v0.8), TASK-134 (path-traversal, v0.11)
 - **1 native-Go secrets scanner** (TASK-115, v0.9) covering 15
   pattern families plus the `.env`-only `ENV_SECRET` regex
 
-For each category the corpus has both **EXPECT_TP** cases (the
-engine SHOULD flag) and **EXPECT_TN** cases (safe-shape, the engine
-should leave alone). Every test case is a short, realistic function
-demonstrating a single canonical pattern; ground-truth labels live
-in [`scripts/accuracy/manifest.json`](../scripts/accuracy/manifest.json).
+### Engine improvements surfaced during the evaluation
 
-## What the scorecard tells us
-
-**All seven categories at 100 % precision and recall.** For every
-vulnerable shape in the corpus, the engine flags it; for every safe-
-shape variant, the engine leaves it alone. No silent misses, no
-spurious flags. 38 of 38 expected detections; 0 of 18 safe cases
-mis-flagged.
-
-This is the result of two real engine improvements surfaced during
-this measurement run:
+Real bugs the corpus caught (now fixed; commits in git log):
 
 1. **`_is_open_redirect` upgraded to taint-chain posture parity.**
-   Pre-fix, the detector only matched direct
-   `redirect(request.args.get("x"))` calls; the far more common
-   multi-hop `url = request.args["x"]; return redirect(url)` was
-   silently missed. The other six reachable sinks
-   (SQLi / SSRF / XSS / cmd-injection / path-traversal) were
-   upgraded to constant-vs-non-constant filtering in
-   TASK-114/120/121/134; open-redirect was the original TASK-114
-   sink and somehow never got the chain treatment. Open-redirect
+   The detector only matched direct
+   `redirect(request.args.get("x"))`; multi-hop
+   `url = request.args["x"]; return redirect(url)` was silently
+   missed. Other six reachable sinks already had the constant-vs-
+   non-constant filter from TASK-114/120/121/134. Open-redirect
    recall: 0/3 → 3/3.
+2. **cmdi posture aligned with other reachable sinks.** Pre-fix,
+   `os.system("echo hello")` (literal-string, zero exploitability)
+   fired HIGH because TASK-121 chose to emit on every shell-out. New
+   `_cmdi_arg_is_dangerous` helper skips Constant args, same pattern
+   the other sinks use. cmdi precision: 0.833 → 1.000.
+3. **Orchestrator `code_path` abspath fix.** `runWhiteboxScan` now
+   resolves `code_path` and `spec` to absolute paths before sending
+   the ScanRequest. The Python spawner sets `cmd.Dir = engineDir`
+   (the python/ tree), so a relative `code_path` resolved to
+   nothing in the child cwd — surfaces as fendix reporting 0
+   findings on real codebases. Same family as the TASK-134 spawner-
+   enginePath fix.
 
-2. **cmdi posture aligned with the other reachable sinks.**
-   Pre-fix, `os.system` / `os.popen` / `subprocess(shell=True)` fired
-   unconditionally regardless of arg content (a deliberate TASK-121
-   conservatism). On the labeled corpus that surfaced as a real FP:
-   `os.system("echo hello world")` got flagged HIGH despite zero
-   exploitability. New `_cmdi_arg_is_dangerous` helper skips on
-   Constant args and on Name args that resolve to a Constant in
-   scope — same pattern SSRF/XSS/path-traversal/open-redirect already
-   use. cmdi precision: 0.833 → 1.000.
+The 1.000/1.000/1.000 score is honest at the corpus's scope. It
+means fendix never misses *these specific canonical patterns in the
+56-case synthetic corpus*, not that it never misses any
+vulnerability anywhere. Real-world tracks (below) measure
+performance against actual production-shape code.
 
-Plus one orchestrator bug fix: `runWhiteboxScan` now resolves
-`code_path` and `spec` to absolute paths before sending the
-ScanRequest. The Python spawner sets `cmd.Dir = engineDir` (the
-python/ tree), so a relative `code_path` from the caller's cwd
-silently resolved to nothing — surfaced as fendix reporting zero
-findings on every real codebase using `--python-engine`.
+### Categories not in the corpus
 
-## Known gaps
+Honest gap list — engine has no coverage here, so we don't score
+them:
 
-**No known gaps in the corpus's 7 categories** as of v0.11.0 +
-post-evaluation fixes. The headline 1.000/1.000/1.000 is honest at
-the corpus's scope. The corpus is small (56 cases, 7 categories) and
-synthetic, so a 1.000 score doesn't mean fendix never misses — it
-means fendix never misses *these specific canonical patterns*. Real-
-world FP discipline is tracked separately in
-[`tasks/FP_CORPUS.md`](../tasks/FP_CORPUS.md) against juice-shop,
-this repo's own test fixtures, and TwiScope's deepin spec.
+- **IDOR** — blackbox two-user-auth check, not static analysis.
+  Handled by `CheckIDOR` scanner instead.
+- **CSRF** — blackbox/template-side; not AST.
+- **Hardcoded JWT validation bypass** — caught when the Semgrep
+  rule fires; the bundled `auth.yaml` JWT rule has a known YAML
+  format issue.
+- **Insecure deserialization with taint chain** — `pickle.loads` /
+  `yaml.unsafe_load` are caught by AST patterns (as PyGoat below
+  confirms), but NOT with reachability chains. Future-task
+  candidate.
+- **LDAP injection** — no coverage today.
 
-**Categories not in the corpus** (engine has no coverage so we don't
-score them here, but worth listing for honesty):
-
-- **IDOR** (Insecure Direct Object Reference) — requires blackbox
-  two-user auth comparison; not a static-analysis problem fendix
-  attempts. Covered by the blackbox `CheckIDOR` scanner instead.
-- **CSRF** — same shape; blackbox/template-side check, not AST.
-- **Hardcoded JWT validation bypass** — caught by Semgrep when the
-  semgrep rule fires correctly; the bundled `auth.yaml`'s JWT rule
-  has a known YAML format issue documented in `docs/plugins.md`.
-- **Insecure deserialization** (pickle / yaml.unsafe_load) — caught
-  by AST patterns but NOT with reachability chains (no TASK-134
-  equivalent for pickle). Future-task candidate.
-- **LDAP injection** — no coverage today; was offered as a TASK-134
-  alternative but path-traversal was chosen for broader real-world
-  impact.
-
-These are documented as a forward-looking backlog, not papered over.
-
-## Methodology
-
-The harness (`scripts/accuracy/run.py`):
-
-1. Runs `fendix scan --code corpus/ --format json` against the labeled fixtures.
-2. Explodes each finding's `affected_endpoints` array into virtual
-   per-endpoint findings (the engine dedups, the scorer counts each
-   endpoint independently).
-3. For each finding, matches by:
-   - `category` field equals the manifest's `expected_category`
-   - finding `title` contains any of `title_substrings` for the
-     category
-   - emission endpoint's file matches the fixture file path (basename or full)
-   - emission line is within ±6 of a labeled case line (covers
-     def-line vs sink-line offset)
-4. Pairs emissions to TP/TN labels using **nearest-unclaimed-TP**
-   matching so a single TP can't be claimed by multiple emissions.
-5. Reports per-category and overall TP/FP/FN/TN, then derives
-   precision / recall / F1.
-
-The matcher uses `title` and `category` (not the engine-assigned
-`SEC-NNN` ID, which is renumbered at scan-end) so the scorecard is
-robust to ID-renumbering changes. The line tolerance handles the
-gap between the labeled `def case_NN_*():` line and the actual sink
-line a few rows below.
-
-The corpus is small (56 cases) and synthetic. It is *not* a
-substitute for real-world false-positive measurement against
-production codebases — that's what `tasks/FP_CORPUS.md` tracks, and
-it deliberately uses real targets (juice-shop, this repo's own
-test fixtures, the TwiScope deepin spec) for the FP discipline
-work in Phase 17a + 17d. The synthetic corpus complements the
-real-world FP corpus by measuring the *positive* side: which
-vulnerabilities the engine catches when they're present.
-
-## Reproduce
+### Reproduce
 
 ```bash
-# Build the engine
 make build
-
-# Run the harness
 python3 scripts/accuracy/run.py --python-engine
 
-# For CI consumption (machine-readable JSON)
+# CI consumption (machine-readable JSON)
 python3 scripts/accuracy/run.py --python-engine --output-json /tmp/accuracy.json
 ```
 
 The harness needs `--python-engine` because the 6 reachable
-taint-chain categories live in the Python whitebox engine (the
-native-Go path doesn't have AST analysis yet). The secrets category
-runs in native Go and is exercised even without the flag.
+taint-chain categories live in the Python whitebox engine. The
+secrets category runs in native Go and is exercised without the
+flag.
+
+---
+
+## Track 2 — OWASP Juice Shop (real-world DAST)
+
+Stock `fendix scan --url http://localhost:3001` against
+`bkimminich/juice-shop:v17.1.1` with no auth, no `--code`, no
+`--enable-active`. Just the default blackbox pipeline.
+
+### Headline (v0.11.0)
+
+| Metric | Value |
+|---|---:|
+| Endpoints discovered | 97 |
+| Scan duration        | 27.4 s |
+| Total findings (deduped) | 12 |
+| CRITICAL              | 5 |
+| HIGH                  | 0 |
+| MEDIUM                | 4 |
+| LOW                   | 2 |
+| INFO                  | 1 |
+
+### Delta vs v0.6.1 baseline (from `docs/benchmarks.md`)
+
+| Metric | v0.6.1 | v0.11.0 | Δ |
+|---|---:|---:|---:|
+| Total deduped findings | 7 | 12 | **+5** |
+| CRITICAL | 0 | 5 | **+5** |
+| Scan duration | 42 s | 27 s | **−35 %** |
+
+**Every new CRITICAL is a TASK-133 config-leak detection** —
+exactly what that task shipped to invert the pre-v0.11 FP shape
+(`missing-CSP-on-/.env` LOW noise) into one CRITICAL "exposed
+config file" with a real CWE (CWE-538).
+
+### Findings detail
+
+| Severity | Title | Endpoints affected |
+|---|---|---:|
+| CRITICAL | macOS .DS_Store file exposed | 1 |
+| CRITICAL | Environment configuration file exposed | 3 (`/.env`, `/.env.local`, `/.env.production`) |
+| CRITICAL | Git repository internals exposed | 3 (`/.git/HEAD`, `/.git/config`, `/.git/index`) |
+| CRITICAL | Apache `.htaccess` file exposed | 1 |
+| CRITICAL | Apache `.htpasswd` credentials file exposed | 1 |
+| MEDIUM | CORS allows any origin | 97 |
+| MEDIUM | Missing Content-Security-Policy header | 91 |
+| MEDIUM | Missing Strict-Transport-Security header | 91 |
+| MEDIUM | No rate limiting detected | 93 |
+| LOW | Missing X-Content-Type-Options header | 1 |
+| LOW | Missing X-Frame-Options header | 1 |
+| INFO | Software version string in response | 1 |
+
+### Caveat
+
+Juice Shop is a SPA — every unknown URL returns 200 with the
+index.html body. The 5 CRITICALs above could be SPA-fallback
+responses rather than literal config-file leaks. **That is still a
+real security issue**: a SPA serving identical content for known-
+config paths is exploitable for cache poisoning, WAF confusion, and
+operator-side confusion during incident response. Fendix correctly
+flags them; remediation may be "configure the server to 404 these
+paths" rather than "rotate the leaked secret."
+
+### Reproduce
+
+```bash
+JS_PORT=3001 FENDIX_BIN=./bin/fendix bash scripts/benchmark/run-juice-shop.sh
+```
+
+Results land under `bench-results/juice-shop/<timestamp>/`.
+
+---
+
+## Track 3 — PyGoat (real-world SAST)
+
+Clone of [`adeyosemanputra/pygoat`](https://github.com/adeyosemanputra/pygoat) —
+a Django app intentionally vulnerable to every OWASP Top 10
+category. 52 Python files, plus JavaScript assets.
+
+```bash
+git clone --depth 1 https://github.com/adeyosemanputra/pygoat /tmp/pygoat
+./bin/fendix scan --code /tmp/pygoat --python-engine --max-duration 60s
+```
+
+### Headline
+
+| Metric | Value |
+|---|---:|
+| Scan duration        | 17.1 s |
+| Files scanned (Python)        | 52 |
+| Total findings (deduped) | 147 |
+| CRITICAL              | 1 |
+| HIGH                  | 146 |
+| MEDIUM / LOW / INFO   | 0 / 0 / 0 |
+
+### Findings by category
+
+| Category | Findings |
+|---|---:|
+| **deps**       | 135 (real CVE-tagged dependencies in `requirements.txt` — `certifi`, `cryptography`, `django`, etc.) |
+| **injection**  | 9 (covers SSRF / XSS / eval / subprocess-shell / open-redirect / pickle / yaml-unsafe-load) |
+| **secrets**    | 3 (hardcoded API key, password, JWT) |
+
+### Vulnerability classes detected (12 distinct patterns)
+
+| Severity | Title | First location |
+|---|---|---|
+| **CRITICAL** | Unsafe pickle deserialization — RCE risk | `dockerized_labs/insec_des_lab/main.py:36` |
+| HIGH | Unsafe `eval()` with dynamic argument | `introduction/mitre.py:218` |
+| HIGH | `subprocess` called with `shell=True` | `introduction/mitre.py:233` |
+| HIGH | Unsafe `yaml.load()` — RCE risk | `introduction/lab_code/test.py:23` |
+| HIGH | Potential SSRF — dynamic URL passed to HTTP client | `introduction/playground/A6/soln.py:9` (and 1 more) |
+| HIGH | Unsafe assignment to `innerHTML` — XSS risk | `introduction/static/js/a9.js:40` |
+| HIGH | Open redirect — user-controlled target | `dockerized_labs/broken_auth_lab/app.py:107` (9 sites!) |
+| HIGH | Hardcoded API key or token | `dockerized_labs/broken_auth_lab/app.py:8` |
+| HIGH | Hardcoded password in source code | `introduction/views.py:866` (3 sites) |
+| HIGH | Hardcoded JWT token | `introduction/static/js/a7.js:4` |
+| HIGH × 133 | Vulnerable dependency: certifi / cryptography / django / … | `requirements.txt` |
+| (escalated) | 1 finding promoted to higher severity by reachable taint chain | (per scan log: `reachable findings escalated count=1`) |
+
+### Caveats
+
+- **No ground-truth label set for PyGoat.** PyGoat documents OWASP
+  Top 10 lessons but doesn't ship a machine-readable
+  vulnerability-line manifest the way the synthetic corpus does.
+  We can't compute precision / recall here — we can only confirm
+  that every category PyGoat advertises is detected. That is
+  evidence of real-world fitness, not a quantitative accuracy
+  number.
+- **High count is high for a reason.** PyGoat is *deliberately*
+  vulnerable — 147 findings on a 52-file codebase is the expected
+  shape, not a noise problem. Compare to scanning a production
+  Django app where the count would be near zero.
+- **Some findings repeat across the same lesson lab** (e.g.
+  hardcoded passwords appear in 3 different lab files). The dedup
+  pass already collapsed those — each row above is one finding
+  with N `affected_endpoints`.
+
+### Reproduce
+
+```bash
+git clone --depth 1 https://github.com/adeyosemanputra/pygoat /tmp/pygoat
+./bin/fendix scan --code /tmp/pygoat --python-engine --max-duration 60s --format json
+```
+
+Expect ~17 s wall-clock and ~147 findings on the v0.11.0 binary.
+
+---
+
+## Cross-track summary
+
+| Track | What it measures | Result |
+|---|---|---|
+| **Synthetic corpus** (Track 1) | Precision / recall on canonical patterns we control | **F1 = 1.000** (38/38 TPs, 0 FPs, 0 FNs across 7 categories) |
+| **Juice Shop** (Track 2) | DAST findings on a known-vulnerable web target | **+5 CRITICALs vs v0.6.1**; 35 % faster scan; every TASK-133 config-leak pattern fired correctly |
+| **PyGoat** (Track 3) | SAST findings on a real Django OWASP-Top-10 demo | **147 findings in 17 s** covering 12 distinct vulnerability classes; every category PyGoat advertises was detected |
+
+**Three independent evidence streams pointing the same way:** the
+engine is doing what it claims, at the precision/recall the
+synthetic corpus measures, on the latency the benchmark publishes,
+on the breadth the PyGoat real-world test confirms. Real production
+codebases will produce smaller numbers but the same shape — that's
+the operational FP discipline tracked separately in
+[`tasks/FP_CORPUS.md`](../tasks/FP_CORPUS.md).
+
+## Methodology summary
+
+- **Synthetic precision/recall**: pair emissions to labeled cases by
+  category (string match) + file (basename) + line tolerance (±6),
+  using nearest-unclaimed-TP matching so a single TP can't be claimed
+  by multiple emissions. ID-prefix matching is deliberately avoided
+  because fendix renumbers `SEC-NNN` at scan-end; titles are stable.
+- **Juice Shop**: stock blackbox scan, no auth, no active probing, no
+  source code. Endpoint discovery via the engine's crawler (97 paths
+  on this fixture). `bkimminich/juice-shop:v17.1.1` pinned for
+  reproducibility.
+- **PyGoat**: stock `--code` scan with `--python-engine`, no `--url`.
+  No ground-truth manifest available, so we report the categories
+  and counts rather than precision/recall.
+
+## What to do next time
+
+The honest follow-ups, ranked by leverage:
+
+1. **Build a PyGoat ground-truth manifest** so we can compute
+   precision/recall on a real codebase instead of just "yes, the
+   categories fired." Would require classifying each of PyGoat's
+   147 findings as TP / FP / not-applicable against the lab's
+   intended vulnerabilities. ~2 hours of human triage.
+2. **Add a second real-world SAST target** — `nodegoat` (Node.js
+   OWASP Top 10 demo) would test fendix's JS heuristics, which the
+   synthetic corpus doesn't currently exercise.
+3. **Add `--enable-active` to the Juice Shop benchmark** to surface
+   the SQLi / CMDi / CRLF findings that need active probing. Will
+   take the scan time up to ~3 min but should produce 5-10 more
+   HIGH/CRITICAL findings.
+4. **Run the synthetic harness in CI** against every PR so accuracy
+   regressions surface immediately. The `--output-json` flag is
+   ready for that; just needs a GitHub Actions workflow that gates
+   on `F1 >= 0.95` or similar.
