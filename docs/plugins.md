@@ -467,26 +467,27 @@ this repo are MIT to match the rest of the tree.
 
 ## Reference plugins
 
-Three first-party reference plugins live under
+Five first-party reference plugins live under
 [`examples/plugins/`](../examples/plugins/). They're real,
-working, and small enough to read in a sitting:
+working, and small enough to read in a sitting. Each one
+demonstrates a different language to prove the NDJSON wire contract
+is language-agnostic:
 
 | Plugin | Mode | Language | Demonstrates |
 |--------|------|----------|--------------|
 | [`custom-secret-pattern`](../examples/plugins/custom-secret-pattern/) | whitebox | Python (stdlib) | Custom regex-based secret detection over the source tree |
 | [`custom-blackbox-check`](../examples/plugins/custom-blackbox-check/) | blackbox | Python (stdlib `urllib`) | HTTP-response assertion against the live target |
 | [`custom-semgrep-pack`](../examples/plugins/custom-semgrep-pack/) | whitebox | Bash + `jq` | Wraps a custom Semgrep rule pack |
+| [`license-header-check`](../examples/plugins/license-header-check/) | whitebox | Node (stdlib) | Walks the source tree for files missing an SPDX-License-Identifier header (TASK-129) |
+| [`dockerfile-best-practices`](../examples/plugins/dockerfile-best-practices/) | whitebox | Ruby (stdlib) | Flags `:latest` tag, root-by-default, missing HEALTHCHECK, `curl \| sh` install, `ADD <url>` (TASK-129) |
 
 To try one:
 
 ```bash
 mkdir -p ~/.fendix/plugins
-cp -R examples/plugins/custom-secret-pattern ~/.fendix/plugins/
+cp -R examples/plugins/license-header-check ~/.fendix/plugins/
 fendix scan --code ./your-repo
 ```
-
-Two more reference plugins in non-Go languages (Ruby/Node) are
-planned for v0.10 — see [TASK-129](../tasks/PHASES.md).
 
 ---
 

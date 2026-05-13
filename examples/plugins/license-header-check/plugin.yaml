@@ -1,0 +1,14 @@
+name: license-header-check
+version: 0.1.0
+description: |
+  Reference plugin (Node, stdlib-only): flags source files missing an
+  SPDX-License-Identifier header. Demonstrates a real-world whitebox
+  plugin written in JavaScript — proves the NDJSON wire contract is
+  language-agnostic. Pure node:fs / node:path; no npm install needed.
+  Configurable: set FENDIX_LICENSE_HEADER_REGEX env var to override
+  the default detection regex.
+entrypoint: ./run.js
+mode: whitebox
+categories:
+  - compliance
+timeout: 30s

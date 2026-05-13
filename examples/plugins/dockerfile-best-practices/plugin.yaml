@@ -1,0 +1,16 @@
+name: dockerfile-best-practices
+version: 0.1.0
+description: |
+  Reference plugin (Ruby, stdlib-only): walks the code path for
+  Dockerfiles and flags common antipatterns — running as root,
+  pinning to :latest, missing HEALTHCHECK, and curl-pipe-sh
+  installs. Demonstrates a real-world whitebox plugin written in
+  Ruby — proves the NDJSON wire contract is language-agnostic.
+  Pure stdlib (json + find from the standard library); no `gem
+  install` needed.
+entrypoint: ./run.rb
+mode: whitebox
+categories:
+  - compliance
+  - secrets
+timeout: 30s
