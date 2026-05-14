@@ -57,29 +57,29 @@ func secretsFrom(cfg *models.ScanConfig) []string {
 // [REDACTED] when present so the operator can see the auth scheme + header
 // used (helpful for debugging) without leaking the secret.
 type redactedConfig struct {
-	URL                  string `json:"url,omitempty"`
-	SpecPath             string `json:"spec_path,omitempty"`
-	CodePath             string `json:"code_path,omitempty"`
+	URL                  string        `json:"url,omitempty"`
+	SpecPath             string        `json:"spec_path,omitempty"`
+	CodePath             string        `json:"code_path,omitempty"`
 	Auth                 *redactedAuth `json:"auth,omitempty"`
 	AuthUser2            *redactedAuth `json:"auth_user2,omitempty"`
-	EnableActive         bool   `json:"enable_active"`
-	MaxProbesPerEndpoint int    `json:"max_probes_per_endpoint,omitempty"`
-	Workers              int    `json:"workers,omitempty"`
-	Timeout              int    `json:"timeout_seconds,omitempty"`
-	DelayMs              int    `json:"delay_ms,omitempty"`
-	Verbose              bool   `json:"verbose"`
-	IgnorePath           string `json:"ignore_path,omitempty"`
-	BaselinePath         string `json:"baseline_path,omitempty"`
-	SaveBaselinePath     string `json:"save_baseline_path,omitempty"`
-	OutputPath           string `json:"output_path,omitempty"`
-	Format               string `json:"format,omitempty"`
-	FailOn               string `json:"fail_on,omitempty"`
-	WordlistPath         string `json:"wordlist_path,omitempty"`
-	CrawlDepth           int    `json:"crawl_depth,omitempty"`
-	MaxEndpoints         int    `json:"max_endpoints,omitempty"`
-	MaxRequests          int64  `json:"max_requests,omitempty"`
-	MaxDuration          string `json:"max_duration,omitempty"`
-	RespectRobots        bool   `json:"respect_robots"`
+	EnableActive         bool          `json:"enable_active"`
+	MaxProbesPerEndpoint int           `json:"max_probes_per_endpoint,omitempty"`
+	Workers              int           `json:"workers,omitempty"`
+	Timeout              int           `json:"timeout_seconds,omitempty"`
+	DelayMs              int           `json:"delay_ms,omitempty"`
+	Verbose              bool          `json:"verbose"`
+	IgnorePath           string        `json:"ignore_path,omitempty"`
+	BaselinePath         string        `json:"baseline_path,omitempty"`
+	SaveBaselinePath     string        `json:"save_baseline_path,omitempty"`
+	OutputPath           string        `json:"output_path,omitempty"`
+	Format               string        `json:"format,omitempty"`
+	FailOn               string        `json:"fail_on,omitempty"`
+	WordlistPath         string        `json:"wordlist_path,omitempty"`
+	CrawlDepth           int           `json:"crawl_depth,omitempty"`
+	MaxEndpoints         int           `json:"max_endpoints,omitempty"`
+	MaxRequests          int64         `json:"max_requests,omitempty"`
+	MaxDuration          string        `json:"max_duration,omitempty"`
+	RespectRobots        bool          `json:"respect_robots"`
 }
 
 // redactedAuth is the bundle-safe view of AuthContext: the auth scheme and

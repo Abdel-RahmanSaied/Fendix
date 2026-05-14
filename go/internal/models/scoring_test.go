@@ -180,44 +180,44 @@ func TestCalculateSeverity(t *testing.T) {
 // banding it produces.
 func TestCalculateSeverityReachable(t *testing.T) {
 	cases := []struct {
-		name             string
-		category         string
-		confidence       Confidence
-		source           Source
-		wantWithout      Severity
+		name              string
+		category          string
+		confidence        Confidence
+		source            Source
+		wantWithout       Severity
 		wantWithReachable Severity
 	}{
 		{
 			// injection 9.5 × HIGH 1.0 × whitebox 0.9 = 8.55 → HIGH;
 			// × 1.5 = 12.825 → CRITICAL.
-			name: "injection_whitebox_HIGH bumps to CRITICAL",
+			name:     "injection_whitebox_HIGH bumps to CRITICAL",
 			category: "injection", confidence: ConfidenceHigh, source: SourceWhitebox,
 			wantWithout: SeverityHigh, wantWithReachable: SeverityCritical,
 		},
 		{
 			// headers 4.0 × HIGH 1.0 × blackbox 1.0 = 4.0 → MEDIUM;
 			// × 1.5 = 6.0 → MEDIUM (banding doesn't cross 7.0 yet).
-			name: "headers stays MEDIUM (within band)",
+			name:     "headers stays MEDIUM (within band)",
 			category: "headers", confidence: ConfidenceHigh, source: SourceBlackbox,
 			wantWithout: SeverityMedium, wantWithReachable: SeverityMedium,
 		},
 		{
 			// data_exposure 7.0 × HIGH 1.0 × blackbox 1.0 = 7.0 → HIGH;
 			// × 1.5 = 10.5 → CRITICAL.
-			name: "data_exposure_HIGH bumps HIGH → CRITICAL",
+			name:     "data_exposure_HIGH bumps HIGH → CRITICAL",
 			category: "data_exposure", confidence: ConfidenceHigh, source: SourceBlackbox,
 			wantWithout: SeverityHigh, wantWithReachable: SeverityCritical,
 		},
 		{
 			// cors 6.5 × MEDIUM 0.75 × whitebox 0.9 = 4.39 → MEDIUM;
 			// × 1.5 = 6.58 → MEDIUM (still in band).
-			name: "cors_MEDIUM_whitebox stays MEDIUM",
+			name:     "cors_MEDIUM_whitebox stays MEDIUM",
 			category: "cors", confidence: ConfidenceMedium, source: SourceWhitebox,
 			wantWithout: SeverityMedium, wantWithReachable: SeverityMedium,
 		},
 		{
 			// unknown category returns INFO regardless of reachable.
-			name: "unknown category INFO regardless of reachable",
+			name:     "unknown category INFO regardless of reachable",
 			category: "made_up", confidence: ConfidenceHigh, source: SourceWhitebox,
 			wantWithout: SeverityInfo, wantWithReachable: SeverityInfo,
 		},

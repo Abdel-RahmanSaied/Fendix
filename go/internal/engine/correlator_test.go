@@ -572,10 +572,10 @@ func TestCorrelate_ReachableWhiteboxEscalatesSeverityAndPropagatesChain(t *testi
 		{File: "src/handlers.py", Line: 14, Expr: "cursor.execute(query)"},
 	}
 	wb := models.Finding{
-		Title:      "SQL query built via string formatting — injection risk",
-		Severity:   models.SeverityCritical, // CRITICAL whitebox
-		Source:     models.SourceWhitebox,
-		Category:   "injection",
+		Title:    "SQL query built via string formatting — injection risk",
+		Severity: models.SeverityCritical, // CRITICAL whitebox
+		Source:   models.SourceWhitebox,
+		Category: "injection",
 		// URL form (what spec_parser produces). The AST analyzer emits
 		// file:line endpoints; in a real hybrid scan the spec_parser
 		// finding correlates with blackbox and the AST chain is shared

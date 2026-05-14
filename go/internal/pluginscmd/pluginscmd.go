@@ -130,14 +130,14 @@ var validInstallNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
 //
 // The flow:
 //
-//	1. Resolve target = ~/.fendix/plugins/<derived-name>/
-//	2. Refuse if target already exists (no implicit upgrade — that's
-//	   the user's job; `rm -rf` it themselves if they want to replace)
-//	3. Shell out to `git clone --depth=1 <git-url> <target>`
-//	4. Validate the cloned tree has a parseable plugin.yaml
-//	5. On validation failure, remove the cloned directory so we don't
-//	   leave a half-installed plugin that the scanner would skip with
-//	   a WARN every time.
+//  1. Resolve target = ~/.fendix/plugins/<derived-name>/
+//  2. Refuse if target already exists (no implicit upgrade — that's
+//     the user's job; `rm -rf` it themselves if they want to replace)
+//  3. Shell out to `git clone --depth=1 <git-url> <target>`
+//  4. Validate the cloned tree has a parseable plugin.yaml
+//  5. On validation failure, remove the cloned directory so we don't
+//     leave a half-installed plugin that the scanner would skip with
+//     a WARN every time.
 //
 // The git binary is required on PATH. We don't statically link a git
 // implementation (go-git is large + has surprising defaults around
