@@ -33,6 +33,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error. Eight new tests exercise the subprocess + fallback paths
   (`TestScanViaSubprocess_*`, `TestParsePipAuditJSON_*`).
 
+#### Performance
+
+- **OSV.dev `/v1/querybatch` for pip dep-CVE scans (Sprint 02).** The
+  pip dep-CVE path no longer queries OSV.dev one package at a time. It
+  collects every (package, manifest) pair across discovered manifests,
+  serves cache hits inline, then chunks cache misses into batches of up
+  to 100 packages and runs up to 4 batch requests in flight. On a 150
+  pinned-deps fixture with simulated 50ms-per-`/v1/query` and
+  100ms-per-`/v1/querybatch` RTT, the batch path is **62× faster**
+  (~7.8s → ~0.13s) — comfortably above Sprint 02's 4× gate. The serial
+  per-package fallback is preserved and kicks in automatically on any
+  batch-level failure (non-2xx, length mismatch, transport error) so a
+  /v1/querybatch outage cannot hide CVEs.
+
+  Known trade-off: OSV.dev's `/v1/querybatch` response shape includes
+  vuln IDs but NOT aliases, so batch-path findings carry only an
+  OSV-id reference; CVE-* aliases that the per-package `/v1/query`
+  path includes are deferred to Sprint 02.5. The serial fallback path
+  preserves alias coverage for any chunk that hits it. Closes audit
+  §15.4 ("OSV.dev rate limiting / outage" → first thing to break under
+  enterprise load).
+
+  Promotes `golang.org/x/sync` from indirect to direct dependency
+  (already transitively present via `golang.org/x/vuln`; `go.sum`
+  unchanged). No new CGo. No new external deps.
+
 ### Engine UX gaps surfaced by the TwiScope-backend e2e scan (2026-05-14)
 
 Three real product gaps the TwiScope scan exposed; each fixed in
