@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -268,7 +269,13 @@ func (p Plugin) Run(ctx context.Context, req ScanRequest) ([]models.Finding, err
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("plugin %s: marshal request: %w", p.Name, err)
 	}
-	if _, err := stdin.Write(append(reqJSON, '\n')); err != nil {
+	// EPIPE from stdin.Write means the plugin exited before reading the
+	// request — a valid contract for plugins that emit findings without
+	// needing input (e.g. a static-scan plugin that ignores ScanRequest).
+	// Fall through to read stdout and let the exit-code + readPluginFindings
+	// terminator be authoritative. Other write errors (transport-level)
+	// are still fatal.
+	if _, err := stdin.Write(append(reqJSON, '\n')); err != nil && !errors.Is(err, io.ErrClosedPipe) && !isBrokenPipe(err) {
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("plugin %s: write request: %w", p.Name, err)
 	}
@@ -368,4 +375,17 @@ func DefaultRoots(cwd string) []string {
 		roots = append(roots, filepath.Join(home, ".fendix", "plugins"))
 	}
 	return roots
+}
+
+// isBrokenPipe reports whether err is a write-to-closed-pipe failure,
+// which happens when a plugin exits before reading our ScanRequest on
+// stdin. A fast-exiting plugin that emits all its findings without
+// needing input is a valid contract (e.g. a static-scan plugin that
+// ignores ScanRequest entirely), so we tolerate EPIPE on stdin.Write
+// and let stdout + exit-code be authoritative.
+func isBrokenPipe(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, syscall.EPIPE)
 }

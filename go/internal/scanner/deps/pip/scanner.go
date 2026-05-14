@@ -19,7 +19,8 @@
 //   - No transitive resolution. Direct deps only.
 //
 // Cache (OSV.dev path only):
-//   ~/.fendix/cache/osv-pypi/<package>@<version>.json with a 24h TTL.
+//
+//	~/.fendix/cache/osv-pypi/<package>@<version>.json with a 24h TTL.
 package pip
 
 import (
@@ -62,17 +63,17 @@ const DefaultRecurseDepth = 3
 // audit. Match-by-basename so a project that itself names a dir "tests"
 // is unaffected — we only skip exact-name matches at any depth.
 var recurseSkipDirs = map[string]bool{
-	".git":         true,
-	".venv":        true,
-	"venv":         true,
-	"node_modules": true,
+	".git":          true,
+	".venv":         true,
+	"venv":          true,
+	"node_modules":  true,
 	"site-packages": true,
-	"__pycache__":  true,
-	".tox":         true,
-	".mypy_cache":  true,
+	"__pycache__":   true,
+	".tox":          true,
+	".mypy_cache":   true,
 	".pytest_cache": true,
-	"build":        true,
-	"dist":         true,
+	"build":         true,
+	"dist":          true,
 }
 
 // osvAPIBase is the OSV.dev REST endpoint. Var-not-const so tests can

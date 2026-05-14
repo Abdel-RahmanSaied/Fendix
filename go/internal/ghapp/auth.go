@@ -31,7 +31,7 @@ const AppJWTLeeway = 60 * time.Second
 
 // Errors from the auth layer.
 var (
-	ErrInvalidPrivateKey      = errors.New("private key is not a valid RSA PEM block")
+	ErrInvalidPrivateKey       = errors.New("private key is not a valid RSA PEM block")
 	ErrInstallationTokenFailed = errors.New("installation token request failed")
 )
 
@@ -196,15 +196,15 @@ type TokenSource struct {
 	baseURL    string
 	now        func() time.Time
 
-	mu     sync.Mutex
-	tokens map[int64]*InstallationToken
+	mu      sync.Mutex
+	tokens  map[int64]*InstallationToken
 	flights map[int64]*tokenFlight
 }
 
 type tokenFlight struct {
-	done   chan struct{}
-	token  *InstallationToken
-	err    error
+	done  chan struct{}
+	token *InstallationToken
+	err   error
 }
 
 // NewTokenSource constructs a TokenSource. Pass a nil http.Client to

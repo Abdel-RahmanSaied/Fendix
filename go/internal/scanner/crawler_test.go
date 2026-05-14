@@ -1437,7 +1437,7 @@ func TestExtractPathParamSchemas_OAS3(t *testing.T) {
 		map[string]interface{}{
 			// query params should be ignored — only `in: path` counts
 			"name":   "q",
-			"in":    "query",
+			"in":     "query",
 			"schema": map[string]interface{}{"type": "string"},
 		},
 		map[string]interface{}{

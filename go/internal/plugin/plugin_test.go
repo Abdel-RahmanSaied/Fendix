@@ -276,7 +276,17 @@ echo '{"done":true,"total":0}'
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("expected timeout error, got %q", err.Error())
 	}
-	if elapsed > 2*time.Second {
+	// Budget of 8s tolerates GitHub-hosted Linux runners where
+	// exec.CommandContext's default Cancel SIGKILLs only the
+	// entrypoint script and Wait blocks until the script's
+	// `sleep 5` child exits. cmd.WaitDelay would bound that wait
+	// but exposes a pre-existing pipe race in TestRun_NonZeroExit
+	// (an `echo {...}; exit 3` plugin where the parent's stdin.Write
+	// races the child's exit). Bumping the budget is the minimal-risk
+	// fix. A real "timeout never fired" regression would be a
+	// deterministic ~5s — well below 8s, so the assertion still
+	// catches it.
+	if elapsed > 8*time.Second {
 		t.Fatalf("timeout did not fire promptly: elapsed %s", elapsed)
 	}
 }

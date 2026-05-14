@@ -41,7 +41,7 @@ cryptography==36.0.0
 	want := []pinnedPackage{
 		{name: "flask", version: "2.0.1"},
 		{name: "requests", version: "2.28.0"},
-		{name: "boto3", version: "1.26.0  # inline"},  // current parser drops `;` but not `#`; flag and move on
+		{name: "boto3", version: "1.26.0  # inline"}, // current parser drops `;` but not `#`; flag and move on
 		{name: "cryptography", version: "36.0.0"},
 	}
 	// Re-check the inline-comment case: the parser as written does NOT

@@ -29,11 +29,11 @@ import (
 // these caps is what the gate measures.
 
 const (
-	benchPipDeps          = 150
-	benchSerialRTTms      = 50
-	benchBatchRTTms       = 100
-	benchOSVPath          = "/v1/query"
-	benchOSVBatchPath     = "/v1/querybatch"
+	benchPipDeps      = 150
+	benchSerialRTTms  = 50
+	benchBatchRTTms   = 100
+	benchOSVPath      = "/v1/query"
+	benchOSVBatchPath = "/v1/querybatch"
 )
 
 // newBenchOSVServer simulates an OSV.dev with realistic-ish per-request

@@ -160,7 +160,7 @@ var patterns = []pattern{
 		cwe:      "CWE-214",
 	},
 	{
-		id: "GITHUB_TOKEN",
+		id:    "GITHUB_TOKEN",
 		title: "GitHub token hardcoded",
 		// Personal access (ghp_), OAuth (gho_), user-to-server (ghu_),
 		// server-to-server (ghs_), refresh (ghr_).
@@ -180,7 +180,7 @@ var patterns = []pattern{
 		rightBoundary: boundaryAlnum,
 	},
 	{
-		id: "SLACK_TOKEN",
+		id:    "SLACK_TOKEN",
 		title: "Slack token hardcoded",
 		// xoxa-/xoxb-/xoxp-/xoxr-/xoxs-.
 		regex:         regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`),
@@ -208,7 +208,7 @@ var patterns = []pattern{
 		rightBoundary: boundaryAlnumUnderDash,
 	},
 	{
-		id: "OPENAI_API_KEY",
+		id:    "OPENAI_API_KEY",
 		title: "OpenAI API key hardcoded",
 		// Legacy sk-<48 alnum>; project sk-proj-<...>; service-account sk-svcacct-<...>.
 		// The body forbids `-` so the regex naturally cannot match
@@ -229,7 +229,7 @@ var patterns = []pattern{
 		rightBoundary: boundaryAlnum,
 	},
 	{
-		id: "GCP_SERVICE_ACCOUNT",
+		id:    "GCP_SERVICE_ACCOUNT",
 		title: "GCP service-account JSON key hardcoded",
 		// Canonical signature line in Google's downloaded SA JSON files.
 		regex:    regexp.MustCompile(`"type"\s*:\s*"service_account"`),

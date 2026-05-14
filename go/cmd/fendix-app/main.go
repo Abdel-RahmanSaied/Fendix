@@ -109,11 +109,11 @@ func main() {
 }
 
 type config struct {
-	AppID          int64
-	PrivateKeyPEM  []byte
-	WebhookSecret  []byte
-	ListenAddr     string
-	GitHubAPIURL   string
+	AppID         int64
+	PrivateKeyPEM []byte
+	WebhookSecret []byte
+	ListenAddr    string
+	GitHubAPIURL  string
 }
 
 func loadConfig() (*config, error) {

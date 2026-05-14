@@ -16,8 +16,11 @@ const VersionFile = ".fendix-version"
 // EnsureEngine returns a path to a usable Python engine directory.
 // Resolution order:
 //  1. If engineDir is set (dev mode / explicit config), use it directly.
-//  2. If embedded FS has engine files, extract to ~/.fendix/engine/ and return that.
-//  3. Fall back to "python" relative to CWD (source tree development).
+//  2. If FENDIX_ENGINE env var is set, use that (matches the --help and
+//     package doc promise; lets CI / E2E tests point at the repo's
+//     python/ tree without changing CWD).
+//  3. If embedded FS has engine files, extract to ~/.fendix/engine/ and return that.
+//  4. Fall back to "python" relative to CWD (source tree development).
 //
 // The version parameter is the Go binary version (e.g. "1.0.0" or "dev").
 // If the extracted engine has a different version stamp, it is re-extracted.
@@ -31,7 +34,18 @@ func EnsureEngine(engineDir, version string) (string, error) {
 		return "", fmt.Errorf("engine directory %s does not contain engine.py", engineDir)
 	}
 
-	// 2. Try embedded extraction
+	// 2. FENDIX_ENGINE env override — documented in --python-engine's
+	// flag description. Lets CI / tests point at an absolute path
+	// without depending on the binary's CWD.
+	if envDir := os.Getenv("FENDIX_ENGINE"); envDir != "" {
+		if _, err := os.Stat(filepath.Join(envDir, "engine.py")); err == nil {
+			slog.Debug("using FENDIX_ENGINE directory", "dir", envDir)
+			return envDir, nil
+		}
+		return "", fmt.Errorf("FENDIX_ENGINE=%s does not contain engine.py", envDir)
+	}
+
+	// 3. Try embedded extraction
 	if embedded.HasEngine() {
 		destDir, err := embedded.EngineDir()
 		if err != nil {
@@ -57,7 +71,7 @@ func EnsureEngine(engineDir, version string) (string, error) {
 		return destDir, nil
 	}
 
-	// 3. Fall back to local "python" directory (development mode)
+	// 4. Fall back to local "python" directory (development mode)
 	localDir := "python"
 	if _, err := os.Stat(filepath.Join(localDir, "engine.py")); err == nil {
 		slog.Debug("using local python engine directory", "dir", localDir)

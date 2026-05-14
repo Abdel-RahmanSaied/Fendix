@@ -21,7 +21,9 @@
 // issue for a v1 project).
 //
 // Cache: OSV.dev responses live at
-//   ~/.fendix/cache/osv-npm/<pkg>@<version>.json
+//
+//	~/.fendix/cache/osv-npm/<pkg>@<version>.json
+//
 // with a 24h TTL.
 package npm
 

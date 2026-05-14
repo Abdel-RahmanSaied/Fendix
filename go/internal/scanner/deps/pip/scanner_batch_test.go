@@ -117,7 +117,7 @@ func TestScanViaOSV_BatchUsedWhenManyPackages(t *testing.T) {
 	var batchHits, queryHits atomic.Int32
 	srv := newFakeOSVBatchServer(t,
 		vulnsByKey{
-			"flask@2.0.1":    {"PYSEC-2022-43012"},
+			"flask@2.0.1":     {"PYSEC-2022-43012"},
 			"requests@2.20.0": {"PYSEC-2018-91"},
 		},
 		false, &batchHits, &queryHits)

@@ -15,8 +15,8 @@ import (
 // is reported to the user so they can sanity-check that fendix found
 // the right project.
 type Stack struct {
-	Name    string // e.g. "Python", "Node.js", "Go", "Generic"
-	Marker  string // file that triggered the detection, e.g. "go.mod"
+	Name   string // e.g. "Python", "Node.js", "Go", "Generic"
+	Marker string // file that triggered the detection, e.g. "go.mod"
 }
 
 // SpecLocation is a discovered OpenAPI spec path, relative to the

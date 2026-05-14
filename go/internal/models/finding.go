@@ -59,18 +59,18 @@ type TaintLink struct {
 // the whitebox half carries a chain — that's the "DAST + SAST agree
 // AND we can show the path" case worth a build-failing exit code.
 type Finding struct {
-	ID                string     `json:"id"`
-	Title             string     `json:"title"`
-	Severity          Severity   `json:"severity"`
-	Source            Source     `json:"source"`
-	Category          string     `json:"category"`
-	Endpoint          string     `json:"endpoint"`
-	AffectedEndpoints []string   `json:"affected_endpoints,omitempty"`
-	Evidence          string     `json:"evidence"`
-	Fix               string     `json:"fix"`
-	References        []string   `json:"references"`
-	Confidence        Confidence `json:"confidence"`
-	Line              *string    `json:"line"`
+	ID                string      `json:"id"`
+	Title             string      `json:"title"`
+	Severity          Severity    `json:"severity"`
+	Source            Source      `json:"source"`
+	Category          string      `json:"category"`
+	Endpoint          string      `json:"endpoint"`
+	AffectedEndpoints []string    `json:"affected_endpoints,omitempty"`
+	Evidence          string      `json:"evidence"`
+	Fix               string      `json:"fix"`
+	References        []string    `json:"references"`
+	Confidence        Confidence  `json:"confidence"`
+	Line              *string     `json:"line"`
 	TaintChain        []TaintLink `json:"taint_chain,omitempty"`
 	Reachable         bool        `json:"reachable,omitempty"`
 }
