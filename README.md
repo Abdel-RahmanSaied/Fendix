@@ -391,6 +391,20 @@ Severity mapping:
 
 ## CI/CD Integration
 
+Fendix's `init` command generates drop-in templates for three CI
+systems:
+
+```bash
+fendix init                 # auto-detect (looks for .github/, .gitlab-ci.yml, .circleci/)
+fendix init --ci github     # explicit
+fendix init --ci gitlab     # writes .gitlab-ci.fendix.yml + NEXT-STEPS-fendix.md
+fendix init --ci circleci   # writes .circleci/fendix-config.yml + NEXT-STEPS-fendix.md
+```
+
+For gitlab/circleci, the NEXT-STEPS file explains how to wire the
+snippet into your main CI config (GitLab via `include:`, CircleCI by
+merging into your single `config.yml`).
+
 ### GitHub Actions
 
 ```yaml

@@ -43,7 +43,7 @@ If you can't fund all 18 sprints, the **recommended ordering** at the bottom of 
 | [14](sprint-14-jira.md) | 5.2 | Jira integration | 3 | Med | v0.13.1 |
 | [15](sprint-15-slack-teams.md) | 5.3 | Slack / Teams webhook alerts | 2 | Low | v0.13.1 |
 | [16](sprint-16-benchmarks.md) | 6.1 | Enterprise benchmark harness | 1.5 | Low | v0.14.0 |
-| [17](sprint-17-ci-templates.md) | 6.2 | GitLab + CircleCI templates | 1 | Low | v0.14.0 |
+| [17](sprint-17-ci-templates.md) ✅ | 6.2 | GitLab + CircleCI templates | 1 | Low | v0.14.0 |
 | [18](sprint-18-semgrep-rules.md) ✅ | 6.3 | Semgrep rule pack expansion | 2 | Low | v0.14.0 |
 
 **Total: 50–53 days.**

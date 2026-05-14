@@ -139,29 +139,45 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Generate a default CI workflow + .fendix-ignore in the current directory",
-		Long: `Detect the project stack and write a drop-in GitHub Actions workflow plus a
+		Long: `Detect the project stack and write a drop-in CI workflow plus a
 .fendix-ignore starter file. Refuses to overwrite existing files unless --force is set.
 
+Pick a CI system via --ci. Without it, fendix auto-detects from .github/,
+.gitlab-ci.yml, or .circleci/ in the project root, defaulting to GitHub when
+none of those is present.
+
 Files written (relative to the working directory):
-  .github/workflows/fendix.yml   — PR-gated DAST + SAST scan with SARIF upload
-  .fendix-ignore                 — empty starter for finding-level suppressions
+  --ci github (default)  .github/workflows/fendix.yml   — PR-gated DAST+SAST scan
+                         .fendix.yaml                   — policy starter
+                         .fendix-ignore                 — finding suppressions
+  --ci gitlab            .gitlab-ci.fendix.yml          — GitLab CI include file
+                         NEXT-STEPS-fendix.md           — wiring instructions
+                         .fendix.yaml + .fendix-ignore
+  --ci circleci          .circleci/fendix-config.yml    — CircleCI snippet
+                         NEXT-STEPS-fendix.md           — wiring instructions
+                         .fendix.yaml + .fendix-ignore
 
 Use --print to preview without writing.`,
-		Example: `  fendix init                    # write the files
-  fendix init --print            # preview the generated content
-  fendix init --force            # overwrite existing files`,
+		Example: `  fendix init                       # auto-detect CI; write the files
+  fendix init --ci gitlab           # emit GitLab CI templates
+  fendix init --ci circleci         # emit CircleCI templates
+  fendix init --print               # preview the generated content
+  fendix init --force               # overwrite existing files`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
 			print, _ := cmd.Flags().GetBool("print")
+			ci, _ := cmd.Flags().GetString("ci")
 			return initcmd.Run(initcmd.Options{
 				Force: force,
 				Print: print,
+				CI:    ci,
 				Out:   cmd.OutOrStdout(),
 			})
 		},
 	}
 	cmd.Flags().Bool("force", false, "overwrite existing files")
 	cmd.Flags().Bool("print", false, "print generated content to stdout instead of writing")
+	cmd.Flags().String("ci", "", "CI system to emit templates for: github, gitlab, circleci (default: auto-detect → github)")
 	return cmd
 }
 

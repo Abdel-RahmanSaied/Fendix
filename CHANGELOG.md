@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.14.0 — Sprint 17 (GitLab + CircleCI templates)
+
+#### Added
+
+- **`fendix init --ci <github|gitlab|circleci>` (Sprint 17).** The
+  init command now emits CI templates for three systems, not just
+  GitHub Actions. Without `--ci`, fendix auto-detects from `.github/`,
+  `.gitlab-ci.yml`, or `.circleci/` in the project root and falls
+  back to `github` when none are present. Per CI:
+  - **github** (default): `.github/workflows/fendix.yml` (unchanged)
+  - **gitlab**: `.gitlab-ci.fendix.yml` (a GitLab `include:` file
+    that emits a `gl-sast-report.json` SAST report) plus a
+    `NEXT-STEPS-fendix.md` that explains the `include:` wiring.
+  - **circleci**: `.circleci/fendix-config.yml` (an inline snippet
+    the user merges into their main `config.yml`) plus a
+    `NEXT-STEPS-fendix.md` explaining the merge recipe.
+
+  Every emitted `.yml` is parsed by `gopkg.in/yaml.v3` at test time
+  (`TestAllTemplatesParseAsYAML`) so a typo can't ship in a release.
+  Closes audit §8 ("GitHub Actions only today").
+
 ### v0.13.1 — Sprint 13 (GitHub App handler doc cleanup)
 
 #### Fixed
