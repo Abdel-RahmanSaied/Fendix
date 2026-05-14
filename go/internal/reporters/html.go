@@ -7,17 +7,24 @@ import (
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters/i18n"
 )
 
 const htmlTemplate = `<!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Lang}}"{{if .RTL}} dir="rtl"{{end}}>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fendix Security Report</title>
+<title>{{.I18n.ReportTitle}}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6;padding:2rem}
+{{if .RTL}}/* Sprint 10 RTL branch */
+body,table,.toolbar,.summary,.finding-header,.field{direction:rtl}
+th,td,.field-label,.field-value,.subtitle,.meta{text-align:right}
+.affected-list{padding-right:1.25rem;padding-left:0}
+.finding-id{margin-right:0;margin-left:.5rem}
+{{end}}
 .container{max-width:1200px;margin:0 auto}
 h1{font-size:1.75rem;margin-bottom:.5rem;color:#f8fafc}
 .subtitle{color:#94a3b8;margin-bottom:2rem}
@@ -85,23 +92,23 @@ body{background:#fff;color:#1e293b;padding:1rem}
 </head>
 <body>
 <div class="container">
-<h1>&#x1f6e1; Fendix Security Report</h1>
+<h1>&#x1f6e1; {{.I18n.ReportTitle}}</h1>
 <p class="subtitle">{{.Metadata.Target}} &mdash; {{.Metadata.Mode}} scan &mdash; {{.Metadata.Duration}}</p>
 <div class="summary">
-<div class="stat critical"><div class="count">{{.Summary.Critical}}</div><div class="label">Critical</div></div>
-<div class="stat high"><div class="count">{{.Summary.High}}</div><div class="label">High</div></div>
-<div class="stat medium"><div class="count">{{.Summary.Medium}}</div><div class="label">Medium</div></div>
-<div class="stat low"><div class="count">{{.Summary.Low}}</div><div class="label">Low</div></div>
-<div class="stat info"><div class="count">{{.Summary.Info}}</div><div class="label">Info</div></div>
+<div class="stat critical"><div class="count">{{.Summary.Critical}}</div><div class="label">{{.I18n.SeverityCritical}}</div></div>
+<div class="stat high"><div class="count">{{.Summary.High}}</div><div class="label">{{.I18n.SeverityHigh}}</div></div>
+<div class="stat medium"><div class="count">{{.Summary.Medium}}</div><div class="label">{{.I18n.SeverityMedium}}</div></div>
+<div class="stat low"><div class="count">{{.Summary.Low}}</div><div class="label">{{.I18n.SeverityLow}}</div></div>
+<div class="stat info"><div class="count">{{.Summary.Info}}</div><div class="label">{{.I18n.SeverityInfo}}</div></div>
 </div>
 <div class="toolbar">
-<span class="sort-label">Sort by:</span>
-<button class="active" onclick="sortFindings('severity',this)">Severity</button>
-<button onclick="sortFindings('endpoint',this)">Endpoint</button>
-<button onclick="sortFindings('source',this)">Source</button>
+<span class="sort-label">{{.I18n.SortByLabel}}</span>
+<button class="active" onclick="sortFindings('severity',this)">{{.I18n.SortBySeverity}}</button>
+<button onclick="sortFindings('endpoint',this)">{{.I18n.SortByEndpoint}}</button>
+<button onclick="sortFindings('source',this)">{{.I18n.SortBySource}}</button>
 <span style="flex:1"></span>
-<button onclick="toggleAll(true)">Expand All</button>
-<button onclick="toggleAll(false)">Collapse All</button>
+<button onclick="toggleAll(true)">{{.I18n.ExpandAll}}</button>
+<button onclick="toggleAll(false)">{{.I18n.CollapseAll}}</button>
 </div>
 <div class="findings" id="findings">
 {{range .Findings}}<div class="finding" data-severity="{{severityRank .Severity}}" data-endpoint="{{.Endpoint}}" data-source="{{.Source}}" onclick="this.classList.toggle('open')">
@@ -113,23 +120,23 @@ body{background:#fff;color:#1e293b;padding:1rem}
 <span class="toggle">&#x25B6;</span>
 </div>
 <div class="finding-body">
-<div class="field"><div class="field-label">Evidence</div><div class="evidence">{{.Evidence}}</div></div>
-<div class="field"><div class="field-label">Fix</div><div class="field-value">{{.Fix}}</div></div>
-<div class="field"><div class="field-label">Source</div><div class="field-value">{{.Source}} &middot; {{.Confidence}} confidence</div></div>
-<div class="field"><div class="field-label">Category</div><div class="field-value">{{.Category}}</div></div>
-{{if gt (len .AffectedEndpoints) 1}}<div class="field"><div class="field-label">Affected endpoints ({{len .AffectedEndpoints}})</div><div class="field-value"><ul class="affected-list">{{range .AffectedEndpoints}}<li>{{.}}</li>{{end}}</ul></div></div>{{end}}
-{{if .Reachable}}<div class="field"><div class="field-label">Reachable dataflow ({{len .TaintChain}} step{{if ne (len .TaintChain) 1}}s{{end}})</div><div class="field-value"><ol class="affected-list">{{range .TaintChain}}<li><code>{{.File}}:{{.Line}}</code> &mdash; <code>{{.Expr}}</code></li>{{end}}</ol></div></div>{{end}}
-{{if .References}}<div class="field"><div class="field-label">References</div><div class="field-value">{{joinRefs .References}}</div></div>{{end}}
-{{if .Line}}<div class="field"><div class="field-label">Location</div><div class="field-value">{{derefLine .Line}}</div></div>{{end}}
+<div class="field"><div class="field-label">{{$.I18n.FieldEvidence}}</div><div class="evidence">{{.Evidence}}</div></div>
+<div class="field"><div class="field-label">{{$.I18n.FieldFix}}</div><div class="field-value">{{.Fix}}</div></div>
+<div class="field"><div class="field-label">{{$.I18n.FieldSource}}</div><div class="field-value">{{.Source}} &middot; {{.Confidence}} {{$.I18n.ConfidenceLabel}}</div></div>
+<div class="field"><div class="field-label">{{$.I18n.FieldCategory}}</div><div class="field-value">{{.Category}}</div></div>
+{{if gt (len .AffectedEndpoints) 1}}<div class="field"><div class="field-label">{{$.I18n.FieldAffected}} ({{len .AffectedEndpoints}})</div><div class="field-value"><ul class="affected-list">{{range .AffectedEndpoints}}<li>{{.}}</li>{{end}}</ul></div></div>{{end}}
+{{if .Reachable}}<div class="field"><div class="field-label">{{$.I18n.FieldReachable}} ({{len .TaintChain}})</div><div class="field-value"><ol class="affected-list">{{range .TaintChain}}<li><code>{{.File}}:{{.Line}}</code> &mdash; <code>{{.Expr}}</code></li>{{end}}</ol></div></div>{{end}}
+{{if .References}}<div class="field"><div class="field-label">{{$.I18n.FieldReferences}}</div><div class="field-value">{{joinRefs .References}}</div></div>{{end}}
+{{if .Line}}<div class="field"><div class="field-label">{{$.I18n.FieldLocation}}</div><div class="field-value">{{derefLine .Line}}</div></div>{{end}}
 </div>
 </div>
 {{end}}</div>
 <div class="meta">
-<span>Scan started: {{formatTime .Metadata.StartedAt}}</span>
-<span>Duration: {{.Metadata.Duration}}</span>
-<span>Mode: {{.Metadata.Mode}}</span>
-<span>Endpoints: {{.Metadata.EndpointsCount}}</span>
-<span>Total findings: {{.Total}}</span>
+<span>{{.I18n.ScanStartedLabel}} {{formatTime .Metadata.StartedAt}}</span>
+<span>{{.I18n.DurationLabel}} {{.Metadata.Duration}}</span>
+<span>{{.I18n.ModeLabel}} {{.Metadata.Mode}}</span>
+<span>{{.I18n.EndpointsLabel}} {{.Metadata.EndpointsCount}}</span>
+<span>{{.I18n.TotalFindingsLabel}} {{.Total}}</span>
 <span>Fendix {{.Metadata.Version}}</span>
 </div>
 </div>
@@ -159,8 +166,39 @@ else el.classList.remove('open');
 </body>
 </html>`
 
-// RenderHTML writes a self-contained HTML report to the writer.
+// HTMLOptions configures RenderHTMLOpts. Today the only knob is the
+// language code (Sprint 10); future options (custom CSS, embedded
+// logos) can land here without breaking existing callers.
+type HTMLOptions struct {
+	// Lang is a BCP-47 language code (e.g. "en", "ar"). Unknown codes
+	// fall back to English with i18n.IsSupported returning false; the
+	// CLI wrapper is responsible for logging the warning. Empty string
+	// is treated as "en".
+	Lang string
+}
+
+// htmlTemplateData is the struct piped into the HTML template. It
+// embeds the existing JSONReport (so all the data shapes the template
+// already used continue to work) and adds the Sprint-10 i18n fields.
+type htmlTemplateData struct {
+	JSONReport
+	Lang string
+	RTL  bool
+	I18n i18n.Strings
+}
+
+// RenderHTML writes a self-contained English HTML report to the
+// writer. Preserved for backward compatibility with pre-Sprint-10
+// callers; new callers should prefer RenderHTMLOpts.
 func RenderHTML(w io.Writer, findings []models.Finding, meta ScanMetadata) error {
+	return RenderHTMLOpts(w, findings, meta, HTMLOptions{})
+}
+
+// RenderHTMLOpts is the Sprint-10 variant of RenderHTML that honours
+// HTMLOptions.Lang. The behaviour for opts.Lang=="" or "en" is
+// byte-identical to the pre-Sprint-10 output (modulo the new
+// <html lang="..."> attribute, which existing CSS doesn't care about).
+func RenderHTMLOpts(w io.Writer, findings []models.Finding, meta ScanMetadata, opts HTMLOptions) error {
 	funcMap := template.FuncMap{
 		"joinRefs": func(refs []string) string {
 			return strings.Join(refs, ", ")
@@ -188,12 +226,21 @@ func RenderHTML(w io.Writer, findings []models.Finding, meta ScanMetadata) error
 		return fmt.Errorf("parsing HTML template: %w", err)
 	}
 
-	data := JSONReport{
-		Metadata: meta,
-		Summary:  CountSeverities(findings),
-		Sources:  CountSources(findings),
-		Total:    len(findings),
-		Findings: findings,
+	lang := opts.Lang
+	if lang == "" {
+		lang = "en"
+	}
+	data := htmlTemplateData{
+		JSONReport: JSONReport{
+			Metadata: meta,
+			Summary:  CountSeverities(findings),
+			Sources:  CountSources(findings),
+			Total:    len(findings),
+			Findings: findings,
+		},
+		Lang: lang,
+		RTL:  i18n.IsRTL(lang),
+		I18n: i18n.Get(lang),
 	}
 
 	if err := tmpl.Execute(w, data); err != nil {

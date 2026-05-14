@@ -36,7 +36,7 @@ If you can't fund all 18 sprints, the **recommended ordering** at the bottom of 
 | [07](sprint-07-fendix-serve.md) | 3.1 | `fendix serve` REST API (in-memory) | 5 | **High** | v0.12.1 |
 | [08](sprint-08-oidc.md) | 3.2 | OIDC login for `fendix serve` | 3 | Med | v0.12.1 |
 | [09](sprint-09-offline-mode.md) | 4.1 | Offline mode + `fendix db` | 4 | **High** | v0.13.0 |
-| [10](sprint-10-arabic-html.md) | 4.2 | Arabic HTML report (i18n) | 2 | Low | v0.13.0 |
+| [10](sprint-10-arabic-html.md) ✅ | 4.2 | Arabic HTML report (i18n) | 2 | Low | v0.13.0 |
 | [11](sprint-11-pdf-report.md) | 4.3 | PDF executive report | 4 | Med | v0.13.0 |
 | 12 | 4.4 | NCA ECC compliance report | — | **DEFERRED** | — |
 | [13](sprint-13-github-app-handler.md) ✅ | 5.1 | GitHub App handler glue | 4 | Med | v0.13.1 |

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.13.0 — Sprint 10 (Arabic HTML report, i18n)
+
+#### Added
+
+- **Arabic HTML report (Sprint 10).** `fendix scan` and `fendix
+  report` now accept `--lang ar` to render the HTML output
+  right-to-left with Arabic strings. JSON, SARIF, and (future) PDF
+  outputs stay English (machine-consumed; localisation would break
+  downstream tooling).
+
+  New package `go/internal/reporters/i18n/` holds the language
+  catalog (`Strings` struct, `English()`, `Arabic()`, `Get(lang)`,
+  `IsSupported(lang)`, `IsRTL(lang)`). Adding a language is one new
+  constructor + a switch case. The new `RenderHTMLOpts(w, findings,
+  meta, HTMLOptions{Lang: lang})` is the i18n-aware entry point;
+  `RenderHTML` is preserved as an English-defaulting thin wrapper so
+  every existing caller keeps working byte-for-byte.
+
+  Arabic strings ship as a machine-generated baseline marked with
+  `TRANSLATION_REVIEW_NEEDED` comments inline. A native-speaker
+  security professional is expected to clear those before Fendix
+  v0.13.0-stable is promoted — see RISKS.md ("Arabic translation
+  review"). Numerals stay Western Arabic (0-9), not Eastern
+  (٠-٩), for tooling compatibility.
+
+  Unknown `--lang` values fall back to English with a stderr warning.
+  RTL is detected from the language code (ar, he, fa, ur) so adding
+  the next RTL language is a single switch entry.
+
+  Closes audit §13 ("no i18n today").
+
 ### v0.13.1 — Sprint 15 (Slack / Teams webhook alerts)
 
 #### Added

@@ -513,7 +513,7 @@ func (o *Orchestrator) renderReport(findings []models.Finding, meta reporters.Sc
 
 	switch o.cfg.Format {
 	case "html":
-		return reporters.RenderHTML(w, findings, meta)
+		return reporters.RenderHTMLOpts(w, findings, meta, reporters.HTMLOptions{Lang: o.cfg.Lang})
 	case "sarif":
 		return reporters.RenderSARIF(w, findings, meta)
 	case "json", "":

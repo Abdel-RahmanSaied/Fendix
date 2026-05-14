@@ -101,4 +101,11 @@ type ScanConfig struct {
 	// `python/` source tree or an explicit FENDIX_ENGINE env var
 	// pointing at one (the binary no longer carries an embedded copy).
 	PythonEngine bool
+
+	// Lang controls the HTML reporter's language (Sprint 10). Today's
+	// values: "en" (default) and "ar". Other formats (JSON, SARIF) stay
+	// English because they're machine-consumed. Unknown values fall
+	// back to English at render time; the CLI wrapper warns when a
+	// passed --lang isn't a supported translation.
+	Lang string
 }

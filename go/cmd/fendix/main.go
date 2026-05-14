@@ -232,6 +232,7 @@ func newScanCmd() *cobra.Command {
 			usePipAuditFlag, _ := flags.GetBool("use-pip-audit")
 			pythonEngineFlag, _ := flags.GetBool("python-engine")
 			configFlag, _ := flags.GetString("config")
+			langFlag, _ := flags.GetString("lang")
 
 			// Resolve --config: explicit path takes precedence; if
 			// absent and a .fendix.yaml exists in the cwd, pick it up
@@ -284,6 +285,7 @@ func newScanCmd() *cobra.Command {
 				NoNativeDeps:         noNativeDepsFlag,
 				UsePipAudit:          usePipAuditFlag,
 				PythonEngine:         pythonEngineFlag,
+				Lang:                 resolveLang(langFlag, cmd.ErrOrStderr()),
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -378,8 +380,23 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("use-pip-audit", false, "Shell out to the pip-audit binary for Python dep-CVE scanning instead of the native OSV.dev client. Falls back to OSV.dev with a warning if pip-audit is not on PATH.")
 	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
+	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
 
 	return cmd
+}
+
+// resolveLang validates --lang against the i18n-supported set. Unknown
+// values fall back to English with a one-line warning to stderr so the
+// user can see their flag didn't take effect.
+func resolveLang(lang string, stderr io.Writer) string {
+	if lang == "" {
+		return "en"
+	}
+	if reporters.IsSupportedLang(lang) {
+		return lang
+	}
+	fmt.Fprintf(stderr, "warning: --lang=%q is not a supported translation; falling back to English. Supported: en, ar.\n", lang)
+	return "en"
 }
 
 func newReportCmd() *cobra.Command {
@@ -392,6 +409,8 @@ func newReportCmd() *cobra.Command {
 			inputPath, _ := flags.GetString("input")
 			formatFlag, _ := flags.GetString("format")
 			outputPath, _ := flags.GetString("output")
+			langFlag, _ := flags.GetString("lang")
+			lang := resolveLang(langFlag, cmd.ErrOrStderr())
 
 			if inputPath == "" {
 				return fmt.Errorf("--input is required: path to a findings JSON file")
@@ -419,7 +438,7 @@ func newReportCmd() *cobra.Command {
 
 			switch formatFlag {
 			case "html":
-				return reporters.RenderHTML(w, report.Findings, report.Metadata)
+				return reporters.RenderHTMLOpts(w, report.Findings, report.Metadata, reporters.HTMLOptions{Lang: lang})
 			case "sarif":
 				return reporters.RenderSARIF(w, report.Findings, report.Metadata)
 			case "json":
@@ -434,6 +453,7 @@ func newReportCmd() *cobra.Command {
 	flags.String("input", "", "Path to findings JSON file")
 	flags.StringP("format", "f", "html", "Output format: json, html, sarif")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
+	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
 
 	return cmd
 }
