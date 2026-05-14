@@ -1,30 +1,26 @@
-// Package pip runs an in-process PyPI dependency CVE scan against
-// requirements.txt manifests and emits fendix Findings for any pinned
-// version that matches an OSV.dev vulnerability record.
+// Package pip queries the OSV.dev /v1/query API to find vulnerabilities in
+// Python dependencies declared in requirements.txt manifests. It provides
+// behavioural parity with pip-audit (same advisory sources, same finding
+// shape) but does NOT shell out to pip-audit by default.
 //
-// Behavioural parity with python/analyzers/deps.py::_check_requirements:
-//   - One Finding per (package, version, OSV-id) tuple.
-//   - ID shape: SEC-DEPS-<vid-with-underscores> (no PY prefix; matches the
-//     Python output so dedup collapses overlap during the transition
-//     window before Phase 17b drops the embedded Python deps path).
-//   - Fix line picks the first OSV `affected[].ranges[].events[].fixed`
-//     entry per OSV schema.
-//   - References include the OSV ID followed by every alias.
+// Users who require an actual pip-audit invocation (for reproducibility
+// in environments that audit subprocess calls, or to pick up pip-audit-
+// specific patches ahead of OSV.dev's index) can pass --use-pip-audit
+// to fendix scan. When set, the scanner runs `pip-audit --format json -r
+// <manifest>` for every manifest discovered by findRequirementsManifests
+// and converts the output to []models.Finding using the same shape as
+// the native OSV.dev path. If pip-audit is not on PATH, a warning is
+// logged to stderr and the OSV.dev path is used as fallback — never
+// fails-closed silently.
 //
-// Limitations (deliberate — match pip-audit's scope):
-//   - Only pinned `==` versions are checked. Range specifiers (`>=`,
-//     `~=`, `>`) are skipped with a stderr warning — pip-audit also
-//     requires resolved versions and refuses to guess for ranges.
-//   - No transitive resolution. Direct deps only. Phase 17b can add a
-//     `pip install --dry-run --report` step if transitive coverage
-//     becomes important; today's contract matches the Python path.
+// Limitations (unchanged from existing implementation):
+//   - Only pinned `==` versions are checked. Range specifiers
+//     (`>=`, `~=`, `>`) are skipped with a stderr warning.
+//   - No transitive resolution. Direct deps only.
 //
-// Cache: OSV.dev responses are cached at
+// Cache (OSV.dev path only):
 //
-//	~/.fendix/cache/osv-pypi/<package>@<version>.json
-//
-// with a 24h TTL. Cache stamp = file mtime; older = re-fetch. The
-// directory is created lazily on first miss.
+//	~/.fendix/cache/osv-pypi/<package>@<version>.json with a 24h TTL.
 package pip
 
 import (
@@ -37,10 +33,14 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -88,6 +88,17 @@ const cacheTTL = 24 * time.Hour
 // is fast (<1s typical) — 15s is enough headroom for a slow link
 // without holding a scan hostage.
 const httpTimeout = 15 * time.Second
+
+// osvBatchMaxSize is OSV.dev's documented max batch size for
+// /v1/querybatch (https://google.github.io/osv.dev/post-v1-querybatch/).
+const osvBatchMaxSize = 100
+
+// osvMaxConcurrentBatches caps how many /v1/querybatch requests are in
+// flight simultaneously. Conservative for OSV.dev's undocumented
+// ~10 req/s per-IP rate limit — at 4 concurrent batches of up to 100
+// packages each, a 200-dep monorepo finishes in 2 batches with
+// effectively zero rate-limit risk. Benchmark before bumping.
+const osvMaxConcurrentBatches = 4
 
 // Scan reads requirements.txt at codePath and returns one Finding per
 // (package, version, OSV-id) tuple. ErrNoRequirements signals "not a
@@ -138,6 +149,16 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	return findings, nil
 }
 
+// Options controls runtime behaviour of ScanRecursiveWithOptions. The
+// zero value uses the native OSV.dev client (current default).
+type Options struct {
+	// UsePipAudit, when true, shells out to `pip-audit --format json`
+	// for every discovered manifest instead of querying OSV.dev directly.
+	// If pip-audit is not on PATH, a warning is emitted and the OSV.dev
+	// path is used as fallback (never fails-closed silently).
+	UsePipAudit bool
+}
+
 // ScanRecursive walks `codePath` up to `maxDepth` levels deep looking
 // for every `requirements.txt` and scans them all. The returned findings
 // carry a relative-path manifest stamp ("service/requirements.txt") so
@@ -160,7 +181,46 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 //
 // Dedups by absolute path so a symlink loop can't double-count, and
 // scans manifests in alphabetical path order for stable output.
+//
+// Preserved as a thin wrapper around ScanRecursiveWithOptions for
+// backward compat. Callers that want the new flag use the With-Options
+// variant.
 func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models.Finding, error) {
+	return ScanRecursiveWithOptions(ctx, codePath, maxDepth, Options{})
+}
+
+// ScanRecursiveWithOptions is the explicit-options variant of
+// ScanRecursive. When opts.UsePipAudit is true and pip-audit is on PATH,
+// the scanner shells out to it; otherwise it falls back to the native
+// OSV.dev /v1/query client. The fallback emits a stderr warning so the
+// caller knows their flag was honoured at "best effort" only.
+func ScanRecursiveWithOptions(ctx context.Context, codePath string, maxDepth int, opts Options) ([]models.Finding, error) {
+	if opts.UsePipAudit {
+		if path, err := exec.LookPath("pip-audit"); err == nil {
+			return scanViaSubprocess(ctx, codePath, maxDepth, path)
+		}
+		fmt.Fprintln(os.Stderr, "[fendix] pip: --use-pip-audit set but pip-audit not found on PATH; falling back to OSV.dev client")
+		// intentional fallthrough to OSV.dev path
+	}
+	return scanViaOSV(ctx, codePath, maxDepth)
+}
+
+// scanViaOSV scans every requirements.txt manifest under codePath
+// (recursing up to maxDepth levels), batching OSV.dev queries across
+// packages. Cache hits are processed first; cache misses are chunked
+// into osvBatchMaxSize-sized batches with up to osvMaxConcurrentBatches
+// in flight at once.
+//
+// If /v1/querybatch returns a non-2xx, the affected chunk falls back to
+// the per-package /v1/query path with a logged warning. Per-batch
+// failures don't sink the whole scan.
+//
+// Sprint-02 trade-off: /v1/querybatch responses include vuln IDs but
+// NOT aliases. Findings emitted via the batch path therefore carry only
+// an OSV-id reference; CVE-* aliases (which the per-package /v1/query
+// path includes) are deferred to Sprint 02.5. The serial fallback path
+// preserves alias coverage for any chunk that hits it.
+func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Finding, error) {
 	if maxDepth < 0 {
 		maxDepth = 0
 	}
@@ -176,10 +236,11 @@ func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models
 		return []models.Finding{}, nil
 	}
 
-	client := &http.Client{Timeout: httpTimeout}
-	cache, _ := cacheDir()
-
-	var all []models.Finding
+	// Phase 1: collect all (package, manifest-rel-path) pairs across
+	// every discovered manifest. The same package can appear in multiple
+	// manifests in a multi-service repo; we keep the manifest stamp on
+	// each pair so each finding's Endpoint correctly attributes ownership.
+	var allPairs []pkgWithManifest
 	for _, m := range manifests {
 		content, err := os.ReadFile(m)
 		if err != nil {
@@ -195,18 +256,323 @@ func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models
 			rel = "requirements.txt"
 		}
 		for _, p := range pkgs {
-			vulns, qerr := queryOSV(ctx, client, cache, p.name, p.version)
-			if qerr != nil {
-				fmt.Fprintf(os.Stderr, "[fendix] pip: query %s==%s failed: %v\n", p.name, p.version, qerr)
+			allPairs = append(allPairs, pkgWithManifest{pkg: p, manifest: rel})
+		}
+	}
+	if len(allPairs) == 0 {
+		return []models.Finding{}, nil
+	}
+
+	client := &http.Client{Timeout: httpTimeout}
+	cache, _ := cacheDir()
+
+	// Phase 2: cache lookup. Anything fresh in cache produces findings
+	// now; misses go into the batch queue. Note we look up per-pair (not
+	// per-package), so the same package present in two manifests gets
+	// the cache hit applied to both manifests' findings.
+	var findings []models.Finding
+	var misses []pkgWithManifest
+	for _, p := range allPairs {
+		if vulns, ok := readCache(cache, p.pkg.name, p.pkg.version); ok {
+			for _, v := range vulns {
+				findings = append(findings, buildFinding(p.pkg, v, p.manifest))
+			}
+			continue
+		}
+		misses = append(misses, p)
+	}
+
+	// Phase 3: batch the misses. Chunk into osvBatchMaxSize-sized
+	// groups, run up to osvMaxConcurrentBatches concurrently. The
+	// semaphore + waitgroup pattern keeps backpressure on OSV.dev's
+	// rate limiter while still parallelising across chunks.
+	if len(misses) > 0 {
+		sem := semaphore.NewWeighted(osvMaxConcurrentBatches)
+		var batchMu sync.Mutex
+		batchFindings := make([]models.Finding, 0)
+		var wg sync.WaitGroup
+		for start := 0; start < len(misses); start += osvBatchMaxSize {
+			end := start + osvBatchMaxSize
+			if end > len(misses) {
+				end = len(misses)
+			}
+			chunk := misses[start:end]
+			if err := sem.Acquire(ctx, 1); err != nil {
+				// Context cancellation surfaces here; bail with whatever
+				// we've already gathered (cache hits + completed batches).
+				wg.Wait()
+				batchMu.Lock()
+				findings = append(findings, batchFindings...)
+				batchMu.Unlock()
+				sortFindingsByID(findings)
+				return findings, fmt.Errorf("pip: acquire batch slot: %w", err)
+			}
+			wg.Add(1)
+			go func(chunk []pkgWithManifest) {
+				defer wg.Done()
+				defer sem.Release(1)
+				chunkFindings := runBatchOrFallback(ctx, client, cache, chunk)
+				batchMu.Lock()
+				batchFindings = append(batchFindings, chunkFindings...)
+				batchMu.Unlock()
+			}(chunk)
+		}
+		wg.Wait()
+		findings = append(findings, batchFindings...)
+	}
+
+	sortFindingsByID(findings)
+	return findings, nil
+}
+
+// runBatchOrFallback tries /v1/querybatch for a single chunk; on any
+// batch-level failure (non-2xx, length mismatch, transport error) it
+// falls back to the per-package /v1/query path so individual findings
+// still surface. Cache writes happen on both paths.
+func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
+	pkgs := make([]pinnedPackage, len(chunk))
+	for i, p := range chunk {
+		pkgs[i] = p.pkg
+	}
+	results, err := queryOSVBatch(ctx, client, pkgs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[fendix] pip: querybatch failed (%v); falling back to per-package /v1/query for %d packages\n", err, len(chunk))
+		return runSerialFallback(ctx, client, cache, chunk)
+	}
+	var findings []models.Finding
+	for _, p := range chunk {
+		key := p.pkg.name + "@" + p.pkg.version
+		vulns := results[key]
+		// Cache the batch result even when empty — that's a valid
+		// "no known vulns" answer worth caching for 24h.
+		writeCache(cache, p.pkg.name, p.pkg.version, vulns)
+		for _, v := range vulns {
+			findings = append(findings, buildFinding(p.pkg, v, p.manifest))
+		}
+	}
+	return findings
+}
+
+// runSerialFallback walks the chunk one package at a time using the
+// classic /v1/query endpoint. Used when /v1/querybatch fails so any
+// transient batch-only outage doesn't hide CVE coverage.
+func runSerialFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
+	var findings []models.Finding
+	for _, p := range chunk {
+		vulns, err := queryOSV(ctx, client, cache, p.pkg.name, p.pkg.version)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[fendix] pip: query %s==%s failed: %v\n", p.pkg.name, p.pkg.version, err)
+			continue
+		}
+		for _, v := range vulns {
+			findings = append(findings, buildFinding(p.pkg, v, p.manifest))
+		}
+	}
+	return findings
+}
+
+// queryOSVBatch sends one /v1/querybatch request with up to
+// osvBatchMaxSize packages. Returns map[<pkg>@<version>]vulns so
+// callers can correlate responses back to their request packages.
+//
+// Known limitation: /v1/querybatch's response shape includes vuln IDs
+// but NOT aliases. To get the CVE-* aliases that the per-package
+// /v1/query path includes, callers would need a follow-up
+// GET /v1/vulns/{id} per vuln. This is intentionally NOT done here;
+// see Sprint 02 risks. The trade-off:
+//
+//   - Batch path (this function): N packages → 1 round trip, no aliases
+//   - Serial fallback (runSerialFallback): N packages → N round trips,
+//     full aliases
+//
+// Sprint 02.5 can hydrate aliases here if customers complain. Today we
+// accept the alias gap to win the throughput improvement.
+func queryOSVBatch(ctx context.Context, client *http.Client, pkgs []pinnedPackage) (map[string][]osvVuln, error) {
+	if len(pkgs) == 0 {
+		return map[string][]osvVuln{}, nil
+	}
+	if len(pkgs) > osvBatchMaxSize {
+		return nil, fmt.Errorf("batch size %d exceeds OSV.dev limit of %d — caller must chunk", len(pkgs), osvBatchMaxSize)
+	}
+	type batchQuery struct {
+		Package osvPackage `json:"package"`
+		Version string     `json:"version"`
+	}
+	type batchRequest struct {
+		Queries []batchQuery `json:"queries"`
+	}
+	type batchResultEntry struct {
+		Vulns []struct {
+			ID string `json:"id"`
+		} `json:"vulns"`
+	}
+	type batchResponse struct {
+		Results []batchResultEntry `json:"results"`
+	}
+
+	reqBody := batchRequest{Queries: make([]batchQuery, len(pkgs))}
+	for i, p := range pkgs {
+		reqBody.Queries[i] = batchQuery{
+			Package: osvPackage{Ecosystem: "PyPI", Name: p.name},
+			Version: p.version,
+		}
+	}
+	body, err := json.Marshal(&reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("encode batch request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, osvAPIBase+"/v1/querybatch", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build batch request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post batch to %s: %w", osvAPIBase, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("osv batch returned %d: %s", resp.StatusCode, snippet)
+	}
+	var parsed batchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("decode batch response: %w", err)
+	}
+	if len(parsed.Results) != len(pkgs) {
+		return nil, fmt.Errorf("osv batch response length mismatch: %d results for %d packages", len(parsed.Results), len(pkgs))
+	}
+
+	out := make(map[string][]osvVuln, len(pkgs))
+	for i, entry := range parsed.Results {
+		if len(entry.Vulns) == 0 {
+			continue
+		}
+		vulns := make([]osvVuln, 0, len(entry.Vulns))
+		for _, v := range entry.Vulns {
+			// TODO(sprint-02.5): hydrate aliases via GET /v1/vulns/{id}.
+			// Today: batch findings get a single OSV-id reference; the
+			// per-package /v1/query path remains the way to get full
+			// CVE-* aliases.
+			vulns = append(vulns, osvVuln{ID: v.ID})
+		}
+		out[pkgs[i].name+"@"+pkgs[i].version] = vulns
+	}
+	return out, nil
+}
+
+// scanViaSubprocess runs `pip-audit --format json -r <manifest>` for every
+// requirements.txt manifest discovered under codePath up to maxDepth levels.
+// Stamps the relative manifest path on each finding's Endpoint so users can
+// tell which service owns each CVE (parity with scanViaOSV).
+//
+// pip-audit's JSON output shape (--format json):
+//
+//	{
+//	  "dependencies": [
+//	    {"name": "...", "version": "...", "vulns": [{"id": "...", "fix_versions": [...], "description": "..."}, ...]},
+//	    ...
+//	  ]
+//	}
+//
+// We map pip-audit's vuln IDs (which are OSV IDs) into the SEC-DEPS-<id>
+// shape used by scanViaOSV's buildFinding. Title/severity/fix shape is
+// identical to the OSV.dev path so downstream dedup, correlator, and
+// reporters cannot tell the two paths apart.
+//
+// pip-audit's JSON shape has changed twice in 2024. This implementation
+// targets pip-audit >= 2.7.0 schema. Older versions: parsing returns an
+// error with a clear "upgrade pip-audit" hint.
+//
+// The scan-budget context is inherited verbatim — pip-audit invocations
+// honour the same wall-clock cap the orchestrator passes to the package.
+func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAuditPath string) ([]models.Finding, error) {
+	if maxDepth < 0 {
+		maxDepth = 0
+	}
+	abs, err := filepath.Abs(codePath)
+	if err != nil {
+		return nil, fmt.Errorf("pip: resolve path: %w", err)
+	}
+	manifests, err := findRequirementsManifests(abs, maxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("pip: walk for requirements.txt: %w", err)
+	}
+	if len(manifests) == 0 {
+		return []models.Finding{}, nil
+	}
+	var all []models.Finding
+	for _, m := range manifests {
+		rel, _ := filepath.Rel(abs, m)
+		if rel == "" {
+			rel = "requirements.txt"
+		}
+		cmd := exec.CommandContext(ctx, pipAuditPath, "--format", "json", "-r", m)
+		out, err := cmd.Output()
+		if err != nil {
+			// pip-audit exits 1 when findings exist. Distinguish:
+			// exit-1 + JSON output = expected; other exits = failure
+			// (log + continue, don't sink the whole scan).
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && len(out) > 0 {
+				// findings exist; proceed to parse
+			} else {
+				fmt.Fprintf(os.Stderr, "[fendix] pip: pip-audit failed on %s: %v\n", m, err)
 				continue
 			}
-			for _, v := range vulns {
-				all = append(all, buildFinding(p, v, rel))
-			}
 		}
+		findings, perr := parsePipAuditJSON(out, rel)
+		if perr != nil {
+			return nil, fmt.Errorf("pip: parse pip-audit output for %s: %w (run with --verbose for stderr)", rel, perr)
+		}
+		all = append(all, findings...)
 	}
 	sortFindingsByID(all)
 	return all, nil
+}
+
+// parsePipAuditJSON maps pip-audit's --format json output to []models.Finding.
+// Targets pip-audit >= 2.7.0 schema. Returns a clear error on older schemas
+// or any malformed JSON.
+func parsePipAuditJSON(jsonBytes []byte, manifestRelPath string) ([]models.Finding, error) {
+	var report struct {
+		Dependencies []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Vulns   []struct {
+				ID          string   `json:"id"`
+				FixVersions []string `json:"fix_versions"`
+				Description string   `json:"description"`
+				Aliases     []string `json:"aliases"`
+			} `json:"vulns"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(jsonBytes, &report); err != nil {
+		return nil, fmt.Errorf("decode pip-audit JSON (expected schema from pip-audit >= 2.7.0; upgrade with `pip install -U pip-audit`): %w", err)
+	}
+	var findings []models.Finding
+	for _, d := range report.Dependencies {
+		for _, v := range d.Vulns {
+			// Reuse buildFinding for shape parity. Convert pip-audit's
+			// vuln record to the same osvVuln shape buildFinding consumes.
+			osv := osvVuln{
+				ID:      v.ID,
+				Summary: v.Description,
+				Aliases: v.Aliases,
+			}
+			// pip-audit returns fix_versions as a list; preserve the first.
+			if len(v.FixVersions) > 0 {
+				osv.Affected = []osvAffected{{
+					Ranges: []osvRange{{Events: []osvEvent{{Fixed: v.FixVersions[0]}}}},
+				}}
+			}
+			findings = append(findings, buildFinding(
+				pinnedPackage{name: d.Name, version: d.Version},
+				osv,
+				manifestRelPath,
+			))
+		}
+	}
+	return findings, nil
 }
 
 // findRequirementsManifests returns absolute paths to every
@@ -251,6 +617,16 @@ func findRequirementsManifests(root string, maxDepth int) ([]string, error) {
 type pinnedPackage struct {
 	name    string
 	version string
+}
+
+// pkgWithManifest carries the relative path of the manifest a package
+// was discovered in. Sprint 02's batch path needs this stamp because
+// the same package can appear in multiple manifests in a multi-service
+// repo, and each finding must attribute ownership correctly via
+// Finding.Endpoint.
+type pkgWithManifest struct {
+	pkg      pinnedPackage
+	manifest string
 }
 
 // parseRequirements walks requirements.txt and yields only `==`-pinned

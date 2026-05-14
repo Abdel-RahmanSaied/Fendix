@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/cli"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/democmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/ignorecmd"
@@ -43,6 +45,18 @@ func main() {
 
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
+		// Sprint 03 introduced *cli.ExitError so subcommands (today: just
+		// verify) can dictate a specific process exit code that's
+		// CI-script-friendly. Catch and translate before falling through
+		// to the generic error-prints-then-exit-2 path.
+		var exitErr *cli.ExitError
+		if errors.As(err, &exitErr) {
+			if exitErr.Message != "" {
+				fmt.Fprintln(os.Stderr, exitErr.Message)
+			}
+			os.Exit(exitErr.Code)
+		}
+
 		// Cobra's SilenceErrors=true on the root command suppresses its
 		// built-in error printing (which clutters scan output), so we print
 		// the error here ourselves before exiting. Without this, errors
@@ -198,6 +212,7 @@ func newScanCmd() *cobra.Command {
 			debugBundleFlag, _ := flags.GetString("debug-bundle")
 			noPluginsFlag, _ := flags.GetBool("no-plugins")
 			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
+			usePipAuditFlag, _ := flags.GetBool("use-pip-audit")
 			pythonEngineFlag, _ := flags.GetBool("python-engine")
 			configFlag, _ := flags.GetString("config")
 
@@ -250,6 +265,7 @@ func newScanCmd() *cobra.Command {
 				DebugBundlePath:      debugBundleFlag,
 				NoPlugins:            noPluginsFlag,
 				NoNativeDeps:         noNativeDepsFlag,
+				UsePipAudit:          usePipAuditFlag,
 				PythonEngine:         pythonEngineFlag,
 			}
 
@@ -342,6 +358,7 @@ func newScanCmd() *cobra.Command {
 	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
 	flags.Bool("no-plugins", false, "Disable out-of-tree plugin discovery in .fendix/plugins/ + ~/.fendix/plugins/")
 	flags.Bool("no-native-deps", false, "Disable the in-process Go dep-CVE scanner (TASK-119). Defer to the Python deps.py path instead.")
+	flags.Bool("use-pip-audit", false, "Shell out to the pip-audit binary for Python dep-CVE scanning instead of the native OSV.dev client. Falls back to OSV.dev with a warning if pip-audit is not on PATH.")
 	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
 
@@ -408,27 +425,44 @@ func newVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify [finding-id]",
 		Short: "Re-run a single finding by ID and report still-present / resolved",
-		Long: `Re-test a specific finding from a saved scan report and report
-whether it is still present, resolved, or unverifiable.
+		Long: `Re-test a specific finding from a saved baseline scan report and
+report whether it is still present, resolved, or unverifiable.
 
-Supports three finding shapes:
+Supported finding shapes:
+  - URL-anchored DAST findings    (source: blackbox)
+  - File-anchored SAST findings   (source: whitebox; category:
+                                   secrets / injection / headers / ...)
+  - Dependency CVE findings       (category: deps)
 
-  - URL-anchored (DAST) findings: re-issues the same request with the
-    same auth and re-applies the per-title check (missing headers,
-    permissive CORS, version disclosure, missing auth, etc.).
+Not yet supported (returns status "unknown" with an explanatory reason):
+  - Correlated findings           (source: correlated)
+  - Active injection probe findings (require --enable-active to reproduce)
 
-  - File-anchored secrets findings: re-runs the native secrets scanner
-    against the file's directory.
+Exit codes (Sprint 03 of the enterprise-readiness plan):
+  0   resolved          — the finding no longer fires
+  1   still-present     — the finding still fires; CI should fail the build
+  2   unknown OR
+      not-found-in-baseline
+                        — verify could not produce a confident result;
+                          the operator should investigate but CI should
+                          NOT auto-fail on this
 
-  - Dep-CVE findings (category=deps): re-runs the pip / npm scanner
-    against the manifest's directory.
+The user passes --baseline pointing at a previously saved findings.json
+from "fendix scan --output ...", plus the same --url and/or --code that
+the original scan used.
 
-The user passes --baseline pointing at a previously saved
-findings.json from "fendix scan --output ...", plus the same --url
-and/or --code that the original scan used.
+Output is JSON (machine-readable) when --json is set; otherwise a short
+human-readable summary.
 
-Output is JSON (machine-readable) when --json is set; otherwise a
-short human-readable summary.`,
+Use in CI:
+
+  fendix verify SEC-001-abc --baseline scan.json --url $TARGET_URL
+  case $? in
+    0) echo "resolved";;
+    1) echo "still present"; exit 1;;
+    2) echo "verify could not tell — investigate manually";;
+  esac
+`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			baseline, _ := cmd.Flags().GetString("baseline")
@@ -455,7 +489,25 @@ short human-readable summary.`,
 			if err != nil {
 				return err
 			}
-			return verifycmd.Render(os.Stdout, result, emitJSON)
+			if err := verifycmd.Render(os.Stdout, result, emitJSON); err != nil {
+				return err
+			}
+
+			// Exit-code semantics for CI scripting (Sprint 03).
+			// 0 = resolved (default for RunE returning nil)
+			// 1 = still-present (CI should fail the build)
+			// 2 = unknown / not-found-in-baseline (operator should
+			//     investigate but CI should not auto-fail)
+			switch result.Status {
+			case verifycmd.StatusResolved:
+				return nil
+			case verifycmd.StatusStillPresent:
+				return cli.ExitWithCode(1, "finding still present")
+			case verifycmd.StatusUnknown, verifycmd.StatusNotFound:
+				return cli.ExitWithCode(2, fmt.Sprintf("verification %s", result.Status))
+			default:
+				return cli.ExitWithCode(2, fmt.Sprintf("unexpected status %q", result.Status))
+			}
 		},
 	}
 	cmd.Flags().String("baseline", "", "Path to the saved findings.json from the original scan (required)")

@@ -6,31 +6,47 @@
 // subcommand was a Phase-4 stub that just printed "not yet implemented"
 // despite being documented in `fendix --help`.
 //
-// Scope of the MVP implementation:
+// Supported finding shapes:
 //
-//   - URL-anchored findings (endpoint shape: "GET /path", "POST /path",
-//     or "http(s)://host/path"): re-issue the request with the same auth
-//     and re-evaluate the SAME check that produced the finding originally.
-//     Status = `still-present` if the check fires again, `resolved` if it
-//     doesn't, `unknown` if the request itself fails for a reason
-//     unrelated to the finding (network, DNS).
+//   - URL-anchored DAST findings (endpoint shape: "GET /path", "POST /path",
+//     or "http(s)://host/path"; source: blackbox): re-issue the request
+//     with the same auth and re-evaluate the SAME check that produced
+//     the finding originally.
 //
-//   - File-anchored SAST findings (endpoint shape: "path/to/file.py:42"):
-//     re-scan the file containing the original endpoint and look for a
-//     finding with the same ID at the same approximate line. Status
-//     mirrors the URL case.
+//   - File-anchored SAST findings (endpoint shape: "path/to/file.py:42";
+//     source: whitebox; category: secrets/injection/headers/...): re-scan
+//     the file containing the original endpoint and look for a finding
+//     with the same ID at the same approximate line.
 //
-//   - Dep-CVE findings (category=deps, endpoint="requirements.txt" or
-//     similar): re-run the relevant native scanner against the
-//     manifest's directory and check if the same (package, version,
-//     OSV-id) tuple still emerges.
+//   - Dep-CVE findings (category: deps, endpoint: "requirements.txt" or
+//     "package-lock.json" or similar): re-run the relevant native
+//     scanner against the manifest's directory and check if the same
+//     (package, version, OSV-id) tuple still emerges.
 //
-// What this is NOT yet:
-//   - Correlated/active-probe findings need separate re-test paths
-//     (not in MVP scope).
-//   - There's no automatic discovery of the scan target — caller passes
-//     --url / --code explicitly, the same way they did for the
-//     original scan.
+// Not yet supported (returns Status = "unknown" with an explanatory Reason):
+//
+//   - Correlated findings (source: correlated). Need separate
+//     blackbox+whitebox re-test paths and re-correlation logic, which
+//     would duplicate the orchestrator. Workaround: re-run the full
+//     scan that produced the baseline and diff against the baseline.
+//
+//   - Active injection probe findings (require --enable-active to
+//     reproduce). Would need to invoke the injection scanner against
+//     a single endpoint with consent re-acknowledged. Doable but
+//     bigger than the MVP.
+//
+// Process exit codes (Sprint 03):
+//
+//   - 0 — Status: resolved. The finding no longer fires.
+//   - 1 — Status: still-present. The finding still fires; CI should fail.
+//   - 2 — Status: unknown OR not-found-in-baseline. Verify could not
+//     produce a confident result; the operator should investigate but
+//     CI should NOT auto-fail on this — that would punish edge cases
+//     (correlated findings, baseline drift) the operator hasn't yet
+//     opted to handle.
+//
+// There's no automatic discovery of the scan target — the caller passes
+// --url / --code explicitly, the same way they did for the original scan.
 package verifycmd
 
 import (
@@ -118,6 +134,27 @@ func Run(ctx context.Context, findingID string, opts Options) (*Result, error) {
 	}
 	out.Original = original
 
+	// Sprint 03: gate by Source first. A correlated finding may also have
+	// a URL or file endpoint (correlation merges blackbox + whitebox), and
+	// the per-shape verifier would happily re-test the URL/file but the
+	// "still-present" answer would be wrong — it'd reflect ONE side of the
+	// correlation, not whether the *correlated* relationship still holds.
+	// Re-correlation needs the full scan; tell the user honestly rather
+	// than serve a misleading single-shape verdict.
+	if original.Source == models.SourceCorrelated {
+		out.Status = StatusUnknown
+		out.Reason = fmt.Sprintf(
+			"verify does not yet support correlated findings (source=%q, category=%q). "+
+				"A correlated finding fuses a blackbox URL match with a whitebox file match; "+
+				"re-testing one side alone cannot confirm the correlation still holds. "+
+				"See tasks/enterprise-readiness/sprint-03-verify-scope.md. "+
+				"Workaround: re-run the full scan that produced the baseline "+
+				"(fendix scan --code <path> --url <url>) and diff against the baseline.",
+			original.Source, original.Category)
+		out.LatencyMs = time.Since(start).Milliseconds()
+		return out, nil
+	}
+
 	// Dispatch by finding shape.
 	switch {
 	case isDepFinding(original):
@@ -128,7 +165,14 @@ func Run(ctx context.Context, findingID string, opts Options) (*Result, error) {
 		verifyFile(ctx, original, opts, out)
 	default:
 		out.Status = StatusUnknown
-		out.Reason = "finding shape not yet supported by verify (correlated/active-probe paths are MVP-deferred)"
+		out.Reason = fmt.Sprintf(
+			"verify does not yet support this finding shape (source=%q, category=%q). "+
+				"Correlated and active-probe findings are MVP-deferred — see "+
+				"tasks/enterprise-readiness/sprint-03-verify-scope.md. "+
+				"Workaround: re-run the full scan that produced the baseline "+
+				"(fendix scan --code <path> --url <url> --enable-active if applicable) "+
+				"and diff against the baseline.",
+			original.Source, original.Category)
 	}
 
 	out.LatencyMs = time.Since(start).Milliseconds()

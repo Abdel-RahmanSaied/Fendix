@@ -222,7 +222,15 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		// Twiscope_Main_App/, not the repo root. Vendored / cache dirs
 		// (.venv, node_modules, .git, etc.) are skipped regardless of
 		// depth — see recurseSkipDirs in the pip package.
-		pipFindings, err := pip.ScanRecursive(ctx, o.cfg.CodePath, pip.DefaultRecurseDepth)
+		pipMode := "OSV.dev"
+		if o.cfg.UsePipAudit {
+			pipMode = "pip-audit subprocess"
+		}
+		slog.Debug("native pypi dep-CVE scan starting", "mode", pipMode)
+		pipFindings, err := pip.ScanRecursiveWithOptions(
+			ctx, o.cfg.CodePath, pip.DefaultRecurseDepth,
+			pip.Options{UsePipAudit: o.cfg.UsePipAudit},
+		)
 		switch {
 		case err == nil:
 			if len(pipFindings) > 0 {

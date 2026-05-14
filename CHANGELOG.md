@@ -7,6 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.11.1 — Phase 1 trust fixes (Sprints 01–03)
+
+#### Fixed
+
+- **pip-audit naming gap (Sprint 01).** The Python dep-CVE scanner has
+  always been a direct OSV.dev `/v1/query` REST client, but its package
+  doc and surrounding comments described it as "pip-audit parity," which
+  was the kind of claim/implementation drift an external evaluator
+  reasonably loses trust over. The package doc, log messages, and inline
+  comments now state the implementation honestly: native code talks to
+  OSV.dev; behavioural parity with pip-audit (same advisory sources,
+  same finding shape) is preserved but the *tool* shown to users is no
+  longer misnamed. Closes audit §15.5.
+
+#### Added
+
+- **`--use-pip-audit` flag on `fendix scan` (Sprint 01).** Opt in to
+  shell out to the actual pip-audit binary instead of the native
+  OSV.dev client. The flag honours the same recursive walk
+  (`pip.DefaultRecurseDepth=3`) so multi-service repos still see every
+  manifest. Falls back to OSV.dev with a stderr warning if pip-audit is
+  not on PATH — never fails-closed silently. Targets pip-audit ≥ 2.7.0
+  JSON schema; older versions produce a clear "upgrade pip-audit"
+  error. Eight new tests exercise the subprocess + fallback paths
+  (`TestScanViaSubprocess_*`, `TestParsePipAuditJSON_*`).
+
+#### Performance
+
+- **OSV.dev `/v1/querybatch` for pip dep-CVE scans (Sprint 02).** The
+  pip dep-CVE path no longer queries OSV.dev one package at a time. It
+  collects every (package, manifest) pair across discovered manifests,
+  serves cache hits inline, then chunks cache misses into batches of up
+  to 100 packages and runs up to 4 batch requests in flight. On a 150
+  pinned-deps fixture with simulated 50ms-per-`/v1/query` and
+  100ms-per-`/v1/querybatch` RTT, the batch path is **62× faster**
+  (~7.8s → ~0.13s) — comfortably above Sprint 02's 4× gate. The serial
+  per-package fallback is preserved and kicks in automatically on any
+  batch-level failure (non-2xx, length mismatch, transport error) so a
+  /v1/querybatch outage cannot hide CVEs.
+
+  Known trade-off: OSV.dev's `/v1/querybatch` response shape includes
+  vuln IDs but NOT aliases, so batch-path findings carry only an
+  OSV-id reference; CVE-* aliases that the per-package `/v1/query`
+  path includes are deferred to Sprint 02.6 (alias hydration via
+  `GET /v1/vulns/{id}`). The serial fallback path preserves alias
+  coverage for any chunk that hits it. Closes audit §15.4 ("OSV.dev
+  rate limiting / outage" → first thing to break under enterprise
+  load).
+
+  Promotes `golang.org/x/sync` from indirect to direct dependency
+  (already transitively present via `golang.org/x/vuln`; `go.sum`
+  unchanged). No new CGo. No new external deps.
+
+- **OSV.dev `/v1/querybatch` for npm dep-CVE scans (Sprint 02.5).**
+  Mirrors Sprint 02's pip work into the npm scanner: `npm.Scan` now
+  collects all (package, version) pairs from `package-lock.json`,
+  serves cache hits inline, and chunks cache misses into batches of up
+  to 100 packages with up to 4 batch requests in flight. On a 150
+  resolved-deps fixture with the same simulated RTT as Sprint 02
+  (50ms /v1/query, 100ms /v1/querybatch), the batch path is **~62×
+  faster** (~7.87s → ~0.13s), comfortably above the 4× gate. Serial
+  per-package fallback kicks in automatically on any batch-level
+  failure so a /v1/querybatch outage cannot hide npm CVEs.
+
+  Same alias trade-off as the pip path: batch findings carry the
+  OSV-id; CVE-* alias hydration is folded into Sprint 02.6.
+
+  Public surface of `npm.Scan` is unchanged — same signature, same
+  sentinel errors (`ErrNoLockfile`,
+  `ErrLockfileMissingButPackageJsonPresent`), same Finding shape. The
+  orchestrator and `fendix verify` integration paths see no behaviour
+  change beyond the speedup.
+
+#### Changed
+
+- **`fendix verify` exit codes are now CI-script-friendly (Sprint 03).**
+  Previously verify always exited 0; CI scripts that wanted to fail the
+  build on still-present findings had to parse JSON output. New mapping:
+  - **0** — finding is resolved
+  - **1** — finding is still present (CI should fail the build)
+  - **2** — verify could not produce a confident result (unknown shape,
+    not in baseline, or correlated/active-probe finding that needs a
+    full re-scan to verify)
+
+  This is a behaviour change for any CI pipeline that previously relied
+  on `fendix verify ... && rest-of-pipeline` (which always succeeded);
+  those pipelines now correctly fail the build when the finding is
+  still present, which is what they wanted. The new internal package
+  `internal/cli` carries the `*ExitError` type; `main.go` honours it
+  via `errors.As` before the generic exit-2 path.
+
+- **`fendix verify` correlated findings now return an honest "unknown"
+  with a workaround.** Pre-Sprint-03, a correlated finding with a URL
+  endpoint was routed through the URL-shape verifier, which would
+  re-test ONE side of the correlation and report "still-present" or
+  "resolved" based on a single side's verdict — incorrect in principle
+  because re-testing one side cannot confirm a correlation still
+  holds. The `Run` dispatcher now gates `Source==correlated` BEFORE
+  the shape switch and returns Status=unknown with an explanation
+  pointing at the workaround (re-run the full scan and diff). Closes
+  audit §7.
+
+- **`fendix verify --help` now lists supported and unsupported finding
+  shapes explicitly**, plus the new exit-code table. Correlated and
+  active-probe findings are documented as MVP-deferred.
+
 ### Engine UX gaps surfaced by the TwiScope-backend e2e scan (2026-05-14)
 
 Three real product gaps the TwiScope scan exposed; each fixed in

@@ -370,14 +370,71 @@ Capture both numbers in the PR description. If post-sprint is not at least 4x fa
 
 ## Status
 
-**Not started.**
+**Started:** 2026-05-14 (AI implementer)
+**Branch:** `phase1-trust-fixes` (off main; second commit on the branch
+that also carries Sprints 01 and 03)
+**PR:** drafted; not pushed
+**Status:** done — pip only. **npm mirror deferred to Sprint 02.5** per
+the sprint file's explicit timebox-out clause ("If timeboxed, npm can
+slip to Sprint 02.5; pip is the priority since it's the higher-traffic
+ecosystem"). Created `sprint-02p5-osv-batch-npm.md` to track.
 
-```
-**Started:**
-**Branch:**
-**PR:**
-**Status:** not-started
-**Actual effort:**
+**Actual effort:** ~1 day vs 1.5 day estimate. The bulk of saved time
+was that `pkgWithManifest` + the cache lookup/miss split fell out of
+the existing `scanViaOSV` body cleanly; no refactor of cache or
+`buildFinding` was needed.
+
 **Surprises:**
+
+- **The Sprint 01 fake-OSV server in `newFakeOSVServer` only handles
+  `/v1/query`** (not `/v1/querybatch`). After Sprint 02 made the batch
+  path the default, `TestScanRecursive_BackwardCompatNoOptions` (and
+  the older `Scan` tests) still pass — but only because the batch
+  request hits `404` and the code automatically falls back to
+  `runSerialFallback` (per-package `/v1/query`). That's actually a
+  nice property of the fallback, but it's worth knowing: any future
+  test that wants to *prove* it's exercising the batch path must use
+  the new `newFakeOSVBatchServer` helper from
+  `scanner_batch_test.go`, which serves both endpoints.
+- **`go get golang.org/x/sync@v0.10.0` alone does NOT promote it to
+  direct.** Modern Go module tooling keeps it `// indirect` until a
+  package in the module actually `import`s it. Promotion happened on
+  the `import "golang.org/x/sync/semaphore"` line in scanner.go +
+  `go mod tidy`. Worth noting since the sprint file's `cd go && go
+  get ...` instruction implied the bash command alone was enough.
+- **`scanViaOSV` now caches "no vulns" results too.** The pre-Sprint-02
+  per-package `queryOSV` already did this (the empty `Vulns` slice
+  was written to cache); `runBatchOrFallback` does the same to keep
+  parity. Worth flagging because it means a 24h-old "no vulns"
+  result for a package that became vulnerable yesterday won't be
+  re-checked until the cache TTL elapses. This was true before Sprint
+  02; the behaviour is preserved, not introduced.
+
+**Bench (pip dep-CVE only — `BenchmarkPipDepCVE_*` in `scanner_batch_bench_test.go`):**
+
+| Path | ns/op | Wall-clock @ 150 deps |
+|---|---:|---:|
+| Per-package serial (pre-Sprint-02 baseline via `Scan()`) | 7,841,125,458 | ~7.84s |
+| Batched via `scanViaOSV` (post-Sprint-02) | 126,432,681 | ~0.13s |
+
+**~62× speedup**, comfortably above the sprint's required 4× gate.
+Bench uses simulated 50ms `/v1/query` and 100ms `/v1/querybatch` RTT
+(realistic for OSV.dev).
+
+**Engine-throughput bench (`make bench`) post-Sprint-02:** unchanged
+within run-to-run noise (1k-endpoint scan: 31.88ms vs 31.82ms baseline
+on `main`). No SAST regression.
+
 **Follow-ups created:**
-```
+
+- **Sprint 02.5 (npm mirror)** — `sprint-02p5-osv-batch-npm.md`
+  created in this directory. Same shape as Sprint 02 but in the npm
+  scanner (`internal/scanner/deps/npm/scanner.go`). Estimated ~0.5
+  day given the pip implementation now exists as a template.
+- **Sprint 02.6 (alias hydration)** — already in the sprint file's
+  follow-ups section. The TODO comment in `queryOSVBatch` cites it.
+- **Backoff/retry on transient 5xx from OSV.dev.** Not yet a sprint
+  — current behaviour is "log + serial-fallback for the affected
+  chunk", which already gives one effective retry per chunk via a
+  different endpoint. Add a real sprint when customers see the
+  failure mode in production.
