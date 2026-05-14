@@ -48,9 +48,9 @@ func TestMatchesConfigLeakPath(t *testing.T) {
 		{"/api/users", false, "", ""},
 		{"/", false, "", ""},
 		{"", false, "", ""},
-		{"/.envrc.example", false, "", ""},  // not a known basename
-		{"/env", false, "", ""},              // missing leading dot
-		{"/git/config", false, "", ""},       // missing leading dot on directory prefix
+		{"/.envrc.example", false, "", ""}, // not a known basename
+		{"/env", false, "", ""},            // missing leading dot
+		{"/git/config", false, "", ""},     // missing leading dot on directory prefix
 	}
 	for _, c := range cases {
 		gotPath, gotTitle, gotHit := matchesConfigLeakPath(c.path)
@@ -201,7 +201,7 @@ func TestCheckConfigLeak_HandlesEmptyURL(t *testing.T) {
 
 func TestSanitizeConfigLeakEvidence_RedactsSecrets(t *testing.T) {
 	cases := []struct {
-		in        string
+		in         string
 		mustRedact []string // these substrings must NOT appear in output
 		mustHave   []string // these substrings MUST appear
 	}{

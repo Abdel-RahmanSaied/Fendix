@@ -35,9 +35,9 @@ type entry struct {
 }
 
 var (
-	mu      sync.Mutex
+	mu        sync.Mutex
 	capPerKey = DefaultCap
-	entries = map[string]*entry{}
+	entries   = map[string]*entry{}
 )
 
 // SetCap configures the per-key WARN cap. Pass 0 to disable capping
