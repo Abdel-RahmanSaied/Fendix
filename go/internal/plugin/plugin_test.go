@@ -276,7 +276,11 @@ echo '{"done":true,"total":0}'
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("expected timeout error, got %q", err.Error())
 	}
-	if elapsed > 2*time.Second {
+	// Budget of 4s catches "timeout never fired" (sleep would run to its
+	// full 5s) while tolerating runner jitter on slow Linux CI. Local
+	// elapsed is sub-second; the 1s WaitDelay added to plugin.go puts a
+	// hard ceiling at manifest-timeout + 1s + jitter.
+	if elapsed > 4*time.Second {
 		t.Fatalf("timeout did not fire promptly: elapsed %s", elapsed)
 	}
 }

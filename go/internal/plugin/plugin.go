@@ -247,6 +247,15 @@ func (p Plugin) Run(ctx context.Context, req ScanRequest) ([]models.Finding, err
 		"FENDIX_PLUGIN_NAME="+p.Name,
 		"FENDIX_PLUGIN_DIR="+p.Dir,
 	)
+	// On ctx cancel/timeout, exec.CommandContext's default Cancel sends
+	// SIGKILL to the entrypoint process — but if the entrypoint is a
+	// shell that forked sleep/long-running children (typical plugin
+	// shape), Wait blocks until those grandchildren die. WaitDelay
+	// bounds that wait: 1s after Cancel runs, Go closes the I/O pipes
+	// and returns from Wait even if children are still alive. On loaded
+	// Linux runners that grace period stops the test budget exploding
+	// from ~200ms to 5s+.
+	cmd.WaitDelay = 1 * time.Second
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

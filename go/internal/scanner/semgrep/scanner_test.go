@@ -439,7 +439,10 @@ func TestScan_ContextCancellationKillsSemgrep(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ctx-cancellation error")
 	}
-	if time.Since(start) > 2*time.Second {
+	// Budget of 4s catches "cancel never fired" (sleep would run to its
+	// full 5s) while tolerating runner jitter on slow Linux CI. Local
+	// elapsed is ~1.2s (200ms ctx-timeout + 1s WaitDelay grace).
+	if time.Since(start) > 4*time.Second {
 		t.Errorf("Scan didn't honour ctx cancel — took %s", time.Since(start))
 	}
 }

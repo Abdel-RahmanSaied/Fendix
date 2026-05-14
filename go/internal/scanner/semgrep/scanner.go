@@ -124,6 +124,13 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 		"--quiet",
 		codePath,
 	)
+	// On ctx cancel/timeout, the default Cancel hook SIGKILLs the
+	// semgrep entrypoint, but Wait blocks until any orphaned children
+	// (semgrep's worker processes) also exit. WaitDelay bounds that to
+	// 1s — after which Go closes the I/O pipes and returns from Wait
+	// even if children are still alive. Stops the cancel-budget test
+	// blowing past its 2s assertion on slow Linux CI runners.
+	cmd.WaitDelay = 1 * time.Second
 	stdout, err := cmd.Output()
 	if err != nil {
 		// Context errors (cancel/deadline) are always real failures —
