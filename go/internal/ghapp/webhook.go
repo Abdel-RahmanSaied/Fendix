@@ -3,11 +3,14 @@
 // and event routing. The package is consumed by cmd/fendix-app, the
 // long-running HTTP server that GitHub posts webhooks to.
 //
-// The actual scan-and-comment workflow that runs on a pull_request event
-// is stubbed in handler.go pending a follow-up commit. This package ships
-// the credential-handling and transport code first because that's the
-// part most easily broken by a misconfiguration and most worth getting
-// review on before adding business logic on top.
+// The scan-and-comment workflow that runs on a pull_request event is
+// implemented in handler.go (Handler.HandlePullRequest): decode payload
+// → filter to scan-worthy actions (opened / synchronize / reopened) →
+// acquire installation token → clone HEAD SHA → run scan → post PR
+// comment summarising findings → upload SARIF to Code Scanning (best
+// effort). HandleCheckRun re-runs the scan when GitHub UI's "Re-run
+// check" button is clicked. HandlePush is wired for the eventual
+// baseline-refresh flow but is a no-op acknowledgement today.
 package ghapp
 
 import (

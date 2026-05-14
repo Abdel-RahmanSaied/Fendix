@@ -39,7 +39,7 @@ If you can't fund all 18 sprints, the **recommended ordering** at the bottom of 
 | [10](sprint-10-arabic-html.md) | 4.2 | Arabic HTML report (i18n) | 2 | Low | v0.13.0 |
 | [11](sprint-11-pdf-report.md) | 4.3 | PDF executive report | 4 | Med | v0.13.0 |
 | 12 | 4.4 | NCA ECC compliance report | — | **DEFERRED** | — |
-| [13](sprint-13-github-app-handler.md) | 5.1 | GitHub App handler glue | 4 | Med | v0.13.1 |
+| [13](sprint-13-github-app-handler.md) ✅ | 5.1 | GitHub App handler glue | 4 | Med | v0.13.1 |
 | [14](sprint-14-jira.md) | 5.2 | Jira integration | 3 | Med | v0.13.1 |
 | [15](sprint-15-slack-teams.md) | 5.3 | Slack / Teams webhook alerts | 2 | Low | v0.13.1 |
 | [16](sprint-16-benchmarks.md) | 6.1 | Enterprise benchmark harness | 1.5 | Low | v0.14.0 |

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.13.1 — Sprint 13 (GitHub App handler doc cleanup)
+
+#### Fixed
+
+- **Stale package doc in `go/internal/ghapp/webhook.go` (Sprint 13).**
+  The package comment still described `handler.go`'s scan-and-comment
+  workflow as "stubbed pending a follow-up commit." It hasn't been a
+  stub for several commits: `Handler.HandlePullRequest` (clone → scan
+  → comment → SARIF), `Handler.HandleCheckRun` (Re-run check button),
+  and `Handler.HandlePush` (no-op baseline placeholder) are all
+  implemented with `cmd/fendix-app/main.go` fully wired. Updated the
+  package doc to describe what's actually there. No behaviour change.
+
 ### v0.14.0 — Polish phase, Sprint 18
 
 #### Added
