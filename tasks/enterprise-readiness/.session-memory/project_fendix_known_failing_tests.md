@@ -49,6 +49,33 @@ from this list once that merges. Until then, if a future session hits
 either failure on `main`-derived work, the cause is "PR #3 not merged
 yet" — point them at the PR.
 
+**Go CI flakies still unresolved (intermittent on `main`, pre-existing,
+NOT introduced by Phase 1 or PR #3):**
+
+- `TestOrchestrator_BaselineDiffIntegration` (`internal/engine`) —
+  asserts that a second scan against an unchanged target produces zero
+  new findings vs. baseline. Hit on PR #3's first CI run (2026-05-14)
+  AND on main run `25807677016` (2026-05-13). Pass rate ~80–90%
+  locally and on CI; passes 5/5 times locally on macOS with `-race`.
+  Root cause hypothesis: parallel `Workers: 2` + brute-force endpoint
+  discovery against a fake server (`newVulnerableServer`) produces
+  slightly-different (endpoint, finding-id) ordering across the two
+  scans, generating spurious "new" findings in the diff. Real fix is
+  probably to disable brute-force discovery in this test (or shrink
+  to `Workers: 1`) — but neither knob is exposed on `ScanConfig`
+  today, so it's a 30-60min product change. **Not yet picked up as a
+  separate sprint.** If it fires during your session, rerun the job;
+  it almost always passes on the second attempt.
+- `TestRun_MalformedLineSkippedNotFatal` (`internal/plugin`) —
+  appeared in main run `25823902846` (2026-05-13). Has not recurred
+  since. Watch list only.
+
+**Go CI "Format check" step (`gofmt -l . then exit-1-if-nonempty`)
+was failing on every `main` run for 21 files of cosmetic struct-field
+alignment drift. RESOLVED on branch `fix/gofmt-main` (PR #4, off main;
+not yet merged). After PR #4 merges, `gofmt -l .` returns zero output;
+the format check is green on every subsequent run.
+
 **Why:** The plan's first principle is honest scope. A sprint that
 expands to fix unrelated pre-existing bugs grows in ways the plan can't
 account for, and a green test suite stops being a useful ship-gate
