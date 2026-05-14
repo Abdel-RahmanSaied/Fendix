@@ -1,0 +1,21 @@
+{
+  "fixture": "python-vulns",
+  "language": "python",
+  "loc": 100,
+  "true_positives": [
+    {"line": 28, "id": "TP-1", "cwe": "CWE-89",  "title": "SQL injection via string concatenation"},
+    {"line": 35, "id": "TP-2", "cwe": "CWE-798", "title": "Hardcoded AWS access key"},
+    {"line": 41, "id": "TP-3", "cwe": "CWE-22",  "title": "Path traversal via unfiltered user input"},
+    {"line": 47, "id": "TP-4", "cwe": "CWE-918", "title": "SSRF via fully-user-controlled URL"},
+    {"line": 53, "id": "TP-5", "cwe": "CWE-601", "title": "Open redirect via flask.redirect(user_target)"}
+  ],
+  "true_negatives": [
+    {"line": 65, "id": "TN-1", "shape": "parameterised SQL"},
+    {"line": 72, "id": "TN-2", "shape": "env-loaded secret"},
+    {"line": 76, "id": "TN-3", "shape": "basename-sanitised path"},
+    {"line": 84, "id": "TN-4", "shape": "whitelist-sanitised SSRF"},
+    {"line": 95, "id": "TN-5", "shape": "constant redirect target"}
+  ],
+  "tp_lines": [28, 35, 41, 47, 53],
+  "tn_lines": [65, 72, 76, 84, 95]
+}

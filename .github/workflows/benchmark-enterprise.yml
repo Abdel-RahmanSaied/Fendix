@@ -1,0 +1,63 @@
+name: Benchmark — enterprise comparison
+
+# Sprint 16 — apples-to-apples Python SAST comparison: fendix vs.
+# semgrep vs. bandit on a shared 100-LOC fixture. Triggered on release
+# tags and manually; not on push/PR (the comparison is most useful
+# against tagged releases, and semgrep+bandit install adds ~30s).
+#
+# Honesty constraint: this measures Python SAST on a single fixture.
+# It does NOT measure DAST (only fendix), cross-language SAST (varies
+# wildly by rule pack), or coverage on real-world projects.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-enterprise:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install GNU time + competitors
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y time
+          pip install --quiet bandit semgrep
+
+      - name: Build fendix
+        run: make build
+
+      - name: Run benchmark
+        run: bash scripts/benchmark-enterprise/run.sh
+
+      - name: Post results as job summary
+        if: always()
+        run: |
+          if [ -f scripts/benchmark-enterprise/RESULTS.md ]; then
+            cat scripts/benchmark-enterprise/RESULTS.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RESULTS.md produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload RESULTS.md
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-enterprise-results
+          path: scripts/benchmark-enterprise/RESULTS.md
+          if-no-files-found: warn

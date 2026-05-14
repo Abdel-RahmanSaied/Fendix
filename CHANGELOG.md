@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.14.0 — Sprint 16 (Enterprise benchmark harness)
+
+#### Added
+
+- **`scripts/benchmark-enterprise/` (Sprint 16).** Apples-to-apples
+  comparison of three Python-aware SAST tools (fendix vs. semgrep
+  vs. bandit) on a shared ~100-LOC fixture with 5 labeled true
+  positives and 5 labeled false-positive probes. Measures
+  wall-clock, peak RSS (via GNU `time -v`), TP count, and FP count.
+  Tools that aren't on PATH are honestly reported as "skipped" — no
+  silent zeros.
+
+  Each tool's output is scored against the fixture manifest
+  (`manifest.json`) by `score.py`, which tolerates the three different
+  output shapes (fendix's `"findings"[].endpoint`, semgrep's
+  `"results"[].start.line`, bandit's `"results"[].line_number`).
+  Findings on lines outside the labeled set are ignored — they're
+  typically style or import-hygiene rules outside the benchmark scope.
+
+  CI: a new `benchmark-enterprise.yml` workflow runs on release tags
+  and `workflow_dispatch`, installs semgrep + bandit + GNU time, then
+  posts the results table as a GitHub Actions job summary.
+
+  **Honesty constraint (in the runner's stdout AND every doc):**
+  measures Python SAST on a single fixture. Does NOT compare DAST
+  (only fendix), JS coverage (semgrep), or general SAST against a
+  customer's full repo.
+
 ### v0.13.0 — Sprint 10 (Arabic HTML report, i18n)
 
 #### Added
