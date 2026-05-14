@@ -104,16 +104,16 @@ func isFoundVulnsExit(err error) bool {
 //   - finding: ties an OSV id to a specific call trace. A finding counts
 //     as "reachable" when any trace frame has a non-empty Function name.
 type vulnMessage struct {
-	OSV     *osvRecord    `json:"osv,omitempty"`
-	Finding *vulnFinding  `json:"finding,omitempty"`
+	OSV     *osvRecord   `json:"osv,omitempty"`
+	Finding *vulnFinding `json:"finding,omitempty"`
 }
 
 type osvRecord struct {
-	ID       string         `json:"id"`
-	Summary  string         `json:"summary"`
-	Details  string         `json:"details"`
-	Aliases  []string       `json:"aliases"`
-	Affected []osvAffected  `json:"affected"`
+	ID       string        `json:"id"`
+	Summary  string        `json:"summary"`
+	Details  string        `json:"details"`
+	Aliases  []string      `json:"aliases"`
+	Affected []osvAffected `json:"affected"`
 }
 
 type osvAffected struct {
@@ -125,8 +125,8 @@ type osvRange struct {
 }
 
 type osvEvent struct {
-	Fixed       string `json:"fixed,omitempty"`
-	Introduced  string `json:"introduced,omitempty"`
+	Fixed      string `json:"fixed,omitempty"`
+	Introduced string `json:"introduced,omitempty"`
 }
 
 type vulnFinding struct {

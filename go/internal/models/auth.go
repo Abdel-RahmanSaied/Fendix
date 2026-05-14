@@ -21,8 +21,8 @@ const (
 	EnvAuthType   = "FENDIX_AUTH_TYPE"
 	EnvAuthHeader = "FENDIX_AUTH_HEADER"
 
-	DefaultAuthHeader        = "Authorization"
-	DefaultAPIKeyQueryParam  = "api_key"
+	DefaultAuthHeader       = "Authorization"
+	DefaultAPIKeyQueryParam = "api_key"
 )
 
 // ResolveAuth resolves authentication from multiple sources in priority order:

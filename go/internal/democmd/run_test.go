@@ -23,10 +23,10 @@ import (
 // assertions about argument shape, plus inject errors. Mirrors the
 // realDocker shape so production paths exercise the exact dispatch.
 type fakeDocker struct {
-	mu       sync.Mutex
-	calls    [][]string
-	failOn   map[string]error // first arg → error to return
-	stdout   map[string]string
+	mu     sync.Mutex
+	calls  [][]string
+	failOn map[string]error // first arg → error to return
+	stdout map[string]string
 }
 
 func (f *fakeDocker) record(args []string) {

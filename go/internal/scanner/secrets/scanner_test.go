@@ -108,7 +108,7 @@ func TestScan_AWSSecretShortPrefix(t *testing.T) {
 		line string
 	}{
 		{"canonical-long", `aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
-		{"medium-_key",    `aws_secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
+		{"medium-_key", `aws_secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
 		{"short-aws-secret", `aws_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
 		{"upper-AWS-Secret", `AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`},
 	}
@@ -526,14 +526,14 @@ func TestTruncateSecret(t *testing.T) {
 
 func TestIsEnvFile(t *testing.T) {
 	cases := map[string]bool{
-		".env":             true,
-		".env.local":       true,
-		".env.production":  true,
-		"app.env":          true,
-		"env":              false,
-		"server.env.bak":   false,
-		"config.py":        false,
-		".envfilelike":     false, // doesn't begin with .env.
+		".env":            true,
+		".env.local":      true,
+		".env.production": true,
+		"app.env":         true,
+		"env":             false,
+		"server.env.bak":  false,
+		"config.py":       false,
+		".envfilelike":    false, // doesn't begin with .env.
 	}
 	for name, want := range cases {
 		if got := isEnvFile(name); got != want {

@@ -37,24 +37,24 @@ import (
 // severity) tuple is shared across the affected paths.
 var configLeakBasenames = map[string]string{
 	// Environment / app config
-	".env":              "Environment configuration file exposed",
-	".env.local":        "Environment configuration file exposed",
-	".env.production":   "Environment configuration file exposed",
-	".env.development":  "Environment configuration file exposed",
-	".env.staging":      "Environment configuration file exposed",
-	".env.backup":       "Environment configuration backup exposed",
-	".envrc":            "direnv configuration file exposed",
+	".env":             "Environment configuration file exposed",
+	".env.local":       "Environment configuration file exposed",
+	".env.production":  "Environment configuration file exposed",
+	".env.development": "Environment configuration file exposed",
+	".env.staging":     "Environment configuration file exposed",
+	".env.backup":      "Environment configuration backup exposed",
+	".envrc":           "direnv configuration file exposed",
 	// Web-server config
-	".htaccess":     "Apache .htaccess file exposed",
-	".htpasswd":     "Apache .htpasswd credentials file exposed",
-	"web.config":    "IIS web.config file exposed",
+	".htaccess":  "Apache .htaccess file exposed",
+	".htpasswd":  "Apache .htpasswd credentials file exposed",
+	"web.config": "IIS web.config file exposed",
 	// Package-manager credentials
-	".npmrc":           "npm authentication tokens exposed",
-	".pypirc":          "PyPI authentication tokens exposed",
-	".netrc":           "netrc credentials file exposed",
-	"composer.lock":    "PHP Composer lockfile exposed (lower risk; informational)",
+	".npmrc":        "npm authentication tokens exposed",
+	".pypirc":       "PyPI authentication tokens exposed",
+	".netrc":        "netrc credentials file exposed",
+	"composer.lock": "PHP Composer lockfile exposed (lower risk; informational)",
 	// CI / config-as-code that should be in source control, never on the live server
-	".dockerenv":     "Docker environment file exposed",
+	".dockerenv":                  "Docker environment file exposed",
 	"docker-compose.override.yml": "Docker Compose override file exposed",
 	// Editor / IDE / OS leftovers
 	".DS_Store": "macOS .DS_Store file exposed (directory listing leak)",
@@ -64,10 +64,10 @@ var configLeakBasenames = map[string]string{
 // prefix — for directory-style leaks (the whole .git or .aws tree
 // served by mis-aliased nginx locations).
 var configLeakPrefixes = map[string]string{
-	".git/":  "Git repository internals exposed",
-	".aws/":  "AWS credentials directory exposed",
-	".ssh/":  "SSH key directory exposed",
-	".idea/": "JetBrains IDE configuration exposed",
+	".git/":    "Git repository internals exposed",
+	".aws/":    "AWS credentials directory exposed",
+	".ssh/":    "SSH key directory exposed",
+	".idea/":   "JetBrains IDE configuration exposed",
 	".vscode/": "VSCode workspace configuration exposed",
 }
 

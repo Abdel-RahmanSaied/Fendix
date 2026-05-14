@@ -249,8 +249,8 @@ func (h *Handler) HandleCheckRun(ctx Context, body []byte) error {
 	var p struct {
 		Action   string `json:"action"`
 		CheckRun struct {
-			Name        string `json:"name"`
-			HeadSHA     string `json:"head_sha"`
+			Name         string `json:"name"`
+			HeadSHA      string `json:"head_sha"`
 			PullRequests []struct {
 				Number int `json:"number"`
 			} `json:"pull_requests"`
@@ -305,4 +305,3 @@ func (h *Handler) HandleCheckRun(ctx Context, body []byte) error {
 		Ref:            ref,
 	})
 }
-
