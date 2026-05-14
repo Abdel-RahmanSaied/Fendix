@@ -24,6 +24,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/pip"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/secrets"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/semgrep"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/textscan"
 )
 
 // Orchestrator coordinates the full scan lifecycle:
@@ -307,6 +308,20 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			slog.Debug("code path missing — skipping native semgrep scan")
 		default:
 			slog.Warn("native semgrep scan failed", "error", err)
+		}
+	}
+
+	// 3.8. Native textscan (Sprints 04 / 05 / 06). Regex-based SAST
+	// for Go, JS/TS, Dockerfile, and Kubernetes YAML. Pure stdlib,
+	// no external tooling required. Fast (<1s on typical repos)
+	// because it's filename-extension-routed line scanning.
+	if o.cfg.CodePath != "" {
+		textFindings, err := textscan.Scan(o.cfg.CodePath, textscan.AllRules())
+		if err != nil {
+			slog.Warn("native textscan failed", "error", err)
+		} else if len(textFindings) > 0 {
+			slog.Info("native textscan complete", "findings", len(textFindings))
+			findings = append(findings, textFindings...)
 		}
 	}
 

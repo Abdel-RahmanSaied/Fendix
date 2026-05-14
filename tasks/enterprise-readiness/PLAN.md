@@ -30,9 +30,9 @@ If you can't fund all 18 sprints, the **recommended ordering** at the bottom of 
 | [02](sprint-02-osv-batch.md) ✅ | 1.2 | OSV batch queries + concurrency cap (pip) | 1.5 | Med | v0.11.1 |
 | [02.5](sprint-02p5-osv-batch-npm.md) ✅ | 1.2.5 | OSV batch queries for npm scanner | 0.5 | Low | v0.11.1 |
 | [03](sprint-03-verify-scope.md) ✅ | 1.3 | `fendix verify` scope + exit codes | 0.5 | Low | v0.11.1 |
-| [04](sprint-04-go-sast.md) | 2.1 | Go SAST engine (5 rules) | 5–7 | **High** | v0.12.0 |
-| [05](sprint-05-js-sast.md) | 2.2 | JS/TS regex SAST (6 rules) | 4 | Med | v0.12.0 |
-| [06](sprint-06-iac-sast.md) | 2.3 | IaC scanner (Dockerfile + k8s) | 4 | Med | v0.12.0 |
+| [04](sprint-04-go-sast.md) ✅ | 2.1 | Go SAST engine (5 rules) | 5–7 | **High** | v0.12.0 |
+| [05](sprint-05-js-sast.md) ✅ | 2.2 | JS/TS regex SAST (6 rules) | 4 | Med | v0.12.0 |
+| [06](sprint-06-iac-sast.md) ✅ | 2.3 | IaC scanner (Dockerfile + k8s) | 4 | Med | v0.12.0 |
 | [07](sprint-07-fendix-serve.md) | 3.1 | `fendix serve` REST API (in-memory) | 5 | **High** | v0.12.1 |
 | [08](sprint-08-oidc.md) | 3.2 | OIDC login for `fendix serve` | 3 | Med | v0.12.1 |
 | [09](sprint-09-offline-mode.md) ✅ | 4.1 | Offline mode + `fendix db` | 4 | **High** | v0.13.0 |

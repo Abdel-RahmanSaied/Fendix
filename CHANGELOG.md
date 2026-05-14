@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.12.0 — Sprints 04 / 05 / 06 (unified textscan engine)
+
+#### Added
+
+- **`internal/scanner/textscan` package (Sprints 04 + 05 + 06).**
+  A unified regex-based SAST engine that drives Go, JS/TS,
+  Dockerfile, and Kubernetes YAML rules in one shared codebase.
+  Plan-finish session combined three originally-separate sprints
+  to deliver shared scaffolding once instead of three times.
+
+  Rulesets (16 rules total):
+  - **Go (4):** SQL injection via concat, exec.Command shell
+    invocation, weak hash (MD5/SHA1) for password storage,
+    hardcoded AWS access-key ID.
+  - **JS/TS (6):** eval() with non-literal arg, innerHTML
+    assignment from non-literal, child_process.exec, document.write,
+    require() with non-literal path, hardcoded AWS key.
+  - **IaC (6):** Dockerfile FROM (privilege drop), ADD vs COPY,
+    :latest pinning; Kubernetes privileged: true, hostNetwork: true,
+    allowPrivilegeEscalation: true, runAsUser: 0.
+
+  Filename-extension routing (.go → Go rules, .js/.ts → JS rules,
+  Dockerfile / *.dockerfile → Docker rules, .yaml → k8s rules).
+  Skips noisy build dirs (node_modules, vendor, .git, build, dist).
+  1 MiB per-file cap. Pure stdlib — no new deps, no CGo.
+
+  Wired into orchestrator.go between the semgrep and Python
+  passes; runs whenever `--code` is set. 11 tests in
+  textscan_test.go cover positive / negative pairs per rule
+  category plus the dir-skip and endpoint-format invariants.
+
+  Closes audit §15.2 / §15.3 (SAST coverage gaps).
+
+  **Cuts vs original briefs (carried to follow-up sprints):**
+  - **Sprint 04.5:** Go XXE + INSECURE_RAND — need AST context
+    to avoid stdlib FP floods.
+  - **Sprint 05.5:** JS prototype-pollution + insecure-RNG
+    (proximity-based) — regex+window has too many FPs.
+  - **Sprint 06.5:** Terraform HCL — D2 gate at default (no TF).
+
 ### v0.13.0 — Sprint 09 (Offline mode + `fendix db`)
 
 #### Added
