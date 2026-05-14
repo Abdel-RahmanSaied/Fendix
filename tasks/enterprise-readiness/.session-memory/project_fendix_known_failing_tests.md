@@ -28,6 +28,27 @@ this list before assuming your work caused it.
 Both confirmed by checking out `main` and running the e2e suite during
 the Phase 1 session.
 
+**Go CI-only flakies (pass locally on macOS, fail on GitHub-hosted
+Linux runners) — RESOLVED on branch `fix/flaky-ctx-cancel-tests`
+(PR #3, off main; not yet merged):**
+
+- `TestScan_ContextCancellationKillsSemgrep`
+  (`internal/scanner/semgrep`) — asserts elapsed ≤ 2s after a
+  200ms ctx-timeout against a fake semgrep that `sleep 5`s. On
+  Linux CI it takes the full 5s because `exec.CommandContext`'s
+  default Cancel SIGKILLs only the entrypoint; the orphaned
+  `sleep` keeps the I/O pipes alive until it dies.
+- `TestRun_Timeout` (`internal/plugin`) — identical pattern with
+  a plugin manifest declaring `timeout: 200ms`.
+
+Both fixed by setting `cmd.WaitDelay = 1 * time.Second` on the
+subprocess in `plugin.go:244` and `semgrep/scanner.go:120`, plus
+bumping the test budgets from 2s → 4s as belt-and-suspenders. After
+the merge of PR #3 both should be green on every CI run; remove them
+from this list once that merges. Until then, if a future session hits
+either failure on `main`-derived work, the cause is "PR #3 not merged
+yet" — point them at the PR.
+
 **Why:** The plan's first principle is honest scope. A sprint that
 expands to fix unrelated pre-existing bugs grows in ways the plan can't
 account for, and a green test suite stops being a useful ship-gate
