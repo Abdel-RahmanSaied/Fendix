@@ -464,7 +464,7 @@ func TestEnsureRules_ExtractsAllBundledFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureRules: %v", err)
 	}
-	for _, name := range []string{"auth.yaml", "injection.yaml", "secrets.yaml"} {
+	for _, name := range []string{"auth.yaml", "injection.yaml", "secrets.yaml", "crypto.yaml"} {
 		full := filepath.Join(dir, name)
 		info, err := os.Stat(full)
 		if err != nil {

@@ -1,0 +1,120 @@
+rules:
+  # Rule 1 (Sprint 18): MD5 used in a function that handles a parameter
+  # whose name suggests a password / token. The proximity heuristic
+  # (pattern-inside def with a $X named like a password, plus $X passed
+  # to hashlib.md5) reduces FPs from MD5-on-arbitrary-bytes which is fine
+  # (e.g. file content addressing). FP class: a function param happens to
+  # be named `password` but holds a non-secret payload — still flagged,
+  # which is the correct human-review prompt. FN class: caller passes a
+  # password through a generic-name local variable; not caught.
+  - id: python-md5-used-for-password
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5($X).hexdigest()
+          - pattern: hashlib.md5($X).digest()
+          - pattern: hashlib.md5($X.encode()).hexdigest()
+          - pattern: hashlib.md5($X.encode()).digest()
+      - metavariable-regex:
+          metavariable: $X
+          regex: (?i)(password|passwd|pwd|passphrase|secret|token)
+    message: >
+      hashlib.md5() used on a password-shaped variable.
+      MD5 is broken for cryptographic use. Use a password-hashing
+      function — bcrypt, scrypt, argon2, or PBKDF2 — never a raw hash.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: secrets
+      cwe: CWE-327
+      confidence: MEDIUM
+      fendix_severity: HIGH
+
+  # Rule 2 (Sprint 18): SHA1 used on a password-shaped variable. Same
+  # shape as the MD5 rule above; SHA1 is also unsuitable for password
+  # hashing (fast hash, no work factor, no per-record salt baked in).
+  # FP class: same as MD5 rule. FN class: same as MD5 rule.
+  - id: python-sha1-used-for-password
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.sha1($X).hexdigest()
+          - pattern: hashlib.sha1($X).digest()
+          - pattern: hashlib.sha1($X.encode()).hexdigest()
+          - pattern: hashlib.sha1($X.encode()).digest()
+      - metavariable-regex:
+          metavariable: $X
+          regex: (?i)(password|passwd|pwd|passphrase|secret|token)
+    message: >
+      hashlib.sha1() used on a password-shaped variable.
+      SHA1 is unsuitable for password hashing (fast hash, no work
+      factor). Use bcrypt, scrypt, argon2, or PBKDF2 instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: secrets
+      cwe: CWE-327
+      confidence: MEDIUM
+      fendix_severity: HIGH
+
+  # Rule 3 (Sprint 18): Legacy / broken symmetric ciphers (DES, 3DES, RC4).
+  # Imports from pycryptodome's Crypto.Cipher submodule. FP class: a
+  # codebase implementing a legacy protocol parser (e.g. PDF decryption,
+  # SMB) may legitimately need DES/RC4; in that case suppress per-line
+  # with // nosemgrep. FN class: re-exporting Crypto.Cipher via a wrapper
+  # module isn't caught (the imports below are the signal).
+  - id: python-legacy-cipher-import
+    pattern-either:
+      - pattern: from Crypto.Cipher import DES
+      - pattern: from Crypto.Cipher import DES3
+      - pattern: from Crypto.Cipher import ARC2
+      - pattern: from Crypto.Cipher import ARC4
+      - pattern: from Crypto.Cipher import Blowfish
+      - pattern: import Crypto.Cipher.DES
+      - pattern: import Crypto.Cipher.DES3
+      - pattern: import Crypto.Cipher.ARC4
+    message: >
+      Legacy / broken symmetric cipher imported (DES, 3DES, RC4, ARC2,
+      Blowfish). These are no longer considered secure. Use AES-GCM,
+      AES-CCM, or ChaCha20-Poly1305 instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: secrets
+      cwe: CWE-327
+      confidence: HIGH
+      fendix_severity: HIGH
+
+  # Rule 4 (Sprint 18): random.random / random.choice / random.randint /
+  # random.sample / random.shuffle used in a function whose name or
+  # arguments suggest token / password / nonce generation. The standard
+  # `random` module is NOT cryptographically secure — use `secrets`. FP
+  # class: a function named `generate_token` that's testing-only and
+  # uses `random` deliberately for reproducibility will fire; suppress
+  # with // nosemgrep when intentional. FN class: a generic-name helper
+  # `def make_id():` that happens to be used as a token isn't caught.
+  - id: python-random-for-token-generation
+    patterns:
+      - pattern-either:
+          - pattern: random.random()
+          - pattern: random.choice(...)
+          - pattern: random.randint(...)
+          - pattern: random.sample(...)
+          - pattern: random.shuffle(...)
+          - pattern: random.getrandbits(...)
+      - pattern-inside: |
+          def $FN(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FN
+          regex: (?i)(token|password|secret|nonce|salt|session|otp|reset|csrf|api_key|access_key)
+    message: >
+      random module used inside a function whose name suggests a
+      security-sensitive value ('$FN'). The `random` module is NOT
+      cryptographically secure. Use `secrets.token_urlsafe()`,
+      `secrets.token_bytes()`, or `secrets.choice()` instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: secrets
+      cwe: CWE-338
+      confidence: MEDIUM
+      fendix_severity: HIGH

@@ -546,7 +546,7 @@ Injection checks (last 3 rows) require `--enable-active`.
 | Check | What It Detects |
 |---|---|
 | **Secrets** | AWS keys, private keys, hardcoded passwords, API keys, JWT secrets, DB URLs, bearer tokens |
-| **Semgrep Rules** | Missing auth decorators, SQL string concatenation, exec/eval with user input, subprocess shell=True, hardcoded JWT secrets |
+| **Semgrep Rules** | 24 bundled rules across auth (Flask/Django/FastAPI missing decorators, JWT verification disabled), injection (SQL, command, eval/exec, Django ORM raw, SSTI, pickle.loads, yaml.load), secrets (hardcoded credentials/DB URLs, AWS keys, GCP service accounts, Slack webhooks, PEM private keys), and crypto (MD5/SHA1 for passwords, legacy ciphers, `random` used for token generation) |
 | **Spec Parser** | Missing security schemes in OpenAPI spec, API keys in query params, unauthenticated endpoints |
 | **AST Analysis** | Python and JavaScript security-relevant patterns via AST parsing |
 | **Dependencies** | Known CVEs in PyPI and npm packages |
@@ -668,7 +668,8 @@ class MyAnalyzer:
 
 ### Adding a Semgrep rule
 
-Add a YAML rule file to `python/rules/`:
+Add a YAML rule file to `go/internal/scanner/semgrep/rules/` (the
+embedded rule pack — //go:embed picks up every `.yaml` at build time):
 
 ```yaml
 rules:

@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.14.0 — Polish phase, Sprint 18
+
+#### Added
+
+- **Semgrep rule pack expanded from 9 to 24 rules (Sprint 18).** New
+  rules target patterns the native regex engine cannot catch
+  (multi-line, framework-specific, proximity-based crypto misuse):
+
+  - **auth:** Django function-based view missing auth decorator
+    (`@login_required` / `@permission_required` / `@user_passes_test`
+    / `@staff_member_required`); Flask route with no auth-style
+    decorator above `@app.route(...)` (`@login_required` /
+    `@requires_auth` / `@jwt_required` / `@auth.login_required`).
+  - **injection:** Django ORM raw SQL (`Model.objects.raw(<var>)`,
+    `<qs>.extra(where=<var>)`); Flask `render_template_string(<var>)`
+    SSTI; `subprocess(<var>, shell=True)` (high-precision variant of
+    the existing rule, only fires on non-literal commands); `pickle.loads(<var>)`;
+    `yaml.load(...)` without `SafeLoader`.
+  - **secrets:** inline GCP service-account JSON (matched by
+    `"type":"service_account"`); AWS access-key ID literal
+    (`AKIA[A-Z0-9]{16}` shape); Slack incoming-webhook URL literal;
+    PEM-encoded private-key block literal.
+  - **crypto** (new file `rules/crypto.yaml`): `hashlib.md5` /
+    `hashlib.sha1` called on a password-shaped variable;
+    legacy/broken symmetric cipher imports (DES, 3DES, RC4, ARC2,
+    Blowfish from `Crypto.Cipher`); `random` module used inside a
+    function whose name suggests token/password/nonce generation.
+
+  Every rule carries `metadata.category`, `metadata.fendix_severity`,
+  `metadata.confidence`, `metadata.cwe`, and a comment explaining its
+  FP/FN class. A new YAML-only catalog test
+  (`scanner_rulepack_test.go`) enforces these invariants — including
+  the LOW-confidence/MEDIUM-severity-cap rule documented in
+  `docs/semgrep-rules.md` — so subsequent rule additions can't drift
+  the metadata schema silently. A separate
+  `TestRulepack_ValidatesViaSemgrepCLI` runs `semgrep --validate`
+  against the bundled pack when semgrep is on PATH (skipped
+  otherwise), catching pattern-syntax errors the YAML catalog can't
+  see. Closes audit §15.1 ("embedded semgrep rule pack is very
+  small").
+
+#### Fixed
+
+- **Documentation drift in `docs/semgrep-rules.md` and README** (also
+  Sprint 18, surfaced by the rule-pack work). Both documents still
+  referenced `python/rules/` and
+  `python/analyzers/semgrep_runner.py` from before TASK-116 migrated
+  the Semgrep runner to native Go (`go/internal/scanner/semgrep/`).
+  Updated all paths, the worked-example source links, and the
+  "Adding a rule" workflow to match the post-migration reality. The
+  legacy quick reference `semgrep --config python/rules/ --validate`
+  is now `semgrep --config go/internal/scanner/semgrep/rules/
+  --validate`.
+
+- **Pre-existing YAML quoting in `auth.yaml`'s
+  `python-jwt-decode-no-verification` rule.** The patterns embedded
+  `{"verify_signature": False, ...}` unquoted, which strict YAML
+  parsers (`gopkg.in/yaml.v3`, `ruamel-yaml --rt`) reject with
+  "mapping values are not allowed in this context." Semgrep itself
+  tolerated the loose form, so the bug had no scan-time effect, but
+  Sprint 18's new YAML-only catalog test surfaced it. Patterns are
+  now single-quoted; the rule's behaviour is unchanged.
+
 ### v0.11.1 — Phase 1 trust fixes (Sprints 01–03)
 
 #### Fixed
