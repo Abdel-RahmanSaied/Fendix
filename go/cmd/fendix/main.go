@@ -84,6 +84,7 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newDemoCmd())
+	root.AddCommand(newNotifyCmd())
 	root.AddCommand(pluginscmd.NewCmd())
 	root.AddCommand(ignorecmd.NewCmd())
 

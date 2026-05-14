@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.13.1 — Sprint 15 (Slack / Teams webhook alerts)
+
+#### Added
+
+- **`fendix notify` subcommand and `internal/integrations/notify`
+  package (Sprint 15).** Post Slack Block Kit + Teams Adaptive Card
+  alerts for findings above a severity floor:
+
+  ```bash
+  fendix scan ... --format json --output findings.json
+  export FENDIX_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+  fendix notify --findings findings.json
+  ```
+
+  Configuration (12-factor, matching `cmd/fendix-app`):
+  - `FENDIX_SLACK_WEBHOOK_URL` / `FENDIX_TEAMS_WEBHOOK_URL` — either
+    or both. No-op when neither is set.
+  - `FENDIX_NOTIFY_MIN_SEVERITY` — `CRITICAL` (default) / `HIGH` /
+    `MEDIUM` / `LOW` / `INFO`.
+  - `FENDIX_NOTIFY_DEDUP_WINDOW` — Go duration (default `1h`); same
+    finding ID won't re-alert inside the window. In-memory only;
+    process restart re-alerts. Persistence is Sprint 15.5 (waits on
+    Sprint 07.5 SQLite).
+
+  Per-sink errors are logged but do not block the other sink. Webhook
+  URLs are redacted to `[REDACTED]` in error messages so secrets
+  don't leak into operator logs. The Teams payload is pinned to
+  Adaptive Card schema 1.3 for the widest client compatibility.
+
+  Closes audit §13 ("no real-time alerts today"). The package is
+  designed to slot into `fendix serve` (Sprint 07) and the ghapp
+  post-scan hook with no code change — `(*Notifier).NotifyAll(ctx,
+  findings)` is the integration surface.
+
 ### v0.14.0 — Sprint 17 (GitLab + CircleCI templates)
 
 #### Added
