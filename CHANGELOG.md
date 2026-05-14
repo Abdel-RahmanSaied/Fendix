@@ -59,6 +59,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (already transitively present via `golang.org/x/vuln`; `go.sum`
   unchanged). No new CGo. No new external deps.
 
+#### Changed
+
+- **`fendix verify` exit codes are now CI-script-friendly (Sprint 03).**
+  Previously verify always exited 0; CI scripts that wanted to fail the
+  build on still-present findings had to parse JSON output. New mapping:
+  - **0** — finding is resolved
+  - **1** — finding is still present (CI should fail the build)
+  - **2** — verify could not produce a confident result (unknown shape,
+    not in baseline, or correlated/active-probe finding that needs a
+    full re-scan to verify)
+
+  This is a behaviour change for any CI pipeline that previously relied
+  on `fendix verify ... && rest-of-pipeline` (which always succeeded);
+  those pipelines now correctly fail the build when the finding is
+  still present, which is what they wanted. The new internal package
+  `internal/cli` carries the `*ExitError` type; `main.go` honours it
+  via `errors.As` before the generic exit-2 path.
+
+- **`fendix verify` correlated findings now return an honest "unknown"
+  with a workaround.** Pre-Sprint-03, a correlated finding with a URL
+  endpoint was routed through the URL-shape verifier, which would
+  re-test ONE side of the correlation and report "still-present" or
+  "resolved" based on a single side's verdict — incorrect in principle
+  because re-testing one side cannot confirm a correlation still
+  holds. The `Run` dispatcher now gates `Source==correlated` BEFORE
+  the shape switch and returns Status=unknown with an explanation
+  pointing at the workaround (re-run the full scan and diff). Closes
+  audit §7.
+
+- **`fendix verify --help` now lists supported and unsupported finding
+  shapes explicitly**, plus the new exit-code table. Correlated and
+  active-probe findings are documented as MVP-deferred.
+
 ### Engine UX gaps surfaced by the TwiScope-backend e2e scan (2026-05-14)
 
 Three real product gaps the TwiScope scan exposed; each fixed in

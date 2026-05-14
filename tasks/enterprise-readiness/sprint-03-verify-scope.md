@@ -251,4 +251,78 @@ Add under `[Unreleased]`:
 
 ## Status
 
-**Not started.**
+**Started:** 2026-05-14 (AI implementer)
+**Branch:** `phase1-trust-fixes` (off main; third commit on the branch
+that also carries Sprints 01 and 02)
+**PR:** drafted; not pushed
+**Status:** done
+**Actual effort:** ~0.5 day (matched estimate, despite the bug
+discovery below adding ~15 minutes of unplanned but necessary work)
+
+**Surprises:**
+
+- **Sprint 03 contained a hidden bug fix that wasn't in the brief.**
+  The dispatcher in `Run` routed by *finding shape* (URL/file/dep),
+  not by source — so a correlated finding with a URL endpoint went
+  through `verifyURL` and produced a misleading single-side verdict
+  ("still-present" if the URL responded weakly, "resolved" if it
+  responded cleanly). This was *consistent with the previous
+  package's pre-Sprint-03 default-branch reason* ("correlated/active-
+  probe paths are MVP-deferred"), but the user-facing reality
+  contradicted that doc: many correlated findings never reached the
+  default branch. Sprint 03 now gates `Source==SourceCorrelated`
+  before the shape switch, so the new explanatory Reason actually
+  fires for the user. Surfaced by the unit test
+  `TestRunCorrelatedFindingReturnsUnknownWithExplanation` — it failed
+  on first run with a connection-refused unknown reason, which led
+  me to the dispatcher gap.
+- **`StatusNotFoundInBaseline` doesn't exist as a constant name.** The
+  sprint file referenced `verifycmd.StatusNotFoundInBaseline`; the
+  actual constant is `verifycmd.StatusNotFound` (with the value
+  `"not-found-in-baseline"`). Used the actual name; no behaviour change.
+- **`internal/cli/exit.go` did not exist; created from scratch** as the
+  sprint file directed. ~30 lines, single type + helper.
+- **Two unrelated e2e tests fail on `main`** —
+  `TestCorrelator_HybridScanProducesCorrelatedFinding` and
+  `TestReachable_HybridScanProducesReachableCorrelated`. Confirmed
+  by checking out main and running the e2e suite. Per the bootstrap
+  prompt's hard rule "If a test is failing in main (not introduced
+  by your work), do not fix it as part of these sprints. Note it and
+  continue." — noted and continued. The five new
+  `TestE2EVerify*` tests Sprint 03 added all pass.
+- **`git stash pop` silently dropped tracked-file edits during a
+  `git checkout main` round trip** (used to baseline an unrelated
+  bench/test). The stash was kept ("in case you need it again") but
+  the worktree only restored untracked files + .gitkeep, not the
+  modifications to `verifycmd.go` and `main.go`. Recovered via
+  `git stash apply` after discarding the .gitkeep build artifact
+  that was blocking the merge. Worth knowing: the workflow of
+  "stash → checkout for baseline → checkout back → pop" is fragile
+  when the build artifact (`go/internal/embedded/engine/.gitkeep`)
+  changes between branches.
+
+**Bench:** Sprint 03 doesn't touch any hot paths. `make bench` (engine
+throughput) shows no change vs. main — ~31.8ms for 1k-endpoint scan,
+identical to the Sprint 01 / Sprint 02 measurements within run-to-run
+noise.
+
+**Tests added:**
+- 3 new unit tests in `verifycmd_scope_test.go`:
+  `TestRunCorrelatedFindingReturnsUnknownWithExplanation`,
+  `TestRunUnknownShapeNamesSourceAndCategory`,
+  `TestRenderJSONIncludesAllFields`.
+- 5 new e2e tests in `verify_exitcodes_e2e_test.go` (under the
+  `e2e` build tag, run via `make e2e`):
+  `TestE2EVerifyExit0_Resolved`, `TestE2EVerifyExit1_StillPresent`,
+  `TestE2EVerifyExit2_CorrelatedUnknown`,
+  `TestE2EVerifyExit2_NotInBaseline`,
+  `TestE2EVerifyHelpListsExitCodes` (a docs-drift guard).
+- Total Sprint 03 test additions: 8 tests covering three new behaviours.
+
+**Follow-ups created:**
+
+- None required by Sprint 03 itself. The original sprint file's
+  "Follow-ups" section already lists the bigger asks (real verify for
+  correlated findings; active-probe verify) which aren't gated by
+  Sprint 03 — they need real engineering, not a one-line dispatcher
+  fix.
