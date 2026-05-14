@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.13.0 — Sprint 11 (PDF executive report)
+
+#### Added
+
+- **`--format pdf` (Sprint 11).** New PDF executive report
+  output via `fendix scan --format pdf` and `fendix report --format
+  pdf`. Adds direct dep `github.com/go-pdf/fpdf` (MIT, pure Go, no
+  CGo — pre-allowed in PLAN.md). Structure: cover page →
+  executive summary with severity counts table and top-3 findings
+  → paginated findings table with severity-coloured cells →
+  remediation plan (CRITICAL + HIGH only) → metadata appendix.
+
+  New flag `--classification <text>` (default `INTERNAL`) renders
+  a red banner at the top-right of every page. Empty disables.
+
+  English-only for v0.13.0. Arabic PDF is **deferred to Sprint
+  11.5** — fpdf's built-in fonts don't render Arabic glyphs;
+  shipping a 10MB Noto Arabic font inflates the binary too much
+  for the MVP. Closes audit §6 ("no PDF today").
+
 ### v0.13.1 — Sprint 14 (Jira integration)
 
 #### Added

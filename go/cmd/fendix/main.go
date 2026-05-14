@@ -358,7 +358,7 @@ func newScanCmd() *cobra.Command {
 	flags.String("auth-user2", "", `Second user auth for IDOR checks, e.g. "Bearer token-user2"`)
 	flags.String("profile", "", "Auth profile name from ~/.fendix/profiles/<name>.yaml")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
-	flags.StringP("format", "f", "json", "Output format: json, html, sarif")
+	flags.StringP("format", "f", "json", "Output format: json, html, sarif, pdf")
 	flags.String("fail-on", "", "Exit 1 if findings at this severity: CRITICAL, HIGH, MEDIUM")
 	flags.String("baseline", "", "Path to previous findings JSON for diff mode")
 	flags.String("save-baseline", "", "Save current findings to this path")
@@ -442,19 +442,23 @@ func newReportCmd() *cobra.Command {
 				return reporters.RenderHTMLOpts(w, report.Findings, report.Metadata, reporters.HTMLOptions{Lang: lang})
 			case "sarif":
 				return reporters.RenderSARIF(w, report.Findings, report.Metadata)
+			case "pdf":
+				classification, _ := flags.GetString("classification")
+				return reporters.RenderPDF(w, report.Findings, report.Metadata, reporters.PDFOptions{Classification: classification})
 			case "json":
 				return reporters.RenderJSON(w, report.Findings, report.Metadata)
 			default:
-				return fmt.Errorf("unsupported format %q — use json, html, or sarif", formatFlag)
+				return fmt.Errorf("unsupported format %q — use json, html, sarif, or pdf", formatFlag)
 			}
 		},
 	}
 
 	flags := cmd.Flags()
 	flags.String("input", "", "Path to findings JSON file")
-	flags.StringP("format", "f", "html", "Output format: json, html, sarif")
+	flags.StringP("format", "f", "html", "Output format: json, html, sarif, pdf")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
 	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
+	flags.String("classification", "INTERNAL", "PDF classification banner text rendered on every page (empty disables; only used by --format pdf)")
 
 	return cmd
 }

@@ -516,10 +516,12 @@ func (o *Orchestrator) renderReport(findings []models.Finding, meta reporters.Sc
 		return reporters.RenderHTMLOpts(w, findings, meta, reporters.HTMLOptions{Lang: o.cfg.Lang})
 	case "sarif":
 		return reporters.RenderSARIF(w, findings, meta)
+	case "pdf":
+		return reporters.RenderPDF(w, findings, meta, reporters.PDFOptions{})
 	case "json", "":
 		return reporters.RenderJSON(w, findings, meta)
 	default:
-		return fmt.Errorf("unsupported format %q — use json, html, or sarif", o.cfg.Format)
+		return fmt.Errorf("unsupported format %q — use json, html, sarif, or pdf", o.cfg.Format)
 	}
 }
 

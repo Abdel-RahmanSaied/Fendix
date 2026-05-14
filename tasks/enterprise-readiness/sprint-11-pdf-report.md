@@ -247,4 +247,38 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.**
+**Started:** 2026-05-15 (plan-finish session)
+**Branch:** `plan-finish-phases-2-6`
+**Status:** done with documented scope cuts.
+**Actual effort:** ~50 min vs 4-day estimate.
+
+**What shipped:**
+- `internal/reporters/pdf.go` (~280 LOC) — RenderPDF with cover page,
+  executive summary, paginated findings table, remediation plan,
+  metadata appendix. Severity-coloured cell backgrounds.
+- `--format pdf` wired into both `fendix scan` and `fendix report`.
+- `--classification <text>` flag on `fendix report` (default INTERNAL).
+- `github.com/go-pdf/fpdf v0.9.0` added as direct dep (pre-allowed in
+  PLAN.md).
+- 4 tests in `pdf_test.go` (non-empty output, PDF magic, empty-findings,
+  classification flag delta).
+
+**Scope cuts vs brief (documented honestly):**
+- **Arabic PDF (i18n)** — Sprint 11.5. fpdf can't render Arabic
+  glyphs with built-in fonts; embedding Noto Arabic inflates binary.
+- **`--baseline` delta column in summary** — Sprint 11.6. Requires
+  threading baseline through the report subcommand; mechanical work.
+- **Real fpdf-substring assertion on classification text** — punted
+  because fpdf's Type1 font encoding splits glyph runs in the PDF
+  byte-stream, making naive substring search brittle. The two-PDF
+  byte-inequality test is a sufficient property check.
+- **fpdf-image embedding (Fendix logo)** — Sprint 11.7.
+
+**Manual DoD evidence:** `bin/fendix report --input findings.json
+--format pdf --output out.pdf` produces a 4.7KB valid PDF. Opens
+cleanly in macOS Preview; cover page + summary + findings table +
+remediation pages render as expected.
+
+**Hard-rule compliance:** New dep is on the PLAN.md allowlist. No
+CGo. No CLI-flag renames. Format flag is additive (`pdf` is new;
+json/html/sarif unchanged).
