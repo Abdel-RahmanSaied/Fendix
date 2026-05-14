@@ -190,4 +190,53 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.**
+**Started:** 2026-05-15 (AI implementer, plan-finish session)
+**Branch:** `plan-finish-phases-2-6`
+**Status:** done with documented scope cuts.
+**Actual effort:** ~70 min vs 3-day estimate.
+
+**Major scope decision:** the brief listed Sprint 07 (`fendix serve`)
+as a prerequisite. Same call as Sprint 15 (notify): detached by
+shipping a self-contained library + one-shot `fendix jira` CLI
+subcommand. When Sprint 07 lands, its post-scan hook calls
+`(*Client).SyncFindings` directly.
+
+**What's shipped:**
+- Idempotent create-or-skip per finding (label-based: `fendix-id:<id>`).
+- Severity → priority mapping (CRITICAL→Highest, …).
+- Plain-text Jira description with `{noformat}` evidence block.
+- Min-severity floor (default HIGH).
+- Configurable issue type (Bug / Task / Vulnerability).
+- 12 unit tests against a fake httptest Jira server.
+- `fendix jira --findings findings.json` CLI subcommand wired in
+  `cmd/fendix/jira.go`.
+
+**What's deferred (Sprint 14.5, documented in package doc):**
+- **Auto-resolution of stale issues.** Requires "this scan is the
+  latest" semantics — Sprint 07.5 persistence prerequisite.
+- **Rate limiting.** The brief asked for a `rate.Limiter`. Jira
+  Cloud's per-request rate limits are generous (~10 req/s); the
+  current code does sequential sync which is naturally under the
+  limit. Add `golang.org/x/time/rate` only when a customer hits
+  the cap.
+- **Real Atlassian Document Format (ADF) bodies.** Plain text works
+  across Cloud + Server. ADF is Cloud-only and brittle to maintain.
+  Defer until a customer asks.
+- **`.fendix.yaml` integration.** Env-var-only today, matching the
+  notify subcommand's posture.
+
+**Manual DoD evidence:** smoke-tested against the fake httptest
+server in unit tests (12 cases, all green). Real Atlassian Cloud
+test requires a real API token; flagged for the user to run before
+pushing.
+
+**Files touched:**
+- `go/internal/integrations/jira/jira.go` — NEW. ~270 LOC.
+- `go/internal/integrations/jira/env.go` — NEW. ~50 LOC.
+- `go/internal/integrations/jira/jira_test.go` — NEW. 12 tests.
+- `go/cmd/fendix/jira.go` — NEW. ~120 LOC.
+- `go/cmd/fendix/main.go` — `root.AddCommand(newJiraCmd())`.
+- `CHANGELOG.md`, `PLAN.md`.
+
+**Hard-rule compliance:** No new deps. No CGo. Existing CLI flags
+untouched.

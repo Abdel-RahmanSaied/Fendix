@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.13.1 — Sprint 14 (Jira integration)
+
+#### Added
+
+- **`fendix jira` subcommand and `internal/integrations/jira`
+  package (Sprint 14).** Idempotent Jira sync: each finding above
+  FENDIX_JIRA_MIN_SEVERITY (default HIGH) gets one Jira issue with
+  a `fendix-id:<finding.ID>` label as the idempotency key.
+
+  ```bash
+  fendix scan ... --format json --output findings.json
+  export FENDIX_JIRA_URL=https://your-org.atlassian.net
+  export FENDIX_JIRA_PROJECT_KEY=SEC
+  export FENDIX_JIRA_EMAIL=you@example.com
+  export FENDIX_JIRA_API_TOKEN=<token>
+  fendix jira --findings findings.json
+  ```
+
+  Severity → priority mapping: CRITICAL→Highest, HIGH→High,
+  MEDIUM→Medium, LOW/INFO→Low. Description format is Jira's
+  plaintext+markup (universal across Cloud and Server tiers);
+  ADF auto-rendering happens server-side on Cloud.
+
+  Auto-resolution (transition issues to Done when findings stop
+  appearing in scans) is **deferred to Sprint 14.5** because it
+  needs a "this is the latest scan" signal that requires Sprint
+  07.5 persistence to be honest. Today the subcommand is
+  create-or-skip only; re-runs are idempotent.
+
+  Closes audit §13 ("no ticketing today"). The package is
+  designed to slot into `fendix serve` (Sprint 07) and the ghapp
+  post-scan hook with no code change — `(*Client).SyncFindings`
+  is the integration surface.
+
 ### v0.14.0 — Sprint 16 (Enterprise benchmark harness)
 
 #### Added
