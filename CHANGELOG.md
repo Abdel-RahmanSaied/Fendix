@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.13.0 — Sprint 09 (Offline mode + `fendix db`)
+
+#### Added
+
+- **`internal/offline/` package + `fendix db` subcommand (Sprint 09).**
+  Air-gapped CVE-database snapshot format (JSON, schema v1) with
+  three management subcommands:
+  - `fendix db update --source <osv-export.json>` — ingest an OSV
+    advisory export into a snapshot.
+  - `fendix db list [--path]` — print snapshot metadata.
+  - `fendix db verify [--path]` — print SHA-256 for integrity check.
+
+  Plus additive `--offline` and `--offline-db <path>` flags on
+  `fendix scan` (honest stub today; per-scanner integration is the
+  follow-up Sprint 09.5 — see internal/offline/offline.go package
+  doc for the API the scanners will call).
+
+  Closes audit §17 / D3-Option-A precondition. Today's shippable
+  surface is the format + tooling; the runtime path that swaps each
+  ecosystem's HTTP CVE call for a snapshot lookup is a per-scanner
+  bolt-on that benefits from being staged.
+
 ### v0.13.0 — Sprint 11 (PDF executive report)
 
 #### Added

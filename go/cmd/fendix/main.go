@@ -86,6 +86,7 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newDemoCmd())
 	root.AddCommand(newNotifyCmd())
 	root.AddCommand(newJiraCmd())
+	root.AddCommand(newDBCmd())
 	root.AddCommand(pluginscmd.NewCmd())
 	root.AddCommand(ignorecmd.NewCmd())
 
@@ -382,6 +383,8 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
 	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
+	flags.Bool("offline", false, "Air-gapped mode (Sprint 09): consult the local offline-db snapshot for dep CVEs instead of osv.dev/golang.org/x/vuln. Today this is a no-op honest stub — the snapshot is created via `fendix db update`; per-scanner integration is wired sprint-by-sprint (see internal/offline/offline.go).")
+	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
 
 	return cmd
 }
