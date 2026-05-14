@@ -1,8 +1,11 @@
 # Next-session bootstrap prompt
 
 This file holds the prompt to start a fresh Claude Code session that
-picks up the enterprise-readiness plan and ships **Sprints 01–03 (Phase 1
-trust fixes)** as a single v0.11.1 release.
+picks up the enterprise-readiness plan **wherever it currently is** and
+ships the next sprint(s) in order. It is intentionally generic — the
+prompt makes the session read the plan, recall what the prior session
+left behind via the on-disk memory, and pick the next work item itself
+rather than hardcoding a sprint.
 
 Copy everything in the fenced block below and paste it as the first
 message of a new session. The new session reads this without prior
@@ -12,194 +15,247 @@ on disk, not memory.
 ---
 
 ```
-You are picking up the Fendix enterprise-readiness plan to ship Phase 1
-(Sprints 01–03) as v0.11.1. The plan, audit, and per-sprint tasks are
-all committed at HEAD on main. You have not seen them before; read them
-on disk before writing any code.
+You are picking up the Fendix enterprise-readiness plan. The plan,
+audit, per-sprint tasks, and prior-session status notes are all on
+disk. You have not seen them before; read them before writing any
+code.
 
 # Where you are
 
-Working directory: /Users/saied/WorkDir/Fendix/fendix-services/Fendix
-Branch state at session start: main is at the tip of a recently-merged
-work cycle (5 commits landed: Track 4 engine fixes + the
-enterprise-readiness plan + the audit report). Do not push to origin.
+Working directory: the Fendix repo. Find it via `git rev-parse --show-toplevel`
+or assume `/Users/saied/WorkDir/Fendix/fendix-services/Fendix` if you're
+on the primary dev machine. The path differs across the user's machines
+— never hardcode it; always derive from git.
 
-# What to do (in order)
+This project's session memory lives **in the repo** at
+`tasks/enterprise-readiness/.session-memory/` so it syncs across
+devices via git. Your auto-memory directory under `~/.claude/projects/...`
+holds only a pointer (POINTER.md) confirming this — it is NOT the
+canonical store. Do not write memory updates to `~/.claude/...` for
+this project; write them to the repo location and commit them as part
+of the session's hand-off.
 
-## Step 0 — Ground yourself (mandatory, ~10 minutes)
+Do not push to origin and do not open PRs without explicit user
+confirmation.
 
-Read these files in this order, in full. Do not skim:
+# Step 0 — Recall and ground (mandatory, ~10 minutes)
+
+## 0a. Memory recall
+
+Read `tasks/enterprise-readiness/.session-memory/MEMORY.md` (the
+in-repo index). Read each file the index points to, in full. These are
+the only record of what prior sessions learned about this codebase
+that isn't already in git history or the plan documents — read them
+before anything else and treat them exactly the way you would treat
+auto-loaded memory.
+
+If your auto-memory MEMORY.md (under `~/.claude/projects/...`) contains
+entries beyond a single POINTER pointing at the repo, those are stale
+mirrors from before this project moved its memory in-repo. Read the
+in-repo location and ignore the auto-loaded ones for project-specific
+context.
+
+## 0b. Disk reading — read these files in this order, in full
 
 1. tasks/enterprise-readiness/README.md
-2. tasks/enterprise-readiness/PLAN.md
+2. tasks/enterprise-readiness/PLAN.md  ← the master plan
 3. tasks/enterprise-readiness/DECISIONS.md
 4. tasks/enterprise-readiness/RISKS.md
-5. FENDIX_AUDIT_REPORT.md (specifically §3, §7, §15.4, §15.5 — the
-   sections each Phase 1 sprint addresses)
+5. CHANGELOG.md (top section — `[Unreleased]`)
+6. The most recent ~10 commits: `git log --oneline -15`
+7. Every sprint file under tasks/enterprise-readiness/ that has a
+   filled-in Status section showing "Status: done" or "in-progress".
+   These are the prior session's actual-vs-estimate notes and the
+   surprises they flagged. Pay attention to "Follow-ups created"
+   sub-sections — those become candidate sprint files for *this*
+   session.
 
-Then read each sprint file you'll implement:
+The README explains the directory layout. PLAN.md has the sprint
+roster (with ✅ marks for shipped sprints) and the recommended
+ordering at the bottom.
 
-6. tasks/enterprise-readiness/sprint-01-pip-audit-naming.md
-7. tasks/enterprise-readiness/sprint-02-osv-batch.md
-8. tasks/enterprise-readiness/sprint-03-verify-scope.md
+# Step 1 — Decide what to ship this session
 
-The sprint files contain "Read first" sections at the top. Honor them.
-The trap of "this is simpler than the brief implies" only opens when
-you skip the read-first list.
+## 1a. Build the candidate list
 
-## Step 1 — Confirm prerequisites
+Make a candidate list of "next sprint to ship." Sources, in priority
+order:
 
-Before implementing, confirm:
+  1. **Any sprint file with Status: in-progress.** These are the
+     prior session's interrupted work. Finish them before starting
+     anything new.
+  2. **Any "Follow-ups created" entry from a recently-shipped sprint
+     that has its own sprint file.** These are the small honest
+     deferrals (e.g. `sprint-02p5-*.md`) the prior session wrote up.
+     They're usually 0.5-1 day and unblock nothing important being
+     missing.
+  3. **The next sprint in PLAN.md's recommended-ordering table** that
+     is not yet ✅. Skip sprints whose Decision Gate (D1–D4 in PLAN.md)
+     is unresolved unless you have explicit user direction otherwise —
+     resolving a gate without the user is a way to waste a sprint.
 
-- `make build` succeeds on main as-is
-- `make test` passes (Python: 174 + 6 pre-existing fuzz flake; Go: all
-  21 packages green)
-- `bin/fendix --version` reports a v0.11.x build
-- pip-audit is available (or installable): `pip install pip-audit && pip-audit --version`
-  — needed for Sprint 01's subprocess test path
-- `golang.org/x/sync` is an indirect dep in go.mod (Sprint 02 promotes
-  it to direct; confirm it's not already direct)
+Stop and surface to the user if:
+  - A required Decision Gate is unresolved AND blocks every otherwise-
+    ready sprint.
+  - The natural next sprint is large (>2 days) — confirm scope before
+    starting.
 
-If any prerequisite fails, surface it before writing code — do not
-work around it.
+## 1b. Confirm with the user before writing code
 
-## Step 2 — Branch strategy
+State your candidate (one sentence: "I propose Sprint XX (`title`),
+estimated N days, because <reason>") and ask for go-ahead. Do not
+self-authorise large work.
 
-Create branch `phase1-trust-fixes` off main. All three sprints land
-as commits on this branch:
+# Step 2 — Confirm prerequisites
 
-  git checkout -b phase1-trust-fixes main
+For the chosen sprint, confirm:
 
-Three commits, one per sprint, in this order:
-  - Commit 1: Sprint 01 (pip-audit naming + fallback flag)
-  - Commit 2: Sprint 02 (OSV batch queries + concurrency cap)
-  - Commit 3: Sprint 03 (verify scope + exit codes)
+  - `make build` succeeds on main as-is
+  - `make test` passes on main as-is (Go: 21 packages green; Python:
+    179 passed + 1 known pre-existing fuzz failure
+    `test_check_auth_never_crashes` that is NOT yours to fix)
+  - `make e2e` — note which tests fail on main as-is. Two known
+    pre-existing fails as of 2026-05-14:
+    `TestCorrelator_HybridScanProducesCorrelatedFinding` and
+    `TestReachable_HybridScanProducesReachableCorrelated`. Do not fix
+    these as part of any sprint.
+  - The sprint file's "Read first" section enumerates other
+    prerequisites (binaries, env, deps). Honour them.
+
+If a prerequisite fails AND it isn't pre-existing, surface it to the
+user before working around it. The hard rule is: do not silently work
+around prerequisite gaps; either the user fixes them, you fix them
+deliberately as their own commit, or you stop and report.
+
+# Step 3 — Branch strategy
+
+Default: one branch per session, multiple sprint commits if more than
+one fits in the session.
+
+  git checkout -b <topic-branch> main
+
+Topic-branch naming: `<phase>-<short-description>` (e.g.
+`phase1-trust-fixes`, `sprint-02p5-npm-batch`,
+`phase2-go-sast`). Look at the prior session's branch names via
+`git branch -a` and follow the existing convention.
 
 Each commit must independently:
   - Build (`make build`)
-  - Pass tests (`make test`, including the new tests for that sprint)
-  - Pass `make bench` with no regression vs. main
-  - Update CHANGELOG.md under [Unreleased] → v0.11.1
+  - Pass `make test` (the same Python fuzz fail is acceptable)
+  - Pass `make bench` with no regression vs. main on the engine
+    throughput numbers
+  - Update CHANGELOG.md under `[Unreleased]` → the appropriate version
+    heading (the prior session conventionally used `### v0.X.Y —
+    Phase N <topic>` then `#### Fixed / Added / Changed / Performance`
+    sub-headings)
 
-After all three commits land, you'll have v0.11.1 ready to tag.
+# Step 4 — Implement the sprint
 
-## Step 3 — Implement Sprint 01
+Read the sprint file's "Concrete deliverables" section. Stay strictly
+inside the file paths it lists. The prior session repeatedly
+discovered that:
 
-Follow tasks/enterprise-readiness/sprint-01-pip-audit-naming.md exactly.
-The sprint file specifies file paths, function signatures, test names,
-and CHANGELOG wording. Stay inside that scope; do not refactor
-adjacent code.
+  - Sprint files sometimes reference paths that have moved or
+    function names that have been renamed. Verify on disk before
+    editing; adjust the path/name silently when correct, but flag in
+    the commit body or sprint Status if the divergence was material.
+  - Sprint files' "Read first" section is load-bearing. The trap of
+    "this is simpler than the brief implies" only opens when you skip
+    it.
+  - The sprint file's risk section lists likely surprises and their
+    mitigations. Read it before improvising.
 
-Specific things to watch for:
+# Step 5 — Definition of done (per sprint)
 
-- The package doc comment update in pip/scanner.go must read literally
-  what the sprint file says (it's the line an external evaluator
-  inspects to verify the trust fix). Do not editorialize.
-- The new `--use-pip-audit` flag MUST be Hidden:false (visible in
-  --help). It's a real feature, not a stub.
-- The pip-audit JSON schema tests need a fake binary shell script.
-  See the writeFakePipAudit helper in the sprint file.
-- pip-audit exits 1 when findings exist — that's normal, not an error.
-  The sprint's TestScanViaSubprocess_ExitCode1WithFindingsIsNormal
-  test locks this in.
+Cross-check against the sprint file's DoD section AND PLAN.md's
+"Definition of done (per sprint)" section. Don't ship until every
+checkbox is true.
 
-Definition of done for Sprint 01 is at the bottom of its sprint file.
-Verify every checkbox before committing. Update the sprint file's
-Status section with actual-vs-estimate and any surprises.
+For the manual checks (`bin/fendix <subcmd> --help`, live invocations
+against fixtures), capture the actual output in the commit body or
+Status section. The prior session conventionally:
 
-## Step 4 — Implement Sprint 02
+  - put bench numbers (before/after) in a small table in the commit
+    body
+  - put manual-DoD evidence (actual --help output, actual scan
+    output) in the sprint file's Status section, not the commit body
+  - listed surprises explicitly in the Status section, with one
+    bullet per surprise — the prior session found this was the most
+    valuable information for future sessions
 
-After Sprint 01 is committed and tests pass, move to Sprint 02.
+# Step 6 — Hand-off
 
-Honest expectation up front: OSV.dev's /v1/querybatch response shape
-omits aliases. Sprint 02's plan explicitly accepts this — batch
-findings ship with only the OSV-id in references; aliases (CVE-*)
-are deferred to Sprint 02.5. Do NOT try to hydrate aliases inside
-this sprint. The sprint file says so; honor it.
+When the session ends:
 
-Performance gate: post-sprint `make bench` against a 150+ pinned-dep
-fixture must be ≥4x faster than pre-sprint. Capture both numbers in
-the commit message body.
+  - Update the sprint file's Status section with actual-vs-estimate,
+    surprises, follow-ups (with sprint-file paths if you created
+    new ones).
+  - Mark the sprint ✅ in PLAN.md's roster table.
+  - Save anything novel to memory **in the repo location**
+    (`tasks/enterprise-readiness/.session-memory/`): a NEW kind of trap
+    the prior session didn't already document, a non-obvious project
+    fact, a user-preference correction. Don't save things derivable
+    from git/code (those rot fast). Don't duplicate prior memory
+    entries. Don't write to `~/.claude/projects/...` — that location
+    holds only a POINTER for this project. Commit the memory update as
+    part of the session's hand-off so the next device sees it.
+  - Draft a PR description as a working file at
+    tasks/enterprise-readiness/<branch>_PR_DESCRIPTION.md (the
+    prior session put PHASE1_PR_DESCRIPTION.md there as a template
+    to copy from).
+  - Do NOT push to origin. Do NOT open the PR. Report back to the
+    user with:
+      * The N-commit log
+      * Bench numbers (where the sprint's gate required them)
+      * Surprises, with a one-line take on each
+      * Anything outside the sprint scope that needed touching
+        (and why)
+      * What's left undone — explicitly, including which sprint file
+        to point the NEXT session at if relevant
 
-If the OSV.dev batch endpoint behaves differently than the OSV.dev
-docs describe (this has happened before), document the divergence
-in the sprint file's Status section and in the code's comments.
+# Hard rules (lifted from the prior session and confirmed effective)
 
-## Step 5 — Implement Sprint 03
-
-After Sprint 02 lands, move to Sprint 03. This is the smallest sprint
-(~0.5 day). Three small deliverables:
-
-  1. Update verify's --help with the supported/unsupported list
-  2. Improve the default-branch Reason string in verifycmd.go::Run
-  3. Add exit code semantics (0/1/2) to main.go's verify RunE
-
-The sprint requires adding an internal/cli/exit.go helper if it
-doesn't already exist. Confirm before creating.
-
-Existing verify tests (~12 of them) must still pass. The four new
-exit-code tests live in go/internal/e2e/verify_e2e_test.go under
-the e2e build tag. Use `make e2e`, not `make test`, to exercise them.
-
-## Step 6 — Definition of done for the whole phase
-
-After all three commits land:
-
-- `make test` green (Python 174 + Go 21 packages)
-- `make e2e` green
-- `make bench` shows no SAST throughput regression vs. main; Sprint 02's
-  4x speedup on the dep-CVE fixture is captured in PR description
-- bin/fendix scan --help shows the new --use-pip-audit flag
-- bin/fendix verify --help shows the new exit-code table
-- CHANGELOG.md has the v0.11.1 section under [Unreleased] with all
-  three sprints' entries combined
-- Each sprint file's Status section is filled in with actual-vs-
-  estimate, surprises, and any follow-ups
-- A PR description is drafted citing FENDIX_AUDIT_REPORT.md §15.5,
-  §15.4, and §7 (one per sprint)
-
-Do NOT push to origin or open the PR yourself — leave the branch
-locally and report back to the user with:
-  - The 3-commit log
-  - Bench numbers before/after
-  - Any surprises that warrant updates to the plan or other sprint files
-
-## Hard rules
-
-- Do not modify code outside the sprint's scope. The sprint files
-  list exact file paths; stay inside.
+- Do not modify code outside the sprint's listed file paths.
 - Do not change CLI flag names, .fendix.yaml keys, or the Finding
   struct JSON shape. Additive only.
-- No new CGo. No new direct deps beyond what the sprint files specify
-  (Sprint 02 promotes golang.org/x/sync from indirect to direct;
-  nothing else).
+- No new CGo. Only the deps PLAN.md's "Dependency posture" section
+  permits.
 - If a sprint's "Read first" list mentions a file you can't find,
   stop and surface that — don't guess.
 - If a test is failing in main (not introduced by your work), do not
-  fix it as part of these sprints. Note it and continue. Pre-existing
-  fuzz failure in python/tests/test_fuzz.py::test_check_auth_never_crashes
-  is known and unrelated.
+  fix it as part of these sprints. Note it and continue. Confirmed
+  pre-existing failures: `test_check_auth_never_crashes`,
+  `TestCorrelator_HybridScanProducesCorrelatedFinding`,
+  `TestReachable_HybridScanProducesReachableCorrelated`.
 - If you find yourself wanting to defer a sprint feature to make
   ship-date, say so before doing it. The plan has explicit cuts;
   silent cuts erode the plan's value.
+- The build artifact `go/internal/embedded/engine/.gitkeep` is
+  re-modified by every `make build`. Do not stage it; do not commit
+  it. The prior session learned to add only specific paths in `git
+  add` (never `git add -A`) for this reason.
+- `git stash pop` after a `git checkout main` round trip can silently
+  drop tracked-file edits when the .gitkeep build artifact is in the
+  way. If you need to baseline against main, prefer `git worktree
+  add` over stash, OR commit your in-progress work first to a WIP
+  commit and reset it later.
 
-## Reference: what's already on main
+# Reference: how to read what's already on disk
 
-The work that landed in the previous session:
+Use `git log --all --oneline | head -20` to see what's already on
+disk. Look for branches whose names match a sprint or phase
+(`phase1-trust-fixes`, `sprint-02p5-npm-batch`, etc.). Cross-check
+against PLAN.md's roster: a sprint is shipped if it has ✅ in the
+roster, even if its branch has been merged + deleted.
 
-  046408f feat(engine): Track 4 quality lift — 7 gaps closed, heavy-eval harness + CI
-  31cc74d feat(pip-audit): walk subdirectories for requirements.txt (Track 4 gap 1)
-  9bd84bd feat(verify): ship `fendix verify <id>` — was a Phase-4 stub (Track 4 gap 2)
-  af2bbce fix(auth-probe): dedup JWT-bypass FPs on fully-public endpoints (Track 4 gap 3)
-  cf431ce docs: enterprise readiness sprint plan (Phases 1-6, 17 active + 1 deferred sprints)
-  5103be5 docs: commit FENDIX_AUDIT_REPORT.md (referenced by enterprise-readiness plan)
+If a topic branch exists locally and is NOT yet on origin, ask the
+user before doing anything to it; merging or pushing is a human
+decision.
 
-You are starting from 5103be5. The plan and audit are at HEAD.
+# When in doubt
 
-## When in doubt
-
-Read the sprint file's risks section. Each sprint surfaced the
-likely surprises during planning; if you hit one, the mitigation
+Re-read the relevant sprint file's Risks section. Each sprint surfaced
+the likely surprises during planning; if you hit one, the mitigation
 is already documented.
 
 Begin with Step 0. Do not skip it.
@@ -212,43 +268,47 @@ Begin with Step 0. Do not skip it.
 1. Open a new Claude Code session in this repo (or any Claude session
    that can read this filesystem).
 2. Paste the fenced block above as the first message.
-3. Let the session run. It will:
+3. The session will:
+   - Recall its on-disk memory entries
    - Read the plan + audit + sprint files (~10 minutes)
-   - Confirm prerequisites (build/test/pip-audit available)
-   - Create the `phase1-trust-fixes` branch
-   - Land Sprint 01, then Sprint 02, then Sprint 03 as three commits
-   - Report back with the 3-commit log, bench numbers, and any
-     surprises
+   - Identify the next sprint(s) to ship and confirm with you
+   - Ship them as commits on a topic branch
+   - Hand back with bench numbers, surprises, and explicit
+     unfinished-work notes
+
+## What this prompt does NOT do
+
+- Hardcode which sprint is next. The session figures that out from
+  PLAN.md's roster + the recommended ordering + the prior session's
+  Status sections + any in-progress / follow-up sprint files.
+- Authorise large work. The session must confirm scope with you
+  before starting any sprint estimated >2 days.
+- Push or open PRs. Always handed back to a human.
 
 ## What to expect back
 
-- A branch `phase1-trust-fixes` locally with 3 commits
+- A topic branch with N commits (one per sprint)
 - An honest report (not just "done") covering:
   - Actual vs. estimated time per sprint
   - Surprises encountered (and which sprint file they should be
     added to as risks)
   - Any code outside the sprint scope that needed touching
+  - What's left undone, with pointers to the next session
 - Tests + bench results in the report
-- The PR description drafted but NOT pushed
-
-## If you want the session to take a different shape
-
-The prompt is opinionated for "Phase 1 in one session." Other shapes
-that would also work:
-
-- **One sprint per session, three sessions** — replace `Sprints 01-03`
-  with `Sprint 01` in the prompt header and adjust Steps 3-5 to a
-  single sprint. Lower risk of mid-session fatigue; longer calendar.
-- **Sprint 01 only, then evaluate** — same as above but explicitly
-  stops after Sprint 01 ships so you can decide whether to continue.
-
-Edit the prompt directly to change the shape. The structure (Step 0
-ground yourself, branch off main, one commit per sprint, hard rules
-at the bottom) should stay the same regardless of which sprints land.
+- A PR description drafted under
+  `tasks/enterprise-readiness/<branch>_PR_DESCRIPTION.md` but NOT
+  pushed
 
 ## When to regenerate this prompt
 
-When the plan evolves enough that Step 0 should point at different
-files, or when the next sprint to ship is no longer Sprints 01-03,
-update this file. The prompt is committed alongside the plan so
-edits land naturally with each plan update.
+This prompt is intentionally generic — it should keep working as the
+plan evolves. Regenerate only if:
+
+- The directory layout under `tasks/enterprise-readiness/` changes
+  fundamentally
+- The repo structure (Go module path, Makefile target names) changes
+- A new hard rule emerges that future sessions need to know about
+
+If a hard rule changes, update the "Hard rules" section in the fenced
+block. If new pre-existing test failures emerge, update the list under
+the same section.

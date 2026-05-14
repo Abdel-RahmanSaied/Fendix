@@ -1,0 +1,51 @@
+---
+name: project-fendix-known-failing-tests
+description: "Tests that fail on Fendix `main` and are NOT to be fixed as part of any enterprise-readiness sprint. Hard rule from the bootstrap prompt; check before claiming a regression."
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 911255e3-c2a2-41c3-978e-966f3a6969e0
+---
+
+These tests are confirmed-failing on `main` as of 2026-05-14. The
+bootstrap prompt's hard rule: *"do not fix it as part of these sprints.
+Note it and continue."* Always cross-check a "new" test failure against
+this list before assuming your work caused it.
+
+**Python (`make test-python`):**
+
+- `python/tests/test_fuzz.py::TestSpecParserFuzz::test_check_auth_never_crashes`
+  — Hypothesis falsifies with `{'servers': None}`; the `spec_parser.py`
+  code at line 147 doesn't handle the None case and raises TypeError.
+  Pre-existing for at least the duration of the Phase 1 work.
+
+**Go e2e (`make e2e`):**
+
+- `TestCorrelator_HybridScanProducesCorrelatedFinding` — somewhere in
+  the hybrid blackbox+whitebox correlation pipeline.
+- `TestReachable_HybridScanProducesReachableCorrelated` — same area.
+
+Both confirmed by checking out `main` and running the e2e suite during
+the Phase 1 session.
+
+**Why:** The plan's first principle is honest scope. A sprint that
+expands to fix unrelated pre-existing bugs grows in ways the plan can't
+account for, and a green test suite stops being a useful ship-gate
+because everyone learns to expect noise.
+
+**How to apply:** When `make test` or `make e2e` reports a failure
+during your sprint:
+  1. Check this list. If the failure is here, it's pre-existing —
+     mention it in your Status section as "noted and continued" and
+     move on.
+  2. If the failure is NOT here, it's likely yours. Investigate before
+     committing. Don't add it to this list as a workaround.
+  3. If you confirm a NEW pre-existing failure (one that was failing
+     on main but isn't on this list), update this memory with the
+     test name and a one-line cause, so future sessions can skip the
+     same investigation.
+
+Verify suspected pre-existing failures by checking out `main`, running
+the relevant test, then coming back to your branch — see
+[[gotcha-fendix-build-artifacts-and-stash]] for the safe way to do
+that round trip.
