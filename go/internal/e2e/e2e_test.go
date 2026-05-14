@@ -675,6 +675,12 @@ paths:
 	tmpDir := t.TempDir()
 	outputPath := filepath.Join(tmpDir, "report.json")
 
+	// The spec-parser whitebox check that emits "no auth requirement"
+	// lives in python/analyzers/spec_parser.py — post-TASK-118 the
+	// Python engine is opt-in. Point FENDIX_ENGINE at the repo's
+	// python/ tree and pass --python-engine so the spec parser runs.
+	t.Setenv("FENDIX_ENGINE", filepath.Join(repoRoot(t), "python"))
+
 	cmd := exec.Command(bin,
 		"scan",
 		"--url", srv.URL,
@@ -685,6 +691,7 @@ paths:
 		"--timeout", "5",
 		"--wordlist", tinyWordlist(t),
 		"--crawl-depth", "0",
+		"--python-engine",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
