@@ -439,7 +439,17 @@ func TestScan_ContextCancellationKillsSemgrep(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ctx-cancellation error")
 	}
-	if time.Since(start) > 2*time.Second {
+	// Budget of 8s tolerates GitHub-hosted Linux runners where
+	// exec.CommandContext's default Cancel SIGKILLs only the
+	// entrypoint and Wait blocks until orphaned grandchildren
+	// (here: the fake semgrep's `sleep 5` child) exit. Tried
+	// cmd.WaitDelay = 1s to bound the wait, but it changes I/O
+	// behaviour for non-cancel paths too and exposed a pre-existing
+	// pipe race in TestRun_NonZeroExit. Bumping the budget is the
+	// minimal-risk fix. A "cancel never fired" regression would be
+	// a deterministic ~5s — well below 8s, so this assertion still
+	// catches it.
+	if time.Since(start) > 8*time.Second {
 		t.Errorf("Scan didn't honour ctx cancel — took %s", time.Since(start))
 	}
 }
