@@ -26,9 +26,10 @@ If you can't fund all 18 sprints, the **recommended ordering** at the bottom of 
 
 | # | Phase | Sprint title | Days | Risk | Ships in |
 |---|---|---|---:|---|---|
-| [01](sprint-01-pip-audit-naming.md) | 1.1 | pip-audit naming + fallback flag | 1 | Low | v0.11.1 |
-| [02](sprint-02-osv-batch.md) | 1.2 | OSV batch queries + concurrency cap | 1.5 | Med | v0.11.1 |
-| [03](sprint-03-verify-scope.md) | 1.3 | `fendix verify` scope + exit codes | 0.5 | Low | v0.11.1 |
+| [01](sprint-01-pip-audit-naming.md) ✅ | 1.1 | pip-audit naming + fallback flag | 1 | Low | v0.11.1 |
+| [02](sprint-02-osv-batch.md) ✅ | 1.2 | OSV batch queries + concurrency cap (pip) | 1.5 | Med | v0.11.1 |
+| [02.5](sprint-02p5-osv-batch-npm.md) ✅ | 1.2.5 | OSV batch queries for npm scanner | 0.5 | Low | v0.11.1 |
+| [03](sprint-03-verify-scope.md) ✅ | 1.3 | `fendix verify` scope + exit codes | 0.5 | Low | v0.11.1 |
 | [04](sprint-04-go-sast.md) | 2.1 | Go SAST engine (5 rules) | 5–7 | **High** | v0.12.0 |
 | [05](sprint-05-js-sast.md) | 2.2 | JS/TS regex SAST (6 rules) | 4 | Med | v0.12.0 |
 | [06](sprint-06-iac-sast.md) | 2.3 | IaC scanner (Dockerfile + k8s) | 4 | Med | v0.12.0 |

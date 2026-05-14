@@ -37,7 +37,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -66,9 +69,32 @@ const cacheTTL = 24 * time.Hour
 
 const httpTimeout = 15 * time.Second
 
+// osvBatchMaxSize mirrors the pip scanner — OSV.dev's documented max
+// batch size for /v1/querybatch
+// (https://google.github.io/osv.dev/post-v1-querybatch/).
+const osvBatchMaxSize = 100
+
+// osvMaxConcurrentBatches mirrors the pip scanner's concurrency cap.
+// At 4 in-flight batches of up to 100 packages each, a 400-dep
+// lockfile completes in one wave with effectively zero rate-limit
+// risk against OSV.dev's undocumented ~10 req/s per-IP cap.
+const osvMaxConcurrentBatches = 4
+
 // Scan reads package-lock.json at codePath and returns one Finding per
 // (package, resolved-version, OSV-id) tuple. ErrNoLockfile signals
 // "not a Node project (or yarn/pnpm-only)" — caller skips silently.
+//
+// Sprint 02.5: cache misses now go through /v1/querybatch (chunked into
+// batches of osvBatchMaxSize, up to osvMaxConcurrentBatches in flight).
+// Falls back per-chunk to the per-package /v1/query path on any
+// batch-level failure so a transient batch-only outage cannot hide
+// CVE coverage.
+//
+// Sprint-02 trade-off (carried into npm): /v1/querybatch responses
+// include vuln IDs but NOT aliases. Findings via the batch path carry
+// only an OSV-id reference; the serial fallback preserves the alias
+// behaviour for any chunk that hits it. CVE-* alias hydration via
+// GET /v1/vulns/{id} is deferred to Sprint 02.6.
 func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	abs, err := filepath.Abs(codePath)
 	if err != nil {
@@ -102,20 +128,216 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 
 	client := &http.Client{Timeout: httpTimeout}
 	cache, _ := cacheDir()
+	const manifestName = "package-lock.json"
 
-	findings := make([]models.Finding, 0)
+	// Phase 1: collect all (package, manifest) pairs. npm reads one
+	// lockfile per Scan invocation so the manifest stamp is constant;
+	// the pair shape mirrors pip's pkgWithManifest so the helpers below
+	// stay structurally identical to pip's.
+	allPairs := make([]pkgWithManifest, 0, len(pkgs))
 	for _, p := range pkgs {
-		vulns, err := queryOSV(ctx, client, cache, p.name, p.version)
+		allPairs = append(allPairs, pkgWithManifest{pkg: p, manifest: manifestName})
+	}
+
+	// Phase 2: cache lookup. Anything fresh in cache produces findings
+	// now; misses go into the batch queue.
+	var findings []models.Finding
+	var misses []pkgWithManifest
+	for _, p := range allPairs {
+		if vulns, ok := readCache(cache, p.pkg.name, p.pkg.version); ok {
+			for _, v := range vulns {
+				findings = append(findings, buildFinding(p.pkg, v, p.manifest))
+			}
+			continue
+		}
+		misses = append(misses, p)
+	}
+
+	// Phase 3: batch the misses. Chunk into osvBatchMaxSize-sized
+	// groups, run up to osvMaxConcurrentBatches concurrently. Failures
+	// of a chunk fall back to per-package /v1/query so CVE coverage
+	// survives a /v1/querybatch outage.
+	if len(misses) > 0 {
+		sem := semaphore.NewWeighted(osvMaxConcurrentBatches)
+		var batchMu sync.Mutex
+		batchFindings := make([]models.Finding, 0)
+		var wg sync.WaitGroup
+		for start := 0; start < len(misses); start += osvBatchMaxSize {
+			end := start + osvBatchMaxSize
+			if end > len(misses) {
+				end = len(misses)
+			}
+			chunk := misses[start:end]
+			if err := sem.Acquire(ctx, 1); err != nil {
+				// Context cancellation surfaces here; bail with whatever
+				// we've already gathered (cache hits + completed batches).
+				wg.Wait()
+				batchMu.Lock()
+				findings = append(findings, batchFindings...)
+				batchMu.Unlock()
+				sortFindingsByID(findings)
+				return findings, fmt.Errorf("npm: acquire batch slot: %w", err)
+			}
+			wg.Add(1)
+			go func(chunk []pkgWithManifest) {
+				defer wg.Done()
+				defer sem.Release(1)
+				chunkFindings := runBatchOrFallback(ctx, client, cache, chunk)
+				batchMu.Lock()
+				batchFindings = append(batchFindings, chunkFindings...)
+				batchMu.Unlock()
+			}(chunk)
+		}
+		wg.Wait()
+		findings = append(findings, batchFindings...)
+	}
+
+	sortFindingsByID(findings)
+	return findings, nil
+}
+
+// pkgWithManifest carries the manifest stamp for a resolvedPackage.
+// npm only scans one lockfile per Scan call today, but the
+// (pkg, manifest) pair shape keeps this function structurally identical
+// to pip's batch path and makes a future recursive-walk extension
+// trivial.
+type pkgWithManifest struct {
+	pkg      resolvedPackage
+	manifest string
+}
+
+// runBatchOrFallback tries /v1/querybatch for a single chunk; on any
+// batch-level failure (non-2xx, length mismatch, transport error) it
+// falls back to the per-package /v1/query path so individual findings
+// still surface. Cache writes happen on both paths.
+func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
+	pkgs := make([]resolvedPackage, len(chunk))
+	for i, p := range chunk {
+		pkgs[i] = p.pkg
+	}
+	results, err := queryOSVBatch(ctx, client, pkgs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[fendix] npm: querybatch failed (%v); falling back to per-package /v1/query for %d packages\n", err, len(chunk))
+		return runSerialFallback(ctx, client, cache, chunk)
+	}
+	var findings []models.Finding
+	for _, p := range chunk {
+		key := p.pkg.name + "@" + p.pkg.version
+		vulns := results[key]
+		// Cache the batch result even when empty — that's a valid
+		// "no known vulns" answer worth caching for 24h.
+		writeCache(cache, p.pkg.name, p.pkg.version, vulns)
+		for _, v := range vulns {
+			findings = append(findings, buildFinding(p.pkg, v, p.manifest))
+		}
+	}
+	return findings
+}
+
+// runSerialFallback walks the chunk one package at a time using the
+// classic /v1/query endpoint. Used when /v1/querybatch fails so any
+// transient batch-only outage doesn't hide CVE coverage.
+func runSerialFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
+	var findings []models.Finding
+	for _, p := range chunk {
+		vulns, err := queryOSV(ctx, client, cache, p.pkg.name, p.pkg.version)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[fendix] npm: query %s@%s failed: %v\n", p.name, p.version, err)
+			fmt.Fprintf(os.Stderr, "[fendix] npm: query %s@%s failed: %v\n", p.pkg.name, p.pkg.version, err)
 			continue
 		}
 		for _, v := range vulns {
-			findings = append(findings, buildFinding(p, v, "package-lock.json"))
+			findings = append(findings, buildFinding(p.pkg, v, p.manifest))
 		}
 	}
-	sortFindingsByID(findings)
-	return findings, nil
+	return findings
+}
+
+// queryOSVBatch sends one /v1/querybatch request with up to
+// osvBatchMaxSize packages and returns map[<pkg>@<version>]vulns.
+//
+// Known limitation: /v1/querybatch's response shape includes vuln IDs
+// but NOT aliases. To get the CVE-* aliases the per-package /v1/query
+// path includes, a follow-up GET /v1/vulns/{id} per vuln would be
+// needed. This is intentionally NOT done here:
+//
+//   - Batch path (this function): N packages → 1 round trip, no aliases
+//   - Serial fallback (runSerialFallback): N packages → N round trips,
+//     full aliases
+//
+// Sprint 02.6 can hydrate aliases here if customers complain. Today we
+// accept the alias gap to win the throughput improvement.
+func queryOSVBatch(ctx context.Context, client *http.Client, pkgs []resolvedPackage) (map[string][]osvVuln, error) {
+	if len(pkgs) == 0 {
+		return map[string][]osvVuln{}, nil
+	}
+	if len(pkgs) > osvBatchMaxSize {
+		return nil, fmt.Errorf("batch size %d exceeds OSV.dev limit of %d — caller must chunk", len(pkgs), osvBatchMaxSize)
+	}
+	type batchQuery struct {
+		Package osvPackage `json:"package"`
+		Version string     `json:"version"`
+	}
+	type batchRequest struct {
+		Queries []batchQuery `json:"queries"`
+	}
+	type batchResultEntry struct {
+		Vulns []struct {
+			ID string `json:"id"`
+		} `json:"vulns"`
+	}
+	type batchResponse struct {
+		Results []batchResultEntry `json:"results"`
+	}
+
+	reqBody := batchRequest{Queries: make([]batchQuery, len(pkgs))}
+	for i, p := range pkgs {
+		reqBody.Queries[i] = batchQuery{
+			Package: osvPackage{Ecosystem: "npm", Name: p.name},
+			Version: p.version,
+		}
+	}
+	body, err := json.Marshal(&reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("encode batch request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, osvAPIBase+"/v1/querybatch", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build batch request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post batch to %s: %w", osvAPIBase, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("osv batch returned %d: %s", resp.StatusCode, snippet)
+	}
+	var parsed batchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("decode batch response: %w", err)
+	}
+	if len(parsed.Results) != len(pkgs) {
+		return nil, fmt.Errorf("osv batch response length mismatch: %d results for %d packages", len(parsed.Results), len(pkgs))
+	}
+
+	out := make(map[string][]osvVuln, len(pkgs))
+	for i, entry := range parsed.Results {
+		if len(entry.Vulns) == 0 {
+			continue
+		}
+		vulns := make([]osvVuln, 0, len(entry.Vulns))
+		for _, v := range entry.Vulns {
+			// TODO(sprint-02.6): hydrate aliases via GET /v1/vulns/{id}.
+			// Today: batch findings get a single OSV-id reference; the
+			// per-package /v1/query path remains the way to get full
+			// CVE-* aliases.
+			vulns = append(vulns, osvVuln{ID: v.ID})
+		}
+		out[pkgs[i].name+"@"+pkgs[i].version] = vulns
+	}
+	return out, nil
 }
 
 // resolvedPackage is one (name, version) entry extracted from a
