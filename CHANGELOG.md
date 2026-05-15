@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Sprints 07 + 08 — closed by reference to sibling repo
+
+**Sprint 07 (`fendix serve` REST API)** and **Sprint 08 (OIDC login)**
+are marked ✅ in PLAN.md as **already-covered by the sibling repo
+`fendix-services/fendix-backend`** — a Django 5.2 + DRF API server
+that:
+
+- Wraps the fendix CLI as a multi-tenant SaaS (Celery 5.4 +
+  Postgres 16 + Redis).
+- Exposes the REST scan-job lifecycle the brief specified
+  (`backend/scanning/views.py`, OpenAPI contract at
+  `backend/openapi.json`).
+- Implements JWT auth via simplejwt (RS256), with key generation
+  at `make keys`.
+- Adds billing, subscriptions, accounts, scheduling, notifications
+  — well past Sprint 07's "in-memory MVP" scope.
+
+The plan-finish session started a Go-native `internal/servecmd`
+package, then discarded it on the user's instruction to "stop
+implementing REST API, check fendix-backend." The right framing is:
+Sprint 07/08's audit-gap ("no REST API, no auth on a serve mode")
+is closed by the production backend, not by adding a parallel Go
+implementation. The Fendix CLI in this repo remains a CLI; the
+serve-mode story lives in the Django backend.
+
+D1 (persistence) and the in-memory caveat from the brief are
+moot for the same reason — Postgres handles persistence in the
+backend.
+
 ### v0.12.0 — Sprints 04 / 05 / 06 (unified textscan engine)
 
 #### Added
