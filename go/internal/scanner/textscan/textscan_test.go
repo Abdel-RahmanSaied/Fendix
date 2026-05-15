@@ -48,7 +48,7 @@ func b(db *sql.DB, id string) { db.Query("SELECT * FROM u WHERE id = " + id) }`)
 func TestGoRules_DetectAWSKeyLiteral(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "app.go", `package x
-var Key = "AKIAIOSFODNN7EXAMPLE"`)
+var Key = "AKIA1234567890ABCDEF"`)
 	got, _ := Scan(dir, GoRules())
 	by := findingsByID(got)
 	if len(by["GO_HARDCODED_AWS_KEY"]) != 1 {
@@ -120,7 +120,7 @@ RUN echo hi`)
 func TestScan_SkipsNoiseDirs(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "node_modules/x/pwned.js", `eval(userCode);`)
-	writeFile(t, dir, "vendor/y/pwned.go", `var k = "AKIAIOSFODNN7EXAMPLE"`)
+	writeFile(t, dir, "vendor/y/pwned.go", `var k = "AKIA1234567890ABCDEF"`)
 	got, _ := Scan(dir, AllRules())
 	if len(got) != 0 {
 		t.Errorf("noise dirs should be skipped; got %d findings: %+v", len(got), got)
@@ -129,7 +129,7 @@ func TestScan_SkipsNoiseDirs(t *testing.T) {
 
 func TestScan_ProducesEndpointAndLine(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "app.go", "package x\n\nvar K = \"AKIAIOSFODNN7EXAMPLE\"\n")
+	writeFile(t, dir, "app.go", "package x\n\nvar K = \"AKIA1234567890ABCDEF\"\n")
 	got, _ := Scan(dir, GoRules())
 	if len(got) != 1 {
 		t.Fatalf("got %d findings; want 1", len(got))

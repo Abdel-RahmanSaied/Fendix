@@ -32,9 +32,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -108,6 +109,13 @@ func (e SyncError) Error() string {
 	return fmt.Sprintf("jira sync: %s for finding %q: %v", e.Phase, e.FindingID, e.Err)
 }
 
+// ErrUnsafeFindingID is returned when a finding ID contains
+// characters that would break the JQL idempotency search or split
+// into multiple Jira labels (which silently breaks idempotency —
+// every sync run creates a fresh duplicate issue). Allowed
+// characters: A-Z a-z 0-9 . _ -
+var ErrUnsafeFindingID = errors.New("jira: finding ID contains characters not permitted in a Jira label (allowed: A-Z a-z 0-9 . _ -)")
+
 // SyncFindings is the package's main entry point. It iterates
 // findings ≥ MinSeverity and ensures one Jira issue exists per
 // finding (idempotency via the label `fendix-id:<id>`).
@@ -117,11 +125,22 @@ func (e SyncError) Error() string {
 // querying all existing fendix-labelled issues, which depends on a
 // stable persistence story (Sprint 07.5 SQLite) to know "this scan
 // is the latest." See PLAN.md decision gate D1.
+//
+// Finding IDs are validated against [A-Za-z0-9._-]+ at this boundary
+// — once, here — so neither findExisting nor createIssue can ever
+// see an ID that would inject JQL or split-on-whitespace into
+// multiple Jira labels. Both helpers assert the invariant defensively;
+// any future caller bypassing SyncFindings will get an immediate
+// ErrUnsafeFindingID instead of a silent idempotency break.
 func (c *Client) SyncFindings(ctx context.Context, findings []models.Finding) (SyncResult, error) {
 	out := SyncResult{}
 	for _, f := range findings {
 		if !c.severityClears(f.Severity) {
 			out.Skipped = append(out.Skipped, f.ID)
+			continue
+		}
+		if !labelSafeID.MatchString(f.ID) {
+			out.Errors = append(out.Errors, SyncError{FindingID: f.ID, Phase: "validate", Err: ErrUnsafeFindingID})
 			continue
 		}
 		key, found, err := c.findExisting(ctx, f.ID)
@@ -149,20 +168,43 @@ func (c *Client) severityClears(s models.Severity) bool {
 	return models.SeverityRank(s) >= models.SeverityRank(c.cfg.MinSeverity)
 }
 
+// labelSafeID is the character set Jira accepts in a label. Jira
+// labels can't contain whitespace or quotes; we restrict further to
+// alphanumerics, dot, dash, underscore so the JQL `labels = "…"`
+// literal can never be broken out of by a hostile finding ID
+// (e.g. one derived from a scan of an attacker-controlled repo via
+// the GH App handler).
+var labelSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // findExisting queries Jira for an issue with the fendix-id label
 // for the given finding. Returns (issueKey, found, error). "Not
 // found" is `("", false, nil)` — a normal idempotency outcome, not
 // an error.
+//
+// Uses the POST /rest/api/3/search/jql endpoint introduced May 2025
+// (the GET /rest/api/3/search endpoint was deprecated and removed
+// for new instances at that time).
 func (c *Client) findExisting(ctx context.Context, findingID string) (string, bool, error) {
+	// Defensive: SyncFindings already enforces this, but a future
+	// caller might invoke findExisting directly. Fail closed.
+	if !labelSafeID.MatchString(findingID) {
+		return "", false, ErrUnsafeFindingID
+	}
 	// JQL: project = "<KEY>" AND labels = "fendix-id:<id>"
-	jql := fmt.Sprintf(`project = %q AND labels = "fendix-id:%s"`, c.cfg.ProjectKey, findingID)
-	q := url.Values{}
-	q.Set("jql", jql)
-	q.Set("fields", "key")
-	q.Set("maxResults", "1")
-	endpoint := c.cfg.BaseURL + "/rest/api/3/search?" + q.Encode()
-
-	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	// Project keys are restricted by Jira to [A-Z][A-Z0-9_]+; we still
+	// escape defensively in case a customer's key violates the rule.
+	jql := fmt.Sprintf(`project = %s AND labels = %s`,
+		quoteJQL(c.cfg.ProjectKey), quoteJQL("fendix-id:"+findingID))
+	payload, err := json.Marshal(map[string]any{
+		"jql":        jql,
+		"fields":     []string{"key"},
+		"maxResults": 1,
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("marshal search payload: %w", err)
+	}
+	endpoint := c.cfg.BaseURL + "/rest/api/3/search/jql"
+	resp, err := c.do(ctx, http.MethodPost, endpoint, payload)
 	if err != nil {
 		return "", false, err
 	}
@@ -187,9 +229,36 @@ func (c *Client) findExisting(ctx context.Context, findingID string) (string, bo
 	return body.Issues[0].Key, true, nil
 }
 
+// quoteJQL renders a Go string as a JQL-quoted literal. Per
+// Atlassian's JQL grammar, backslash and double-quote inside a
+// quoted string must be backslash-escaped.
+func quoteJQL(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\', '"':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // createIssue posts a new Jira issue carrying the fendix-id label
 // for idempotency. Returns the new issue key.
+//
+// Defensive: SyncFindings already enforces labelSafeID, but a future
+// caller might invoke createIssue directly. Jira labels split on
+// whitespace, so an ID containing a space would produce multiple
+// labels and silently break idempotency for every subsequent sync.
+// Fail closed before that can happen.
 func (c *Client) createIssue(ctx context.Context, f models.Finding) (string, error) {
+	if !labelSafeID.MatchString(f.ID) {
+		return "", ErrUnsafeFindingID
+	}
 	body := map[string]any{
 		"fields": map[string]any{
 			"project":     map[string]string{"key": c.cfg.ProjectKey},
@@ -308,9 +377,25 @@ func severityToJiraPriority(s models.Severity) string {
 	}
 }
 
+// truncate clips s to at most max runes, appending "…" when clipped.
+// Rune-aware so multi-byte UTF-8 characters (e.g. file paths with
+// accents in finding titles) are never split mid-byte.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	runes := []rune(s)
+	return string(runes[:max-1]) + "…"
 }
+
+// String redacts the API token so accidental `%+v` / log dumps of
+// Config don't leak credentials. GoString covers the `%#v` verb.
+func (c Config) String() string {
+	return fmt.Sprintf("jira.Config{BaseURL:%q ProjectKey:%q Email:%q APIToken:[REDACTED] IssueType:%q MinSeverity:%q}",
+		c.BaseURL, c.ProjectKey, c.Email, c.IssueType, c.MinSeverity)
+}
+
+func (c Config) GoString() string { return c.String() }

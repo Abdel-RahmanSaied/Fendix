@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
@@ -15,9 +16,9 @@ import (
 // newDBCmd wires the Sprint-09 offline-mode CLI surface. Three
 // subcommands matching the brief:
 //
-//   fendix db list                     — show the local snapshot's metadata
-//   fendix db update --source <file>   — ingest an OSV.dev export into the snapshot
-//   fendix db verify                   — recompute the snapshot's SHA-256
+//	fendix db list                     — show the local snapshot's metadata
+//	fendix db update --source <file>   — ingest an OSV.dev export into the snapshot
+//	fendix db verify                   — recompute the snapshot's SHA-256
 //
 // The runtime integration (`--offline` flag on `scan` that swaps
 // every dep-CVE check from live HTTP to the snapshot) is wired
@@ -140,7 +141,10 @@ func runDBUpdate(w io.Writer, sourcePath, outputPath string) error {
 	if err != nil {
 		return fmt.Errorf("parse source %s: %w", sourcePath, err)
 	}
-	snap := offline.FromOSVExport(advisories, []string{sourcePath})
+	// Record only the source filename in the snapshot — the operator's
+	// full local path can include usernames, build paths, or scratch
+	// directories that shouldn't ship to air-gapped recipients.
+	snap := offline.FromOSVExport(advisories, []string{filepath.Base(sourcePath)})
 	snap.GeneratedAt = time.Now().UTC()
 	if err := offline.Write(outputPath, snap); err != nil {
 		return err

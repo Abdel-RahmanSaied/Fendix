@@ -40,12 +40,14 @@ package textscan
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -53,15 +55,15 @@ import (
 // Rule describes one SAST pattern. A file matches a rule when its
 // path passes Applies() and the rule's Pattern matches any line.
 type Rule struct {
-	ID          string
-	Title       string
-	Severity    models.Severity
-	Confidence  models.Confidence
-	Category    string // "injection" | "secrets" | "auth" | "iac" | "crypto" ...
-	CWE         string
-	Pattern     *regexp.Regexp
-	NegPattern  *regexp.Regexp // optional: line must NOT also match
-	Fix         string
+	ID         string
+	Title      string
+	Severity   models.Severity
+	Confidence models.Confidence
+	Category   string // "injection" | "secrets" | "auth" | "iac" | "crypto" ...
+	CWE        string
+	Pattern    *regexp.Regexp
+	NegPattern *regexp.Regexp // optional: line must NOT also match
+	Fix        string
 	// Applies returns true when path falls under this rule's
 	// language-extension set.
 	Applies func(path string) bool
@@ -88,12 +90,23 @@ func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
 		if walkErr != nil {
 			return nil // skip unreadable entries; don't fail the walk
 		}
+		// Skip symlinks unconditionally — both file and directory
+		// symlinks. filepath.WalkDir does not follow symlinks (it uses
+		// lstat), so a directory symlink shows up here with
+		// d.Type()&fs.ModeSymlink != 0 and IsDir() == false; refuse
+		// to descend or read either way. Prevents loops and silent
+		// privilege boundary crossings (e.g. /tmp symlink to /etc).
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if d.IsDir() {
 			// Skip noisy build / vendor / VCS dirs.
 			name := d.Name()
 			if name == ".git" || name == "node_modules" || name == "vendor" ||
 				name == "__pycache__" || name == ".venv" || name == "build" ||
-				name == "dist" || name == ".pytest_cache" {
+				name == "dist" || name == ".pytest_cache" ||
+				name == ".next" || name == ".nuxt" || name == ".svelte-kit" ||
+				name == ".cache" || name == "target" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -115,6 +128,14 @@ func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
 		if info.Size() > maxFileBytes {
 			return nil
 		}
+		// Skip binary blobs. Reading PNGs/jars/sqlite line-by-line
+		// against every regex is CPU waste and produces false-positive
+		// AKIA hits in random binary noise. We sniff the first 512
+		// bytes here; the AWS-key + similar rules then never run on
+		// non-text.
+		if looksBinary, _ := isBinaryFile(path); looksBinary {
+			return nil
+		}
 		got, err := scanFile(rootDir, path, applicable)
 		if err != nil {
 			return nil
@@ -128,6 +149,30 @@ func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
 	return findings, nil
 }
 
+// dockerfileHasUSER reports whether a Dockerfile-shaped file
+// contains a `USER` directive. Used to suppress IAC_DOCKER_RUNS_AS_ROOT
+// when the image actually drops privileges. Cheap whole-file pre-pass
+// so the per-line scan can stay stateless.
+func dockerfileHasUSER(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if regexp.MustCompile(`^USER\s+\S`).MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
 // scanFile reads one file line-by-line and applies the supplied
 // rules. We use bufio.Scanner with a generous buffer to handle
 // auto-generated source files with long lines.
@@ -138,6 +183,14 @@ func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
 	}
 	defer f.Close()
 	rel := pathRel(rootDir, path)
+
+	// Whole-file pre-pass for rules that need context outside one
+	// line. Today: IAC_DOCKER_RUNS_AS_ROOT is suppressed when any
+	// `USER <name>` directive exists in the Dockerfile.
+	suppressRule := map[string]bool{}
+	if IsDockerfile(path) && dockerfileHasUSER(path) {
+		suppressRule["IAC_DOCKER_RUNS_AS_ROOT"] = true
+	}
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20) // 1 MiB max line
@@ -151,6 +204,9 @@ func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
 		// the original for pattern matching (some rules care about
 		// leading whitespace).
 		for _, r := range rules {
+			if suppressRule[r.ID] {
+				continue
+			}
 			if !r.Pattern.MatchString(line) {
 				continue
 			}
@@ -160,8 +216,9 @@ func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
 			endpoint := fmt.Sprintf("%s:%d", rel, lineNo)
 			endpointCopy := endpoint
 			snippet := strings.TrimSpace(line)
-			if len(snippet) > 200 {
-				snippet = snippet[:200] + "…"
+			if utf8.RuneCountInString(snippet) > 200 {
+				runes := []rune(snippet)
+				snippet = string(runes[:199]) + "…"
 			}
 			findings = append(findings, models.Finding{
 				ID:         r.ID,
@@ -220,4 +277,21 @@ func IsDockerfile(path string) bool {
 // before flagging anything.
 func IsYAML(path string) bool {
 	return strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml")
+}
+
+// isBinaryFile sniffs the first 512 bytes of path and reports whether
+// the file looks binary. The heuristic: any NUL byte → binary. This
+// is the same shape stdlib http.DetectContentType uses internally and
+// is robust enough for the scanner's "skip blobs" need. Returns
+// (false, nil) when the file can't be opened — the caller will then
+// try to scan it (and probably fail similarly), which is fine.
+func isBinaryFile(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return bytes.IndexByte(buf[:n], 0) >= 0, nil
 }

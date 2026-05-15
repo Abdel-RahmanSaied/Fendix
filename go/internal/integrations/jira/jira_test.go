@@ -32,7 +32,7 @@ func newFakeJira(t *testing.T) *fakeJira {
 	fj := &fakeJira{}
 	fj.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.Contains(r.URL.Path, "/rest/api/3/search"):
+		case strings.Contains(r.URL.Path, "/rest/api/3/search/jql"):
 			fj.searches.Add(1)
 			out := map[string]any{"issues": []any{}}
 			if len(fj.matchedIssues) > 0 {
@@ -92,10 +92,10 @@ func makeFinding(id string, sev models.Severity) models.Finding {
 func TestNewClient_RequiresAllFields(t *testing.T) {
 	cases := []Config{
 		{},
-		{BaseURL: "u", ProjectKey: "K", Email: "e"}, // missing token
+		{BaseURL: "u", ProjectKey: "K", Email: "e"},    // missing token
 		{BaseURL: "u", ProjectKey: "K", APIToken: "t"}, // missing email
-		{BaseURL: "u", Email: "e", APIToken: "t"}, // missing project
-		{ProjectKey: "K", Email: "e", APIToken: "t"}, // missing URL
+		{BaseURL: "u", Email: "e", APIToken: "t"},      // missing project
+		{ProjectKey: "K", Email: "e", APIToken: "t"},   // missing URL
 	}
 	for i, c := range cases {
 		_, err := NewClient(c)
@@ -185,6 +185,51 @@ func TestSyncFindings_SkipsBelowMinSeverity(t *testing.T) {
 	}
 	if len(out.Skipped) != 1 || out.Skipped[0] != "LOW-1" {
 		t.Errorf("Skipped = %v; want [LOW-1]", out.Skipped)
+	}
+}
+
+func TestSyncFindings_RejectsUnsafeFindingID(t *testing.T) {
+	// Finding IDs containing whitespace silently split into multiple
+	// Jira labels (labels are space-delimited), breaking idempotency
+	// — every sync run would create a fresh duplicate issue. The
+	// invariant is enforced at the SyncFindings boundary; verify here
+	// that unsafe IDs short-circuit before any Jira call is made.
+	fj := newFakeJira(t)
+	c := newTestClient(t, fj.URL)
+	out, err := c.SyncFindings(context.Background(),
+		[]models.Finding{
+			makeFinding("good-id", models.SeverityCritical),
+			makeFinding("bad id with space", models.SeverityCritical),
+			makeFinding(`quote"injection`, models.SeverityCritical),
+		})
+	if err != nil {
+		t.Fatalf("SyncFindings (transport-level): %v", err)
+	}
+	if len(out.Created) != 1 {
+		t.Errorf("Created = %v; want exactly 1 (the good ID)", out.Created)
+	}
+	if len(out.Errors) != 2 {
+		t.Fatalf("Errors = %+v; want 2 validation errors", out.Errors)
+	}
+	for _, e := range out.Errors {
+		if e.Phase != "validate" {
+			t.Errorf("unexpected phase %q on validation error; want \"validate\"", e.Phase)
+		}
+		if !errors.Is(e.Err, ErrUnsafeFindingID) {
+			t.Errorf("unexpected err %v; want ErrUnsafeFindingID", e.Err)
+		}
+	}
+}
+
+func TestCreateIssue_DefensiveValidation(t *testing.T) {
+	// createIssue is internal but reachable by any future caller that
+	// bypasses SyncFindings. It must fail closed rather than silently
+	// shipping an unsafe label to Jira.
+	c := newTestClient(t, "https://unused.example.com")
+	_, err := c.createIssue(context.Background(),
+		makeFinding("bad id", models.SeverityCritical))
+	if !errors.Is(err, ErrUnsafeFindingID) {
+		t.Errorf("createIssue err = %v; want ErrUnsafeFindingID", err)
 	}
 }
 

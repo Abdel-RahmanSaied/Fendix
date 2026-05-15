@@ -59,15 +59,17 @@ story to know "this scan is the latest", which depends on Sprint 07.5
 				return errors.New("--findings is required (path to a findings JSON produced by `fendix scan --format json`)")
 			}
 			timeout, _ := cmd.Flags().GetDuration("timeout")
-			return runJira(cmd.Context(), cmd.OutOrStdout(), path, timeout)
+			strict, _ := cmd.Flags().GetBool("strict")
+			return runJira(cmd.Context(), cmd.OutOrStdout(), path, timeout, strict)
 		},
 	}
 	cmd.Flags().String("findings", "", "Path to a findings JSON file produced by `fendix scan --format json`")
 	cmd.Flags().Duration("timeout", 5*time.Minute, "Overall timeout for the Jira sync")
+	cmd.Flags().Bool("strict", false, "Exit non-zero if ANY finding fails to sync (default: exit non-zero only when every finding fails)")
 	return cmd
 }
 
-func runJira(ctx context.Context, w io.Writer, findingsPath string, timeout time.Duration) error {
+func runJira(ctx context.Context, w io.Writer, findingsPath string, timeout time.Duration, strict bool) error {
 	c, err := jira.NewFromEnv()
 	if err != nil {
 		if errors.Is(err, jira.ErrEmptyConfig) {
@@ -107,6 +109,9 @@ func runJira(ctx context.Context, w io.Writer, findingsPath string, timeout time
 	}
 	for _, e := range result.Errors {
 		fmt.Fprintf(w, "  ! %s\n", e.Error())
+	}
+	if strict && len(result.Errors) > 0 {
+		return fmt.Errorf("jira: %d finding(s) failed to sync (--strict)", len(result.Errors))
 	}
 	if len(result.Errors) > 0 && len(result.Created) == 0 && len(result.Unchanged) == 0 {
 		return fmt.Errorf("jira: every finding failed (%d errors)", len(result.Errors))

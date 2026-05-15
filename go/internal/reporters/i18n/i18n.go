@@ -24,9 +24,9 @@ import "strings"
 // template.
 type Strings struct {
 	// Document-level
-	ReportTitle             string
-	ScanSubtitle            string // "{target} — {mode} scan — {duration}"
-	GeneratedByFendix       string
+	ReportTitle       string
+	ScanSubtitle      string // "{target} — {mode} scan — {duration}"
+	GeneratedByFendix string
 
 	// Severities
 	SeverityCritical string

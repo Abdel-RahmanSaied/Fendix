@@ -47,8 +47,20 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
+
+// MaxSnapshotBytes caps the on-disk size of a snapshot that Read /
+// FromOSVExport will accept. A malformed or hostile input produces a
+// clean error instead of OOMing the scanner. 200 MiB is generous for
+// a full OSV.dev mirror (~100k advisories ≈ 70 MiB compressed JSON).
+const MaxSnapshotBytes = 200 << 20
+
+// MaxAdvisories caps the count of advisories one snapshot can carry.
+// Belt-and-braces with MaxSnapshotBytes so a pathological JSON with
+// many short entries can't sneak past the byte cap.
+const MaxAdvisories = 5_000_000
 
 // SchemaVersion is the on-disk format version. Bump when the format
 // changes in a non-backward-compatible way.
@@ -66,23 +78,23 @@ func DefaultDBPath() string {
 
 // Snapshot is the in-memory shape of an on-disk DB.
 type Snapshot struct {
-	Schema      int         `json:"schema"`
-	GeneratedAt time.Time   `json:"generated_at"`
-	Generator   string      `json:"generator"`
-	Sources     []string    `json:"sources"`
-	Advisories  []Advisory  `json:"advisories"`
+	Schema      int        `json:"schema"`
+	GeneratedAt time.Time  `json:"generated_at"`
+	Generator   string     `json:"generator"`
+	Sources     []string   `json:"sources"`
+	Advisories  []Advisory `json:"advisories"`
 }
 
 // Advisory mirrors the OSV.dev wire shape, but only the subset we
 // actually consume. Unknown fields in real OSV data are silently
 // dropped on decode.
 type Advisory struct {
-	ID         string      `json:"id"`
-	Aliases    []string    `json:"aliases,omitempty"`
-	Package    PackageRef  `json:"package"`
-	Ranges     []Range     `json:"ranges,omitempty"`
-	Summary    string      `json:"summary,omitempty"`
-	References []string    `json:"references,omitempty"`
+	ID         string     `json:"id"`
+	Aliases    []string   `json:"aliases,omitempty"`
+	Package    PackageRef `json:"package"`
+	Ranges     []Range    `json:"ranges,omitempty"`
+	Summary    string     `json:"summary,omitempty"`
+	References []string   `json:"references,omitempty"`
 }
 
 type PackageRef struct {
@@ -106,21 +118,36 @@ var ErrSchemaMismatch = errors.New("offline: snapshot schema version mismatch")
 
 // Read loads a snapshot from disk. Returns ErrSnapshotMissing when
 // the path doesn't exist (a normal "user hasn't run update yet"
-// outcome).
+// outcome). Files larger than MaxSnapshotBytes are rejected before
+// being read into memory — a malformed or hostile snapshot can't
+// OOM the scanner.
 func Read(path string) (*Snapshot, error) {
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: %s", ErrSnapshotMissing, path)
 		}
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() > MaxSnapshotBytes {
+		return nil, fmt.Errorf("read %s: snapshot exceeds %d bytes (got %d)", path, MaxSnapshotBytes, info.Size())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return Decode(data)
 }
 
 // Decode parses snapshot JSON bytes into a Snapshot, validating the
-// schema version.
+// schema version, the byte budget, the advisory count, and the
+// per-advisory required fields. Required fields are non-empty ID,
+// ecosystem, and package name — anything below that is a malformed
+// snapshot we don't want to silently load.
 func Decode(data []byte) (*Snapshot, error) {
+	if len(data) > MaxSnapshotBytes {
+		return nil, fmt.Errorf("decode snapshot: payload exceeds %d bytes (got %d)", MaxSnapshotBytes, len(data))
+	}
 	var s Snapshot
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("decode snapshot: %w", err)
@@ -128,12 +155,36 @@ func Decode(data []byte) (*Snapshot, error) {
 	if s.Schema != SchemaVersion {
 		return nil, fmt.Errorf("%w: got %d, want %d", ErrSchemaMismatch, s.Schema, SchemaVersion)
 	}
+	if len(s.Advisories) > MaxAdvisories {
+		return nil, fmt.Errorf("decode snapshot: %d advisories exceeds max %d", len(s.Advisories), MaxAdvisories)
+	}
+	seen := make(map[string]bool, len(s.Advisories))
+	for i, a := range s.Advisories {
+		if strings.TrimSpace(a.ID) == "" {
+			return nil, fmt.Errorf("decode snapshot: advisory %d: empty ID", i)
+		}
+		if strings.TrimSpace(a.Package.Ecosystem) == "" {
+			return nil, fmt.Errorf("decode snapshot: advisory %q: empty package.ecosystem", a.ID)
+		}
+		if strings.TrimSpace(a.Package.Name) == "" {
+			return nil, fmt.Errorf("decode snapshot: advisory %q: empty package.name", a.ID)
+		}
+		if seen[a.ID] {
+			return nil, fmt.Errorf("decode snapshot: duplicate advisory ID %q", a.ID)
+		}
+		seen[a.ID] = true
+	}
 	return &s, nil
 }
 
 // Write encodes the snapshot as pretty JSON to the given path,
 // creating parent directories. The file ends with a trailing newline
 // so it round-trips through line-oriented tooling (jq, less, diff).
+//
+// The write is durable: payload is written to a sibling temp file
+// and then atomically renamed over `path`. A crash mid-write leaves
+// either the previous snapshot intact or the new one — never a
+// half-flushed JSON that subsequent Read would reject.
 func Write(path string, snap *Snapshot) error {
 	if snap == nil {
 		return errors.New("offline: cannot write nil snapshot")
@@ -144,7 +195,8 @@ func Write(path string, snap *Snapshot) error {
 	if snap.GeneratedAt.IsZero() {
 		snap.GeneratedAt = time.Now().UTC()
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir for %s: %w", path, err)
 	}
 	out, err := json.MarshalIndent(snap, "", "  ")
@@ -152,8 +204,24 @@ func Write(path string, snap *Snapshot) error {
 		return fmt.Errorf("encode snapshot: %w", err)
 	}
 	out = append(out, '\n')
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op on success (file is renamed)
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmpName, err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmpName, path, err)
 	}
 	return nil
 }
@@ -202,39 +270,19 @@ func (s *Snapshot) Summary() string {
 // LookupByPackage returns every advisory matching (ecosystem, name).
 // Ecosystem comparison is case-insensitive (OSV uses "PyPI", we
 // might receive "pypi"); name comparison is case-sensitive (per OSV
-// convention).
+// convention). Uses strings.EqualFold so non-ASCII ecosystems compare
+// correctly.
 func (s *Snapshot) LookupByPackage(ecosystem, name string) []Advisory {
 	out := make([]Advisory, 0)
 	if s == nil {
 		return out
 	}
 	for _, a := range s.Advisories {
-		if equalFold(a.Package.Ecosystem, ecosystem) && a.Package.Name == name {
+		if strings.EqualFold(a.Package.Ecosystem, ecosystem) && a.Package.Name == name {
 			out = append(out, a)
 		}
 	}
 	return out
-}
-
-// equalFold is a tiny ASCII case-insensitive compare to avoid pulling
-// in `strings` for this one call.
-func equalFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
 
 // ReadFrom is a streaming variant for very large snapshots. Not used

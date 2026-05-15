@@ -12,10 +12,10 @@ import (
 // EnvVar names recognised by NewFromEnv. Kept in one place so the
 // CLI --help text can list them without divergence.
 const (
-	EnvSlackWebhookURL  = "FENDIX_SLACK_WEBHOOK_URL"
-	EnvTeamsWebhookURL  = "FENDIX_TEAMS_WEBHOOK_URL"
-	EnvMinSeverity      = "FENDIX_NOTIFY_MIN_SEVERITY"
-	EnvDedupWindow      = "FENDIX_NOTIFY_DEDUP_WINDOW"
+	EnvSlackWebhookURL = "FENDIX_SLACK_WEBHOOK_URL"
+	EnvTeamsWebhookURL = "FENDIX_TEAMS_WEBHOOK_URL"
+	EnvMinSeverity     = "FENDIX_NOTIFY_MIN_SEVERITY"
+	EnvDedupWindow     = "FENDIX_NOTIFY_DEDUP_WINDOW"
 )
 
 // NewFromEnv reads notify Config from environment variables. Used by
@@ -29,7 +29,8 @@ const (
 //
 // Defaults:
 //   - FENDIX_NOTIFY_MIN_SEVERITY: CRITICAL
-//   - FENDIX_NOTIFY_DEDUP_WINDOW: 1h (Go duration string, e.g. "30m", "2h")
+//   - FENDIX_NOTIFY_DEDUP_WINDOW: 1h (Go duration string, e.g. "30m", "2h").
+//     Set to "0" to disable dedup entirely (every alert fires).
 func NewFromEnv() (*Notifier, error) {
 	cfg := Config{
 		SlackWebhookURL: os.Getenv(EnvSlackWebhookURL),
@@ -55,7 +56,15 @@ func NewFromEnv() (*Notifier, error) {
 		if dur < 0 {
 			return nil, fmt.Errorf("%s: negative duration %s", EnvDedupWindow, dur)
 		}
-		cfg.DedupWindow = dur
+		// Explicit "0" → disable dedup entirely. Distinguished from
+		// "unset" (env var not present) so the documented contract
+		// "set to 0 to disable" holds without conflicting with the
+		// zero-value default in NewNotifier.
+		if dur == 0 {
+			cfg.DisableDedup = true
+		} else {
+			cfg.DedupWindow = dur
+		}
 	}
 
 	return NewNotifier(cfg), nil

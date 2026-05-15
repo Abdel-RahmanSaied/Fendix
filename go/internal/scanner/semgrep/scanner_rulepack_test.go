@@ -11,10 +11,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// rulepackTotalCount is the count of bundled rules Sprint 18 ships with.
-// When you add or remove a rule, update this constant in the same commit
-// so the catalog test catches accidental rule deletion.
-const rulepackTotalCount = 24
+// rulepackTotalCount is the count of bundled rules. When you add or
+// remove a rule, update this constant in the same commit so the
+// catalog test catches accidental rule deletion. v0.13.1 dropped the
+// broken django-fbv-missing-auth-decorator rule (Sprint 18 review).
+const rulepackTotalCount = 23
 
 // rulepackFiles is the canonical list of embedded YAML rule files. The
 // extraction tests (TestEnsureRules_ExtractsAllBundledFiles) assert this

@@ -18,6 +18,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-pdf/fpdf"
 
@@ -304,11 +305,20 @@ func topNBySeverity(findings []models.Finding, n int) []models.Finding {
 	return cp
 }
 
+// truncatePDFLine clips s to at most max runes (not bytes); appends
+// "…" when clipped. Rune-aware so multi-byte UTF-8 characters in
+// finding titles / paths are never split mid-byte. fpdf's built-in
+// Helvetica still substitutes glyphs it can't render — register a
+// Unicode font for true non-Latin-1 support (Sprint 11.5).
 func truncatePDFLine(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	runes := []rune(s)
+	return string(runes[:max-1]) + "…"
 }
 
 func pdfFormatTime(t interface{}) string {

@@ -96,50 +96,13 @@ rules:
       confidence: HIGH
       fendix_severity: CRITICAL
 
-  # Rule 5 (Sprint 18): Django function-based view with no auth decorator.
-  # FP class: a view that delegates auth to middleware (e.g. AuthenticationMiddleware
-  # + a project-wide LOGIN_URL redirect) will be flagged. FN class: views protected
-  # by a custom decorator whose name doesn't match the pattern-not list will be
-  # flagged. Confidence: LOW to reflect both — orchestrator will keep severity ≤ MEDIUM
-  # per the LOW-confidence severity-cap rule documented in docs/semgrep-rules.md.
-  - id: django-fbv-missing-auth-decorator
-    patterns:
-      - pattern: |
-          @$URLS.path(...)
-          def $FUNC(request, ...):
-              ...
-      - pattern-not: |
-          @login_required
-          def $FUNC(request, ...):
-              ...
-      - pattern-not: |
-          @permission_required(...)
-          def $FUNC(request, ...):
-              ...
-      - pattern-not: |
-          @user_passes_test(...)
-          def $FUNC(request, ...):
-              ...
-      - pattern-not: |
-          @staff_member_required
-          def $FUNC(request, ...):
-              ...
-      - pattern-not: |
-          @csrf_exempt
-          @login_required
-          def $FUNC(request, ...):
-              ...
-    message: >
-      Django function-based view '$FUNC' is missing an auth decorator
-      (@login_required, @permission_required, @user_passes_test, or
-      @staff_member_required). Any unauthenticated user can hit this view.
-    languages: [python]
-    severity: WARNING
-    metadata:
-      category: auth
-      cwe: CWE-306
-      confidence: LOW
-      fendix_severity: MEDIUM
+  # (Rule 5 — django-fbv-missing-auth-decorator — was removed in v0.13.1.
+  # The original pattern attempted to match `@urls.path(...)` as a
+  # decorator, but `urls.path()` is the path-registration helper in
+  # urls.py and never decorates a view function. The rule could never
+  # fire on real Django code; carried to Sprint 05.5 for a redesign
+  # that pattern-matches "view function whose first arg is `request`
+  # and which has no auth-style decorator anywhere above it.")
 
   # Rule 6 (Sprint 18): Flask route with no auth decorator above it.
   # FP class: views that authenticate via Flask-Login's session loading + manual

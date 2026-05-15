@@ -29,20 +29,28 @@ func GoRules() []Rule {
 			Confidence: models.ConfidenceMedium,
 			Category:   "injection",
 			CWE:        "CWE-89",
-			Pattern:    regexp.MustCompile(`(?:db|conn|tx)\.(Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext)\([^,)]*(?:\+|%[sv]|fmt\.Sprintf)`),
-			Applies:    HasGoExtension,
-			Fix:        "Use parameterised queries: db.Query(\"SELECT … WHERE x = ?\", value). Never concatenate or fmt.Sprintf user-controlled values into SQL.",
+			// Two shapes flagged:
+			//   1. Concat/Sprintf directly inside the call: db.Query("…"+x).
+			//   2. fmt.Sprintf returning the query argument on the same line.
+			// The "query built one line earlier and passed as a bare
+			// identifier" case is the dominant real-world shape but
+			// needs taint analysis — carried to Sprint 04.5.
+			Pattern: regexp.MustCompile(`(?:db|conn|tx)\.(?:Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext)\([^)]*(?:\+|%[sv]|fmt\.Sprintf)`),
+			Applies: HasGoExtension,
+			Fix:     "Use parameterised queries: db.Query(\"SELECT … WHERE x = ?\", value). Never concatenate or fmt.Sprintf user-controlled values into SQL.",
 		},
 		{
 			ID:         "GO_EXEC_COMMAND_INJECTION",
-			Title:      "Command injection: exec.Command with concatenated argv",
+			Title:      "Command injection: exec.Command with shell wrapper or concatenated argv",
 			Severity:   models.SeverityHigh,
 			Confidence: models.ConfidenceMedium,
 			Category:   "injection",
 			CWE:        "CWE-78",
-			// exec.Command("sh", "-c", userInput+"...") OR
-			// exec.Command(...) with a `+` in the call OR a Sprintf-built string.
-			Pattern: regexp.MustCompile(`exec\.(?:Command|CommandContext)\(\s*"(?:sh|bash|cmd|powershell)"\s*,\s*"-c"`),
+			// Three shapes flagged:
+			//   1. exec.Command("sh","-c", …) / bash / cmd / powershell — shell semantics.
+			//   2. exec.Command(…) with `+` concat anywhere in the argv list.
+			//   3. exec.Command(…) with fmt.Sprintf building an argv element.
+			Pattern: regexp.MustCompile(`exec\.(?:Command|CommandContext)\([^)]*(?:"(?:sh|bash|cmd|powershell)"\s*,\s*"-c"|\+|fmt\.Sprintf)`),
 			Applies: HasGoExtension,
 			Fix:     "Pass argv as a list rather than going through `sh -c`. If shell semantics are required, sanitise inputs with shellescape or use os/exec with explicit env+argv.",
 		},
@@ -54,10 +62,12 @@ func GoRules() []Rule {
 			Category:   "secrets",
 			CWE:        "CWE-327",
 			// crypto/md5 + crypto/sha1 imports near password-shaped variables.
-			// Naive line-level pattern — flags any hash.Write call near a "password" identifier.
-			Pattern:    regexp.MustCompile(`(md5|sha1)\.(?:Sum|New)\(\s*\[?\s*]?byte\s*\(\s*(?:[a-zA-Z_]*[Pp]assword|[a-zA-Z_]*[Pp]wd|[a-zA-Z_]*[Pp]assphrase)`),
-			Applies:    HasGoExtension,
-			Fix:        "Use bcrypt, scrypt, argon2, or PBKDF2 for password hashing. Raw MD5/SHA1 is unsuitable — they're fast hashes with no work factor and no per-record salt.",
+			// Naive line-level pattern — flags any hash.Sum/New call near a
+			// "password"/"pwd"/"passphrase" identifier. The byte-cast is
+			// matched as `[]byte(` (closing bracket fixed in v0.13.1).
+			Pattern: regexp.MustCompile(`(?:md5|sha1)\.(?:Sum|New)\(\s*(?:\[\s*\]byte\s*\()?\s*(?:[a-zA-Z_]*[Pp]assword|[a-zA-Z_]*[Pp]wd|[a-zA-Z_]*[Pp]assphrase)`),
+			Applies: HasGoExtension,
+			Fix:     "Use bcrypt, scrypt, argon2, or PBKDF2 for password hashing. Raw MD5/SHA1 is unsuitable — they're fast hashes with no work factor and no per-record salt.",
 		},
 		{
 			ID:         "GO_HARDCODED_AWS_KEY",
@@ -67,6 +77,9 @@ func GoRules() []Rule {
 			Category:   "secrets",
 			CWE:        "CWE-798",
 			Pattern:    regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
+			// AWS's own documentation placeholders. Including them here
+			// would train users to ignore CRITICAL findings.
+			NegPattern: regexp.MustCompile(`AKIAIOSFODNN7EXAMPLE|AKIAI44QH8DHBEXAMPLE`),
 			Applies:    HasGoExtension,
 			Fix:        "Load AWS credentials from the SDK's default chain (env, ~/.aws/credentials, instance role). If this is a real key, rotate it now.",
 		},
@@ -149,6 +162,7 @@ func JSRules() []Rule {
 			Category:   "secrets",
 			CWE:        "CWE-798",
 			Pattern:    regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
+			NegPattern: regexp.MustCompile(`AKIAIOSFODNN7EXAMPLE|AKIAI44QH8DHBEXAMPLE`),
 			Applies:    HasJSExtension,
 			Fix:        "Load credentials from process.env or the AWS SDK's default chain. Rotate the exposed key.",
 		},
@@ -162,14 +176,17 @@ func IaCRules() []Rule {
 		// ----- Dockerfile -----
 		{
 			ID:         "IAC_DOCKER_RUNS_AS_ROOT",
-			Title:      "Dockerfile doesn't drop privileges (no USER directive observed at this line)",
+			Title:      "Dockerfile doesn't drop privileges (no USER directive in file)",
 			Severity:   models.SeverityMedium,
 			Confidence: models.ConfidenceLow,
 			Category:   "iac",
 			CWE:        "CWE-250",
-			// Pattern flags the `FROM` line; an out-of-band post-pass could
-			// suppress when a USER directive follows. Confidence: LOW so the
-			// orchestrator caps severity at MEDIUM per the consistency rule.
+			// Pattern flags the `FROM` line. scanFile's whole-file
+			// pre-pass (dockerfileHasUSER) suppresses the rule when
+			// any `USER <name>` directive exists, so a Dockerfile that
+			// drops privileges later doesn't get flagged. Confidence:
+			// LOW so the orchestrator caps severity at MEDIUM per the
+			// consistency rule.
 			Pattern: regexp.MustCompile(`^\s*FROM\s+\S+`),
 			Applies: IsDockerfile,
 			Fix:     "Add `USER <non-root>` after package installs. Containers running as UID 0 escalate easily into the host on misconfigured runtimes.",
@@ -195,10 +212,15 @@ func IaCRules() []Rule {
 			Confidence: models.ConfidenceMedium,
 			Category:   "iac",
 			CWE:        "CWE-829",
-			Pattern:    regexp.MustCompile(`^\s*FROM\s+\S+(?::latest)?\s*$`),
-			NegPattern: regexp.MustCompile(`^\s*FROM\s+\S+:[^l\s][^\s]*`), // any tag that isn't :latest
-			Applies:    IsDockerfile,
-			Fix:        "Pin to a specific tag or digest (e.g. `python:3.11.7-slim` or `python@sha256:…`). `:latest` makes builds unreproducible AND ships unreviewed upstream changes.",
+			// Flag a FROM line that is either bare (no `:tag`, no
+			// `@sha256:…` digest) or explicitly `:latest`. Tolerates
+			// the optional `AS <stage>` suffix used in multi-stage
+			// builds. Tags starting with `l` (e.g. `lts`, `linux-…`)
+			// are correctly NOT flagged because the pattern only
+			// matches `:latest` literally.
+			Pattern: regexp.MustCompile(`^\s*FROM\s+[^\s:@]+(?::latest)?(?:\s+AS\s+\S+)?\s*$`),
+			Applies: IsDockerfile,
+			Fix:     "Pin to a specific tag or digest (e.g. `python:3.11.7-slim` or `python@sha256:…`). `:latest` makes builds unreproducible AND ships unreviewed upstream changes.",
 		},
 		// ----- k8s YAML -----
 		{

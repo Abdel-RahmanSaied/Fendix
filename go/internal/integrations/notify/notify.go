@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -55,9 +56,14 @@ type Config struct {
 	MinSeverity models.Severity
 
 	// DedupWindow is the duration during which a repeat alert for the
-	// same finding ID is suppressed. Default: 1 hour. Zero disables
-	// dedup entirely (every finding alerts).
+	// same finding ID is suppressed. Default: 1 hour. Set
+	// DisableDedup to opt out entirely.
 	DedupWindow time.Duration
+
+	// DisableDedup turns off the in-memory dedup map. Every qualifying
+	// finding alerts on every NotifyAll call. Useful for test fixtures
+	// and short-lived CI runs where dedup state is meaningless.
+	DisableDedup bool
 
 	// HTTPClient is reused across Notify calls. Nil uses
 	// http.DefaultClient with a 10s timeout.
@@ -112,11 +118,11 @@ func (n *Notifier) Enabled() bool {
 // sinks are attempted independently per finding; one failing does
 // not block the other.
 type SinkResult struct {
-	Sink     string // "slack" or "teams"
-	Finding  string // finding ID
-	Sent     bool
-	Skipped  string // "below_min_severity" | "dedup" | ""
-	Err      error
+	Sink    string // "slack" or "teams"
+	Finding string // finding ID
+	Sent    bool
+	Skipped string // "below_min_severity" | "dedup" | ""
+	Err     error
 }
 
 // NotifyAll iterates findings and posts qualifying ones to all
@@ -145,7 +151,13 @@ func (n *Notifier) NotifyAll(ctx context.Context, findings []models.Finding) []S
 			}
 			continue
 		}
-		if n.isSuppressed(f.ID) {
+		// Atomic check-and-claim under one lock — two concurrent
+		// NotifyAll calls on the same finding can't both observe
+		// "not suppressed" and both post. The claim happens BEFORE
+		// posting so a transient sink failure doesn't allow a repeat
+		// alert seconds later — dedup is "saw the finding", not
+		// "successfully posted."
+		if !n.claim(f.ID) {
 			if n.cfg.SlackWebhookURL != "" {
 				out = append(out, SinkResult{Sink: "slack", Finding: f.ID, Skipped: "dedup"})
 			}
@@ -154,11 +166,6 @@ func (n *Notifier) NotifyAll(ctx context.Context, findings []models.Finding) []S
 			}
 			continue
 		}
-		// Record the alert BEFORE posting. Even if a sink errors, we
-		// don't want a transient failure to cause spam if NotifyAll
-		// runs again seconds later — the dedup is "saw the finding",
-		// not "successfully posted."
-		n.markAlerted(f.ID)
 		if n.cfg.SlackWebhookURL != "" {
 			out = append(out, n.postSlack(ctx, f))
 		}
@@ -175,32 +182,33 @@ func (n *Notifier) severityClears(s models.Severity) bool {
 	return models.SeverityRank(s) >= models.SeverityRank(n.cfg.MinSeverity)
 }
 
-// isSuppressed checks whether a finding ID alerted within the dedup
-// window. The map is GC'd opportunistically (entries older than the
-// window are dropped on every check) so it doesn't grow unboundedly.
-func (n *Notifier) isSuppressed(id string) bool {
+// claim atomically checks the dedup map and, if the finding hasn't
+// alerted within the dedup window, records "alerted now" and returns
+// true. Returns false (skip — duplicate) when the entry exists and
+// is still within the window. Holding the lock across the read and
+// write closes the TOCTOU race that two prior separate-lock helpers
+// allowed. Opportunistic GC drops entries older than the window so
+// the map can't grow unboundedly.
+func (n *Notifier) claim(id string) bool {
+	if n.cfg.DisableDedup {
+		return true
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	now := n.cfg.Now()
 	if last, ok := n.alerts[id]; ok {
 		if now.Sub(last) < n.cfg.DedupWindow {
-			return true
+			return false
 		}
-		delete(n.alerts, id)
 	}
-	// Opportunistic GC: drop any other entries older than the window.
+	// Opportunistic GC of expired entries.
 	for k, t := range n.alerts {
 		if now.Sub(t) >= n.cfg.DedupWindow {
 			delete(n.alerts, k)
 		}
 	}
-	return false
-}
-
-func (n *Notifier) markAlerted(id string) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.alerts[id] = n.cfg.Now()
+	n.alerts[id] = now
+	return true
 }
 
 func (n *Notifier) postSlack(ctx context.Context, f models.Finding) SinkResult {
@@ -225,46 +233,73 @@ func (n *Notifier) postTeams(ctx context.Context, f models.Finding) SinkResult {
 	return SinkResult{Sink: "teams", Finding: f.ID, Sent: true}
 }
 
-// postJSON POSTs body to url with Content-Type: application/json and
-// returns an error when the response status is outside 2xx. The
-// response body (truncated to 512 bytes) is included in the error
-// for operator debugging.
-func (n *Notifier) postJSON(ctx context.Context, url string, body []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+// postJSON POSTs body to webhookURL with Content-Type:
+// application/json and returns an error when the response status is
+// outside 2xx. The response body (truncated to 512 bytes) is included
+// in the error for operator debugging.
+//
+// Transport-level errors from net/http carry the full request URL in
+// their Error() text (e.g. `Post "https://hooks.slack.com/services/T/B/SECRET": dial tcp …`).
+// We deliberately do NOT %w-wrap those errors — the wrapped chain
+// would leak the secret. Instead we redact at the message boundary
+// by extracting the underlying error's text and stripping any
+// occurrence of webhookURL.
+func (n *Notifier) postJSON(ctx context.Context, webhookURL string, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := n.cfg.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", redactWebhookURL(url), err)
+		return fmt.Errorf("POST %s: %s",
+			redactWebhookURL(webhookURL),
+			stripURLFromMessage(err.Error(), webhookURL))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		excerpt, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("POST %s: status %d (body: %s)",
-			redactWebhookURL(url), resp.StatusCode, strings.TrimSpace(string(excerpt)))
+			redactWebhookURL(webhookURL), resp.StatusCode, strings.TrimSpace(string(excerpt)))
 	}
 	// Drain to allow connection reuse.
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
+// stripURLFromMessage replaces every occurrence of webhookURL in msg
+// with its redacted form so transport-level errors (which embed the
+// full URL with secret) don't leak into operator logs.
+func stripURLFromMessage(msg, webhookURL string) string {
+	if webhookURL == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, webhookURL, redactWebhookURL(webhookURL))
+}
+
 // redactWebhookURL strips the credential-bearing path components of
-// Slack / Teams webhook URLs so they don't leak into operator logs.
-// Slack: https://hooks.slack.com/services/T.../B.../<secret>
-// Teams: https://*.webhook.office.com/webhookb2/<guid>/IncomingWebhook/<secret>/<guid>
+// Slack / Teams / Power-Automate webhook URLs so they don't leak
+// into operator logs. Covered shapes:
+//
+//	Slack incoming        https://hooks.slack.com/services/T.../B.../<secret>
+//	Teams incoming        https://*.webhook.office.com/webhookb2/<guid>/IncomingWebhook/<secret>/<guid>
+//	Teams legacy          https://outlook.office.com/webhook/<guid>/IncomingWebhook/<secret>/<guid>
+//	Power Automate flow   https://*.logic.azure.com/workflows/<guid>/triggers/.../?sig=<secret>
+//
+// Anything that doesn't match a known prefix falls back to
+// scheme://host only — so a typo'd or future webhook shape still
+// doesn't leak the path.
 func redactWebhookURL(u string) string {
-	if i := strings.Index(u, "/services/"); i > 0 {
-		return u[:i+len("/services/")] + "[REDACTED]"
+	for _, marker := range []string{"/services/", "/webhookb2/", "/webhook/", "/workflows/"} {
+		if i := strings.Index(u, marker); i > 0 {
+			return u[:i+len(marker)] + "[REDACTED]"
+		}
 	}
-	if i := strings.Index(u, "/webhookb2/"); i > 0 {
-		return u[:i+len("/webhookb2/")] + "[REDACTED]"
+	// Fallback: keep scheme+host, drop everything else.
+	if parsed, err := url.Parse(u); err == nil && parsed.Host != "" {
+		return parsed.Scheme + "://" + parsed.Host + "/[REDACTED]"
 	}
-	if i := strings.Index(u, "/webhook/"); i > 0 {
-		return u[:i+len("/webhook/")] + "[REDACTED]"
-	}
-	return u
+	return "[REDACTED]"
 }
 
 // ErrEmptyConfig is returned by NewFromEnv when no webhook URL is set.
