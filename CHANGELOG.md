@@ -7,6 +7,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-05-16
+
+**Headline:** enterprise-readiness audit pass — closes every actionable
+finding from the 2026-05-16 multi-round audit. Pure hardening; no new
+features, no API surface, no CLI flag, no schema field. Backend +
+frontend sync against this tag is a no-op on the data contract; the
+deltas are entirely in supply-chain provenance + plugin-trust posture
++ engine concurrency.
+
+Single PR: [#6](https://github.com/Abdel-RahmanSaied/Fendix/pull/6).
+The 4 audit commits plus 1 follow-up workflow-lint fix are all on
+this tag.
+
+### Added
+
+- **Supply-chain hardening** (commit `a3f4d9b`).
+  - `enforce-signing` job in `release.yml` refuses to ship a `v*` tag
+    unless `vars.COSIGN_ENABLED` is `true` (or explicit
+    `allow-unsigned` for debugging). Closes a marketing-vs-artifact
+    gap where `SECURITY.md` advertised signed releases but cosign was
+    off by default.
+  - CycloneDX + SPDX SBOMs per binary via `syft`, both cosign-signed.
+    Docker image gets an in-toto CycloneDX attestation in Rekor.
+  - SLSA v1.0 build provenance attestations per binary
+    (`.intoto.jsonl`) and per Docker image. L2 claim with self-
+    verifiable L3 properties.
+  - Every third-party GitHub Action pinned to a 40-char commit SHA.
+    `actionlint` job + inline SHA-pin guard in `ci.yml` fail CI on
+    drift. `actionlint` and `syft` installed via `go install` so no
+    new third-party actions to pin.
+  - `.github/dependabot.yml` (new): weekly Monday bumps for
+    github-actions / gomod / pip / docker ecosystems; action bumps
+    grouped by family (actions / docker / sigstore).
+  - `Dockerfile` and `Dockerfile.app` base images pinned to digest
+    (`golang:1.22-alpine@sha256:1699c10...`,
+    `python:3.11-slim@sha256:9a7765b3...`).
+  - `-trimpath` + explicit `CGO_ENABLED=0` in release.yml and both
+    Dockerfiles.
+  - `SECURITY.md` discloses the transitive `golang.org/x/telemetry/
+    counter` import (via `golang.org/x/vuln`). Local-only counters;
+    uploads nothing unless host user runs `go telemetry on`.
+
+- **Plugin trust tier-1** (commit `363c091`).
+  - `fendix plugins install <url>` scheme allowlist: accepts
+    `https://`, `http://`, `git://`, `ssh://`, scp-style git URLs.
+    Rejects `file://`, `ext::`, and the rest of git's transport zoo
+    that can execute arbitrary commands (CVE-2017-1000117 family).
+  - `redactPluginEnv()` strips credential-shaped env vars
+    (`AWS_*`, `GITHUB_TOKEN`, `OPENAI_*`, `*_SECRET`, etc.) from
+    `os.Environ()` before invoking a plugin subprocess.
+  - `~/.fendix/plugins/` created with mode `0700` (was `0755`).
+  - `TestPluginSandbox_DocumentsUnmitigatedRisks` is living
+    documentation of tier-1 scope-outs (filesystem reads, network
+    egress, detached children) that will be promoted to real
+    assertions when tier-2 ships.
+
+### Changed
+
+- **Engine concurrency + perf** (commit `c103601`).
+  - `WorkerPool` channel buffer reduced from N×M to `workers*4`.
+    Producer now selects on `ctx.Done()` so mid-flight cancel
+    propagates (previously masked by oversized buffer never
+    blocking). `time.Sleep` replaced with `time.After` + ctx
+    select so the inter-request delay also honours cancellation.
+  - `Correlate` hoisted the path-segment noise filter to package
+    scope and pre-caches per-blackbox + per-whitebox segment
+    splits. `BenchmarkMemory_Correlate1000` delta: time **−15%**
+    (6.25ms → 5.32ms), bytes **−41%** (2.12 MB → 1.25 MB),
+    allocs **−22.6%** (13 324 → 10 316).
+  - Crawler BFS short-circuits the moment
+    `len(endpoints) >= --max-endpoints` so `--crawl-depth ≥ 2`
+    scans of large sites stop fetching pages they'd discard
+    anyway.
+  - `auth.go::mustJSON` panic replaced with `slog.Error` + empty-
+    JSON fallback. Zero `panic(` calls remain in production code.
+  - `pip.SetOSVAPIBaseForTest(url)` exported as a test-only seam
+    so orchestrator-level continue-on-error tests can drive OSV
+    at a 503 server.
+
+### Tests
+
+- **9 new test files; 27 new tests across engine + plugin + scanner**:
+  workerpool cancel-during-produce + bounded-buffer, dedup
+  order-invariance + idempotency (100 random permutations),
+  correlator order-invariance + no-blackbox-suffix + idempotency
+  property tests, correlator scaling bench at n ∈ {500, 1 000,
+  2 500, 5 000}, crawler BFS cap test, OSV total-outage continue-
+  on-error test, plugin env-redaction unit + integration, plugin
+  install-URL rejection contract.
+
+### Documentation
+
+- **`FENDIX_AUDIT_REPORT.md`** §3.2, §6, §11, §13, §15 refreshed
+  in place with inline "Refreshed 2026-05-16" markers. Every
+  numbered finding from the 2026-05-14 audit cut now carries a
+  STATUS line; new §15.6 (findings raised during refresh) and
+  §15.7 (explicit open follow-ups) added.
+- **Sprint Status sections** for Sprints 04, 05, 06, 07, 08, 09
+  backfilled (they shipped but DoD #7 was violated at ship time).
+  Honest about what was and wasn't recorded at the moment.
+- **`SECURITY.md`** verify-blob / verify-attestation commands for
+  cosign + SBOM + SLSA provenance.
+
+### Fixed
+
+- **`release.yml` mirror job** (commit `5aafa8a`): `$ASSETS` unquoted
+  glob converted to a bash array with `nullglob` (shellcheck
+  SC2086). Adds an explicit "no assets matched" guard.
+- **`heavy-eval.yml` quality-gate step**: `ls -td | head -1`
+  replaced with a `find -printf` pipeline (shellcheck SC2012). Now
+  emits an explicit "no run directory" error rather than passing
+  an empty path to `gate.py`.
+
+## [0.14.0] - 2026-05-16
+
+**Headline:** the plan-finish "v0.12 → v0.14" mega-release. Folds
+13 sprint commits (Sprints 04, 05, 06, 09, 10, 11, 13, 14, 15, 16,
+17, 18, plus a code-review follow-up) into a single minor cut.
+
+Single PR: [#6](https://github.com/Abdel-RahmanSaied/Fendix/pull/6).
+The author originally drafted this CHANGELOG with `### v0.12.0`,
+`### v0.13.x`, `### v0.14.0` sub-headings inside `[Unreleased]`,
+intending separate tags. The plan-finish session shipped fast
+enough that splitting into 3 release events would have been
+ceremony without value; tagged together. The pre-existing
+sub-headings are preserved below so cherry-pick / revert maps
+cleanly.
+
 ### Sprints 07 + 08 — closed by reference to sibling repo
 
 **Sprint 07 (`fendix serve` REST API)** and **Sprint 08 (OIDC login)**
