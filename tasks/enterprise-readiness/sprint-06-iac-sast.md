@@ -130,4 +130,11 @@ See [PLAN.md](PLAN.md) cross-cutting checklist. Specifically:
 
 ## Status
 
-**Not started.**
+**Status:** shipped as part of the textscan engine, commit
+[`5b8492f`](../../../../commit/5b8492f) — `feat(textscan): unified Go + JS + IaC SAST engine (Sprints 04, 05, 06)`. Dockerfile and k8s rules landed; Terraform stayed
+deferred (D2 unresolved — see [DECISIONS.md](DECISIONS.md#L80-L85)).
+Source: [`go/internal/scanner/textscan/`](../../go/internal/scanner/textscan/).
+
+**Status section backfill (2026-05-16):** Section was empty at ship
+time (DoD #7 not honored). See sprint-04 Status for the matching note
+on what details are and aren't recorded.

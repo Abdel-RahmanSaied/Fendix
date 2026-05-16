@@ -173,4 +173,15 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.**
+**Status:** **closed by reference** in the plan-finish session,
+commit [`75a939a`](../../../../commit/75a939a) — `docs(plan): close Sprints 07/08 by reference + final hand-off`.
+
+**Resolution:** OIDC login is a property of the
+[`fendix-backend`](../../../fendix-backend) sibling repo's serve
+layer, not of the `fendix` CLI in this repo. With Sprint 07 closed
+by reference (no in-repo serve mode), there is no surface in this
+repo for OIDC to attach to. See [DECISIONS.md D1
+resolution](DECISIONS.md#L63-L79).
+
+**Status section backfill (2026-05-16):** Section was empty at ship
+time (DoD #7 not honored).
