@@ -673,10 +673,40 @@ jobs:
           git add Formula/fendix.rb install.sh CNAME .nojekyll index.html
           if git diff --cached --quiet; then
             echo "Mirror tree unchanged — nothing to commit."
-          else
-            git commit -m "chore(release): sync ${{ steps.sha.outputs.version }} (Formula + install.sh + Pages)"
-            git push origin HEAD:main
+            exit 0
           fi
+          git commit -m "chore(release): sync ${{ steps.sha.outputs.version }} (Formula + install.sh + Pages)"
+
+          # Rebase-and-retry: two release tags pushed in quick succession
+          # (v0.14.0 → v0.14.1 on 2026-05-16) race here — the second
+          # mirror job clones at HEAD-N, commits, and gets push-rejected
+          # because the first one moved main. Fix is a bounded
+          # rebase+retry loop: at each attempt we fetch the latest main,
+          # rebase our single mirror-sync commit on top, and push again.
+          # Bounded at 5 attempts so a genuinely stuck remote can't make
+          # the workflow hang.
+          attempts=0
+          max_attempts=5
+          while [ $attempts -lt $max_attempts ]; do
+            if git push origin HEAD:main; then
+              echo "✓ pushed mirror sync on attempt $((attempts + 1))"
+              exit 0
+            fi
+            attempts=$((attempts + 1))
+            echo "::warning::mirror push rejected (attempt $attempts/$max_attempts); rebasing on latest main and retrying"
+            git fetch origin main
+            # `--keep-empty` defends against the no-op case where main
+            # already contains an equivalent commit (e.g. two tags
+            # producing byte-identical Formula). `|| true` because rebase
+            # can fail on conflict; we surface a clean error in that
+            # case rather than letting set -eu kill us mid-loop.
+            if ! git rebase --keep-empty origin/main; then
+              echo "::error::mirror rebase produced conflicts on attempt $attempts — needs manual resolution"
+              exit 1
+            fi
+          done
+          echo "::error::mirror push failed after $max_attempts attempts; remote may be wedged"
+          exit 1
 
       - name: Create mirror release with binaries
         env:
