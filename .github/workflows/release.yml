@@ -687,7 +687,17 @@ jobs:
           # `dist/fendix-${VERSION}-*` already matches both binaries and
           # `.sha256` sidecar files. Listing both globs would upload each
           # checksum twice and fail with "ReleaseAsset.name already exists".
-          ASSETS="dist/fendix-${VERSION}-*"
+          # Use a bash array so the glob expands at array-assignment time
+          # (one element per matched file) and each element is passed as
+          # a separate argv to gh — no word-splitting on filenames with
+          # spaces. Replaces an unquoted $ASSETS that shellcheck SC2086
+          # flagged.
+          shopt -s nullglob
+          ASSETS=( dist/fendix-"${VERSION}"-* )
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "::error::no assets matched dist/fendix-${VERSION}-* — release build did not produce expected artifacts"
+            exit 1
+          fi
 
           # Idempotent: skip if a release already exists at this tag.
           if gh release view "$VERSION" -R "$MIRROR_REPO" >/dev/null 2>&1; then
@@ -695,11 +705,11 @@ jobs:
             gh release upload "$VERSION" \
               -R "$MIRROR_REPO" \
               --clobber \
-              $ASSETS
+              "${ASSETS[@]}"
           else
             gh release create "$VERSION" \
               -R "$MIRROR_REPO" \
               --title "$VERSION" \
               --notes "Mirror of $VERSION from the engine repo. See the engine repo CHANGELOG for full release notes." \
-              $ASSETS
+              "${ASSETS[@]}"
           fi

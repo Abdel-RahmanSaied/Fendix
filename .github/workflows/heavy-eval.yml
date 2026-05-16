@@ -79,8 +79,15 @@ jobs:
 
       - name: Apply quality gates
         run: |
-          python3 scripts/heavy-eval/gate.py \
-            "$(ls -td bench-results/heavy/* | head -1)"
+          # Newest sub-directory under bench-results/heavy/. find -printf
+          # is GNU-find-only but this runs on ubuntu-latest, so it's fine.
+          # Replaces `ls -td` per shellcheck SC2012.
+          LATEST="$(find bench-results/heavy/ -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          if [ -z "$LATEST" ]; then
+            echo "::error::no run directory found under bench-results/heavy/"
+            exit 1
+          fi
+          python3 scripts/heavy-eval/gate.py "$LATEST"
 
       - name: Upload heavy-eval results
         if: always()
