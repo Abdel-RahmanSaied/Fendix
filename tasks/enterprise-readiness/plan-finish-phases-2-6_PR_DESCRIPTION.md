@@ -1,7 +1,8 @@
-# Plan-finish — Phases 2/3/4/5/6 (Sprints 04–11, 13–17)
+# Plan-finish — Phases 2/3/4/5/6 (Sprints 04–11, 13–17) + 2026-05-16 audit pass
 
-Drafted by the plan-finish session 2026-05-15. Branch:
-`plan-finish-phases-2-6` (10 commits ahead of `main`). Not yet pushed.
+Drafted by the plan-finish session 2026-05-15. Audit hardening pass
+landed 2026-05-16. Branch: `plan-finish-phases-2-6` (**16 commits
+ahead of `main`**). Pushed to origin.
 
 ---
 
@@ -100,6 +101,112 @@ comments in the code. The full follow-up list:
 - **17.5–17.6** CI: Bitbucket Pipelines + Azure DevOps, CircleCI orb
 - **18.5–18.6** Semgrep: Java/Ruby/PHP rule packs, plugin
   distribution
+
+## 2026-05-16 audit-driven hardening (4 follow-up commits)
+
+After the plan-finish commits landed, a multi-round enterprise-
+readiness audit ran against the branch. Four follow-up commits
+were added to address every actionable finding (defer-with-rationale
+items are documented in `FENDIX_AUDIT_REPORT.md §15.7`):
+
+```text
+a3f4d9b chore(supply-chain): enforce signing, SBOMs, SLSA, SHA-pinned actions
+363c091 feat(plugin-trust): tier-1 sandbox hardening + boundary tests
+c103601 fix(engine):       concurrency/perf hardening + property tests
+6fae45f docs(audit):       refresh FENDIX_AUDIT_REPORT + backfill sprint Status
+```
+
+### What the audit commits add
+
+**Supply chain (`a3f4d9b`)**
+
+- `enforce-signing` job: a `v*` tag push fails unless cosign signing
+  is on (or explicitly `allow-unsigned` for debugging). Closes the
+  gap where `SECURITY.md` advertised signed releases but cosign was
+  off by default.
+- SBOM generation per binary via `syft` (CycloneDX + SPDX, both
+  cosign-signed). Docker image gets an in-toto CycloneDX attestation
+  uploaded to Rekor.
+- SLSA v1.0 build provenance attestations per binary
+  (`.intoto.jsonl`) and per Docker image. L2 claim with self-
+  verifiable L3 properties; no third-party attestor.
+- Every third-party GitHub Action pinned to a 40-char commit SHA;
+  `actionlint` + an in-line SHA-pin guard in `ci.yml` fails CI on
+  drift. `.github/dependabot.yml` keeps the pins current.
+- `Dockerfile` + `Dockerfile.app` `FROM` lines pinned to image
+  digests. `-trimpath` + explicit `CGO_ENABLED=0` in both Dockerfiles
+  and `release.yml`.
+- `SECURITY.md` discloses the transitive `golang.org/x/telemetry/
+  counter` import (via `golang.org/x/vuln`). Local-only counters;
+  uploads nothing unless host user runs `go telemetry on`.
+
+**Plugin trust (`363c091`)**
+
+- `fendix plugins install <url>` scheme allowlist: accepts `https://`,
+  `http://`, `git://`, `ssh://`, and scp-style git URLs. Rejects
+  `file://`, `ext::`, and the rest of git's transport zoo
+  (CVE-2017-1000117 family).
+- `redactPluginEnv()` strips credential-shaped env vars
+  (`AWS_*`, `GITHUB_TOKEN`, `OPENAI_*`, `*_SECRET`, etc.) from
+  `os.Environ()` before invoking a plugin subprocess.
+- `~/.fendix/plugins/` created with mode `0700` (was `0755`).
+- Three new test files: env-redaction unit pins, install-URL
+  rejection contract, and an integration test that runs a real
+  plugin subprocess and asserts secrets set in the parent never
+  reach the captured plugin env.
+- `sandbox_test.go::TestPluginSandbox_DocumentsUnmitigatedRisks`
+  is living documentation of tier-1 scope-outs (FS reads, network,
+  detached children) — promoted to real assertions when tier-2 ships.
+
+**Engine concurrency + perf (`c103601`)**
+
+- `WorkerPool` bounded the jobs/results channel buffer to
+  `workers*4` (was N×M sized); producer selects on `ctx.Done()`
+  so mid-flight cancel propagates; `time.Sleep` replaced with
+  `time.After` + ctx select.
+- `Correlate` hoisted the `pathSegmentNoise` map to package scope
+  and pre-caches per-blackbox + per-whitebox segment splits.
+  `BenchmarkMemory_Correlate1000` delta:
+  time **-15%** (6.25ms → 5.32ms), bytes **-41%** (2.12MB → 1.25MB),
+  allocs **-22.6%** (13,324 → 10,316).
+- Crawler BFS short-circuits the moment `len(endpoints) >=
+  --max-endpoints` so the in-loop save kicks in on `--crawl-depth>=2`
+  scans of large sites (test: 21+ fetches without it → ≤10 with).
+- `auth.go::mustJSON` panic replaced with `slog.Error` + empty-JSON
+  fallback. Zero `panic(` calls remain in production code.
+- `pip.SetOSVAPIBaseForTest(url)` exported as a test-only seam so
+  the new `orchestrator_continue_test.go` can drive OSV at a 503
+  server and assert the orchestrator continues with secrets findings.
+- Seven new test files: workerpool cancel-during-produce + bounded-
+  buffer, dedup order-invariance + idempotency property tests,
+  correlator order-invariance + no-blackbox-suffix + idempotency
+  property tests, correlator scaling bench at n ∈ {500, 1000, 2500,
+  5000}, crawler BFS cap test, OSV total-outage test.
+
+**Audit refresh (`6fae45f`)**
+
+- `FENDIX_AUDIT_REPORT.md` §3.2, §6, §11, §13, §15 rewritten in
+  place with inline "Refreshed 2026-05-16" markers. Every numbered
+  finding from the 2026-05-14 cut now carries a STATUS line; the
+  audit's "what's open" list (§15.7) was added.
+- Six sprint Status sections backfilled (Sprints 04, 05, 06, 07,
+  08, 09) — they shipped on this branch but DoD #7 was violated at
+  ship time. Backfills are honest about what was and wasn't recorded
+  (actual-vs-estimate numbers were not captured).
+
+### Audit pass — bench / tests / DoD
+
+- `go build ./...` + `go vet ./...` + `gofmt -l .` clean
+- `go test -race ./...` green on all 27 packages
+- `actionlint` clean on all 5 workflow files
+- `make e2e` green (14.2s)
+- `make bench` shows the workerpool change reduced peak-goroutines
+  (≤173 at 1000 endpoints) and the correlator change reduced
+  allocations as quoted above.
+- One pre-existing Python test still fails as documented in
+  `tasks/enterprise-readiness/.session-memory/project_fendix_known_failing_tests.md`
+  (`test_check_auth_never_crashes` — Hypothesis falsifies with
+  `{'servers': None}`; not introduced by this work).
 
 ## Push instructions
 
