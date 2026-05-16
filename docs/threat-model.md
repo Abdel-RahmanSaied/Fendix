@@ -212,10 +212,13 @@ it.
   Actions identity that produced them; there is no long-lived key
   for an attacker to exfiltrate.
 - **Reproducible release matrix.** The release workflow runs in a
-  declared, audited CI environment with pinned action versions
-  (`@v4`/`@v5`/`@v6` major-pin policy). The build ldflags
-  (`-s -w -X main.Version=...`) and Go version (1.21) are
-  recorded in `release.yml`.
+  declared, audited CI environment with **commit-SHA-pinned third-party
+  actions** (every `uses:` line carries a 40-char SHA followed by a
+  human-readable major-tag comment, e.g.
+  `actions/checkout@34e114...d5 # v4`). A `dependabot` config can
+  bump these by opening a PR rather than silently moving the tag. The
+  build ldflags (`-s -w -X main.Version=...`) and Go version (1.22)
+  are recorded in `release.yml`.
 - **Dependency hygiene.** `go.sum` is committed and verified by
   `go mod download` on every CI run. `python/requirements.txt`
   pins exact versions. `dependabot` is enabled for both Go and
@@ -229,6 +232,43 @@ or `curl ... | sh` get the artifact GitHub serves at request time;
 a momentary repo compromise could distribute a malicious build.
 Using cosign-verified binaries (after TASK-099 ships) closes this
 window. We recommend pinning to a specific tag in CI, not `@latest`.
+
+**Container base-image CVE posture.** Both Dockerfiles
+([Dockerfile](../Dockerfile), [Dockerfile.app](../Dockerfile.app))
+pin their `FROM` lines to image digests (sha256-addressed), so the
+exact byte content of a release-pipeline image build is reproducible.
+At pin time the IDE's container scanner reports:
+
+| Image | Stage | CVE count (reported at pin time) |
+| --- | --- | --- |
+| `golang:1.22-alpine@sha256:1699c10...` | builder (multi-stage; discarded) | 3 critical + 27 high |
+| `python:3.11-slim@sha256:9a7765b3...` | runtime | 1 high |
+
+The Go builder-stage CVEs **do not ship** — multi-stage copies only
+the compiled binary into the runtime image, so a `golang:` CVE
+affects the build environment but not anyone who pulls the
+published image. The `python:3.11-slim` CVEs **do ship** and bound
+the runtime attack surface. Dependabot's docker ecosystem
+([.github/dependabot.yml](../.github/dependabot.yml)) tracks both
+digests weekly so a patched upstream image lands in a reviewable PR
+rather than silently. Until a customer's procurement gates require
+zero-CVE base images, the policy is: review dependabot bumps
+within the week they arrive, prioritise the runtime image, and
+accept that builder-stage CVEs are an internal-CI concern.
+
+**Transitive telemetry import (disclosed).** Verifiable via
+`go list -deps ./go/cmd/fendix | grep telemetry`, the binary links
+`golang.org/x/telemetry/counter` transitively through
+`golang.org/x/vuln/internal/scan`. The package writes local-only
+counters under `~/.config/go/telemetry/local/` and uploads **nothing**
+unless the host user has explicitly enabled Go telemetry with
+`go telemetry on`. Fendix itself does not call `counter.Open` or
+otherwise initialise the counter system in its own code. Operators
+who require zero local-counter writes can audit with `strace`/`dtrace`
+on a scan run, or set `GOTELEMETRY=off` in the binary's environment
+(the upstream toggle). This entry exists because "Fendix does not
+phone home" is part of the operator-facing promise and the
+transitive import deserves an explicit disclosure.
 
 ### T7: Output report contains exploitable content
 

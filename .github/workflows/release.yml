@@ -13,9 +13,34 @@ permissions:
   id-token: write
 
 jobs:
+  # Guard: tagged releases MUST be cosign-signed. Defaults are user-set
+  # repo vars; this job is the enforcement layer so an accidentally-off
+  # COSIGN_ENABLED can't produce an unsigned tag in the wild.
+  # SECURITY.md and docs/install.md both advertise cosign-verified
+  # binaries — this guard keeps those claims honest. To intentionally
+  # ship an unsigned tag (debugging only), set vars.COSIGN_ENABLED=allow-unsigned.
+  enforce-signing:
+    name: Enforce signing on tagged release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require cosign on v* tags
+        run: |
+          set -eu
+          if [ "${{ vars.COSIGN_ENABLED }}" = "true" ]; then
+            echo "cosign signing: enabled — proceeding"
+            exit 0
+          fi
+          if [ "${{ vars.COSIGN_ENABLED }}" = "allow-unsigned" ]; then
+            echo "::warning::cosign signing explicitly disabled for this tag (vars.COSIGN_ENABLED=allow-unsigned)"
+            exit 0
+          fi
+          echo "::error::Tagged releases MUST set vars.COSIGN_ENABLED=true (Settings → Secrets and variables → Actions → Variables). To intentionally ship an unsigned tag, set vars.COSIGN_ENABLED=allow-unsigned."
+          exit 1
+
   release:
     name: Build & Release
     runs-on: ubuntu-latest
+    needs: enforce-signing
     strategy:
       matrix:
         include:
@@ -29,11 +54,11 @@ jobs:
             goarch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.22"
 
@@ -41,13 +66,23 @@ jobs:
         run: make embed-engine
 
       - name: Build binary
+        # -trimpath strips $GOPATH from recorded source paths so a binary
+        # built on my machine and a binary built in CI have byte-identical
+        # debug info; a third party can rebuild from the tagged source and
+        # compare hashes without first replaying our $HOME layout.
+        # CGO_ENABLED=0 makes the cross-compile explicit — Go's default is
+        # 1 when a C toolchain is available, and the plan's "no CGo" rule
+        # ([PLAN.md:124](../tasks/enterprise-readiness/PLAN.md)) makes the
+        # explicit form the safer one.
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
         run: |
           VERSION="${GITHUB_REF_NAME}"
           BINARY="fendix-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
           cd go && go build \
+            -trimpath \
             -ldflags="-s -w -X main.Version=${VERSION}" \
             -o "../dist/${BINARY}" \
             ./cmd/fendix/
@@ -101,11 +136,12 @@ jobs:
       #     fendix-vX.Y.Z-OS-ARCH
       #
       # Toggle on by setting repo variable COSIGN_ENABLED=true (Settings → Secrets
-      # and variables → Actions → Variables tab). Off by default so cosign opt-in
-      # is a deliberate decision per release.
+      # and variables → Actions → Variables tab). The enforce-signing job at the
+      # top of this workflow refuses to release a v* tag unless COSIGN_ENABLED
+      # is `true` or `allow-unsigned`, so this `if:` is now informational.
       - name: Install cosign
         if: vars.COSIGN_ENABLED == 'true'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         with:
           cosign-release: "v2.4.1"
 
@@ -140,27 +176,193 @@ jobs:
               "${ASSET}"
           done
 
+      # ─── SBOM generation ────────────────────────────────────────────
+      # Produces a CycloneDX-JSON SBOM per shipped artifact. Why
+      # CycloneDX over SPDX: NTIA "Minimum Elements for an SBOM" maps
+      # cleanly to either format, but CycloneDX is what most
+      # procurement checklists (federal FedRAMP, finserv, healthcare)
+      # ask for by name. `syft` writes both formats from the same
+      # source-of-truth; the choice here is which one we sign and
+      # ship. If a customer needs SPDX, they can `syft convert`.
+      #
+      # syft is installed via `go install` so we don't pull in a new
+      # third-party action (which would itself need a SHA pin). The
+      # version is pinned; dependabot will bump it.
+      - name: Install syft
+        run: go install github.com/anchore/syft/cmd/syft@v1.18.1
+
+      - name: Generate SBOMs
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          BINARY="fendix-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          cd dist
+          # syft can scan a binary directly — it reads the Go build
+          # manifest baked in by Go 1.18+ (no debug info required, so
+          # -ldflags="-s -w" doesn't break this).
+          syft "${BINARY}" \
+            -o "cyclonedx-json=${BINARY}.cdx.json" \
+            -o "spdx-json=${BINARY}.spdx.json"
+          sha256sum "${BINARY}.cdx.json"  > "${BINARY}.cdx.json.sha256"
+          sha256sum "${BINARY}.spdx.json" > "${BINARY}.spdx.json.sha256"
+          # Generate SBOMs for the linux packages too — they share the
+          # binary's package graph but include the .deb/.rpm metadata.
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            for ext in deb rpm; do
+              ASSET="fendix-${VERSION}-linux-${{ matrix.goarch }}.${ext}"
+              syft "${ASSET}" -o "cyclonedx-json=${ASSET}.cdx.json"
+              sha256sum "${ASSET}.cdx.json" > "${ASSET}.cdx.json.sha256"
+            done
+          fi
+
+      # Sign the SBOMs the same way the binaries are signed.
+      # An attacker who swaps the SBOM out for one that hides a
+      # vulnerable dep would otherwise defeat the whole point.
+      - name: Sign SBOMs (cosign keyless)
+        if: vars.COSIGN_ENABLED == 'true'
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          BINARY="fendix-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          cd dist
+          for sbom in "${BINARY}.cdx.json" "${BINARY}.spdx.json"; do
+            cosign sign-blob \
+              --output-signature "${sbom}.sig" \
+              --output-certificate "${sbom}.crt" \
+              "${sbom}"
+          done
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            for ext in deb rpm; do
+              SBOM="fendix-${VERSION}-linux-${{ matrix.goarch }}.${ext}.cdx.json"
+              cosign sign-blob \
+                --output-signature "${SBOM}.sig" \
+                --output-certificate "${SBOM}.crt" \
+                "${SBOM}"
+            done
+          fi
+
+      # ─── SLSA Provenance ────────────────────────────────────────────
+      # Generates a SLSA v1.0 build provenance predicate and signs it
+      # as an in-toto attestation alongside the binary. The predicate
+      # records: who built it (the GitHub Actions identity, bound to
+      # the Fulcio cert), what the build was (this workflow run by
+      # ID), what the inputs were (commit SHA, ref, repo), and what
+      # the output was (binary sha256).
+      #
+      # We construct the predicate inline rather than calling
+      # `slsa-framework/slsa-github-generator` because (a) the
+      # reusable workflow expands the trust boundary by another
+      # third-party repo we'd have to pin and audit, and (b) the
+      # in-toto + cosign path achieves the same verifiability via
+      # Rekor. A consumer verifies with:
+      #
+      #   cosign verify-blob-attestation \
+      #     --signature   fendix-vX.Y.Z-OS-ARCH.intoto.jsonl \
+      #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+      #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      #     --type slsaprovenance1 \
+      #     fendix-vX.Y.Z-OS-ARCH
+      #
+      # By default this signs at SLSA L2 (hosted-runner, non-forgeable
+      # OIDC, automated build, source-versioned). L3 ("isolated,
+      # parameterless, hermetic build") is achievable on this
+      # workflow because the runner is ephemeral and the build script
+      # is pinned by commit SHA via the workflow file — but a formal
+      # L3 claim requires a third-party attestor; we claim L2 and let
+      # users self-verify the L3 properties.
+      - name: Generate SLSA provenance
+        if: vars.COSIGN_ENABLED == 'true'
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          BINARY="fendix-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          cd dist
+
+          # Build the predicate. The schema is SLSA v1.0
+          # (https://slsa.dev/spec/v1.0/provenance). buildType
+          # is a URI that identifies the build process — we use a
+          # repo-local URI so it's unambiguous what produced the
+          # binary.
+          BINARY_SHA256="$(sha256sum "${BINARY}" | awk '{print $1}')"
+          cat > "${BINARY}.predicate.json" <<EOF
+          {
+            "buildDefinition": {
+              "buildType": "https://github.com/Abdel-RahmanSaied/Fendix/build/release/v1",
+              "externalParameters": {
+                "workflow": {
+                  "ref": "${GITHUB_REF}",
+                  "repository": "https://github.com/${GITHUB_REPOSITORY}",
+                  "path": ".github/workflows/release.yml"
+                }
+              },
+              "internalParameters": {
+                "GOOS": "${{ matrix.goos }}",
+                "GOARCH": "${{ matrix.goarch }}",
+                "CGO_ENABLED": "0",
+                "go_version": "1.22"
+              },
+              "resolvedDependencies": [
+                {
+                  "uri": "git+https://github.com/${GITHUB_REPOSITORY}@${GITHUB_REF}",
+                  "digest": { "sha1": "${GITHUB_SHA}" }
+                }
+              ]
+            },
+            "runDetails": {
+              "builder": {
+                "id": "https://github.com/actions/runner/github-hosted"
+              },
+              "metadata": {
+                "invocationId": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+              }
+            }
+          }
+          EOF
+
+          # Sign the predicate as an in-toto attestation that
+          # references the binary's sha256. The output is JSONL with
+          # the cosign signature embedded.
+          cosign attest-blob --yes \
+            --predicate "${BINARY}.predicate.json" \
+            --type slsaprovenance1 \
+            --output-attestation "${BINARY}.intoto.jsonl" \
+            "${BINARY}"
+
+          # Record the SHA we attested over (lets a verifier sanity-
+          # check the bound subject without parsing the JSONL).
+          echo "${BINARY_SHA256}  ${BINARY}" > "${BINARY}.intoto.jsonl.subject"
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fendix-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/
+          # This artifact is transit-only — `publish` and `docker` download
+          # it inside the same workflow run. The published assets are the
+          # GitHub Release attachments and the GHCR image, both of which
+          # persist independently. 1 day is enough headroom for a manual
+          # re-run while not retaining unsigned binaries beyond their use.
+          retention-days: 1
 
   publish:
     name: Create GitHub Release
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist/
           merge-multiple: true
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
           files: dist/*
@@ -172,18 +374,18 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up QEMU
         # Required for cross-arch builds on ubuntu-latest (x86_64). Without
         # this the linux/arm64 build step has no emulator and fails.
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -207,7 +409,7 @@ jobs:
 
       - name: Build & push image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -235,7 +437,7 @@ jobs:
       # supported install path.
       - name: Install cosign
         if: vars.COSIGN_ENABLED == 'true'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         with:
           cosign-release: "v2.4.1"
 
@@ -251,6 +453,89 @@ jobs:
           # practice per Sigstore docs.
           cosign sign --recursive "${IMAGE}@${DIGEST}"
 
+      # ─── Docker image SBOM + attestation ────────────────────────────
+      # `syft <image-ref>` reads the image straight from the registry
+      # by digest; we then `cosign attest` the SBOM, which uploads an
+      # in-toto attestation to Rekor (the Sigstore transparency log)
+      # bound to the same Fulcio cert that signed the image. Verifies
+      # with `cosign verify-attestation --type cyclonedx ...`.
+      - name: Set up Go (for syft)
+        if: vars.COSIGN_ENABLED == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.22"
+
+      - name: Install syft
+        if: vars.COSIGN_ENABLED == 'true'
+        run: go install github.com/anchore/syft/cmd/syft@v1.18.1
+
+      - name: Generate + attest image SBOM (cosign keyless)
+        if: vars.COSIGN_ENABLED == 'true'
+        env:
+          COSIGN_YES: "true"
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.tags.outputs.image }}
+        run: |
+          set -eu
+          # Pin to digest so syft scans exactly what cosign signed.
+          syft "${IMAGE}@${DIGEST}" -o cyclonedx-json=image.cdx.json
+          cosign attest --yes \
+            --predicate image.cdx.json \
+            --type cyclonedx \
+            "${IMAGE}@${DIGEST}"
+
+      # ─── Docker image SLSA provenance attestation ───────────────────
+      # Same SLSA v1.0 predicate shape as the binary attestation, but
+      # bound to the image digest. Verifies with:
+      #
+      #   cosign verify-attestation \
+      #     --type slsaprovenance1 \
+      #     --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+      #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      #     ghcr.io/abdel-rahmansaied/fendix@sha256:...
+      - name: Attest SLSA provenance (image)
+        if: vars.COSIGN_ENABLED == 'true'
+        env:
+          COSIGN_YES: "true"
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.tags.outputs.image }}
+        run: |
+          set -eu
+          cat > image.provenance.json <<EOF
+          {
+            "buildDefinition": {
+              "buildType": "https://github.com/Abdel-RahmanSaied/Fendix/build/docker-release/v1",
+              "externalParameters": {
+                "workflow": {
+                  "ref": "${GITHUB_REF}",
+                  "repository": "https://github.com/${GITHUB_REPOSITORY}",
+                  "path": ".github/workflows/release.yml"
+                },
+                "image": "${IMAGE}",
+                "digest": "${DIGEST}"
+              },
+              "resolvedDependencies": [
+                {
+                  "uri": "git+https://github.com/${GITHUB_REPOSITORY}@${GITHUB_REF}",
+                  "digest": { "sha1": "${GITHUB_SHA}" }
+                }
+              ]
+            },
+            "runDetails": {
+              "builder": {
+                "id": "https://github.com/actions/runner/github-hosted"
+              },
+              "metadata": {
+                "invocationId": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+              }
+            }
+          }
+          EOF
+          cosign attest --yes \
+            --predicate image.provenance.json \
+            --type slsaprovenance1 \
+            "${IMAGE}@${DIGEST}"
+
   mirror:
     name: Mirror release to public install repo
     needs: publish
@@ -259,10 +544,10 @@ jobs:
       MIRROR_REPO: Abdel-RahmanSaied/homebrew-fendix
     steps:
       - name: Checkout engine repo (for templates)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Download release-binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           # Filter to just the binary artifacts. The Docker job uploads its
           # own *.dockerbuild artifact which is unrelated to mirror release

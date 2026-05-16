@@ -80,6 +80,21 @@ Out of scope:
   service. If you can crash Fendix by feeding it a 50 MB malformed
   spec, that's a bug, but it's not a security issue.
 
+## What's in the binary (transitive imports worth knowing about)
+
+Fendix's "no telemetry" stance applies to code we control. One
+transitive import is worth calling out explicitly so the marketing
+claim matches the artifact:
+
+- `golang.org/x/telemetry/counter` is pulled in via
+  `golang.org/x/vuln/internal/scan`. It writes **local-only** counters
+  to `~/.config/go/telemetry/local/` and uploads NOTHING unless the
+  host user has separately run `go telemetry on`. Fendix code does
+  not call `counter.Open` or otherwise activate uploads. Audit with
+  `go list -deps ./go/cmd/fendix | grep telemetry`. See
+  [`docs/threat-model.md`](docs/threat-model.md) §T6 for the full
+  disclosure.
+
 ## Verifying release artifacts
 
 Starting with the first cosign-enabled release after v0.5.0, every
@@ -112,6 +127,64 @@ cosign verify ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
 
+### Verifying SLSA build provenance
+
+Each release binary and the Docker image carry a SLSA v1.0 build
+provenance attestation signed via cosign keyless (Sigstore Fulcio +
+GitHub Actions OIDC). The predicate records the workflow file path,
+the source commit SHA, the runner identity, and the build inputs.
+
+```sh
+# Per-binary SLSA provenance (the .intoto.jsonl sidecar):
+cosign verify-blob-attestation \
+  --signature fendix-vX.Y.Z-linux-amd64.intoto.jsonl \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --type slsaprovenance1 \
+  fendix-vX.Y.Z-linux-amd64
+
+# Docker image SLSA provenance (via Rekor):
+cosign verify-attestation \
+  --type slsaprovenance1 \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z
+```
+
+SLSA level claim: **L2** (hosted, non-forgeable OIDC, automated,
+source-versioned). The build also happens to satisfy L3 properties
+(ephemeral runner, parameterless, the build script is pinned by the
+commit SHA the attestation records), but L3 requires a third-party
+attestor that we don't currently use. Operators with strict SLSA
+gates can self-verify the L3 properties from the predicate JSON.
+
+### Verifying the SBOM
+
+Each release ships a CycloneDX SBOM (`*.cdx.json`) and an SPDX SBOM
+(`*.spdx.json`) per binary, both cosign-signed. The Docker image
+carries an in-toto attestation uploaded to Rekor.
+
+```sh
+# Per-binary SBOM signature (same flow as the binary itself):
+cosign verify-blob \
+  --certificate fendix-vX.Y.Z-linux-amd64.cdx.json.crt \
+  --signature   fendix-vX.Y.Z-linux-amd64.cdx.json.sig \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  fendix-vX.Y.Z-linux-amd64.cdx.json
+
+# Docker image SBOM attestation (verifies against the Rekor log):
+cosign verify-attestation \
+  --type cyclonedx \
+  --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z
+```
+
+Pipe the verified CycloneDX into your usual SBOM-consuming tooling
+(e.g. `grype` for CVE scanning, the Dependency-Track upload API for
+procurement records).
+
 ### Until cosign is enabled
 
 Pre-cosign releases (v0.5.0 and earlier) ship with `.sha256` sidecars
@@ -120,6 +193,12 @@ and that the URL is the canonical one
 (`https://github.com/Abdel-RahmanSaied/Fendix/releases/download/...`).
 We recommend pinning to a specific tag rather than `:latest` until
 you've cut a cosign-verified upgrade path into your installer.
+
+Note: the `enforce-signing` job in `.github/workflows/release.yml`
+refuses to release a `v*` tag unless cosign signing is on (or
+explicitly set to `allow-unsigned` for debugging), so any v0.6.0+
+release that lands on the GitHub releases page MUST carry the
+sidecars described above.
 
 ## Disclosure timeline
 

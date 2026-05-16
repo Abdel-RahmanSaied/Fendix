@@ -14,7 +14,8 @@
 #           fendix-app
 
 # ---- Stage 1: Build the Go binaries ----
-FROM golang:1.22-alpine AS go-builder
+FROM golang:1.22-alpine@sha256:1699c10032ca2582ec89a24a1312d986a3f094aed3d5c1147b19880afe40e052 AS go-builder
+# Base image pinned to digest — see Dockerfile for rationale.
 
 RUN apk add --no-cache git make
 
@@ -28,14 +29,16 @@ COPY go/ ./go/
 COPY Makefile ./
 
 # Bundle Python engine into the embed dir, then build both binaries.
+# -trimpath + CGO_ENABLED=0 mirror release.yml so docker-built and
+# release-built binaries share build provenance.
 ARG VERSION=docker
 RUN make embed-engine && \
-    cd go && \
-    go build -ldflags="-s -w -X main.Version=${VERSION}" -o /fendix      ./cmd/fendix/ && \
-    go build -ldflags="-s -w -X main.Version=${VERSION}" -o /fendix-app  ./cmd/fendix-app/
+    cd go && export CGO_ENABLED=0 && \
+    go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o /fendix      ./cmd/fendix/ && \
+    go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o /fendix-app  ./cmd/fendix-app/
 
 # ---- Stage 2: Runtime image ----
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834
 
 # git is required for the clone step in the App's pull_request handler.
 # ca-certificates so HTTPS to api.github.com + github.com works.
