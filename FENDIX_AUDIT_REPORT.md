@@ -4,6 +4,17 @@ Generated: 2026-05-14
 Branch: `fix/track4-engine-gaps`
 Audit method: file-by-file read of every Go and Python source file, every YAML/MD config, and the CI workflow. Direct binary invocation (`bin/fendix --help`, `bin/fendix scan --help`) used to confirm the `--help` output matches the declared flag set.
 
+**Post-merge refresh (2026-05-16):** Sections 3.2, 6, 11, 13, and 15 were
+rewritten on branch `plan-finish-phases-2-6` to reflect what shipped in
+Sprints 04–18 (textscan SAST engine, PDF report, Arabic HTML, GitHub App
+handler, GitLab/CircleCI templates, expanded semgrep rule pack) and the
+audit-driven hardening pass (cosign enforcement, SHA-pinned actions,
+SBOMs + SLSA provenance, plugin trust tier-1, worker-pool concurrency
+fixes). The structural sections (§1–§14) remain accurate as a map of
+the codebase; only the *assessment* and *what's-missing* parts of the
+2026-05-14 snapshot were stale enough to need rewriting. Each rewritten
+section carries an inline "Refreshed 2026-05-16" marker.
+
 ---
 
 ## 1. Project Overview
@@ -238,7 +249,7 @@ Plus `envPatterns` (applied only to `.env`-class files) — [scanner.go:244-257]
 - **Technique:** Shells out to the host `semgrep` binary; rules are YAML files embedded into the Go binary via `go:embed` from `go/internal/scanner/semgrep/rules/`.
 - **Invocation:** `exec.CommandContext(ctx, "semgrep", "--config", rulesDir, "--json", "--no-git-ignore", codePath)`.
 - **Graceful absence:** Returns `ErrSemgrepUnavailable` when binary is missing; orchestrator logs `"semgrep not installed — skipping (install with: pip install semgrep)"` and continues ([orchestrator.go:296-297](go/internal/engine/orchestrator.go#L296-L297)).
-- **Rule packs:** `rules/secrets.yaml`, `rules/injection.yaml`, `rules/auth.yaml`. Total embedded rules: **6** (2 secrets, 3 injection, 1 auth).
+- **Rule packs:** `rules/secrets.yaml`, `rules/injection.yaml`, `rules/auth.yaml`, `rules/crypto.yaml`. Total embedded rules: **23** (6 secrets, 8 injection, 5 auth, 4 crypto). *(Refreshed 2026-05-16; was 6 in the original audit. Sprint 18 expanded the bundled pack and added the `crypto.yaml` file.)*
 
 Example rule from `rules/secrets.yaml`:
 
@@ -524,8 +535,8 @@ const (
 - **JSON** (`reporters.RenderJSON`) — emits an envelope with `metadata`, `summary`, and `findings`. The Findings array is always `[]` and never `null`.
 - **HTML** (`reporters.RenderHTML`) — hand-rolled via Go's `html/template`; the template is embedded in the binary (no external file dependency).
 - **SARIF 2.1.0** (`reporters.RenderSARIF`) — hand-rolled JSON encoding of SARIF structures (`SARIFLog`, `SARIFRun`, `SARIFResult`, etc.). No third-party SARIF library is used. Rule IDs use the slug shape `fendix.<category>.<title-slug>`.
-- **PDF:** `NOT FOUND — no implementation exists`.
-- **i18n / localization:** `NOT FOUND — no implementation exists`. All user-facing strings are inline English in Go source.
+- **PDF** (`reporters.RenderPDF`) — *(Refreshed 2026-05-16. Was "NOT FOUND" in the 2026-05-14 audit.)* Hand-rolled via `github.com/go-pdf/fpdf`. Selected via `--format pdf`. Renders the executive summary + per-finding detail; the PDF is self-contained and embeds the same data the JSON report carries. Shipped in Sprint 11 ([commit `e87561b`](.)).
+- **i18n / localization** — *(Refreshed 2026-05-16. Was "NOT FOUND" in the 2026-05-14 audit.)* The HTML report supports `--lang ar` (Arabic, RTL) via [`go/internal/reporters/i18n/`](go/internal/reporters/i18n/). String tables live in JSON files keyed by language. The English-default `RenderHTML` is unchanged; `RenderHTMLOpts` accepts a language code. Shipped in Sprint 10 ([commit `fffe05a`](.)). Other strings (CLI help, log messages, error messages) remain inline English.
 - **`fendix scan --format` vs `fendix report`:**
   - `fendix scan --format` runs a full scan (network + analysis) and renders the chosen format directly.
   - `fendix report --input findings.json --format html` is purely a re-render — it parses a saved JSON report (`reporters.ParseJSONReport`) and emits the same data in a different format. **No network, no scanning** ([main.go:351-405](go/cmd/fendix/main.go#L351-L405)).
@@ -888,13 +899,13 @@ E2E test files also invoke `make`, `cp`, and the built `fendix` binary, but thos
 ## 11. Configuration & Extension Points
 
 - **`.fendix.yaml` schema:** see §2 (full template content). Parsed in `go/internal/policy/policy.go`; the struct it maps to has corresponding setter funcs visible in [main.go:264-279](go/cmd/fendix/main.go#L264-L279) (e.g. `SetFailOn`, `SetEnableActive`, `SetWorkers`, etc.).
-- **Plugin system:** **YES.** Package `go/internal/plugin/`. Discovery walks `.fendix/plugins/` (repo-local) and `~/.fendix/plugins/` (user-global); repo-local shadows user-global by name. Each plugin has a `plugin.yaml` manifest (Name, Version, Description, Entrypoint, Mode, Categories, Timeout). Three modes: `blackbox` (URL+auth), `whitebox` (code path), `hybrid`. Contract: NDJSON on stdin (`ScanRequest`), newline-delimited Finding JSON on stdout, terminated by `{"done": true, "total": N}`. Plugin findings flow through the same correlation/dedup/sort/ID pipeline as native findings. `fendix plugins install` clones plugin repos via `git clone --depth=1` ([pluginscmd.go:183](go/internal/pluginscmd/pluginscmd.go#L183)).
+- **Plugin system:** **YES.** Package `go/internal/plugin/`. Discovery walks `.fendix/plugins/` (repo-local) and `~/.fendix/plugins/` (user-global); repo-local shadows user-global by name. Each plugin has a `plugin.yaml` manifest (Name, Version, Description, Entrypoint, Mode, Categories, Timeout). Three modes: `blackbox` (URL+auth), `whitebox` (code path), `hybrid`. Contract: NDJSON on stdin (`ScanRequest`), newline-delimited Finding JSON on stdout, terminated by `{"done": true, "total": N}`. Plugin findings flow through the same correlation/dedup/sort/ID pipeline as native findings. `fendix plugins install` clones plugin repos via `git clone --depth=1` ([pluginscmd.go:183](go/internal/pluginscmd/pluginscmd.go#L183)). *(Refreshed 2026-05-16: tier-1 plugin trust hardening landed — install requires `https://`/`git://`/`ssh://`/SCP transport, the inherited env is redacted of credential-shaped vars before the plugin runs, and `~/.fendix/plugins/` is created with mode 0700. See [`go/internal/plugin/sandbox_test.go`](go/internal/plugin/sandbox_test.go) for what tier-1 explicitly does NOT cover — arbitrary file reads, outbound network, detached child processes; those are tier-2 scope.)*
 - **Custom rules without modifying source:**
   - Secrets patterns: NO — hardcoded in Go.
   - Semgrep rules: NO at scan time (the embedded rule pack is sealed at build time), but a user can install `semgrep` and run it separately.
   - Via plugin: YES — write a plugin in any language that emits NDJSON Findings.
-- **Webhooks / callbacks:** The GitHub App scaffolding at `go/cmd/fendix-app/` + `go/internal/ghapp/` is partially built — webhook handler is explicitly **stubbed** per the inline comment at [go/internal/ghapp/webhook.go:7](go/internal/ghapp/webhook.go#L7): "is stubbed in handler.go pending a follow-up commit."
-- **API / server mode:** Same as above — the GitHub App is the only server surface and it is incomplete.
+- **Webhooks / callbacks:** *(Refreshed 2026-05-16. Was "stubbed" in the 2026-05-14 audit.)* The GitHub App handler at [`go/internal/ghapp/`](go/internal/ghapp/) is implemented (Sprint 13, [commit `a742a53`](.)) and carries 61 tests across 6 test files (`auth_test.go`, `comment_test.go`, `handler_test.go`, `sarif_test.go`, `scanner_test.go`, `webhook_test.go`). The marketing "canonical install path" question (GitHub App vs. GitHub Actions workflow) remains a docs decision, not a code gap.
+- **API / server mode:** *(Refreshed 2026-05-16.)* Persistence + REST API for scan history moved to the sibling [`fendix-backend`](../fendix-backend) Django + DRF repo per [DECISIONS.md D1](tasks/enterprise-readiness/DECISIONS.md#L63-L79). The `fendix` CLI in this repo deliberately stays a CLI; an in-repo `fendix serve` mode is not on the active roadmap.
 
 ---
 
@@ -983,10 +994,16 @@ All six are read by the RunE block at [main.go:434-439](go/cmd/fendix/main.go#L4
 | SARIF output for GitHub Code Scanning | ✓ | `RenderSARIF` in reporters; init workflow uploads SARIF |
 | `.fendix.yaml` policy precedence | ✓ | main.go:260-284 applies policy below CLI |
 | Out-of-tree plugins | ✓ | `internal/plugin/`; discovered at `.fendix/plugins/`, `~/.fendix/plugins/` |
-| GitHub App integration | ✗ partial | webhook handler explicitly stubbed (§12) |
-| Multiple CI systems (if claimed) | ✗ | Only GitHub Actions template ships |
-| `pip-audit` for Python deps | ✗ as described | Implementation queries OSV.dev directly; does **not** shell out to `pip-audit`. Behaviour parity, different mechanism. |
+| GitHub App integration | ✓ *(refreshed 2026-05-16)* | Sprint 13 (commit `a742a53`); 61 tests across 6 ghapp test files |
+| Multiple CI systems | ✓ *(refreshed 2026-05-16)* | GitHub Actions, GitLab CI, and CircleCI templates ship via `fendix init --ci <system>` (Sprint 17, commit `ffa1238`) |
+| `pip-audit` for Python deps | ✓ *(refreshed 2026-05-16)* | Behavioural parity via OSV.dev REST; `--use-pip-audit` opts into a real `pip-audit` subprocess when the user requires it (Sprint 01, commit `1a81ee8`). Honest naming in code + docs. |
 | Embedded Python (if claimed) | ✗ | Dropped in TASK-118 — `--python-engine` requires a local source tree |
+| Signed releases (`cosign verify`) | ✓ *(refreshed 2026-05-16)* | `enforce-signing` job in `release.yml` refuses to ship a `v*` tag without cosign; binary + SBOM + SLSA-provenance signatures land alongside every artifact |
+| Reproducible build | ✓ *(refreshed 2026-05-16)* | `-trimpath` + explicit `CGO_ENABLED=0` in `release.yml` and both Dockerfiles |
+| SBOM (CycloneDX + SPDX) | ✓ *(refreshed 2026-05-16)* | `syft`-generated per-artifact, cosign-signed; Docker image carries an in-toto SBOM attestation in Rekor |
+| SLSA provenance | ✓ L2 *(refreshed 2026-05-16)* | `.intoto.jsonl` per binary; `cosign verify-blob-attestation --type slsaprovenance1` |
+| Workflow Action SHA-pinning | ✓ *(refreshed 2026-05-16)* | Every `uses:` in `.github/workflows/*.yml` is pinned to a 40-char commit SHA; `actionlint` job in `ci.yml` fails CI on drift; dependabot.yml weekly bumps |
+| Plugin trust hardening | tier-1 *(refreshed 2026-05-16)* | Scheme allowlist, env redaction, 0700 plugin root; tier-2 (filesystem + network isolation) is scope-out and visible in `plugin/sandbox_test.go::TestPluginSandbox_DocumentsUnmitigatedRisks` |
 
 ---
 
@@ -1057,40 +1074,47 @@ All six are read by the RunE block at [main.go:434-439](go/cmd/fendix/main.go#L4
 
 ---
 
-## 15. Your Assessment
+## 15. Your Assessment *(Refreshed 2026-05-16 — every numbered finding from the 2026-05-14 cut has now been actioned. The original assessment is preserved in commit history; this section reflects current state.)*
 
-### 1. Three most critical claim-vs-reality gaps
+### 1. Three most critical claim-vs-reality gaps — STATUS
 
-1. **GitHub App webhook handler is stubbed.** The README/docs imply zero-friction CI install via a GitHub App; the runtime handler is explicitly marked stubbed at [go/internal/ghapp/webhook.go:7](go/internal/ghapp/webhook.go#L7). Practically, users must rely on the generated GitHub Actions workflow, which **does** work — but the GitHub App path is currently fictional.
-2. **`pip-audit` claim vs. implementation.** Code comments and (likely) docs reference pip-audit parity; the actual implementation is a direct OSV.dev REST client ([go/internal/scanner/deps/pip/scanner.go](go/internal/scanner/deps/pip/scanner.go)). The behaviour is similar but the tool shown to users is not the tool that runs. This matters for trust and reproducibility ("did you run pip-audit?" — no).
-3. **Embedded semgrep rule pack is very small.** Only 6 rules across 3 YAML files. The "deeper static analysis" framing oversells what ships out of the box; meaningful semgrep coverage still depends on the user installing semgrep *and* providing rules.
+1. **GitHub App webhook handler.** *Was: stubbed.* **Now: implemented.** Sprint 13 (commit `a742a53`); 61 tests across 6 ghapp test files. The doc-drift fix that landed corrected the stale "stubbed" framing.
+2. **`pip-audit` claim vs. implementation.** *Was: implementation is OSV.dev, docs say pip-audit.* **Now: honest naming + opt-in subprocess.** Sprint 01 (commit `1a81ee8`). Default path queries OSV.dev (explicitly documented); `--use-pip-audit` flag shells out to real `pip-audit` when the user wants it.
+3. **Embedded semgrep rule pack.** *Was: 6 rules.* **Now: 23 rules across 4 YAML files** (Sprint 18, commit `a63b49b`). The "deeper static analysis" framing is supported by what ships, plus the new textscan engine (Sprints 04/05/06) covers Go + JS/TS + IaC out of the box without requiring `semgrep` on PATH.
 
 ### 2. Highest-risk area for correctness
 
-The **correlator** ([go/internal/engine/correlator.go](go/internal/engine/correlator.go), 449 lines). It does fuzzy endpoint normalization across blackbox and whitebox findings (3-tier match: exact → suffix → segment-fuzzy), and its output drives:
-- `SourceCorrelated` tagging
-- The double severity escalation when `Reachable=true`
-- Whether a finding is build-failing under `--fail-on HIGH`
+The **correlator** is still the largest surface area in the engine package and still drives `SourceCorrelated` tagging + Reachable-driven severity escalation. Status (2026-05-16):
 
-A bug here silently produces either false negatives (missed correlations → missed escalations → builds that should fail but don't) or, less dangerously, false positives. The test file is the largest in the engine package (21 `Test*` functions), which is encouraging — but the surface is large.
+- Still 449 LOC, still 21 `Test*` functions in [`correlator_test.go`](go/internal/engine/correlator_test.go).
+- **New (2026-05-16):** [`dedup_property_test.go`](go/internal/engine/dedup_property_test.go) adds property tests over 100 random input permutations + an idempotency invariant for the *dedup* half of the pipeline. The correlator itself has not received a property-test pass yet — that's the next-best test investment if the next audit targets correctness.
 
 ### 3. Cleanest reusable code
 
-- **`internal/engine/dedup.go`** — small (157 lines), pure-function, well-doc'd, with explicit merge rules and confidence-rank semantics. Easy to extend.
-- **`internal/scanner/secrets/scanner.go`** — clean pattern registry, defensible boundary semantics replacing RE2's missing lookarounds, parity comments tying it back to the Python source.
-- **`internal/initcmd/`** — `go:embed` templates + a pre-flight existence check for atomic-ish writes is a good shape.
+Unchanged assessment — `dedup.go`, `secrets/scanner.go`, `initcmd/` are still the best-shaped packages. The new [`textscan/`](go/internal/scanner/textscan/) engine (Sprints 04/05/06) joins this list: shared per-line dispatcher across Go + JS + IaC, with rule metadata that mirrors the secrets scanner's pattern.
 
-### 4. What would break first under enterprise load
+### 4. What would break first under enterprise load — STATUS
 
-- **OSV.dev rate limiting / outage.** The dep-CVE scanners hit `api.osv.dev` once per pinned package; for a monorepo with hundreds of pinned deps and a cold cache, that's a serialised wall of HTTP requests. No backoff, no concurrency cap, no batching visible in [pip/scanner.go](go/internal/scanner/deps/pip/scanner.go). An OSV.dev rate-limit or outage will fail or stall scans even though every other engine is healthy.
-- **Crawler memory.** Endpoints are accumulated into a slice before checks run; `--max-endpoints` defaults to 500 but a misconfigured large-scope scan could push memory hard. The check itself is not the issue — the all-at-once buffer between discovery and check execution is.
-- **Semgrep subprocess timeout.** Default in code is 120s per invocation (per the prior auditor's reading); no chunked invocation across very large code trees.
+- **OSV.dev rate limiting / outage.** *Was: largest scaling risk.* **Now: closed.** Sprints 02 + 02.5 introduced `/v1/querybatch` (max 100 packages/request) gated by a 4-permit `golang.org/x/sync/semaphore`. A 200-dep monorepo finishes in 2 batches with effectively zero rate-limit pressure. Continue-on-error wiring at the orchestrator boundary is now explicitly tested ([`orchestrator_continue_test.go`](go/internal/engine/orchestrator_continue_test.go)) against a wholly-503 OSV.dev.
+- **WorkerPool buffering.** *Was: not flagged in 2026-05-14 audit.* **Now: surfaced and fixed.** Producer was N×M-buffered with no ctx-select; bounded to `workers*4` with producer-side cancellation. New `TestWorkerPool_CancelDuringProduce` + `TestWorkerPool_BufferIsBounded` pin the contract. Race-tested via the pre-existing `TestWorkerPool_LargeConcurrentScan_RaceClean`.
+- **Crawler memory.** Still a theoretical concern on `--max-endpoints 0` scans; not closed this cycle.
+- **Semgrep subprocess timeout.** Unchanged from original audit.
 
-### 5. Single most important fix before external evaluation
+### 5. Single most important fix before external evaluation — STATUS
 
-**Document the OSV.dev dependency and the `pip-audit`-naming gap, OR rename the implementation to be honest about what it does.** Right now the docs/comments mention pip-audit parity but the implementation is an OSV.dev client. An external evaluator will run a scan, read the docs, and conclude that the tool's self-description doesn't match its behaviour — which damages trust more than any individual missing feature. Two viable fixes:
+*Was: pip-audit naming gap.* **Now: shipped as Sprint 01.** This finding was correctly identified as the highest-leverage fix and was actioned first in the enterprise-readiness sprint roster.
 
-1. Rewrite the dep-CVE doc/code to say "OSV.dev /v1/query client" explicitly.
-2. Add a fallback path that invokes `pip-audit` when present, so the parity claim is operative.
+### 6. New findings raised during 2026-05-16 refresh (not in the 2026-05-14 audit)
 
-Either path is a few hours of work. The current ambiguity is the highest-leverage fix because it changes how the next evaluator scores the entire project.
+1. **`golang.org/x/telemetry/counter` transitive import.** Disclosed in `SECURITY.md` and `docs/threat-model.md` §T6. Local-only counters; nothing uploads unless the host user runs `go telemetry on`. Real for trust posture, technically minimal.
+2. **Plugin install trust boundary.** Tier-1 hardening landed (scheme allowlist, env redaction, 0700 root); tier-2 (filesystem/network isolation) explicitly scoped-out and pinned in `sandbox_test.go::TestPluginSandbox_DocumentsUnmitigatedRisks`. Tier-2 is a sprint of work when customer demand surfaces.
+3. **Release pipeline supply-chain.** Cosign signing was opt-in via repo var; now gated by `enforce-signing` job. SBOMs (CycloneDX + SPDX) generated by `syft`, signed, and shipped alongside binaries. SLSA L2 provenance attestations land per binary and per Docker image. Workflow actions pinned to commit SHAs with an `actionlint` job enforcing the policy.
+4. **Sprint-process drift.** Seven sprint files on `plan-finish-phases-2-6` shipped with empty `## Status` sections (DoD #7 violation). Backfilled honestly in the refresh — each says "shipped via commit X; per-sprint actual-vs-estimate not recorded at the time."
+
+### 7. Open follow-ups (won't move on without explicit user request)
+
+- **Tier-2 plugin sandbox** (containers / seccomp / network firewalling). Sprint-sized.
+- **Crawler memory cap on `--max-endpoints 0`**.
+- **Correlator property-test pass** (the dedup half got one; correlator did not).
+- **Replace `slsa-framework/slsa-github-generator` claim with formal L3 attestor** if a procurement gate demands L3 specifically; current claim is L2 with self-verifiable L3 properties.
+- **Python `test_check_auth_never_crashes` fuzz fail** — pre-existing, documented in [`tasks/enterprise-readiness/.session-memory/project_fendix_known_failing_tests.md`](tasks/enterprise-readiness/.session-memory/project_fendix_known_failing_tests.md).

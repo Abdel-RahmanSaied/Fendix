@@ -148,4 +148,12 @@ E2E test scanning the Fendix repo (which has no JS code today) should produce 0 
 
 ## Status
 
-**Not started.**
+**Status:** shipped as part of the textscan engine, commit
+[`5b8492f`](../../../../commit/5b8492f) — `feat(textscan): unified Go + JS + IaC SAST engine (Sprints 04, 05, 06)`. The 6 JS/TS regex rules promised in this sprint
+ride the same per-line regex + context-window dispatcher as the Go
+rules (Sprint 04) and the IaC rules (Sprint 06). Source:
+[`go/internal/scanner/textscan/`](../../go/internal/scanner/textscan/).
+
+**Status section backfill (2026-05-16):** Section was empty at ship
+time (DoD #7 not honored). See sprint-04 Status for the matching note
+on what details are and aren't recorded.

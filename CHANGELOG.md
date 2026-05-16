@@ -7,6 +7,341 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Sprints 07 + 08 — closed by reference to sibling repo
+
+**Sprint 07 (`fendix serve` REST API)** and **Sprint 08 (OIDC login)**
+are marked ✅ in PLAN.md as **already-covered by the sibling repo
+`fendix-services/fendix-backend`** — a Django 5.2 + DRF API server
+that:
+
+- Wraps the fendix CLI as a multi-tenant SaaS (Celery 5.4 +
+  Postgres 16 + Redis).
+- Exposes the REST scan-job lifecycle the brief specified
+  (`backend/scanning/views.py`, OpenAPI contract at
+  `backend/openapi.json`).
+- Implements JWT auth via simplejwt (RS256), with key generation
+  at `make keys`.
+- Adds billing, subscriptions, accounts, scheduling, notifications
+  — well past Sprint 07's "in-memory MVP" scope.
+
+The plan-finish session started a Go-native `internal/servecmd`
+package, then discarded it on the user's instruction to "stop
+implementing REST API, check fendix-backend." The right framing is:
+Sprint 07/08's audit-gap ("no REST API, no auth on a serve mode")
+is closed by the production backend, not by adding a parallel Go
+implementation. The Fendix CLI in this repo remains a CLI; the
+serve-mode story lives in the Django backend.
+
+D1 (persistence) and the in-memory caveat from the brief are
+moot for the same reason — Postgres handles persistence in the
+backend.
+
+### v0.12.0 — Sprints 04 / 05 / 06 (unified textscan engine)
+
+#### Added
+
+- **`internal/scanner/textscan` package (Sprints 04 + 05 + 06).**
+  A unified regex-based SAST engine that drives Go, JS/TS,
+  Dockerfile, and Kubernetes YAML rules in one shared codebase.
+  Plan-finish session combined three originally-separate sprints
+  to deliver shared scaffolding once instead of three times.
+
+  Rulesets (16 rules total):
+  - **Go (4):** SQL injection via concat, exec.Command shell
+    invocation, weak hash (MD5/SHA1) for password storage,
+    hardcoded AWS access-key ID.
+  - **JS/TS (6):** eval() with non-literal arg, innerHTML
+    assignment from non-literal, child_process.exec, document.write,
+    require() with non-literal path, hardcoded AWS key.
+  - **IaC (6):** Dockerfile FROM (privilege drop), ADD vs COPY,
+    :latest pinning; Kubernetes privileged: true, hostNetwork: true,
+    allowPrivilegeEscalation: true, runAsUser: 0.
+
+  Filename-extension routing (.go → Go rules, .js/.ts → JS rules,
+  Dockerfile / *.dockerfile → Docker rules, .yaml → k8s rules).
+  Skips noisy build dirs (node_modules, vendor, .git, build, dist).
+  1 MiB per-file cap. Pure stdlib — no new deps, no CGo.
+
+  Wired into orchestrator.go between the semgrep and Python
+  passes; runs whenever `--code` is set. 11 tests in
+  textscan_test.go cover positive / negative pairs per rule
+  category plus the dir-skip and endpoint-format invariants.
+
+  Closes audit §15.2 / §15.3 (SAST coverage gaps).
+
+  **Cuts vs original briefs (carried to follow-up sprints):**
+  - **Sprint 04.5:** Go XXE + INSECURE_RAND — need AST context
+    to avoid stdlib FP floods.
+  - **Sprint 05.5:** JS prototype-pollution + insecure-RNG
+    (proximity-based) — regex+window has too many FPs.
+  - **Sprint 06.5:** Terraform HCL — D2 gate at default (no TF).
+
+### v0.13.0 — Sprint 09 (Offline mode + `fendix db`)
+
+#### Added
+
+- **`internal/offline/` package + `fendix db` subcommand (Sprint 09).**
+  Air-gapped CVE-database snapshot format (JSON, schema v1) with
+  three management subcommands:
+  - `fendix db update --source <osv-export.json>` — ingest an OSV
+    advisory export into a snapshot.
+  - `fendix db list [--path]` — print snapshot metadata.
+  - `fendix db verify [--path]` — print SHA-256 for integrity check.
+
+  Plus additive `--offline` and `--offline-db <path>` flags on
+  `fendix scan` (honest stub today; per-scanner integration is the
+  follow-up Sprint 09.5 — see internal/offline/offline.go package
+  doc for the API the scanners will call).
+
+  Closes audit §17 / D3-Option-A precondition. Today's shippable
+  surface is the format + tooling; the runtime path that swaps each
+  ecosystem's HTTP CVE call for a snapshot lookup is a per-scanner
+  bolt-on that benefits from being staged.
+
+### v0.13.0 — Sprint 11 (PDF executive report)
+
+#### Added
+
+- **`--format pdf` (Sprint 11).** New PDF executive report
+  output via `fendix scan --format pdf` and `fendix report --format
+  pdf`. Adds direct dep `github.com/go-pdf/fpdf` (MIT, pure Go, no
+  CGo — pre-allowed in PLAN.md). Structure: cover page →
+  executive summary with severity counts table and top-3 findings
+  → paginated findings table with severity-coloured cells →
+  remediation plan (CRITICAL + HIGH only) → metadata appendix.
+
+  New flag `--classification <text>` (default `INTERNAL`) renders
+  a red banner at the top-right of every page. Empty disables.
+
+  English-only for v0.13.0. Arabic PDF is **deferred to Sprint
+  11.5** — fpdf's built-in fonts don't render Arabic glyphs;
+  shipping a 10MB Noto Arabic font inflates the binary too much
+  for the MVP. Closes audit §6 ("no PDF today").
+
+### v0.13.1 — Sprint 14 (Jira integration)
+
+#### Added
+
+- **`fendix jira` subcommand and `internal/integrations/jira`
+  package (Sprint 14).** Idempotent Jira sync: each finding above
+  FENDIX_JIRA_MIN_SEVERITY (default HIGH) gets one Jira issue with
+  a `fendix-id:<finding.ID>` label as the idempotency key.
+
+  ```bash
+  fendix scan ... --format json --output findings.json
+  export FENDIX_JIRA_URL=https://your-org.atlassian.net
+  export FENDIX_JIRA_PROJECT_KEY=SEC
+  export FENDIX_JIRA_EMAIL=you@example.com
+  export FENDIX_JIRA_API_TOKEN=<token>
+  fendix jira --findings findings.json
+  ```
+
+  Severity → priority mapping: CRITICAL→Highest, HIGH→High,
+  MEDIUM→Medium, LOW/INFO→Low. Description format is Jira's
+  plaintext+markup (universal across Cloud and Server tiers);
+  ADF auto-rendering happens server-side on Cloud.
+
+  Auto-resolution (transition issues to Done when findings stop
+  appearing in scans) is **deferred to Sprint 14.5** because it
+  needs a "this is the latest scan" signal that requires Sprint
+  07.5 persistence to be honest. Today the subcommand is
+  create-or-skip only; re-runs are idempotent.
+
+  Closes audit §13 ("no ticketing today"). The package is
+  designed to slot into `fendix serve` (Sprint 07) and the ghapp
+  post-scan hook with no code change — `(*Client).SyncFindings`
+  is the integration surface.
+
+### v0.14.0 — Sprint 16 (Enterprise benchmark harness)
+
+#### Added
+
+- **`scripts/benchmark-enterprise/` (Sprint 16).** Apples-to-apples
+  comparison of three Python-aware SAST tools (fendix vs. semgrep
+  vs. bandit) on a shared ~100-LOC fixture with 5 labeled true
+  positives and 5 labeled false-positive probes. Measures
+  wall-clock, peak RSS (via GNU `time -v`), TP count, and FP count.
+  Tools that aren't on PATH are honestly reported as "skipped" — no
+  silent zeros.
+
+  Each tool's output is scored against the fixture manifest
+  (`manifest.json`) by `score.py`, which tolerates the three different
+  output shapes (fendix's `"findings"[].endpoint`, semgrep's
+  `"results"[].start.line`, bandit's `"results"[].line_number`).
+  Findings on lines outside the labeled set are ignored — they're
+  typically style or import-hygiene rules outside the benchmark scope.
+
+  CI: a new `benchmark-enterprise.yml` workflow runs on release tags
+  and `workflow_dispatch`, installs semgrep + bandit + GNU time, then
+  posts the results table as a GitHub Actions job summary.
+
+  **Honesty constraint (in the runner's stdout AND every doc):**
+  measures Python SAST on a single fixture. Does NOT compare DAST
+  (only fendix), JS coverage (semgrep), or general SAST against a
+  customer's full repo.
+
+### v0.13.0 — Sprint 10 (Arabic HTML report, i18n)
+
+#### Added
+
+- **Arabic HTML report (Sprint 10).** `fendix scan` and `fendix
+  report` now accept `--lang ar` to render the HTML output
+  right-to-left with Arabic strings. JSON, SARIF, and (future) PDF
+  outputs stay English (machine-consumed; localisation would break
+  downstream tooling).
+
+  New package `go/internal/reporters/i18n/` holds the language
+  catalog (`Strings` struct, `English()`, `Arabic()`, `Get(lang)`,
+  `IsSupported(lang)`, `IsRTL(lang)`). Adding a language is one new
+  constructor + a switch case. The new `RenderHTMLOpts(w, findings,
+  meta, HTMLOptions{Lang: lang})` is the i18n-aware entry point;
+  `RenderHTML` is preserved as an English-defaulting thin wrapper so
+  every existing caller keeps working byte-for-byte.
+
+  Arabic strings ship as a machine-generated baseline marked with
+  `TRANSLATION_REVIEW_NEEDED` comments inline. A native-speaker
+  security professional is expected to clear those before Fendix
+  v0.13.0-stable is promoted — see RISKS.md ("Arabic translation
+  review"). Numerals stay Western Arabic (0-9), not Eastern
+  (٠-٩), for tooling compatibility.
+
+  Unknown `--lang` values fall back to English with a stderr warning.
+  RTL is detected from the language code (ar, he, fa, ur) so adding
+  the next RTL language is a single switch entry.
+
+  Closes audit §13 ("no i18n today").
+
+### v0.13.1 — Sprint 15 (Slack / Teams webhook alerts)
+
+#### Added
+
+- **`fendix notify` subcommand and `internal/integrations/notify`
+  package (Sprint 15).** Post Slack Block Kit + Teams Adaptive Card
+  alerts for findings above a severity floor:
+
+  ```bash
+  fendix scan ... --format json --output findings.json
+  export FENDIX_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+  fendix notify --findings findings.json
+  ```
+
+  Configuration (12-factor, matching `cmd/fendix-app`):
+  - `FENDIX_SLACK_WEBHOOK_URL` / `FENDIX_TEAMS_WEBHOOK_URL` — either
+    or both. No-op when neither is set.
+  - `FENDIX_NOTIFY_MIN_SEVERITY` — `CRITICAL` (default) / `HIGH` /
+    `MEDIUM` / `LOW` / `INFO`.
+  - `FENDIX_NOTIFY_DEDUP_WINDOW` — Go duration (default `1h`); same
+    finding ID won't re-alert inside the window. In-memory only;
+    process restart re-alerts. Persistence is Sprint 15.5 (waits on
+    Sprint 07.5 SQLite).
+
+  Per-sink errors are logged but do not block the other sink. Webhook
+  URLs are redacted to `[REDACTED]` in error messages so secrets
+  don't leak into operator logs. The Teams payload is pinned to
+  Adaptive Card schema 1.3 for the widest client compatibility.
+
+  Closes audit §13 ("no real-time alerts today"). The package is
+  designed to slot into `fendix serve` (Sprint 07) and the ghapp
+  post-scan hook with no code change — `(*Notifier).NotifyAll(ctx,
+  findings)` is the integration surface.
+
+### v0.14.0 — Sprint 17 (GitLab + CircleCI templates)
+
+#### Added
+
+- **`fendix init --ci <github|gitlab|circleci>` (Sprint 17).** The
+  init command now emits CI templates for three systems, not just
+  GitHub Actions. Without `--ci`, fendix auto-detects from `.github/`,
+  `.gitlab-ci.yml`, or `.circleci/` in the project root and falls
+  back to `github` when none are present. Per CI:
+  - **github** (default): `.github/workflows/fendix.yml` (unchanged)
+  - **gitlab**: `.gitlab-ci.fendix.yml` (a GitLab `include:` file
+    that emits a `gl-sast-report.json` SAST report) plus a
+    `NEXT-STEPS-fendix.md` that explains the `include:` wiring.
+  - **circleci**: `.circleci/fendix-config.yml` (an inline snippet
+    the user merges into their main `config.yml`) plus a
+    `NEXT-STEPS-fendix.md` explaining the merge recipe.
+
+  Every emitted `.yml` is parsed by `gopkg.in/yaml.v3` at test time
+  (`TestAllTemplatesParseAsYAML`) so a typo can't ship in a release.
+  Closes audit §8 ("GitHub Actions only today").
+
+### v0.13.1 — Sprint 13 (GitHub App handler doc cleanup)
+
+#### Fixed
+
+- **Stale package doc in `go/internal/ghapp/webhook.go` (Sprint 13).**
+  The package comment still described `handler.go`'s scan-and-comment
+  workflow as "stubbed pending a follow-up commit." It hasn't been a
+  stub for several commits: `Handler.HandlePullRequest` (clone → scan
+  → comment → SARIF), `Handler.HandleCheckRun` (Re-run check button),
+  and `Handler.HandlePush` (no-op baseline placeholder) are all
+  implemented with `cmd/fendix-app/main.go` fully wired. Updated the
+  package doc to describe what's actually there. No behaviour change.
+
+### v0.14.0 — Polish phase, Sprint 18
+
+#### Added
+
+- **Semgrep rule pack expanded from 9 to 24 rules (Sprint 18).** New
+  rules target patterns the native regex engine cannot catch
+  (multi-line, framework-specific, proximity-based crypto misuse):
+
+  - **auth:** Django function-based view missing auth decorator
+    (`@login_required` / `@permission_required` / `@user_passes_test`
+    / `@staff_member_required`); Flask route with no auth-style
+    decorator above `@app.route(...)` (`@login_required` /
+    `@requires_auth` / `@jwt_required` / `@auth.login_required`).
+  - **injection:** Django ORM raw SQL (`Model.objects.raw(<var>)`,
+    `<qs>.extra(where=<var>)`); Flask `render_template_string(<var>)`
+    SSTI; `subprocess(<var>, shell=True)` (high-precision variant of
+    the existing rule, only fires on non-literal commands); `pickle.loads(<var>)`;
+    `yaml.load(...)` without `SafeLoader`.
+  - **secrets:** inline GCP service-account JSON (matched by
+    `"type":"service_account"`); AWS access-key ID literal
+    (`AKIA[A-Z0-9]{16}` shape); Slack incoming-webhook URL literal;
+    PEM-encoded private-key block literal.
+  - **crypto** (new file `rules/crypto.yaml`): `hashlib.md5` /
+    `hashlib.sha1` called on a password-shaped variable;
+    legacy/broken symmetric cipher imports (DES, 3DES, RC4, ARC2,
+    Blowfish from `Crypto.Cipher`); `random` module used inside a
+    function whose name suggests token/password/nonce generation.
+
+  Every rule carries `metadata.category`, `metadata.fendix_severity`,
+  `metadata.confidence`, `metadata.cwe`, and a comment explaining its
+  FP/FN class. A new YAML-only catalog test
+  (`scanner_rulepack_test.go`) enforces these invariants — including
+  the LOW-confidence/MEDIUM-severity-cap rule documented in
+  `docs/semgrep-rules.md` — so subsequent rule additions can't drift
+  the metadata schema silently. A separate
+  `TestRulepack_ValidatesViaSemgrepCLI` runs `semgrep --validate`
+  against the bundled pack when semgrep is on PATH (skipped
+  otherwise), catching pattern-syntax errors the YAML catalog can't
+  see. Closes audit §15.1 ("embedded semgrep rule pack is very
+  small").
+
+#### Fixed
+
+- **Documentation drift in `docs/semgrep-rules.md` and README** (also
+  Sprint 18, surfaced by the rule-pack work). Both documents still
+  referenced `python/rules/` and
+  `python/analyzers/semgrep_runner.py` from before TASK-116 migrated
+  the Semgrep runner to native Go (`go/internal/scanner/semgrep/`).
+  Updated all paths, the worked-example source links, and the
+  "Adding a rule" workflow to match the post-migration reality. The
+  legacy quick reference `semgrep --config python/rules/ --validate`
+  is now `semgrep --config go/internal/scanner/semgrep/rules/
+  --validate`.
+
+- **Pre-existing YAML quoting in `auth.yaml`'s
+  `python-jwt-decode-no-verification` rule.** The patterns embedded
+  `{"verify_signature": False, ...}` unquoted, which strict YAML
+  parsers (`gopkg.in/yaml.v3`, `ruamel-yaml --rt`) reject with
+  "mapping values are not allowed in this context." Semgrep itself
+  tolerated the loose form, so the bug had no scan-time effect, but
+  Sprint 18's new YAML-only catalog test surfaced it. Patterns are
+  now single-quoted; the rule's behaviour is unchanged.
+
 ### v0.11.1 — Phase 1 trust fixes (Sprints 01–03)
 
 #### Fixed

@@ -38,6 +38,63 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
+// secretEnvPrefixes lists env var name *prefixes* that the plugin
+// runner strips before invoking a plugin subprocess. A plugin runs
+// arbitrary third-party code at the operator's privilege; inheriting
+// the full operator environment is unnecessary and gives plugin code
+// trivial access to credentials it has no business reading.
+//
+// The list intentionally over-redacts: it's easier for a plugin author
+// to ask for an env var they need than to recover credentials a
+// malicious plugin exfiltrated. Operators who genuinely need a custom
+// env var passed through can set it inside the plugin (the manifest
+// doesn't currently surface "required env" — see follow-up FX-PLUG-2).
+var secretEnvPrefixes = []string{
+	// Cloud / hosting credentials
+	"AWS_", "AZURE_", "GCP_", "GOOGLE_", "DO_", "HEROKU_",
+	// Source-control + registry tokens
+	"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT", "GITLAB_TOKEN",
+	"BITBUCKET_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "CARGO_REGISTRY_TOKEN",
+	// AI/ML provider keys
+	"OPENAI_", "ANTHROPIC_", "COHERE_", "HUGGINGFACE_", "REPLICATE_",
+	// Generic secret-shaped names
+	"API_KEY", "SECRET", "SECRET_KEY", "PRIVATE_KEY", "PASSWORD", "PASSWD",
+	"TOKEN", "ACCESS_KEY", "CLIENT_SECRET",
+	// Database connection strings
+	"DATABASE_URL", "DB_PASSWORD", "POSTGRES_PASSWORD", "MYSQL_PASSWORD",
+	"REDIS_PASSWORD",
+	// Fendix's own per-user state
+	"FENDIX_AUTH",
+}
+
+// redactPluginEnv returns the operator's environment with names that
+// match any prefix in secretEnvPrefixes removed. The match is a
+// case-sensitive substring check on the variable's *name*, not value,
+// so a custom `MY_SECRET_THING=...` is dropped (matches `SECRET`) but
+// `PATH` containing the string "secret" is not.
+//
+// Exported via a package-level var so tests can verify behaviour
+// without spawning a subprocess.
+func redactPluginEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+NEXT:
+	for _, kv := range env {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			out = append(out, kv)
+			continue
+		}
+		name := kv[:eq]
+		for _, p := range secretEnvPrefixes {
+			if strings.Contains(name, p) {
+				continue NEXT
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // DefaultTimeout caps a single plugin invocation when the manifest
 // does not specify a Timeout.
 const DefaultTimeout = 30 * time.Second
@@ -244,7 +301,10 @@ func (p Plugin) Run(ctx context.Context, req ScanRequest) ([]models.Finding, err
 
 	cmd := exec.CommandContext(runCtx, filepath.Join(p.Dir, p.Entrypoint))
 	cmd.Dir = p.Dir
-	cmd.Env = append(os.Environ(),
+	// Strip credentials from the inherited environment before handing
+	// it to third-party code (see secretEnvPrefixes for the redaction
+	// list and rationale).
+	cmd.Env = append(redactPluginEnv(os.Environ()),
 		"FENDIX_PLUGIN_NAME="+p.Name,
 		"FENDIX_PLUGIN_DIR="+p.Dir,
 	)

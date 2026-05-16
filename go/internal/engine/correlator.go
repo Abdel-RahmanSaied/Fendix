@@ -98,10 +98,19 @@ func Correlate(findings []models.Finding) []models.Finding {
 	// Pre-compute normalized blackbox endpoints once. The suffix and fuzzy
 	// passes walk all blackbox findings per whitebox finding, and re-running
 	// url.Parse on every iteration is the dominant allocator for large scans.
+	//
+	// Also pre-compute the per-blackbox segment set used by the fuzzy
+	// matcher. The fuzzy pass calls pathSegments on BOTH sides of every
+	// (W,B) comparison; caching the blackbox side here means the segment
+	// split runs B times instead of W·B times. The matching whitebox
+	// segment is cached once per whitebox iteration inside the Correlate
+	// loop below (see `wbSegments` capture).
 	bbNorm := make([]string, len(blackbox))
+	bbSegments := make([][]string, len(blackbox))
 	bbIndex := make(map[correlationKey][]int)
 	for i, f := range blackbox {
 		bbNorm[i] = normalizeEndpoint(f.Endpoint)
+		bbSegments[i] = pathSegments(bbNorm[i])
 		bbIndex[correlationKey{endpoint: bbNorm[i], category: f.Category}] = append(
 			bbIndex[correlationKey{endpoint: bbNorm[i], category: f.Category}], i,
 		)
@@ -116,8 +125,12 @@ func Correlate(findings []models.Finding) []models.Finding {
 	for _, wf := range whitebox {
 		wbNorm := normalizeEndpoint(wf.Endpoint)
 		relCats := relatedCategories(wf.Category)
+		// Cache the whitebox segments once per iteration of the outer
+		// loop; the fuzzy pass would otherwise re-split this string
+		// on every (W,B) comparison.
+		wbSegments := pathSegments(wbNorm)
 
-		bbIdx, matchKind := findCorrelationMatch(wbNorm, relCats, blackbox, bbNorm, bbIndex, bbCorrelated)
+		bbIdx, matchKind := findCorrelationMatch(wbNorm, wbSegments, relCats, blackbox, bbNorm, bbSegments, bbIndex, bbCorrelated)
 		if bbIdx >= 0 {
 			bf := blackbox[bbIdx]
 			bbCorrelated[bbIdx] = true
@@ -162,15 +175,19 @@ func Correlate(findings []models.Finding) []models.Finding {
 // the whitebox finding identified by `wbNorm` + `relCats`, plus the match
 // kind ("exact", "suffix", or "fuzzy"). Returns (-1, "") if no match.
 //
-// `bbNorm` is the pre-computed normalized endpoint for each blackbox finding
-// (avoids re-running url.Parse per inner-loop iteration). The `taken` set
-// excludes blackbox findings already merged into another correlated finding
-// so each blackbox is consumed at most once.
+// `bbNorm` and `bbSegments` are the pre-computed normalized endpoint and
+// segment-set for each blackbox finding (avoids re-running url.Parse and
+// pathSegments per inner-loop iteration). `wbSegments` is the same for
+// the current whitebox finding. The `taken` set excludes blackbox
+// findings already merged into another correlated finding so each
+// blackbox is consumed at most once.
 func findCorrelationMatch(
 	wbNorm string,
+	wbSegments []string,
 	relCats []string,
 	blackbox []models.Finding,
 	bbNorm []string,
+	bbSegments [][]string,
 	bbIndex map[correlationKey][]int,
 	taken map[int]bool,
 ) (int, string) {
@@ -198,6 +215,8 @@ func findCorrelationMatch(
 	}
 
 	// 3. Fuzzy segment match (handles file-path-vs-URL-path).
+	// Uses pre-computed segments for both sides — the F2 fix to avoid
+	// O(W·B) recomputation of pathSegments inside the inner loop.
 	for i, bf := range blackbox {
 		if taken[i] {
 			continue
@@ -205,7 +224,7 @@ func findCorrelationMatch(
 		if !categoryRelated(relCats, bf.Category) {
 			continue
 		}
-		if endpointsRelated(wbNorm, bbNorm[i]) {
+		if segmentsRelated(wbSegments, bbSegments[i]) {
 			return i, "fuzzy"
 		}
 	}
@@ -335,49 +354,71 @@ func pathSuffixMatch(a, b string) bool {
 	return strings.HasSuffix(long, short)
 }
 
-// endpointsRelated checks if two normalized endpoints refer to the same resource.
-// This handles cases where whitebox uses file paths and blackbox uses URL paths.
+// endpointsRelated checks if two normalized endpoints refer to the same
+// resource. Handles cases where whitebox uses file paths and blackbox
+// uses URL paths. Kept for callers that don't pre-compute segments;
+// the correlator hot path uses segmentsRelated directly to avoid
+// re-splitting.
 func endpointsRelated(a, b string) bool {
 	if a == b {
 		return true
 	}
+	return segmentsRelated(pathSegments(a), pathSegments(b))
+}
 
-	// Check if one endpoint's path is contained in the other
-	// e.g., "/api/v1/users" and "routes/users.py" share "users"
-	aSegments := pathSegments(a)
-	bSegments := pathSegments(b)
-
+// segmentsRelated is the inner kernel of endpointsRelated: given two
+// already-split segment lists, report whether any segment of length >2
+// appears in both. Lifted out so the correlator can pre-compute
+// segments once per finding (F2 fix in the 2026-05-16 complexity
+// audit) instead of re-splitting on every (W, B) comparison.
+func segmentsRelated(aSegments, bSegments []string) bool {
 	for _, as := range aSegments {
+		if len(as) <= 2 {
+			continue
+		}
 		for _, bs := range bSegments {
-			if as == bs && len(as) > 2 {
+			if as == bs {
 				return true
 			}
 		}
 	}
-
 	return false
 }
 
-// pathSegments splits a path into meaningful segments, filtering out common noise.
+// pathSegmentNoise is the set of path tokens we filter out during fuzzy
+// matching. Hoisted to package level so we don't allocate it on every
+// pathSegments() call — the fuzzy-match pass calls pathSegments W·B
+// times per scan, and the F2 finding in the time-complexity audit
+// (2026-05-16) pinpointed this map as the dominant allocator in
+// BenchmarkMemory_Correlate1000.
+//
+// Add tokens here only if they're (a) genuinely noise (not a vuln
+// signal) and (b) common enough that filtering them improves match
+// precision. Don't add per-customer tokens — that belongs in
+// configuration, not in this package.
+var pathSegmentNoise = map[string]bool{
+	"api": true, "v1": true, "v2": true, "v3": true,
+	"src": true, "py": true, "js": true, "go": true, "ts": true,
+	"internal": true, "routes": true, "handlers": true,
+	// HTTP methods leak in when an endpoint format like "GET /pet" is
+	// normalized; filter them so they don't pollute fuzzy matching.
+	"get": true, "post": true, "put": true, "delete": true,
+	"patch": true, "head": true, "options": true,
+}
+
+// pathSegments splits a path into meaningful segments, filtering out
+// common noise. See pathSegmentNoise for the filter set and why it's
+// at package scope.
 func pathSegments(path string) []string {
 	parts := strings.FieldsFunc(path, func(r rune) bool {
 		return r == '/' || r == '\\' || r == '.'
 	})
 
-	var segments []string
-	noise := map[string]bool{
-		"api": true, "v1": true, "v2": true, "v3": true,
-		"src": true, "py": true, "js": true, "go": true, "ts": true,
-		"internal": true, "routes": true, "handlers": true,
-		// HTTP methods leak in when an endpoint format like "GET /pet" is
-		// normalized; filter them so they don't pollute fuzzy matching.
-		"get": true, "post": true, "put": true, "delete": true,
-		"patch": true, "head": true, "options": true,
-	}
-
+	// Pre-size: usually 1-3 segments survive filtering.
+	segments := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.ToLower(strings.TrimSpace(p))
-		if !noise[p] && len(p) > 1 {
+		if !pathSegmentNoise[p] && len(p) > 1 {
 			segments = append(segments, p)
 		}
 	}

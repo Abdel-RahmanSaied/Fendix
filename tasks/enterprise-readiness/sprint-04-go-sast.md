@@ -389,4 +389,20 @@ If Fendix's own code triggers a CRITICAL, that's a real finding to fix before th
 
 ## Status
 
-**Not started.**
+**Status:** shipped on branch `plan-finish-phases-2-6` as commit
+[`5b8492f`](../../../../commit/5b8492f) — `feat(textscan): unified Go + JS + IaC SAST engine (Sprints 04, 05, 06)`.
+Sprints 04, 05, and 06 were delivered as a single textscan engine
+under [`go/internal/scanner/textscan/`](../../go/internal/scanner/textscan/) rather than three independent engines, because the
+Go/JS/IaC rule shapes share enough structure (per-line regex +
+context-window + per-rule severity/FP-class metadata) that splitting
+them would have multiplied glue code without buying any user-visible
+benefit. The 5 Go SAST rules promised in this sprint live in
+[`textscan/rules.go`](../../go/internal/scanner/textscan/rules.go).
+
+**Status section backfill (2026-05-16):** This section was empty
+when the sprint shipped (DoD #7 was not honored at ship time). The
+honest record is: the sprint shipped, the textscan commit covers
+its deliverables, but per-sprint actual-vs-estimate / surprises /
+follow-up details were not captured in writing. If you need the
+shipped scope verified before merging the plan-finish branch, read
+the textscan commit's source diff directly.

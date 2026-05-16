@@ -17,9 +17,9 @@ jobs:
       run:
         working-directory: go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.22"
 
@@ -50,9 +50,9 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -64,18 +64,53 @@ jobs:
       - name: Test
         run: python -m pytest tests/ -v
 
+  # actionlint catches workflow drift: malformed YAML, deprecated syntax,
+  # shell-script bugs inside `run:` blocks, and — critically — actions
+  # that have been un-pinned from a SHA back to a floating tag.
+  # Installed via `go install` (uses the same Go toolchain CI already
+  # sets up) so we don't pull in another third-party action.
+  actionlint:
+    name: Workflow Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.22"
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.4
+
+      - name: Run actionlint
+        run: actionlint -color
+
+      # Enforce the SHA-pin policy directly. actionlint itself doesn't
+      # mandate SHA-pin; this guard is a one-liner that fails CI if any
+      # workflow re-introduces a floating @vN tag for a third-party
+      # action. GitHub-published actions/* are also pinned for
+      # consistency.
+      - name: Enforce SHA-pin policy
+        run: |
+          set -eu
+          if grep -EHn 'uses: [a-zA-Z0-9_./-]+@v[0-9]+\b' .github/workflows/*.yml; then
+            echo "::error::Found a floating @vN tag pin. Every uses: line must pin to a 40-char SHA followed by '# vN' (see docs/threat-model.md §T6)."
+            exit 1
+          fi
+          echo "✓ all workflow action pins are SHAs"
+
   e2e:
     name: End-to-End (CLI flag regression)
     runs-on: ubuntu-latest
     needs: [go, python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.22"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 

@@ -263,4 +263,72 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.**
+**Started:** 2026-05-15 (AI implementer, plan-finish session)
+**Branch:** `plan-finish-phases-2-6`
+**PR:** drafted; not pushed
+**Status:** done — but mostly already shipped before this session.
+**Actual effort:** ~5 minutes — doc-drift cleanup only.
+
+**The big surprise:** Sprint 13's scope was **already implemented on
+`main` before this session**, despite the sprint file showing "Not
+started." Confirmed by reading `go/internal/ghapp/handler.go` (309
+LOC: `Handler` struct with injection points, `HandlePullRequest`
+implementing the full clone→scan→comment→SARIF flow with a 15-minute
+`HandlerScanTimeout`, `HandleCheckRun` for the "Re-run check" button,
+`HandlePush` stub for baseline-refresh, `runScan` shared helper) and
+[`go/cmd/fendix-app/main.go`](go/cmd/fendix-app/main.go) (170 LOC:
+fully-wired HTTP server with `/webhook`, `/healthz`, signal-driven
+graceful shutdown, env-var config matching the brief). All ghapp
+package tests pass on `main` (`go test -race ./internal/ghapp/` → ok
+4.5s, including `handler_test.go`).
+
+**What this sprint actually delivered:** A single doc-drift cleanup in
+`webhook.go`'s package comment. The package doc still claimed the
+scan-and-comment workflow was "stubbed in handler.go pending a
+follow-up commit." That text was true when the brief was written
+(2026-05-14) but stale by 2026-05-15. Replaced with an accurate
+high-level description of the implemented `HandlePullRequest`,
+`HandleCheckRun`, and `HandlePush` flows. No behaviour change.
+
+**Surprises:**
+
+- **The sprint file lied about the codebase state.** Pattern previously
+  documented in `feedback_fendix_sprint_shipping_pattern.md` ("Sprint
+  files sometimes lie about paths and names"); this is the strongest
+  example yet — the sprint file thought handler.go was a stub; on disk
+  it's 309 LOC of production code with test coverage and an HTTP
+  server in `cmd/fendix-app/main.go` already wired to it. The brief's
+  PLAN.md row in the "Cuts" table caught half of this ("Sprint 13 is
+  smaller than the brief implies (~100 LOC of glue, not 'rebuild the
+  App')"); reality is even smaller — the glue itself is also there.
+
+- **Mitigation for future sessions:** Always read every Read-first file
+  and `grep` for the names the sprint says you'll be creating before
+  starting code. If grep hits, the sprint is partially or fully done
+  and the work is to update PLAN.md + sprint Status, not write code.
+
+**Bench:** Sprint 13 changed one Go doc comment; no perf impact
+possible. `make bench` unchanged from main.
+
+**Tests added:** None — Sprint 13's implementation already had test
+coverage from the original implementation commit (see `handler_test.go`,
+`webhook_test.go`, `comment_test.go`, `sarif_test.go`, `auth_test.go`,
+`scanner_test.go` in `go/internal/ghapp/`).
+
+**Files touched:**
+
+- `go/internal/ghapp/webhook.go` — package doc updated (~11 lines
+  changed).
+- `tasks/enterprise-readiness/PLAN.md` — Sprint 13 ✅ in the roster.
+- `tasks/enterprise-readiness/sprint-13-github-app-handler.md` — this
+  Status section.
+
+**Follow-ups created:**
+
+- The three from the sprint file's Follow-ups section
+  (13.5 Marketplace listing, 13.6 push/release events,
+  13.7 per-org config) remain open. None are blocking.
+
+**Hard-rule compliance:** Stayed inside sprint scope (one file in
+`go/internal/ghapp/`, plus PLAN + Status). No CGo. No new deps. No
+CLI flag changes.

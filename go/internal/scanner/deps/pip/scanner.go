@@ -80,6 +80,21 @@ var recurseSkipDirs = map[string]bool{
 // point it at an httptest server.
 var osvAPIBase = "https://api.osv.dev"
 
+// SetOSVAPIBaseForTest replaces the OSV.dev endpoint with a test URL
+// and returns a restore function. Exported (with `ForTest` suffix
+// to make the intent visible at call sites) so cross-package tests
+// (e.g. the orchestrator continue-on-error path in
+// internal/engine) can drive failure injection without an
+// in-package test seam.
+//
+// Production code MUST NOT call this; calling it permanently rebases
+// every OSV.dev query at the new URL for the current process.
+func SetOSVAPIBaseForTest(url string) (restore func()) {
+	prev := osvAPIBase
+	osvAPIBase = url
+	return func() { osvAPIBase = prev }
+}
+
 // cacheTTL is how long an OSV response is considered fresh. 24h matches
 // pip-audit's default cache lifetime.
 const cacheTTL = 24 * time.Hour

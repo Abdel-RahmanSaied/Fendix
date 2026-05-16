@@ -1,9 +1,10 @@
 # Semgrep Rule Guide
 
-Fendix's white-box engine bundles a small set of Semgrep rules and runs any
-additional rules you place in `python/rules/`. This guide explains the
-metadata Fendix expects, how rules are mapped into the Finding model, and
-the conventions to follow when writing project-specific rules.
+Fendix's white-box engine bundles 24 Semgrep rules across four files
+(auth, injection, secrets, crypto) and extracts them to a per-process
+temp directory at scan time. This guide explains the metadata Fendix
+expects, how rules are mapped into the Finding model, and the conventions
+to follow when writing project-specific rules.
 
 For an introduction to Semgrep itself, see the upstream
 [Semgrep docs](https://semgrep.dev/docs/).
@@ -13,20 +14,24 @@ For an introduction to Semgrep itself, see the upstream
 ## How Fendix runs Semgrep
 
 The Semgrep runner lives at
-[`python/analyzers/semgrep_runner.py`](../python/analyzers/semgrep_runner.py).
-At scan time it:
+[`go/internal/scanner/semgrep/scanner.go`](../go/internal/scanner/semgrep/scanner.go)
+(post-TASK-116 this is native Go, not Python). At scan time it:
 
-1. Calls `shutil.which("semgrep")`. If Semgrep isn't on `$PATH`, the runner
-   logs a warning and emits zero findings — the rest of the white-box scan
-   continues.
-2. Invokes `semgrep --config <rules_dir> --json --quiet <code_path>` with
-   a 120-second timeout.
-3. Parses the JSON output and maps each result to a Fendix `Finding` via
-   the helpers `_semgrep_severity`, `_semgrep_confidence`,
-   `_semgrep_category`, `_semgrep_cwe`.
+1. Calls `exec.LookPath("semgrep")`. If Semgrep isn't on `$PATH`, the
+   runner returns `ErrSemgrepUnavailable` and the orchestrator logs an
+   "install semgrep for X% more checks" notice — the rest of the
+   white-box scan continues.
+2. Extracts the embedded `//go:embed rules/*.yaml` pack to a per-process
+   temp directory on the first scan call.
+3. Invokes `semgrep --config <rules_dir> --json --no-git-ignore --quiet
+   <code_path>` with a 120-second timeout.
+4. Parses the JSON output and maps each result to a Fendix `Finding` via
+   `resolveSeverity`, `resolveConfidence`, `resolveCategory`,
+   `resolveCWE`.
 
-`<rules_dir>` is `python/rules/` by default; every `.yaml` file in that
-directory is loaded.
+`<rules_dir>` is the temp extraction of
+[`go/internal/scanner/semgrep/rules/`](../go/internal/scanner/semgrep/rules/);
+every `.yaml` file in that directory is loaded.
 
 > **Install Semgrep for full coverage.** Without it, only the
 > [AST analyzer](./checks/ast-analyzer.md) and
@@ -38,7 +43,8 @@ directory is loaded.
 ## Rule shape
 
 Every rule is a YAML object inside the top-level `rules:` array of a file
-in `python/rules/`. Below is the canonical shape Fendix expects:
+in `go/internal/scanner/semgrep/rules/`. Below is the canonical shape
+Fendix expects:
 
 ```yaml
 rules:
@@ -140,7 +146,7 @@ don't over-claim `HIGH` for pattern matches that have known false positives.
 
 ### Auth — JWT decoded without signature verification
 
-Source: [`python/rules/auth.yaml`](../python/rules/auth.yaml)
+Source: [`go/internal/scanner/semgrep/rules/auth.yaml`](../go/internal/scanner/semgrep/rules/auth.yaml)
 
 ```yaml
 - id: python-jwt-decode-no-verification
@@ -165,7 +171,7 @@ token. There's no second precondition.
 
 ### Injection — SQL via string formatting
 
-Source: [`python/rules/injection.yaml`](../python/rules/injection.yaml)
+Source: [`go/internal/scanner/semgrep/rules/injection.yaml`](../go/internal/scanner/semgrep/rules/injection.yaml)
 
 ```yaml
 - id: python-sql-injection-string-format
@@ -190,7 +196,7 @@ Source: [`python/rules/injection.yaml`](../python/rules/injection.yaml)
 
 ### Secrets — hardcoded password / key assignment
 
-Source: [`python/rules/secrets.yaml`](../python/rules/secrets.yaml)
+Source: [`go/internal/scanner/semgrep/rules/secrets.yaml`](../go/internal/scanner/semgrep/rules/secrets.yaml)
 
 ```yaml
 - id: python-hardcoded-secret-assignment
@@ -231,24 +237,30 @@ positives erode trust faster than missed findings.
    each.
 3. **Pick `confidence` honestly.** If your rule's pattern matches more
    than the actual issue, downgrade to `MEDIUM` or `LOW`.
-4. **Test with a fixture.** Add a Python file to
-   [`python/tests/fixtures/`](../python/tests/fixtures/) with one
-   true-positive and at least one true-negative case. Add a test to
-   `python/tests/test_semgrep_runner.py` that runs Semgrep against the
-   fixture and asserts the rule fires (and doesn't, on the negative case).
+4. **Audit the rule pack.** Sprint 18 added a YAML-only catalog test at
+   [`go/internal/scanner/semgrep/scanner_rulepack_test.go`](../go/internal/scanner/semgrep/scanner_rulepack_test.go)
+   that asserts every rule carries `metadata.category`,
+   `metadata.fendix_severity`, `metadata.confidence`, and
+   `metadata.cwe`, and that no two rules share an `id`. When you add a
+   rule, bump `rulepackTotalCount` in the same commit so the count
+   assertion stays green.
 5. **Run the suite locally.**
 
    ```bash
-   make test          # full suite
-   pytest python/tests/test_semgrep_runner.py -v   # just Semgrep
+   make test                                            # full suite
+   cd go && go test ./internal/scanner/semgrep/...      # just the Semgrep package
    ```
 
 6. **Verify the rule resolves cleanly.** Semgrep itself will warn on
    pattern syntax errors:
 
    ```bash
-   semgrep --config python/rules/ --validate
+   semgrep --config go/internal/scanner/semgrep/rules/ --validate
    ```
+
+   The `TestRulepack_ValidatesViaSemgrepCLI` test runs this
+   automatically when `semgrep` is on `$PATH`; it skips otherwise so
+   contributors without semgrep installed aren't blocked.
 
 ### Project-local rule files
 
@@ -256,7 +268,7 @@ The Fendix engine runs Semgrep against the rules directory bundled inside
 the binary. To use project-specific rules today, layer them in by either
 (a) running Semgrep directly alongside Fendix and folding the JSON results
 into your CI report, or (b) building Fendix from source with your rule
-files added to `python/rules/`.
+files added to `go/internal/scanner/semgrep/rules/`.
 
 A `--semgrep-rules` flag for layering external rule directories at scan
 time is on the backlog — track progress in the GitHub issue tracker.
@@ -276,7 +288,7 @@ time is on the backlog — track progress in the GitHub issue tracker.
 | `extra.message` | → | `evidence` (truncated to 200 chars) |
 | `path` + `start.line` | → | `endpoint`, `line` ("path:line") |
 
-See [`python/analyzers/semgrep_runner.py`](../python/analyzers/semgrep_runner.py)
+See [`go/internal/scanner/semgrep/scanner.go`](../go/internal/scanner/semgrep/scanner.go)
 for the implementation.
 
 ---

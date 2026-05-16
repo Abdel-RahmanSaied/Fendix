@@ -24,6 +24,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/pip"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/secrets"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/semgrep"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/textscan"
 )
 
 // Orchestrator coordinates the full scan lifecycle:
@@ -310,6 +311,20 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		}
 	}
 
+	// 3.8. Native textscan (Sprints 04 / 05 / 06). Regex-based SAST
+	// for Go, JS/TS, Dockerfile, and Kubernetes YAML. Pure stdlib,
+	// no external tooling required. Fast (<1s on typical repos)
+	// because it's filename-extension-routed line scanning.
+	if o.cfg.CodePath != "" {
+		textFindings, err := textscan.Scan(o.cfg.CodePath, textscan.AllRules())
+		if err != nil {
+			slog.Warn("native textscan failed", "error", err)
+		} else if len(textFindings) > 0 {
+			slog.Info("native textscan complete", "findings", len(textFindings))
+			findings = append(findings, textFindings...)
+		}
+	}
+
 	// 4. Spawn Python engine for white-box analysis. Default off as of
 	// TASK-118 — secrets (TASK-115) + semgrep (TASK-116) now run in
 	// native Go and the embedded Python distribution is no longer
@@ -513,13 +528,15 @@ func (o *Orchestrator) renderReport(findings []models.Finding, meta reporters.Sc
 
 	switch o.cfg.Format {
 	case "html":
-		return reporters.RenderHTML(w, findings, meta)
+		return reporters.RenderHTMLOpts(w, findings, meta, reporters.HTMLOptions{Lang: o.cfg.Lang})
 	case "sarif":
 		return reporters.RenderSARIF(w, findings, meta)
+	case "pdf":
+		return reporters.RenderPDF(w, findings, meta, reporters.PDFOptions{})
 	case "json", "":
 		return reporters.RenderJSON(w, findings, meta)
 	default:
-		return fmt.Errorf("unsupported format %q — use json, html, or sarif", o.cfg.Format)
+		return fmt.Errorf("unsupported format %q — use json, html, sarif, or pdf", o.cfg.Format)
 	}
 }
 

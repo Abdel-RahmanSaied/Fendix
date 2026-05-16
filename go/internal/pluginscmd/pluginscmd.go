@@ -120,6 +120,43 @@ func newListCmd() *cobra.Command {
 	}
 }
 
+// validInstallURL accepts only the transports we trust to feed into
+// `git clone`. Git supports several local/remote schemes that can
+// invoke arbitrary commands on a malicious URL — `file://` reads
+// arbitrary paths the user has access to, `ext::` runs a helper
+// program named in the URL, etc. The official upstream advisory is
+// CVE-2017-1000117 and the family of follow-ups.
+//
+// The allowlist below is the set of transports a community plugin
+// repo would realistically advertise:
+//
+//   - https://<host>/<path>           — GitHub, GitLab, self-hosted
+//   - http://<host>/<path>            — only for explicit dev/test
+//   - git://<host>/<path>             — read-only git transport
+//   - ssh://[user@]<host>[:port]/path — SSH git, full URL form
+//   - <user>@<host>:<path>            — SCP-style git URL (`git@github.com:org/repo.git`)
+//
+// Everything else is rejected with an actionable error pointing the
+// user at this comment. Tests cover the rejection paths.
+var (
+	validInstallURLSchemeRe = regexp.MustCompile(`^(https?|git|ssh)://`)
+	validInstallURLScpRe    = regexp.MustCompile(`^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+$`)
+)
+
+func validateInstallURL(gitURL string) error {
+	u := strings.TrimSpace(gitURL)
+	if u == "" {
+		return fmt.Errorf("git URL is empty")
+	}
+	if validInstallURLSchemeRe.MatchString(u) {
+		return nil
+	}
+	if validInstallURLScpRe.MatchString(u) {
+		return nil
+	}
+	return fmt.Errorf("git URL %q uses an unsupported transport — accepted forms are https://…, http://…, git://…, ssh://…, or scp-style user@host:path (file://, ext::, and other git transports are rejected because they can execute arbitrary commands)", gitURL)
+}
+
 // validInstallNameRe locks the directory name we derive from a
 // remote URL to a safe subset: alnum + dash + underscore + dot, no
 // path separators, no leading dot. Catches dorky URLs like
@@ -201,6 +238,10 @@ var loadPluginFn = plugin.LoadPlugin
 // runInstall is the install body, split out so tests can drive it
 // without going through cobra.
 func runInstall(out, errOut io.Writer, gitURL, nameOverride string) error {
+	if err := validateInstallURL(gitURL); err != nil {
+		return fmt.Errorf("plugins install: %w", err)
+	}
+
 	name := nameOverride
 	if name == "" {
 		name = deriveName(gitURL)
@@ -213,7 +254,10 @@ func runInstall(out, errOut io.Writer, gitURL, nameOverride string) error {
 	if err != nil {
 		return fmt.Errorf("plugins install: %w", err)
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	// 0o700 not 0o755 — plugin code runs as the current user and may
+	// read scan-time profile credentials; other local users have no
+	// business enumerating which plugins this user has installed.
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fmt.Errorf("plugins install: create %s: %w", root, err)
 	}
 

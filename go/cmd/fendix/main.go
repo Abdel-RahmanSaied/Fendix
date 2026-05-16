@@ -84,6 +84,9 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newDemoCmd())
+	root.AddCommand(newNotifyCmd())
+	root.AddCommand(newJiraCmd())
+	root.AddCommand(newDBCmd())
 	root.AddCommand(pluginscmd.NewCmd())
 	root.AddCommand(ignorecmd.NewCmd())
 
@@ -139,29 +142,45 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Generate a default CI workflow + .fendix-ignore in the current directory",
-		Long: `Detect the project stack and write a drop-in GitHub Actions workflow plus a
+		Long: `Detect the project stack and write a drop-in CI workflow plus a
 .fendix-ignore starter file. Refuses to overwrite existing files unless --force is set.
 
+Pick a CI system via --ci. Without it, fendix auto-detects from .github/,
+.gitlab-ci.yml, or .circleci/ in the project root, defaulting to GitHub when
+none of those is present.
+
 Files written (relative to the working directory):
-  .github/workflows/fendix.yml   — PR-gated DAST + SAST scan with SARIF upload
-  .fendix-ignore                 — empty starter for finding-level suppressions
+  --ci github (default)  .github/workflows/fendix.yml   — PR-gated DAST+SAST scan
+                         .fendix.yaml                   — policy starter
+                         .fendix-ignore                 — finding suppressions
+  --ci gitlab            .gitlab-ci.fendix.yml          — GitLab CI include file
+                         NEXT-STEPS-fendix.md           — wiring instructions
+                         .fendix.yaml + .fendix-ignore
+  --ci circleci          .circleci/fendix-config.yml    — CircleCI snippet
+                         NEXT-STEPS-fendix.md           — wiring instructions
+                         .fendix.yaml + .fendix-ignore
 
 Use --print to preview without writing.`,
-		Example: `  fendix init                    # write the files
-  fendix init --print            # preview the generated content
-  fendix init --force            # overwrite existing files`,
+		Example: `  fendix init                       # auto-detect CI; write the files
+  fendix init --ci gitlab           # emit GitLab CI templates
+  fendix init --ci circleci         # emit CircleCI templates
+  fendix init --print               # preview the generated content
+  fendix init --force               # overwrite existing files`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
 			print, _ := cmd.Flags().GetBool("print")
+			ci, _ := cmd.Flags().GetString("ci")
 			return initcmd.Run(initcmd.Options{
 				Force: force,
 				Print: print,
+				CI:    ci,
 				Out:   cmd.OutOrStdout(),
 			})
 		},
 	}
 	cmd.Flags().Bool("force", false, "overwrite existing files")
 	cmd.Flags().Bool("print", false, "print generated content to stdout instead of writing")
+	cmd.Flags().String("ci", "", "CI system to emit templates for: github, gitlab, circleci (default: auto-detect → github)")
 	return cmd
 }
 
@@ -215,6 +234,7 @@ func newScanCmd() *cobra.Command {
 			usePipAuditFlag, _ := flags.GetBool("use-pip-audit")
 			pythonEngineFlag, _ := flags.GetBool("python-engine")
 			configFlag, _ := flags.GetString("config")
+			langFlag, _ := flags.GetString("lang")
 
 			// Resolve --config: explicit path takes precedence; if
 			// absent and a .fendix.yaml exists in the cwd, pick it up
@@ -267,6 +287,7 @@ func newScanCmd() *cobra.Command {
 				NoNativeDeps:         noNativeDepsFlag,
 				UsePipAudit:          usePipAuditFlag,
 				PythonEngine:         pythonEngineFlag,
+				Lang:                 resolveLang(langFlag, cmd.ErrOrStderr()),
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -338,7 +359,7 @@ func newScanCmd() *cobra.Command {
 	flags.String("auth-user2", "", `Second user auth for IDOR checks, e.g. "Bearer token-user2"`)
 	flags.String("profile", "", "Auth profile name from ~/.fendix/profiles/<name>.yaml")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
-	flags.StringP("format", "f", "json", "Output format: json, html, sarif")
+	flags.StringP("format", "f", "json", "Output format: json, html, sarif, pdf")
 	flags.String("fail-on", "", "Exit 1 if findings at this severity: CRITICAL, HIGH, MEDIUM")
 	flags.String("baseline", "", "Path to previous findings JSON for diff mode")
 	flags.String("save-baseline", "", "Save current findings to this path")
@@ -361,8 +382,25 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("use-pip-audit", false, "Shell out to the pip-audit binary for Python dep-CVE scanning instead of the native OSV.dev client. Falls back to OSV.dev with a warning if pip-audit is not on PATH.")
 	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
+	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
+	flags.Bool("offline", false, "Air-gapped mode (Sprint 09): consult the local offline-db snapshot for dep CVEs instead of osv.dev/golang.org/x/vuln. Today this is a no-op honest stub — the snapshot is created via `fendix db update`; per-scanner integration is wired sprint-by-sprint (see internal/offline/offline.go).")
+	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
 
 	return cmd
+}
+
+// resolveLang validates --lang against the i18n-supported set. Unknown
+// values fall back to English with a one-line warning to stderr so the
+// user can see their flag didn't take effect.
+func resolveLang(lang string, stderr io.Writer) string {
+	if lang == "" {
+		return "en"
+	}
+	if reporters.IsSupportedLang(lang) {
+		return lang
+	}
+	fmt.Fprintf(stderr, "warning: --lang=%q is not a supported translation; falling back to English. Supported: en, ar.\n", lang)
+	return "en"
 }
 
 func newReportCmd() *cobra.Command {
@@ -375,6 +413,8 @@ func newReportCmd() *cobra.Command {
 			inputPath, _ := flags.GetString("input")
 			formatFlag, _ := flags.GetString("format")
 			outputPath, _ := flags.GetString("output")
+			langFlag, _ := flags.GetString("lang")
+			lang := resolveLang(langFlag, cmd.ErrOrStderr())
 
 			if inputPath == "" {
 				return fmt.Errorf("--input is required: path to a findings JSON file")
@@ -402,21 +442,26 @@ func newReportCmd() *cobra.Command {
 
 			switch formatFlag {
 			case "html":
-				return reporters.RenderHTML(w, report.Findings, report.Metadata)
+				return reporters.RenderHTMLOpts(w, report.Findings, report.Metadata, reporters.HTMLOptions{Lang: lang})
 			case "sarif":
 				return reporters.RenderSARIF(w, report.Findings, report.Metadata)
+			case "pdf":
+				classification, _ := flags.GetString("classification")
+				return reporters.RenderPDF(w, report.Findings, report.Metadata, reporters.PDFOptions{Classification: classification})
 			case "json":
 				return reporters.RenderJSON(w, report.Findings, report.Metadata)
 			default:
-				return fmt.Errorf("unsupported format %q — use json, html, or sarif", formatFlag)
+				return fmt.Errorf("unsupported format %q — use json, html, sarif, or pdf", formatFlag)
 			}
 		},
 	}
 
 	flags := cmd.Flags()
 	flags.String("input", "", "Path to findings JSON file")
-	flags.StringP("format", "f", "html", "Output format: json, html, sarif")
+	flags.StringP("format", "f", "html", "Output format: json, html, sarif, pdf")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
+	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
+	flags.String("classification", "INTERNAL", "PDF classification banner text rendered on every page (empty disables; only used by --format pdf)")
 
 	return cmd
 }

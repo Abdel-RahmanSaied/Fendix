@@ -25,11 +25,31 @@ When implementing a sprint from `tasks/enterprise-readiness/sprint-NN-*.md`:
    `TestRunCorrelatedFindingReturnsUnknownWithExplanation` failed on
    first run because the dispatcher was routing by *finding shape*, not
    by *source* — a hidden bug in pre-existing code that contradicted the
-   user-facing docs. The right move is to fix the bug as part of the
-   sprint AND document the surprise in Status; don't silently weaken
-   the test to dodge the bug.
+   user-facing docs. Sprint 18's new YAML catalog test surfaced a
+   pre-existing YAML-quoting bug in `auth.yaml`'s JWT rule that
+   semgrep's loose parser tolerated but `gopkg.in/yaml.v3` didn't. The
+   right move is to fix the bug as part of the sprint AND document the
+   surprise in Status; don't silently weaken the test to dodge the bug.
 
-4. **Status sections are the most valuable artifact you produce for
+4. **Sprint briefs sometimes assume infrastructure that doesn't exist.**
+   Sprint 18 asked for "30 test cases (15 positive, 15 negative)"
+   implying real semgrep invocations against fixtures. But all
+   existing semgrep tests use `installFakeSemgrep` (a shell script
+   that printf's pre-computed JSON), because semgrep isn't on dev
+   machines or CI runners. Forcing 30 mock-semgrep tests would
+   re-test the mapping layer (already covered) and lie about what's
+   being validated. The honest interpretation: rebuild the test
+   shape to fit what the codebase actually does — Sprint 18 went
+   with a YAML-only catalog audit that asserts every rule's
+   metadata invariants, plus a single `semgrep --validate` test
+   gated on `command -v semgrep`. Document this divergence
+   explicitly in Status and CHANGELOG so reviewers don't see "8
+   tests instead of 30" and think the sprint was cut short. The
+   pattern: when a brief's test plan presumes infra you don't have,
+   substitute a test shape that exercises the same invariants via a
+   different mechanism, and write up the substitution.
+
+5. **Status sections are the most valuable artifact you produce for
    future sessions.** One bullet per surprise, `actual vs. estimate`
    numbers, manual-DoD evidence (real `--help` output, real scan
    output), and bench tables. Future sessions read these to calibrate

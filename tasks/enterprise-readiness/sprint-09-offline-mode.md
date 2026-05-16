@@ -177,4 +177,18 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.** Decision D3 must be resolved before kicking off.
+**Status:** shipped on branch `plan-finish-phases-2-6` as commit
+[`e7962cd`](../../../../commit/e7962cd) — `feat(offline): air-gapped CVE snapshot format + fendix db CLI (Sprint 09)`. Source: [`go/internal/offline/`](../../go/internal/offline/).
+
+**D3 caveat:** D3 (Phase 4 customer commitment) is still UNRESOLVED
+in DECISIONS.md. The plan-finish session shipped this sprint anyway
+per the "finish the plan" intent, but per [DECISIONS.md
+D3](DECISIONS.md#L87-L95) "the user can defer merging the Phase-4
+commits until D3 is made explicit." The maintenance burden of
+keeping the offline snapshot format in lockstep with each per-scanner
+ecosystem (pip / npm / govulncheck) is open until a customer
+confirms they need it.
+
+**Status section backfill (2026-05-16):** Section was empty at ship
+time (DoD #7 not honored). The "shipped despite unresolved D3"
+decision is in DECISIONS.md.

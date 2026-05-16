@@ -30,21 +30,21 @@ If you can't fund all 18 sprints, the **recommended ordering** at the bottom of 
 | [02](sprint-02-osv-batch.md) ✅ | 1.2 | OSV batch queries + concurrency cap (pip) | 1.5 | Med | v0.11.1 |
 | [02.5](sprint-02p5-osv-batch-npm.md) ✅ | 1.2.5 | OSV batch queries for npm scanner | 0.5 | Low | v0.11.1 |
 | [03](sprint-03-verify-scope.md) ✅ | 1.3 | `fendix verify` scope + exit codes | 0.5 | Low | v0.11.1 |
-| [04](sprint-04-go-sast.md) | 2.1 | Go SAST engine (5 rules) | 5–7 | **High** | v0.12.0 |
-| [05](sprint-05-js-sast.md) | 2.2 | JS/TS regex SAST (6 rules) | 4 | Med | v0.12.0 |
-| [06](sprint-06-iac-sast.md) | 2.3 | IaC scanner (Dockerfile + k8s) | 4 | Med | v0.12.0 |
-| [07](sprint-07-fendix-serve.md) | 3.1 | `fendix serve` REST API (in-memory) | 5 | **High** | v0.12.1 |
-| [08](sprint-08-oidc.md) | 3.2 | OIDC login for `fendix serve` | 3 | Med | v0.12.1 |
-| [09](sprint-09-offline-mode.md) | 4.1 | Offline mode + `fendix db` | 4 | **High** | v0.13.0 |
-| [10](sprint-10-arabic-html.md) | 4.2 | Arabic HTML report (i18n) | 2 | Low | v0.13.0 |
-| [11](sprint-11-pdf-report.md) | 4.3 | PDF executive report | 4 | Med | v0.13.0 |
+| [04](sprint-04-go-sast.md) ✅ | 2.1 | Go SAST engine (5 rules) | 5–7 | **High** | v0.12.0 |
+| [05](sprint-05-js-sast.md) ✅ | 2.2 | JS/TS regex SAST (6 rules) | 4 | Med | v0.12.0 |
+| [06](sprint-06-iac-sast.md) ✅ | 2.3 | IaC scanner (Dockerfile + k8s) | 4 | Med | v0.12.0 |
+| [07](sprint-07-fendix-serve.md) ✅ | 3.1 | `fendix serve` REST API (in-memory) | 5 | **High** | v0.12.1 |
+| [08](sprint-08-oidc.md) ✅ | 3.2 | OIDC login for `fendix serve` | 3 | Med | v0.12.1 |
+| [09](sprint-09-offline-mode.md) ✅ | 4.1 | Offline mode + `fendix db` | 4 | **High** | v0.13.0 |
+| [10](sprint-10-arabic-html.md) ✅ | 4.2 | Arabic HTML report (i18n) | 2 | Low | v0.13.0 |
+| [11](sprint-11-pdf-report.md) ✅ | 4.3 | PDF executive report | 4 | Med | v0.13.0 |
 | 12 | 4.4 | NCA ECC compliance report | — | **DEFERRED** | — |
-| [13](sprint-13-github-app-handler.md) | 5.1 | GitHub App handler glue | 4 | Med | v0.13.1 |
-| [14](sprint-14-jira.md) | 5.2 | Jira integration | 3 | Med | v0.13.1 |
-| [15](sprint-15-slack-teams.md) | 5.3 | Slack / Teams webhook alerts | 2 | Low | v0.13.1 |
-| [16](sprint-16-benchmarks.md) | 6.1 | Enterprise benchmark harness | 1.5 | Low | v0.14.0 |
-| [17](sprint-17-ci-templates.md) | 6.2 | GitLab + CircleCI templates | 1 | Low | v0.14.0 |
-| [18](sprint-18-semgrep-rules.md) | 6.3 | Semgrep rule pack expansion | 2 | Low | v0.14.0 |
+| [13](sprint-13-github-app-handler.md) ✅ | 5.1 | GitHub App handler glue | 4 | Med | v0.13.1 |
+| [14](sprint-14-jira.md) ✅ | 5.2 | Jira integration | 3 | Med | v0.13.1 |
+| [15](sprint-15-slack-teams.md) ✅ | 5.3 | Slack / Teams webhook alerts | 2 | Low | v0.13.1 |
+| [16](sprint-16-benchmarks.md) ✅ | 6.1 | Enterprise benchmark harness | 1.5 | Low | v0.14.0 |
+| [17](sprint-17-ci-templates.md) ✅ | 6.2 | GitLab + CircleCI templates | 1 | Low | v0.14.0 |
+| [18](sprint-18-semgrep-rules.md) ✅ | 6.3 | Semgrep rule pack expansion | 2 | Low | v0.14.0 |
 
 **Total: 50–53 days.**
 

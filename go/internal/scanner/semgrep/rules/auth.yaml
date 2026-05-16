@@ -73,11 +73,17 @@ rules:
       confidence: LOW
       fendix_severity: MEDIUM
 
-  # Rule 4: jwt.decode called without verify_signature / algorithms
+  # Rule 4: jwt.decode called without verify_signature / algorithms.
+  # Patterns are single-quoted to make the inline {"verify_signature": ...}
+  # JSON valid YAML — without quotes, the embedded ': ' triggers
+  # 'mapping values are not allowed in this context' in strict YAML
+  # parsers (yaml.v3, ruamel-yaml --rt). Semgrep itself was tolerant of
+  # the unquoted form, but Sprint 18's rulepack-catalog audit test in
+  # scanner_rulepack_test.go can't parse the file otherwise.
   - id: python-jwt-decode-no-verification
     patterns:
-      - pattern: jwt.decode($TOKEN, options={"verify_signature": False, ...}, ...)
-      - pattern: jwt.decode($TOKEN, algorithms=["none"], ...)
+      - pattern: 'jwt.decode($TOKEN, options={"verify_signature": False, ...}, ...)'
+      - pattern: 'jwt.decode($TOKEN, algorithms=["none"], ...)'
     message: >
       JWT decoded with signature verification disabled.
       This allows an attacker to forge tokens.
@@ -89,3 +95,60 @@ rules:
       cwe: CWE-347
       confidence: HIGH
       fendix_severity: CRITICAL
+
+  # (Rule 5 — django-fbv-missing-auth-decorator — was removed in v0.13.1.
+  # The original pattern attempted to match `@urls.path(...)` as a
+  # decorator, but `urls.path()` is the path-registration helper in
+  # urls.py and never decorates a view function. The rule could never
+  # fire on real Django code; carried to Sprint 05.5 for a redesign
+  # that pattern-matches "view function whose first arg is `request`
+  # and which has no auth-style decorator anywhere above it.")
+
+  # Rule 6 (Sprint 18): Flask route with no auth decorator above it.
+  # FP class: views that authenticate via Flask-Login's session loading + manual
+  # `current_user.is_authenticated` check inside the handler body will be flagged.
+  # FN class: a project-specific decorator whose name doesn't match the
+  # pattern-not list will be flagged. Confidence: LOW for the same reasons.
+  - id: flask-route-no-auth-decorator
+    patterns:
+      - pattern: |
+          @$APP.route(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$APP.route(...)
+          @login_required
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$APP.route(...)
+          @requires_auth
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$APP.route(...)
+          @jwt_required(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$APP.route(...)
+          @auth.login_required
+          def $FUNC(...):
+              ...
+      # Skip the rule when login_required is the @app.route()-level decorator —
+      # rule 1 (flask-missing-login-required) already handles that shape.
+      - pattern-not: |
+          @login_required
+          def $FUNC(...):
+              ...
+    message: >
+      Flask route '$FUNC' has no auth-style decorator (@login_required,
+      @requires_auth, @jwt_required, or @auth.login_required) directly above
+      the @app.route(...) line. Confirm authentication is enforced.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: auth
+      cwe: CWE-306
+      confidence: LOW
+      fendix_severity: MEDIUM

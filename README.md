@@ -391,6 +391,20 @@ Severity mapping:
 
 ## CI/CD Integration
 
+Fendix's `init` command generates drop-in templates for three CI
+systems:
+
+```bash
+fendix init                 # auto-detect (looks for .github/, .gitlab-ci.yml, .circleci/)
+fendix init --ci github     # explicit
+fendix init --ci gitlab     # writes .gitlab-ci.fendix.yml + NEXT-STEPS-fendix.md
+fendix init --ci circleci   # writes .circleci/fendix-config.yml + NEXT-STEPS-fendix.md
+```
+
+For gitlab/circleci, the NEXT-STEPS file explains how to wire the
+snippet into your main CI config (GitLab via `include:`, CircleCI by
+merging into your single `config.yml`).
+
 ### GitHub Actions
 
 ```yaml
@@ -546,7 +560,7 @@ Injection checks (last 3 rows) require `--enable-active`.
 | Check | What It Detects |
 |---|---|
 | **Secrets** | AWS keys, private keys, hardcoded passwords, API keys, JWT secrets, DB URLs, bearer tokens |
-| **Semgrep Rules** | Missing auth decorators, SQL string concatenation, exec/eval with user input, subprocess shell=True, hardcoded JWT secrets |
+| **Semgrep Rules** | 24 bundled rules across auth (Flask/Django/FastAPI missing decorators, JWT verification disabled), injection (SQL, command, eval/exec, Django ORM raw, SSTI, pickle.loads, yaml.load), secrets (hardcoded credentials/DB URLs, AWS keys, GCP service accounts, Slack webhooks, PEM private keys), and crypto (MD5/SHA1 for passwords, legacy ciphers, `random` used for token generation) |
 | **Spec Parser** | Missing security schemes in OpenAPI spec, API keys in query params, unauthenticated endpoints |
 | **AST Analysis** | Python and JavaScript security-relevant patterns via AST parsing |
 | **Dependencies** | Known CVEs in PyPI and npm packages |
@@ -668,7 +682,8 @@ class MyAnalyzer:
 
 ### Adding a Semgrep rule
 
-Add a YAML rule file to `python/rules/`:
+Add a YAML rule file to `go/internal/scanner/semgrep/rules/` (the
+embedded rule pack — //go:embed picks up every `.yaml` at build time):
 
 ```yaml
 rules:

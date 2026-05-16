@@ -151,6 +151,35 @@ func plural(n int, singular, pluralForm string) string {
 	return itoa(n) + " " + pluralForm
 }
 
+// DetectCI returns the CI system detected in rootDir, or "" when none
+// matches. Used by Run() when Options.CI is empty (the default).
+// Ordering deliberately prefers GitHub when multiple markers are
+// present, on the assumption that a project shipping multiple CI
+// configurations has the GitHub workflow as its primary; a user who
+// wants a different default passes --ci explicitly. (Sprint 17.)
+func DetectCI(rootDir string) string {
+	if isDir(filepath.Join(rootDir, ".github")) {
+		return CIGitHub
+	}
+	if isFile(filepath.Join(rootDir, ".gitlab-ci.yml")) {
+		return CIGitLab
+	}
+	if isDir(filepath.Join(rootDir, ".circleci")) {
+		return CICircleCI
+	}
+	return ""
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func isFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 // itoa is a tiny strconv.Itoa to avoid importing strconv just for this.
 func itoa(n int) string {
 	if n == 0 {

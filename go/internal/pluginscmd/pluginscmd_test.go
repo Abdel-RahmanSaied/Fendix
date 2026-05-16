@@ -204,12 +204,30 @@ func TestRunInstall_NameOverride(t *testing.T) {
 
 func TestRunInstall_RejectsUnsafeDerivedName(t *testing.T) {
 	withTempRoot(t)
-	// "../etc/passwd" → after stripping etc., derived = "passwd" — fine.
-	// But "" (the empty derived from "" URL) is what we want to catch.
+	// validInstallNameRe rejects names with path separators, leading
+	// dots, or non-alphanumeric characters. Drive the validator by
+	// passing a malformed --name override (URL is well-formed so the
+	// transport check passes; the derived-name validator is what
+	// catches the unsafe name).
 	var out, errOut bytes.Buffer
-	err := runInstall(&out, &errOut, "", "")
+	err := runInstall(&out, &errOut, "https://github.com/me/my-plugin.git", "../escape")
 	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
 		t.Errorf("err = %v; want 'invalid characters'", err)
+	}
+}
+
+func TestRunInstall_RejectsEmptyURL(t *testing.T) {
+	// The empty-URL case is now caught by the transport validator
+	// (it would previously fall through to the name validator). Pin
+	// both contracts so refactors keep early-rejecting.
+	withTempRoot(t)
+	var out, errOut bytes.Buffer
+	err := runInstall(&out, &errOut, "", "")
+	if err == nil {
+		t.Fatal("expected empty URL to be rejected")
+	}
+	if !strings.Contains(err.Error(), "empty") && !strings.Contains(err.Error(), "unsupported transport") {
+		t.Errorf("err = %v; want one of 'empty' or 'unsupported transport'", err)
 	}
 }
 

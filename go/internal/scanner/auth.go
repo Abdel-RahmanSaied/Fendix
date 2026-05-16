@@ -301,10 +301,32 @@ func base64URLEncode(data []byte) string {
 	return strings.TrimRight(base64.URLEncoding.EncodeToString(data), "=")
 }
 
+// mustJSON marshals a value that is *statically* guaranteed to be
+// json.Marshal-safe: every call site in this file passes a
+// map[string]string or map[string]interface{} where the values are
+// strings, int64 (from time.Unix), or other primitives. None of
+// these shapes can fail json.Marshal in any Go release.
+//
+// We previously panicked here. That was correct in the sense that
+// the error truly cannot happen, but a panic in a scanner that runs
+// in CI as a non-root process surfaces as an exit-code-2 + stack
+// trace, which is a worse end-user experience than emitting an
+// empty payload and letting the JWT bypass probe still go out
+// (where the receiving auth handler will reject it on its own
+// merits). If json.Marshal ever does fail here, we log at error
+// level and return an empty byte slice; the resulting probe is
+// still a valid security-relevant request (a malformed JWT).
 func mustJSON(v interface{}) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("json.Marshal: %v", err))
+		// Defensive — see GoDoc above. Not reachable from any
+		// current call site, but if a future call passes a
+		// non-marshalable value (e.g. a channel) this keeps the
+		// scanner alive instead of crash-exiting the whole process.
+		slog.Error("auth: json.Marshal on a value that should be statically safe",
+			"err", err,
+			"hint", "review callers of mustJSON in scanner/auth.go")
+		return []byte("{}")
 	}
 	return b
 }

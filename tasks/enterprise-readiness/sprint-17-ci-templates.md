@@ -166,4 +166,89 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.**
+**Started:** 2026-05-15 (AI implementer, plan-finish session)
+**Branch:** `plan-finish-phases-2-6`
+**Status:** done
+**Actual effort:** ~45 minutes vs 1-day estimate.
+
+**Surprises:**
+
+- **The brief's `gl-sast-report.json` is named for GitLab SAST report
+  ingestion conventions, but the content is SARIF.** Used `--format
+  sarif` in the template; GitLab Premium+ tiers consume the file as a
+  SAST report via `reports.sast:`. Free tier still gets it as an
+  artifact. No behaviour issue.
+- **CircleCI's lack of multi-file config merge** means the gitlab/
+  circleci paths both emit a `NEXT-STEPS-fendix.md` to explain wiring
+  (`include:` for GitLab, manual merge for CircleCI). The brief
+  treated this as a one-liner but it's load-bearing — a user who
+  skips it sees no scan running and silently no findings.
+- **README's existing CI section was thin.** Added a short multi-CI
+  bootstrap snippet at the top of the section.
+
+**Bench:** Sprint 17 only changed `init` (one-shot file emit) and
+templates. `make bench` unaffected.
+
+**Tests added:** 10 new tests in `init_ci_test.go`:
+- `TestDetectCI_GitHub`, `TestDetectCI_GitLab`, `TestDetectCI_CircleCI`,
+  `TestDetectCI_NoneDetected`, `TestDetectCI_GitHubPreferredOverOthers`
+- `TestRun_GitLabWritesExpectedFiles`,
+  `TestRun_CircleCIWritesExpectedFiles`
+- `TestRun_AutoDetectsGitLab` (the full Run path with auto-detection)
+- `TestRun_RejectsUnsupportedCI` (negative-path coverage for `--ci jenkins`)
+- `TestAllTemplatesParseAsYAML` (every emitted `.yml` round-trips
+  through `gopkg.in/yaml.v3` — guards against typos shipping in a
+  release)
+- `TestRun_PrintGitLabIncludesIncludeInstruction` (--print surfaces
+  the `include:` instruction from NEXT-STEPS)
+
+All existing initcmd tests still pass.
+
+**Manual DoD evidence:**
+
+```
+$ bin/fendix init --ci gitlab          # in a fresh tmpdir
+✓ Detected: Generic — no OpenAPI spec found at common paths
+✓ CI system: gitlab
+✓ Wrote .gitlab-ci.fendix.yml
+✓ Wrote NEXT-STEPS-fendix.md
+✓ Wrote .fendix.yaml
+✓ Wrote .fendix-ignore
+
+Next steps:
+  git add .gitlab-ci.fendix.yml NEXT-STEPS-fendix.md .fendix.yaml .fendix-ignore
+  git commit -m "Add Fendix security scanning"
+
+Run a scan now:
+  fendix scan --url https://api.example.com
+
+Wiring instructions: see NEXT-STEPS-fendix.md (just written).
+```
+
+**Files touched:**
+
+- `go/internal/initcmd/init.go` — refactor to dispatch by CI system,
+  add `Options.CI`, `SupportedCIs`, `ErrUnsupportedCI`, `resolveCI`.
+  ~80 LOC added.
+- `go/internal/initcmd/detect.go` — `DetectCI()` + `isDir`/`isFile`
+  helpers. ~25 LOC added.
+- `go/internal/initcmd/templates/gitlab-ci.yml` — NEW.
+- `go/internal/initcmd/templates/circleci-config.yml` — NEW.
+- `go/internal/initcmd/templates/next-steps-gitlab.md` — NEW.
+- `go/internal/initcmd/templates/next-steps-circleci.md` — NEW.
+- `go/internal/initcmd/init_ci_test.go` — NEW, 10 tests.
+- `go/cmd/fendix/main.go` — `--ci` flag on `init` subcommand;
+  Long-doc explains all three CIs.
+- `README.md` — multi-CI bootstrap snippet in the CI/CD section.
+- `CHANGELOG.md` — v0.14.0 Sprint-17 entry.
+- `tasks/enterprise-readiness/PLAN.md` — Sprint 17 ✅.
+
+**Follow-ups created:**
+
+- The two from the sprint file's existing Follow-ups (Bitbucket
+  Pipelines + Azure DevOps templates as Sprint 17.5; CircleCI orb as
+  Sprint 17.6) remain open.
+
+**Hard-rule compliance:** No new deps. No CGo. No CLI-flag renames
+(only added `--ci`). No `.fendix.yaml` key changes. No Finding-struct
+changes. `.gitkeep` build artifact left uncommitted.

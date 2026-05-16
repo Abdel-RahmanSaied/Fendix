@@ -273,4 +273,19 @@ Standard DoD plus:
 
 ## Status
 
-**Not started.**
+**Status:** **closed by reference** in the plan-finish session,
+commit [`75a939a`](../../../../commit/75a939a) — `docs(plan): close Sprints 07/08 by reference + final hand-off`.
+
+**Resolution:** the persistence and REST-API story moved to the
+sibling [`fendix-backend`](../../../fendix-backend) Django + DRF
+repo (Postgres 16 + Redis + Celery 5.4), per [`DECISIONS.md` D1
+resolution](DECISIONS.md#L63-L79). The `fendix` CLI in this repo
+stays a CLI — building a parallel in-memory `fendix serve` HTTP
+surface here would have duplicated work the sibling repo already
+does properly. If a customer specifically needs a single-binary
+serve mode in the future (no fendix-backend dependency), this sprint
+can be re-opened.
+
+**Status section backfill (2026-05-16):** Section was empty at ship
+time (DoD #7 not honored). The "closed by reference" decision is in
+DECISIONS.md, but the sprint file itself wasn't updated.

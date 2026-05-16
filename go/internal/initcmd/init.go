@@ -8,8 +8,20 @@ import (
 	"path/filepath"
 )
 
-//go:embed templates/workflow.yml templates/fendix-ignore.txt templates/fendix-yaml.txt
+//go:embed templates/workflow.yml templates/fendix-ignore.txt templates/fendix-yaml.txt templates/gitlab-ci.yml templates/circleci-config.yml templates/next-steps-gitlab.md templates/next-steps-circleci.md
 var templates embed.FS
+
+// CI identifies the CI system whose templates `init` will emit.
+// Sprint 17 added gitlab and circleci alongside the original github.
+const (
+	CIGitHub   = "github"
+	CIGitLab   = "gitlab"
+	CICircleCI = "circleci"
+)
+
+// SupportedCIs is the canonical set `--ci` accepts. Used by the CLI
+// flag validator and by tests that iterate over every shape.
+var SupportedCIs = []string{CIGitHub, CIGitLab, CICircleCI}
 
 // Options controls Run's behavior. Zero-value defaults are sensible.
 type Options struct {
@@ -24,6 +36,12 @@ type Options struct {
 	// Print writes generated content to Out instead of disk. Useful for
 	// previewing what `fendix init` would do before committing.
 	Print bool
+
+	// CI selects which CI-system templates to emit (Sprint 17). Empty
+	// means auto-detect from project files (see DetectCI in detect.go).
+	// Must be one of SupportedCIs or empty; invalid values cause Run
+	// to return ErrUnsupportedCI.
+	CI string
 
 	// Out is where status lines and (when Print is true) generated
 	// content go. Defaults to os.Stdout when nil.
@@ -47,6 +65,16 @@ func (e *ErrFileExists) Error() string {
 	return fmt.Sprintf("refusing to overwrite existing file: %s (rerun with --force to overwrite)", e.Path)
 }
 
+// ErrUnsupportedCI is returned when Options.CI is set to a value
+// outside SupportedCIs.
+type ErrUnsupportedCI struct {
+	CI string
+}
+
+func (e *ErrUnsupportedCI) Error() string {
+	return fmt.Sprintf("unsupported --ci value %q: must be one of github, gitlab, circleci", e.CI)
+}
+
 // Run executes `fendix init` end-to-end: detect → plan → write. It
 // emits human-readable status lines to Options.Out. On success, the
 // project will have a committable CI workflow + a starter ignore file.
@@ -67,10 +95,16 @@ func Run(opts Options) error {
 		root = wd
 	}
 
+	ci, err := resolveCI(opts.CI, root)
+	if err != nil {
+		return err
+	}
+
 	det := Detect(root)
 	fmt.Fprintf(opts.Out, "✓ Detected: %s\n", det.SummaryLine())
+	fmt.Fprintf(opts.Out, "✓ CI system: %s\n", ci)
 
-	files, err := planFiles()
+	files, err := planFiles(ci)
 	if err != nil {
 		return err
 	}
@@ -104,20 +138,51 @@ func Run(opts Options) error {
 
 	fmt.Fprintln(opts.Out)
 	fmt.Fprintln(opts.Out, "Next steps:")
-	fmt.Fprintln(opts.Out, "  git add .github/workflows/fendix.yml .fendix.yaml .fendix-ignore")
-	fmt.Fprintln(opts.Out, "  git commit -m \"Add Fendix security scanning\"")
+	printAddCommand(opts.Out, ci, files)
 	fmt.Fprintln(opts.Out)
 	fmt.Fprintln(opts.Out, "Run a scan now:")
 	fmt.Fprintln(opts.Out, "  fendix scan --url https://api.example.com")
+	if ci != CIGitHub {
+		fmt.Fprintln(opts.Out)
+		fmt.Fprintln(opts.Out, "Wiring instructions: see NEXT-STEPS-fendix.md (just written).")
+	}
 
 	return nil
 }
 
-func planFiles() ([]File, error) {
-	workflow, err := templates.ReadFile("templates/workflow.yml")
-	if err != nil {
-		return nil, fmt.Errorf("reading embedded workflow template: %w", err)
+// resolveCI returns the CI system to emit templates for. An explicit
+// opts.CI wins; otherwise DetectCI inspects the project; the final
+// fallback is GitHub (the most common case for new projects).
+func resolveCI(explicit, rootDir string) (string, error) {
+	if explicit != "" {
+		for _, s := range SupportedCIs {
+			if explicit == s {
+				return explicit, nil
+			}
+		}
+		return "", &ErrUnsupportedCI{CI: explicit}
 	}
+	if got := DetectCI(rootDir); got != "" {
+		return got, nil
+	}
+	return CIGitHub, nil
+}
+
+// printAddCommand emits the per-CI `git add` invocation as part of
+// the user-facing next-steps block.
+func printAddCommand(w io.Writer, ci string, files []File) {
+	switch ci {
+	case CIGitLab:
+		fmt.Fprintln(w, "  git add .gitlab-ci.fendix.yml NEXT-STEPS-fendix.md .fendix.yaml .fendix-ignore")
+	case CICircleCI:
+		fmt.Fprintln(w, "  git add .circleci/fendix-config.yml NEXT-STEPS-fendix.md .fendix.yaml .fendix-ignore")
+	default:
+		fmt.Fprintln(w, "  git add .github/workflows/fendix.yml .fendix.yaml .fendix-ignore")
+	}
+	fmt.Fprintln(w, "  git commit -m \"Add Fendix security scanning\"")
+}
+
+func planFiles(ci string) ([]File, error) {
 	policy, err := templates.ReadFile("templates/fendix-yaml.txt")
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded policy template: %w", err)
@@ -126,11 +191,49 @@ func planFiles() ([]File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded ignore template: %w", err)
 	}
-	return []File{
-		{Path: ".github/workflows/fendix.yml", Content: workflow},
+
+	out := []File{
 		{Path: ".fendix.yaml", Content: policy},
 		{Path: ".fendix-ignore", Content: ignore},
-	}, nil
+	}
+
+	switch ci {
+	case CIGitLab:
+		gl, err := templates.ReadFile("templates/gitlab-ci.yml")
+		if err != nil {
+			return nil, fmt.Errorf("reading embedded gitlab template: %w", err)
+		}
+		steps, err := templates.ReadFile("templates/next-steps-gitlab.md")
+		if err != nil {
+			return nil, fmt.Errorf("reading embedded gitlab next-steps: %w", err)
+		}
+		out = append([]File{
+			{Path: ".gitlab-ci.fendix.yml", Content: gl},
+			{Path: "NEXT-STEPS-fendix.md", Content: steps},
+		}, out...)
+	case CICircleCI:
+		cc, err := templates.ReadFile("templates/circleci-config.yml")
+		if err != nil {
+			return nil, fmt.Errorf("reading embedded circleci template: %w", err)
+		}
+		steps, err := templates.ReadFile("templates/next-steps-circleci.md")
+		if err != nil {
+			return nil, fmt.Errorf("reading embedded circleci next-steps: %w", err)
+		}
+		out = append([]File{
+			{Path: ".circleci/fendix-config.yml", Content: cc},
+			{Path: "NEXT-STEPS-fendix.md", Content: steps},
+		}, out...)
+	default: // github
+		workflow, err := templates.ReadFile("templates/workflow.yml")
+		if err != nil {
+			return nil, fmt.Errorf("reading embedded workflow template: %w", err)
+		}
+		out = append([]File{
+			{Path: ".github/workflows/fendix.yml", Content: workflow},
+		}, out...)
+	}
+	return out, nil
 }
 
 func printFiles(w io.Writer, files []File) error {

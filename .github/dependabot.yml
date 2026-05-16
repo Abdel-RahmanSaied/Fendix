@@ -1,0 +1,89 @@
+# Dependabot config — keeps every dependency surface current.
+#
+# All third-party actions in .github/workflows/*.yml are pinned to
+# 40-char commit SHAs (see docs/threat-model.md §T6). A pinned SHA
+# never moves unless someone explicitly bumps it, which means stale
+# pins are an active maintenance burden. Dependabot opens a PR per
+# bumpable dep on a weekly cadence; the SECURITY.md verify-blob
+# commands stay valid as long as the bumps are reviewed.
+#
+# Ecosystems covered:
+#   - github-actions  → .github/workflows/*.yml
+#   - gomod           → go/go.mod
+#   - pip             → python/requirements.txt
+#   - docker          → Dockerfile, Dockerfile.app
+#
+# Schedule is weekly Monday so PRs land before the human work week
+# rather than mid-flight. Adjust if you'd rather batch monthly.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(actions)"
+    groups:
+      # Bundle related action bumps into one PR per group so reviewers
+      # see the docker family or the actions family as a unit, not as
+      # five separate PRs landing the same week.
+      actions-core:
+        patterns:
+          - "actions/*"
+      docker-family:
+        patterns:
+          - "docker/*"
+      sigstore:
+        patterns:
+          - "sigstore/*"
+
+  - package-ecosystem: gomod
+    directory: "/go"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+    # Security-critical deps (e.g. golang.org/x/vuln drives all dep-CVE
+    # scanning; gopkg.in/yaml.v3 parses untrusted .fendix.yaml) should
+    # never silently major-bump. Keep semver-major bumps as their own
+    # PR so the review is forced.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: pip
+    directory: "/python"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps-py)"
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(docker)"
