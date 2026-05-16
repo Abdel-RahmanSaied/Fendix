@@ -37,9 +37,26 @@ type scanJob struct {
 
 // Run executes all checks against all endpoints using the worker pool.
 // Returns all collected findings.
+//
+// Channel sizing: a bounded buffer keeps memory linear in pool size,
+// not in the N×M job matrix. Before: `make(chan ..., len(endpoints)*len(wp.checks))`
+// — on a 10k-endpoint × 8-check scan that's 80k slots queued ahead of
+// any worker draining. After: `wp.workers*4` is enough to keep all
+// workers fed during a tail-end drain without amplifying memory under
+// `--max-endpoints 0`.
+//
+// Context cancellation: the producer also selects on ctx.Done() so a
+// long-running scan can be cancelled mid-flight; previously the
+// producer relied on the over-sized buffer never blocking, masking
+// the lack of a cancel path. Workers continue to honour ctx on each
+// loop iteration.
 func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints []scanner.Endpoint) []models.Finding {
-	jobs := make(chan scanJob, len(endpoints)*len(wp.checks))
-	results := make(chan []models.Finding, len(endpoints)*len(wp.checks))
+	bufSize := wp.workers * 4
+	if bufSize < 1 {
+		bufSize = 1
+	}
+	jobs := make(chan scanJob, bufSize)
+	results := make(chan []models.Finding, bufSize)
 
 	var wg sync.WaitGroup
 	for i := 0; i < wp.workers; i++ {
@@ -55,22 +72,36 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 
 				findings := job.check(ctx, cfg, job.endpoint)
 				if len(findings) > 0 {
-					results <- findings
+					select {
+					case results <- findings:
+					case <-ctx.Done():
+						return
+					}
 				}
 
 				if wp.delayMs > 0 {
-					time.Sleep(time.Duration(wp.delayMs) * time.Millisecond)
+					select {
+					case <-time.After(time.Duration(wp.delayMs) * time.Millisecond):
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}(i)
 	}
 
-	for _, ep := range endpoints {
-		for _, check := range wp.checks {
-			jobs <- scanJob{check: check, endpoint: ep}
+	go func() {
+		defer close(jobs)
+		for _, ep := range endpoints {
+			for _, check := range wp.checks {
+				select {
+				case jobs <- scanJob{check: check, endpoint: ep}:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
-	}
-	close(jobs)
+	}()
 
 	go func() {
 		wg.Wait()

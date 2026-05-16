@@ -886,11 +886,25 @@ func (c *Crawler) crawlHTMLLinks(ctx context.Context, depth int) ([]Endpoint, er
 	var endpoints []Endpoint
 
 	const maxBytes = 5 * 1024 * 1024 // 5 MB per page
+
+	// cap is applied two places: here (early-exit the BFS the moment we
+	// reach the budget, so we stop fetching pages and parsing HTML) and
+	// again post-walk in CrawlEndpoints as the canonical truncate. The
+	// post-walk truncate stays as belt-and-suspenders against future
+	// callers, but for `--crawl-depth ≥ 2` against large sites the
+	// in-loop check saves real CPU + bandwidth.
+	cap := c.cfg.MaxEndpoints
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
 			return endpoints, ctx.Err()
 		default:
+		}
+		if cap > 0 && len(endpoints) >= cap {
+			slog.Debug("html-crawl reached --max-endpoints; stopping BFS",
+				"endpoints", len(endpoints), "cap", cap,
+				"queue_remaining", len(queue))
+			break
 		}
 
 		cur := queue[0]
@@ -903,6 +917,11 @@ func (c *Crawler) crawlHTMLLinks(ctx context.Context, depth int) ([]Endpoint, er
 		}
 
 		for _, raw := range extractHTMLLinks(body) {
+			// Inner short-circuit: don't keep processing links from
+			// the current page once we're at cap.
+			if cap > 0 && len(endpoints) >= cap {
+				break
+			}
 			// Drop non-http(s) schemes early: `mailto:`, `tel:`, `javascript:`,
 			// `data:` URLs are common in real HTML but not scannable as endpoints.
 			if hasUnscannableScheme(raw) {
