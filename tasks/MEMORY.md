@@ -480,6 +480,62 @@ packaging>=23.0               — Dependency version comparison
 
 ## Last Session Summary
 
+**Date:** 2026-05-18 (frontend sync — v0.14.1 full catch-up across all 3 repos; cross-compiled linux/arm64 engine binary for backend)
+
+**Session goal:** Sync `fendix_frontend` from v0.11.0 → v0.14.1 (all enterprise-readiness sprints: textscan SAST, PDF reports, offline mode, Jira/Slack/Teams, GitLab/CircleCI CI templates, Semgrep 24-rule pack). Verify frontend build passes. Cross-compile engine binary for backend's docker-compose bind mount.
+
+**Accomplished:**
+
+1. **Version literals** — bumped `StatsBar.tsx` (v0.11.0 → v0.14.1, 15+ → 20+ categories, 720+ → 800+ tests), `LandingFooter.tsx`, `app/lib/releases.ts` (all v0.11.0 → v0.14.1).
+
+2. **Hero banner** — `app/page.tsx` updated: `v0.11.0 — FP discipline + path-traversal reachability` → `v0.14.1 — enterprise-readiness complete: Go/JS/IaC SAST, PDF reports, Jira + Slack integrations`.
+
+3. **Changelog page** (`app/changelog/page.tsx`) — 6 new entries prepended: v0.14.1 (Enterprise-readiness complete), v0.14.0 (Benchmark, CI templates, Semgrep 9→24), v0.13.1 (Jira + Slack/Teams), v0.13.0 (offline CVE, Arabic HTML, PDF), v0.12.0 (textscan SAST), v0.11.1 (pip-audit, OSV batch, `fendix verify` exit codes). "Unreleased" → "Engine evaluation".
+
+4. **CLI reference** (`app/cli-reference/page.tsx`) — new commands: `fendix db update/list/verify`, `fendix jira`, `fendix notify`; new scan flags: `--lang`, `--classification`, `--offline`, `--offline-db`, `--ci`; updated `--format` (added `pdf`); 2 new code examples (PDF+Jira, offline scan).
+
+5. **Checks/docs page** (`app/docs/checks/page.tsx`) — new "Textscan (Go/JS/IaC)" white-box entry (16 rules); "Semgrep Rules" entry updated 9→24 (v0.14+).
+
+6. **Integrations page** (`app/integrations/page.tsx`) — GitLab CI updated to reference `fendix init --ci gitlab` (v0.14+); new CircleCI snippet (`fendix init --ci circleci`); new Jira sync snippet (`fendix jira` with env vars); new Slack+Teams snippet (`fendix notify` with `--min-severity`); callout updated "New in v0.5/v0.14" to mention multi-CI templates; Docker image references corrected to `ghcr.io/abdel-rahmansaied/fendix:latest`.
+
+7. **Frontend build** — `npm run build` ✓ (34 static pages, 0 type errors, Turbopack).
+
+8. **Cross-compiled engine binary** for backend's linux/arm64 docker-compose bind mount: `go/cmd/fendix/` → `bin/fendix-linux-arm64` (19 MB ELF aarch64).
+
+**Files modified this session:**
+
+`fendix_frontend`:
+
+- `app/components/StatsBar.tsx` (version + stats bump)
+- `app/components/LandingFooter.tsx` (version bump)
+- `app/lib/releases.ts` (version bump, replace_all)
+- `app/page.tsx` (hero banner text)
+- `app/changelog/page.tsx` (6 new entries, "Unreleased" → "Engine evaluation")
+- `app/cli-reference/page.tsx` (5 new commands, 5 new flags, 2 new examples)
+- `app/docs/checks/page.tsx` (Textscan entry + Semgrep 24-rule update)
+- `app/integrations/page.tsx` (GitLab + CircleCI + Jira + Slack/Teams snippets; callout update)
+
+`fendix-engine`:
+
+- `bin/fendix-linux-arm64` (NEW cross-compiled binary, 19 MB)
+
+**Build state at session end:**
+
+- Frontend: `npm run build` ✓ (34 pages, no errors)
+- Engine cross-compile: `GOOS=linux GOARCH=arm64 go build` ✓ from `go/` subdirectory
+- Backend: already synced to v0.14.1 via prior PR #5 "sync/engine-v0.14"; no changes needed this session
+
+**Next session should start with:**
+
+1. **Optional: CI workflow for the accuracy harness** — wire `scripts/accuracy/run.py --output-json` into a GitHub Actions job with F1 ≥ 0.95 gate (carry-over from 2026-05-13 session).
+2. **Optional: PyGoat ground-truth manifest** — ~2 hours of human triage; enables precision/recall on a real Django codebase.
+3. **Optional: NodeGoat SAST target** — second real-world SAST benchmark exercising JS heuristics.
+4. **Optional: `fendix init --ci circleci/gitlab` smoke-test** — run against a dummy repo and verify the generated YAML files are valid.
+
+---
+
+## Earlier Session (2026-05-13 — engine evaluation arc — 3-track real-world accuracy scorecard, 5 real engine improvements surfaced + shipped, comprehensive evaluation report published)
+
 **Date:** 2026-05-13 (engine evaluation arc — 3-track real-world accuracy scorecard, 5 real engine improvements surfaced + shipped, comprehensive evaluation report published)
 
 **Session goal:** Operator request to "test fendix in real world cases to evaluate it and check the accuracy" after Phase 17d shipped (v0.11.0). User picked "Whitebox accuracy with labeled fixtures" from the scope options. Scope expanded mid-session to a full 3-track evaluation (synthetic + Juice Shop + PyGoat) after the first track produced engine-fix signals that demanded follow-up real-world validation.
