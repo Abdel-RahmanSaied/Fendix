@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-24
+
+**Headline:** real-world accuracy pass. Closes five gaps surfaced by a
+fendix-vs-bandit-vs-semgrep-vs-pip-audit benchmark on Vulnerable-Flask-App,
+django.nV, dvpwa, a CVE-pinned `requirements.txt`, and `psf/requests` v2.32.4
+(clean-code FP baseline).
+
+The headline outcome: `fendix scan --code <path>` now exercises the AST
+analyzer by default — that work was sitting unreachable behind a flag in
+v0.14.1. On the vulnerable-Flask corpus this lifts findings from 103 to
+119 without touching the CLI invocation. On `psf/requests` the FP count
+on path-traversal sinks drops from 2 to 0.
+
+Commits in this release:
+
+- `914c6f7` — three accuracy fixes (CLI wiring, pip-audit failure mode, os.path FP)
+- `91c38c2` — config-style hardcoded-secret pattern + `fendix engine` subcommand
+- `8cb258c` — preceding analyzer gap fixes from the E2E audit (alias-resolved pickle, os.path.join sinks, 3 missing PyPI CVEs)
+
+### Added
+
+- **`fendix engine` subcommand** (`info` / `sync`). `engine info` shows
+  which Python engine path resolves and from where (`FENDIX_ENGINE` env /
+  embedded payload / local `python/`), plus the version stamp on disk.
+  `engine sync` force-reextracts the embedded engine to `~/.fendix/engine/`
+  — clears, repopulates, and re-stamps — so users can recover from
+  hand-edited or partially-deleted state without reinstalling. See
+  [go/cmd/fendix/engine.go](go/cmd/fendix/engine.go).
+- **`HARDCODED_SECRET_CONFIG` secret pattern** in the native-Go secrets
+  scanner. Catches config-style assignments the bare `HARDCODED_PASSWORD`
+  regex missed: `app.config['SECRET_KEY_HMAC'] = 'secret'` (subscript +
+  compound suffix), `app.secret_key = 'X'` (attribute style), bare
+  `SESSION_SECRET = "..."` with values as short as 4 chars (below the
+  20-char floor of the API-key regex). Narrow keyword family
+  (`secret_key | jwt_secret | hmac_key | app_secret | encryption_key |
+  signing_key | csrf_secret | session_secret | cookie_secret |
+  api_secret`) keeps the false-positive rate at zero on `psf/requests`.
+  Orchestrator-side `Deduplicate` collapses multiple per-file hits into
+  one finding with `AffectedEndpoints` listing every line.
+- **3 missing PyPI CVEs** in the curated fallback list — PyYAML
+  CVE-2020-14343 (safe ≥ 5.4), requests CVE-2023-32681 (safe ≥ 2.31.0),
+  lxml CVE-2021-28957 (safe ≥ 4.6.3). Closes a gap where the offline /
+  pip-audit-unavailable path missed CVEs that OSV.dev had.
+- **`os.path.join` / `os.path.abspath` / `os.path.expanduser` /
+  `os.path.expandvars` as path-traversal sinks** in the Python AST
+  analyzer. Catches the standalone `os.path.join(base, user_input)`
+  pattern that previously slipped through (the join was tracked through
+  the taint chain only when fed into `open()` / `send_file()`).
+- **Import-alias resolution for pickle and yaml** in the AST analyzer.
+  `import pickle as p; p.loads(blob)` and `import yaml as y; y.load(s)`
+  are now detected via a `_module_aliases` map populated by
+  `visit_Import`. Closes an evasion class flagged by the E2E audit
+  fixtures at `/tmp/fendix-e2e/fixtures/vulnerable/evasion_pickle_alias.py`.
+
+### Changed
+
+- **`fendix scan --code <path>` auto-enables the Python engine.** The
+  `--python-engine` flag stays in place — unchanged for users who set it
+  explicitly — but when `--code` is passed AND the flag was not given on
+  the command line, the engine now defaults to ON. Without this nudge,
+  v0.14.1's `fendix scan --code <path>` ran only the native-Go checks
+  (`secrets / semgrep / deps`) and silently skipped the AST analyzer
+  (`SEC-PY_SQL_INJECTION`, `SEC-PY_YAML_UNSAFE_LOAD`, `SEC-PY_PICKLE_LOAD`,
+  `SEC-PY_SSTI_*`, `SEC-PY_OPEN_REDIRECT`, `SEC-PY_PATH_TRAVERSAL`,
+  `SEC-PY_AUTH_HEADER_TRUST`) — the engine code shipped, but no user
+  exercised it. `NewOrchestrator` already falls back gracefully when no
+  engine is discoverable, so binaries built without an embedded payload
+  retain the v0.14.1 behavior. See [go/cmd/fendix/main.go](go/cmd/fendix/main.go).
+- **`os.path.expanduser / abspath / expandvars / join` only emit when
+  taint-proven.** Library code passes opaque parameters to these all the
+  time; v0.14.1's emit-on-any-non-constant posture produced 2 FPs on
+  `psf/requests`. For the `os.path.*` family, only emit when
+  `_collect_taint_chain` proves a flow back to a request source. The
+  conservative posture is preserved for `open()` / `Path()` /
+  `send_file()` / `send_from_directory()` — passing user input to those
+  is suspicious shape even without a proven chain. See
+  [python/analyzers/ast_analyzer.py](python/analyzers/ast_analyzer.py).
+
+### Fixed
+
+- **pip-audit `exit=1 + empty stdout` no longer swallowed as success.**
+  pip-audit exits 1 BOTH on "vulns found" (success path) AND on internal
+  errors (e.g. can't install a package to read its metadata under a
+  newer Python). In the failure case stdout is empty; v0.14.1 parsed
+  `{}`, found zero entries, returned success, and the curated fallback
+  never fired — a silent zero-finding dep scan. Real-world repro:
+  pillow 8.0 on Python 3.14. Now treated as failure and falls through
+  to the curated list. See [python/analyzers/deps.py](python/analyzers/deps.py).
+
+### Tests
+
+- 41 new Python tests (path-traversal sink edge cases, alias resolution
+  positive + negative, pip-audit exit-1-empty-stdout fallback,
+  3 new dep CVEs).
+- 2 new Go tests (`TestScan_HardcodedSecretConfig` + FP-guard variant).
+- 202 tests passing total (161 Python + 41 Go in the relevant packages).
+
+### Verified outcomes
+
+| Metric | v0.14.1 | v0.15.0 |
+|---|---|---|
+| `fendix scan --code vflask` total findings | 103 (Go-only) | **119** (+16 AST) |
+| Hardcoded-secret coverage on vflask lines | 1/4 | **4/4** (3 via `AffectedEndpoints`) |
+| Path-traversal FPs on `psf/requests` | 2 | **0** |
+| Real SAST TPs across vuln corpus | ~14 | **~24** |
+| Test count (Python + Go scanner pkgs) | 159 | **202** |
+
 ## [0.14.1] - 2026-05-16
 
 **Headline:** enterprise-readiness audit pass — closes every actionable
