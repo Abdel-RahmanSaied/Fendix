@@ -2,10 +2,10 @@
 // engine that backs the AST analyzer (injection / SSTI / pickle / yaml-load
 // / path-traversal). Resolution mirrors engine.EnsureEngine:
 //
-//	1. --dir flag (explicit override)
-//	2. FENDIX_ENGINE env var
-//	3. embedded payload extracted to ~/.fendix/engine
-//	4. ./python relative to CWD (dev mode)
+//  1. --dir flag (explicit override)
+//  2. FENDIX_ENGINE env var
+//  3. embedded payload extracted to ~/.fendix/engine
+//  4. ./python relative to CWD (dev mode)
 //
 // Two operations:
 //   - `fendix engine info` — show which engine path resolves and from where,
