@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -94,6 +95,81 @@ func TestScan_DetectsGenericPatterns(t *testing.T) {
 	} {
 		if _, ok := got[id]; !ok {
 			t.Errorf("missing %s; got ids=%v", id, got)
+		}
+	}
+}
+
+// TestScan_HardcodedSecretConfig exercises HARDCODED_SECRET_CONFIG —
+// the subscript/attribute-style and compound-suffix variants that the
+// bare HARDCODED_PASSWORD regex misses, surfaced by the May 2026
+// real-world vs bandit benchmark on we45/Vulnerable-Flask-App.
+func TestScan_HardcodedSecretConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "app.py", strings.Join([]string{
+		// subscript style with compound suffix — most common in Flask config
+		`app.config['SECRET_KEY_HMAC'] = 'secret'`,
+		`app.config["JWT_SECRET_KEY"] = "rotate-me"`,
+		// attribute style
+		`app.secret_key = 'F12Zr47jyXR_XatHjmMLwfKT'`,
+		// bare assignment with ≥4-char value (would be too short for GENERIC_API_KEY's 20-char floor)
+		`SESSION_SECRET = "sess-x"`,
+	}, "\n"))
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	// Expect at least one HARDCODED_SECRET_CONFIG match per line.
+	// We don't care that orchestrator-side dedup later collapses them
+	// — at the scanner layer they should all surface so AffectedEndpoints
+	// can list every flagged line.
+	want := []int{1, 2, 3, 4}
+	got := map[int]bool{}
+	for _, f := range fs {
+		if f.ID != "SEC-HARDCODED_SECRET_CONFIG" {
+			continue
+		}
+		// Endpoint format: "app.py:N"
+		var line int
+		_, err := fmt.Sscanf(f.Endpoint, "app.py:%d", &line)
+		if err != nil {
+			t.Errorf("parse endpoint %q: %v", f.Endpoint, err)
+			continue
+		}
+		got[line] = true
+	}
+	for _, ln := range want {
+		if !got[ln] {
+			t.Errorf("missing HARDCODED_SECRET_CONFIG on app.py:%d; got %v", ln, got)
+		}
+	}
+}
+
+// TestScan_HardcodedSecretConfig_NoFalsePositives confirms the regex
+// doesn't fire on plausible non-credential code shapes.
+func TestScan_HardcodedSecretConfig_NoFalsePositives(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ok.py", strings.Join([]string{
+		// keyword appears in a docstring or comment
+		`# Set up the secret_key field on the user model`,
+		// keyword appears as a return value, not a definition
+		`return "secret_key not found"`,
+		// function declaration with secret-like name
+		`def validate_secret_key(key, salt):`,
+		// dict literal — keyword inside the dict but no assignment line
+		`schema = {"secret_key": str, "other": int}`,
+		// keyword in import
+		`from mylib import secret_key`,
+	}, "\n"))
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range fs {
+		if f.ID == "SEC-HARDCODED_SECRET_CONFIG" {
+			t.Errorf("unexpected FP: %s @ %s :: %s", f.ID, f.Endpoint, f.Evidence)
 		}
 	}
 }

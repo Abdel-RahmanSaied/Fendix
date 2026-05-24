@@ -146,6 +146,29 @@ var patterns = []pattern{
 		cwe:      "CWE-259",
 	},
 	{
+		// Catches compound-suffix assignments through subscript or
+		// attribute targets that the bare HARDCODED_PASSWORD regex
+		// misses. Real-world examples (vflask, default Flask configs):
+		//   app.config['SECRET_KEY_HMAC'] = 'secret'
+		//   app.config["JWT_SECRET_KEY"] = "rotate-me"
+		//   app.secret_key = 'F12Zr47j...'
+		//   APP_SECRET = "..."
+		// The keyword family is intentionally narrower than ENV_SECRET's
+		// shotgun list — we anchor on tokens that strongly imply a
+		// credential (secret_key, jwt_secret, hmac_key, app_secret, etc.)
+		// to keep false-positive rate on non-credential variables low.
+		// Minimum value length 4 to catch short placeholder secrets like
+		// 'secret' / 'admin' / 'test' that the API-key regex's 20-char
+		// floor rejects.
+		id:    "HARDCODED_SECRET_CONFIG",
+		title: "Hardcoded secret value in config-style assignment",
+		regex: regexp.MustCompile(
+			`(?i)(?:^|[.\[ \t])["']?(secret_key|api_secret|app_secret|jwt_secret|hmac_key|encryption_key|signing_key|csrf_secret|session_secret|cookie_secret)(?:[_\-]\w+)*["']?\s*\]?\s*[=:]\s*["']([^"'\n]{4,})["']`,
+		),
+		severity: models.SeverityHigh,
+		cwe:      "CWE-798",
+	},
+	{
 		id:       "JWT_TOKEN",
 		title:    "Hardcoded JWT token",
 		regex:    regexp.MustCompile(`\beyJ[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}\b`),
