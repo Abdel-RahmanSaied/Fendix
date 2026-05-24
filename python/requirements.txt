@@ -2,5 +2,5 @@ semgrep>=1.45.0
 bandit>=1.7.5
 pyyaml>=6.0.3
 openapi-spec-validator>=0.7.1
-detect-secrets>=1.4.0
+detect-secrets>=1.5.0
 packaging>=23.0
