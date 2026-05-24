@@ -326,6 +326,22 @@ class TestPipAuditPrimaryPath:
         findings = self._run(fake_run)
         assert any("CVE-2023-31047" in f["evidence"] for f in findings)
 
+    def test_pip_audit_exit_1_empty_stdout_falls_back(self) -> None:
+        """pip-audit exits 1 BOTH on 'vulns found' (success) AND on internal
+        errors. In the failure case stdout is empty; before this guard the
+        engine parsed `{}`, found zero entries, returned success, and never
+        fell back to the curated list. Real-world repro: pillow 8.0 + Python
+        3.14 — pip can't build the wheel, pip-audit exits 1 with no JSON.
+        """
+        def fake_run(*_args, **_kwargs):
+            return MagicMock(returncode=1, stdout="",
+                             stderr="ERROR: Failed to build 'pillow'")
+        findings = self._run(fake_run)
+        assert any("CVE-2023-31047" in f["evidence"] for f in findings), (
+            "Expected local fallback to emit Django CVE after pip-audit "
+            f"exit-1-empty-stdout; got {[f['title'] for f in findings]}"
+        )
+
     def test_pip_audit_legacy_vulnerabilities_key(self) -> None:
         """Older pip-audit builds emit 'vulnerabilities' instead of 'dependencies';
         we accept both for forward/backward compatibility."""

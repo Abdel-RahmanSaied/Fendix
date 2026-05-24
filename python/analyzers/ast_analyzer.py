@@ -810,33 +810,47 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         #     escalates the non-correlated-reachable case (TASK-125).
         elif self._is_path_traversal_sink(node):
             chain = None
+            sink_name = self._path_traversal_sink_name(node)
             if node.args:
                 # The user-controlled arg is usually the FIRST positional
-                # except for send_from_directory(safe_dir, x) where it's
-                # the second. _path_traversal_arg_index handles that.
+                # except for send_from_directory(safe_dir, x) and
+                # os.path.join(base, x) where it's the second.
+                # _path_traversal_arg_index handles that.
                 arg_idx = self._path_traversal_arg_index(node)
                 if arg_idx < len(node.args):
-                    sink_name = self._path_traversal_sink_name(node)
                     chain = self._collect_taint_chain(
                         node.args[arg_idx],
                         node.lineno,
                         f"{sink_name}({_ast_expr_text(node.args[arg_idx])})",
                     )
-            self._emit_finding(
-                "PY_PATH_TRAVERSAL",
-                "Path traversal — user input flows to filesystem path",
-                "HIGH",
-                "MEDIUM",
-                "CWE-22",
-                (
-                    "Validate the path against an allow-list of permitted filenames or a "
-                    "base directory. Use pathlib.Path.resolve() and confirm the resolved "
-                    "path is still under the intended root before opening. Reject any "
-                    "input containing '..' or absolute paths."
-                ),
-                node.lineno,
-                taint_chain=chain,
-            )
+            # `os.path.*` sinks (join/abspath/expanduser/expandvars) only
+            # become path-traversal vulns when the argument actually
+            # carries user input. They appear constantly in library code
+            # over fixed paths (e.g. `os.path.expanduser(fixed_param)`),
+            # so emitting on a bare non-constant argument generated noisy
+            # FPs on clean codebases like `psf/requests`. For the open()
+            # / Path() / send_file() family the conservative posture (emit
+            # on any non-constant arg) still holds — passing user input
+            # to those is suspicious enough to be worth flagging even
+            # without a proven taint flow.
+            if sink_name.startswith("os.path.") and chain is None:
+                pass
+            else:
+                self._emit_finding(
+                    "PY_PATH_TRAVERSAL",
+                    "Path traversal — user input flows to filesystem path",
+                    "HIGH",
+                    "MEDIUM",
+                    "CWE-22",
+                    (
+                        "Validate the path against an allow-list of permitted filenames or a "
+                        "base directory. Use pathlib.Path.resolve() and confirm the resolved "
+                        "path is still under the intended root before opening. Reject any "
+                        "input containing '..' or absolute paths."
+                    ),
+                    node.lineno,
+                    taint_chain=chain,
+                )
 
         self.generic_visit(node)
 

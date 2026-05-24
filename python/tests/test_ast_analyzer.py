@@ -1217,3 +1217,68 @@ class TestPathTraversalReachable:
             # Single-arg join: index 1 doesn't exist, no path-traversal finding.
             pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
             assert pt == []
+
+    def test_os_path_expanduser_on_param_no_finding(self) -> None:
+        """os.path.expanduser(f) on a plain function param — no taint, no finding.
+
+        Regression for FP found benchmarking against psf/requests v2.32.4:
+        `loc = os.path.expanduser(f)` was emitted as a path-traversal warning
+        even though `f` is a fixed parameter to an internal helper.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "def proxy_bypass_macosx_sysconf(f):\n"
+                "    loc = os.path.expanduser(f)\n"
+                "    return loc\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert pt == [], (
+                f"Expected no finding on untainted os.path.expanduser; "
+                f"got {[f.get('endpoint') for f in pt]}"
+            )
+
+    def test_os_path_abspath_on_param_no_finding(self) -> None:
+        """os.path.abspath on an opaque parameter — no taint, no finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "def resolve(p):\n"
+                "    return os.path.abspath(p)\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert pt == []
+
+    def test_os_path_expanduser_still_emits_when_tainted(self) -> None:
+        """Same sink, but with request.args input — must still emit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    user_input = request.args.get('p')\n"
+                "    return os.path.expanduser(user_input)\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            assert pt[0].get("reachable") is True
+
+    def test_open_with_param_still_emits(self) -> None:
+        """open() / send_file() keep the conservative posture — still emit
+        on an unproven arg because passing a parameter directly to an
+        actual file-IO sink is suspicious shape even without a proven
+        taint flow."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "def load(name):\n"
+                "    with open(name) as f:\n"
+                "        return f.read()\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+            # No taint chain proven, so reachable should not be True
+            assert not pt[0].get("reachable")

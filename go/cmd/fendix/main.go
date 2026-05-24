@@ -233,6 +233,16 @@ func newScanCmd() *cobra.Command {
 			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
 			usePipAuditFlag, _ := flags.GetBool("use-pip-audit")
 			pythonEngineFlag, _ := flags.GetBool("python-engine")
+			// Auto-enable the Python engine for whitebox scans unless the
+			// user explicitly disabled it. Without this, `fendix scan --code
+			// <path>` runs only the native-Go checks (secrets / semgrep /
+			// deps) and silently skips the AST injection / open-redirect /
+			// SSTI / path-traversal / pickle / yaml-load analyzer entirely.
+			// When the engine isn't discoverable, NewOrchestrator logs a
+			// debug-level message and continues with the Go-only checks.
+			if codeFlag != "" && !flags.Changed("python-engine") {
+				pythonEngineFlag = true
+			}
 			configFlag, _ := flags.GetString("config")
 			langFlag, _ := flags.GetString("lang")
 

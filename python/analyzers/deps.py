@@ -312,6 +312,21 @@ class DepsAnalyzer:
             )
             return False
 
+        # pip-audit exits 1 BOTH on "vulns found" (success) AND on internal
+        # errors (e.g. can't install a package to read its metadata under a
+        # newer Python). In the failure case stdout is empty; the previous
+        # path parsed `{}`, found zero entries, returned True, and the local
+        # fallback never fired — silent zero-finding scan.
+        if proc.returncode == 1 and not (proc.stdout or "").strip():
+            stderr_excerpt = (proc.stderr or "").strip().splitlines()[:3]
+            print(
+                "[fendix-engine] pip-audit exited 1 with empty stdout — "
+                "treating as failure, falling back to local list. "
+                f"stderr: {' | '.join(stderr_excerpt)[:200]}",
+                file=sys.stderr,
+            )
+            return False
+
         try:
             data = json.loads(proc.stdout or "{}")
         except json.JSONDecodeError as exc:
