@@ -60,7 +60,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
 
       - name: Bundle Python engine
         run: make embed-engine
@@ -303,7 +303,7 @@ jobs:
                 "GOOS": "${{ matrix.goos }}",
                 "GOARCH": "${{ matrix.goarch }}",
                 "CGO_ENABLED": "0",
-                "go_version": "1.22"
+                "go_version": "1.25"
               },
               "resolvedDependencies": [
                 {
@@ -463,7 +463,7 @@ jobs:
         if: vars.COSIGN_ENABLED == 'true'
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
 
       - name: Install syft
         if: vars.COSIGN_ENABLED == 'true'
