@@ -193,6 +193,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # function body. Top of stack is the innermost function being
         # visited.
         self._func_stack: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+        # Maps local alias → canonical module name, populated by visit_Import.
+        # Lets `import pickle as p; p.loads(data)` be detected despite the alias.
+        self._module_aliases: dict[str, str] = {}
 
     def _line_text(self, lineno: int) -> str:
         """Return the source line (1-indexed), or empty string."""
@@ -865,6 +868,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             self._scopes[-1][node.targets[0].id] = node.value
         self.generic_visit(node)
 
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        """Populate _module_aliases so aliased imports are tracked."""
+        for alias in node.names:
+            local_name = alias.asname if alias.asname else alias.name.split(".")[0]
+            self._module_aliases[local_name] = alias.name
+        self.generic_visit(node)
+
     def visit_If(self, node: ast.If) -> None:  # noqa: N802
         """Detect auth-header-trust patterns at if-statement boundaries."""
         if _is_request_header_trust(node.test):
@@ -1050,18 +1060,21 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
 
     def _is_pickle_load(self, node: ast.Call) -> bool:
         """Return True if the call is pickle.load() or pickle.loads()."""
-        return (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"load", "loads"}
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in {"pickle", "cPickle", "_pickle"}
-        )
+        if not (isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"load", "loads"}
+                and isinstance(node.func.value, ast.Name)):
+            return False
+        module_name = self._module_aliases.get(node.func.value.id, node.func.value.id)
+        return module_name in {"pickle", "cPickle", "_pickle"}
 
     def _is_unsafe_yaml_load(self, node: ast.Call) -> bool:
         """Return True for yaml.load() without SafeLoader, or yaml.unsafe_load*."""
         if not isinstance(node.func, ast.Attribute):
             return False
-        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "yaml"):
+        if not isinstance(node.func.value, ast.Name):
+            return False
+        module_name = self._module_aliases.get(node.func.value.id, node.func.value.id)
+        if module_name != "yaml":
             return False
         # Always-unsafe variants.
         if node.func.attr in {"unsafe_load", "unsafe_load_all", "load_all"}:
@@ -1305,15 +1318,22 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     def _path_traversal_sink_name(self, node: ast.Call) -> str:
         """Return the canonical path-traversal sink-function name, or ''.
 
-        Accepts bare-name calls (`open(x)`, `Path(x)`, `send_file(x)`)
-        and attribute calls (`pathlib.Path(x)`, `flask.send_file(x)`).
-        Returned as the leaf function name only — callers use it for
-        the taint-chain expr.
+        Accepts bare-name calls (`open(x)`, `Path(x)`, `send_file(x)`),
+        single-attribute calls (`pathlib.Path(x)`, `flask.send_file(x)`),
+        and double-attribute `os.path.X` calls (`os.path.join(base, x)`,
+        `os.path.abspath(x)`, `os.path.expanduser(x)`).
         """
         if isinstance(node.func, ast.Name):
             if node.func.id in _PATH_TRAVERSAL_SINK_NAMES:
                 return node.func.id
         elif isinstance(node.func, ast.Attribute):
+            # Double-attribute form: os.path.join / os.path.abspath etc.
+            if (node.func.attr in _OS_PATH_SINK_ATTRS
+                    and isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr == "path"
+                    and isinstance(node.func.value.value, ast.Name)
+                    and node.func.value.value.id == "os"):
+                return f"os.path.{node.func.attr}"
             if node.func.attr in _PATH_TRAVERSAL_SINK_NAMES:
                 return node.func.attr
         return ""
@@ -1321,11 +1341,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     def _path_traversal_arg_index(self, node: ast.Call) -> int:
         """Return the positional-arg index of the path argument.
 
-        `send_from_directory(safe_dir, filename)` puts the user-controlled
-        component at index 1; everything else is at index 0.
+        `send_from_directory(safe_dir, filename)` and `os.path.join(base, x)`
+        put the user-controlled component at index 1; everything else at 0.
         """
         sink_name = self._path_traversal_sink_name(node)
-        if sink_name == "send_from_directory":
+        if sink_name in {"send_from_directory", "os.path.join"}:
             return 1
         return 0
 
@@ -1359,6 +1379,13 @@ _PATH_TRAVERSAL_SINK_NAMES: frozenset[str] = frozenset({
     "Path",
     "send_file",
     "send_from_directory",
+})
+
+# `os.path.X` function names treated as path-traversal sinks when the
+# path argument is non-constant user input. `join` uses arg index 1
+# (base is trusted, joined component is user-controlled); the rest use 0.
+_OS_PATH_SINK_ATTRS: frozenset[str] = frozenset({
+    "join", "abspath", "expanduser", "expandvars",
 })
 
 

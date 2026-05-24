@@ -100,6 +100,30 @@ class TestPickleDeserialization:
         assert findings[0]["severity"] == "CRITICAL"
         assert "CWE-502" in findings[0]["references"]
 
+    def test_pickle_alias_detected(self) -> None:
+        """import pickle as p; p.loads(data) — aliased import must be detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "import pickle as p\n"
+                "def deserialize(blob):\n"
+                "    return p.loads(blob)\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_PICKLE_LOAD" in _ids(findings), (
+                f"Aliased pickle not detected; got {_ids(findings)}"
+            )
+
+    def test_cpickle_alias_detected(self) -> None:
+        """import cPickle as cp; cp.loads(data)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "import cPickle as cp\n"
+                "def deserialize(blob):\n"
+                "    return cp.loads(blob)\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_PICKLE_LOAD" in _ids(findings)
+
 
 class TestYamlUnsafeLoad:
     def test_yaml_load_default_loader_detected(self) -> None:
@@ -127,6 +151,30 @@ class TestYamlUnsafeLoad:
         """yaml.safe_load() is the recommended helper — not flagged."""
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "ok.py").write_text("import yaml\nyaml.safe_load(s)\n")
+            findings = _collect(tmpdir)
+            assert "SEC-PY_YAML_UNSAFE_LOAD" not in _ids(findings)
+
+    def test_yaml_alias_load_detected(self) -> None:
+        """import yaml as y; y.load(stream) — aliased import flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "import yaml as y\n"
+                "def parse(stream):\n"
+                "    return y.load(stream)\n"
+            )
+            findings = _collect(tmpdir)
+            assert "SEC-PY_YAML_UNSAFE_LOAD" in _ids(findings), (
+                f"Aliased yaml.load not detected; got {_ids(findings)}"
+            )
+
+    def test_yaml_alias_safe_load_not_flagged(self) -> None:
+        """import yaml as y; y.load(stream, Loader=y.SafeLoader) is still safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "import yaml as y\n"
+                "def parse(stream):\n"
+                "    return y.load(stream, Loader=y.SafeLoader)\n"
+            )
             findings = _collect(tmpdir)
             assert "SEC-PY_YAML_UNSAFE_LOAD" not in _ids(findings)
 
@@ -744,6 +792,60 @@ class TestSQLConcatViaAssignment:
             assert "SEC-PY_SQL_INJECTION" not in _ids(findings)
 
 
+class TestSQLEvasionPatterns:
+    """Evasion patterns that bypass simple string-concat detection.
+
+    Each pattern assembles a tainted SQL string via a non-obvious construction
+    and then passes it to cursor.execute(). The AST engine must detect all of
+    them via its scope-resolution taint chain.
+    """
+
+    def test_join_parts_list_detected(self) -> None:
+        """parts = ['SELECT...', user_id]; sql = ''.join(parts); cursor.execute(sql)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "from flask import request\n"
+                "def q(cursor):\n"
+                "    user_id = request.args.get('id')\n"
+                "    parts = ['SELECT * FROM users WHERE id = ', user_id]\n"
+                "    query = ''.join(parts)\n"
+                "    cursor.execute(query)\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"join-parts SQLi not detected; got {_ids(findings)}"
+
+    def test_format_named_kwargs_detected(self) -> None:
+        """'SELECT ... WHERE name = \"{name}\"'.format(name=user_input) detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "from flask import request\n"
+                "def q(cursor):\n"
+                "    name = request.args.get('name')\n"
+                "    sql = \"SELECT * FROM users WHERE name = '{name}'\".format(name=name)\n"
+                "    cursor.execute(sql)\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"dict-format SQLi not detected; got {_ids(findings)}"
+
+    def test_string_template_substitute_detected(self) -> None:
+        """string.Template('... $val').substitute(val=user_input) detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "t.py").write_text(
+                "from string import Template\n"
+                "from flask import request\n"
+                "def q(cursor):\n"
+                "    user_input = request.args.get('val')\n"
+                "    t = Template(\"SELECT * FROM t WHERE col = '$val'\")\n"
+                "    query = t.substitute(val=user_input)\n"
+                "    cursor.execute(query)\n"
+            )
+            findings = _collect(tmpdir)
+            sql = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+            assert sql, f"Template-substitute SQLi not detected; got {_ids(findings)}"
+
+
 class TestDjangoORMSQLInjection:
     """Track 4 / bandit B610/B611: Django ORM raw-SQL sinks.
 
@@ -1059,3 +1161,59 @@ class TestPathTraversalReachable:
             assert f["category"] == "injection"
             assert f["source"] == "whitebox"
             assert "CWE-22" in f["references"]
+
+    def test_os_path_join_standalone_sink(self) -> None:
+        """os.path.join('/base/', user_input) — join itself is a traversal sink."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    user_input = request.args.get('val')\n"
+                "    return os.path.join('/base/', user_input)\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1, f"got {[f['id'] for f in findings]}"
+            assert pt[0].get("reachable") is True
+
+    def test_os_path_abspath_standalone_sink(self) -> None:
+        """os.path.abspath(user_input) — abspath is a traversal sink."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    user_input = request.args.get('val')\n"
+                "    return os.path.abspath(user_input)\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert len(pt) >= 1
+
+    def test_os_path_join_constant_args_no_finding(self) -> None:
+        """os.path.join('/base', 'subdir') — all constants, no finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "def handler():\n"
+                "    return os.path.join('/base', 'subdir')\n"
+            )
+            findings = _collect(tmpdir)
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert pt == []
+
+    def test_os_path_join_first_arg_only_no_finding(self) -> None:
+        """os.path.join(user_input) — single-arg join; arg at index 1 not present."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "h.py").write_text(
+                "import os\n"
+                "from flask import request\n"
+                "def handler():\n"
+                "    user_input = request.args.get('val')\n"
+                "    return os.path.join(user_input)\n"
+            )
+            findings = _collect(tmpdir)
+            # Single-arg join: index 1 doesn't exist, no path-traversal finding.
+            pt = [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"]
+            assert pt == []

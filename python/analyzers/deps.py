@@ -44,10 +44,28 @@ _KNOWN_PYPI_VULNS: list[_KnownVuln] = [
         "Upgrade pyyaml >= 5.1 and replace yaml.load() with yaml.safe_load().",
     ),
     _KnownVuln(
+        "pyyaml", "5.4",
+        "CVE-2020-14343", "CRITICAL",
+        "PyYAML arbitrary code execution via yaml.load() with full Loader",
+        "Upgrade pyyaml >= 5.4 and replace yaml.load() with yaml.safe_load().",
+    ),
+    _KnownVuln(
         "requests", "2.20.0",
         "CVE-2018-18074", "HIGH",
         "requests HTTP redirect leaks credentials via Referer header",
         "Upgrade requests >= 2.20.0.",
+    ),
+    _KnownVuln(
+        "requests", "2.31.0",
+        "CVE-2023-32681", "HIGH",
+        "requests Proxy-Authorization header leak on redirect",
+        "Upgrade requests >= 2.31.0.",
+    ),
+    _KnownVuln(
+        "lxml", "4.6.3",
+        "CVE-2021-28957", "MEDIUM",
+        "lxml XSS via HTML cleanup",
+        "Upgrade lxml >= 4.6.3.",
     ),
     _KnownVuln(
         "urllib3", "1.26.5",

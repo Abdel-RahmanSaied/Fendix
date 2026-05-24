@@ -160,7 +160,8 @@ class TestLocalPyPICheck:
         assert any("CVE-2018-18074" in f["evidence"] for f in findings)
 
     def test_safe_version_not_flagged(self) -> None:
-        findings = self._run_reqs("requests==2.28.0\n")
+        # 2.32.0 is beyond all known requests CVE thresholds
+        findings = self._run_reqs("requests==2.32.0\n")
         assert not any("requests" in f["evidence"] for f in findings)
 
     def test_unpinned_known_vuln_emits_info(self) -> None:
@@ -192,6 +193,32 @@ class TestLocalPyPICheck:
     def test_no_findings_for_untracked_package(self) -> None:
         findings = self._run_reqs("somepackage==1.0.0\n")
         assert findings == []
+
+    def test_detects_pyyaml_cve_2020_14343(self) -> None:
+        # pyyaml 5.3 is < 5.4 safe threshold
+        findings = self._run_reqs("pyyaml==5.3\n")
+        assert any("CVE-2020-14343" in f["evidence"] for f in findings)
+
+    def test_pyyaml_5_4_not_flagged_for_cve_2020_14343(self) -> None:
+        findings = self._run_reqs("pyyaml==5.4\n")
+        assert not any("CVE-2020-14343" in f["evidence"] for f in findings)
+
+    def test_detects_requests_cve_2023_32681(self) -> None:
+        # requests 2.30.0 is < 2.31.0 safe threshold
+        findings = self._run_reqs("requests==2.30.0\n")
+        assert any("CVE-2023-32681" in f["evidence"] for f in findings)
+
+    def test_requests_2_31_0_not_flagged_for_cve_2023_32681(self) -> None:
+        findings = self._run_reqs("requests==2.31.0\n")
+        assert not any("CVE-2023-32681" in f["evidence"] for f in findings)
+
+    def test_detects_lxml_cve_2021_28957(self) -> None:
+        findings = self._run_reqs("lxml==4.6.2\n")
+        assert any("CVE-2021-28957" in f["evidence"] for f in findings)
+
+    def test_lxml_4_6_3_not_flagged(self) -> None:
+        findings = self._run_reqs("lxml==4.6.3\n")
+        assert not any("CVE-2021-28957" in f["evidence"] for f in findings)
 
 
 # ---------------------------------------------------------------------------
