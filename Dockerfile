@@ -5,10 +5,10 @@
 # Run:    docker run --rm fendix scan --url https://api.example.com
 
 # ---- Stage 1: Build the Go binary ----
-FROM golang:1.22-alpine@sha256:1699c10032ca2582ec89a24a1312d986a3f094aed3d5c1147b19880afe40e052 AS go-builder
+FROM golang:1.25-alpine@sha256:8d22e29d960bc50cd025d93d5b7c7d220b1ee9aa7a239b3c8f55a57e987e8d45 AS go-builder
 # ↑ Base image pinned to digest. Bumps come through dependabot
 # (docker ecosystem in .github/dependabot.yml); never silently shift
-# under us. The `1.22-alpine` tag stays in the line so a human reader
+# under us. The `1.25-alpine` tag stays in the line so a human reader
 # knows what minor version we're on.
 
 RUN apk add --no-cache git make
