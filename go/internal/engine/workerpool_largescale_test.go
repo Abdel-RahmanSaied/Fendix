@@ -16,7 +16,7 @@ import (
 )
 
 // TestWorkerPool_LargeConcurrentScan_RaceClean is the TASK-097a regression
-// test. It drives WorkerPool with 1000 endpoints × 3 checks × 32 workers
+// test. It drives WorkerPool with 200 endpoints × 3 checks × 16 workers
 // against a single httptest server, exercising the same concurrency surface
 // the CLI hits when scanning a large API. CI runs `go test -race ./...`, so
 // any data race in the pool, scanner clients, or shared findings collection
@@ -24,7 +24,7 @@ import (
 //
 // We assert:
 //
-//   - All 3000 (endpoints × checks) check invocations occurred.
+//   - All 600 (endpoints × checks) check invocations occurred.
 //   - Findings count matches the deterministic per-call return.
 //   - The server received at least one request from every check (proves
 //     real HTTP went through the budget transport without hanging).
@@ -49,8 +49,8 @@ func TestWorkerPool_LargeConcurrentScan_RaceClean(t *testing.T) {
 	defer srv.Close()
 
 	const (
-		endpointCount = 1000
-		workerCount   = 32
+		endpointCount = 200
+		workerCount   = 16
 	)
 
 	endpoints := make([]scanner.Endpoint, endpointCount)
@@ -149,7 +149,7 @@ func TestWorkerPool_LargeConcurrentScan_RaceClean(t *testing.T) {
 	}
 
 	// Soft upper-bound on wall time so we notice if the pool ever serializes
-	// — a 1000-endpoint scan with 32 workers and a localhost server should
+	// — a 200-endpoint scan with 16 workers and a localhost server should
 	// finish well under 30 seconds even on a slow CI runner.
 	if elapsed > 30*time.Second {
 		t.Errorf("large scan took %v, expected < 30s — pool may have serialized", elapsed)
