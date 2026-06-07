@@ -17,6 +17,7 @@ import (
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/netguard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -100,15 +101,27 @@ type Crawler struct {
 // would churn TCP setup/teardown, and on macOS that reliably exhausts
 // ephemeral ports when multiple httptest servers run in parallel — the e2e
 // suite was flaky at exactly that boundary before this fix.
+//
+// The SSRF egress guard (internal/netguard) is composed UNDERNEATH the budget
+// counter via budget.WrapTransportGuarded, preserving the keep-alive transport
+// fields. CheckRedirect caps redirect hops and re-applies the IP policy per
+// hop. This matters for the crawler specifically because robots.txt /
+// sitemap.xml are fetched at the very start of discovery — before any
+// same-host filter runs — so an attacker-controlled --url could otherwise
+// 30x-redirect those early fetches into the metadata IP or the host's own
+// network. AllowPrivate (operator flag + auto-allow for private --url targets)
+// makes the guard a passthrough.
 func NewCrawler(cfg *models.ScanConfig) *Crawler {
+	ap := allowPrivate(cfg)
 	return &Crawler{
 		client: &http.Client{
 			Timeout: time.Duration(cfg.Timeout) * time.Second,
-			Transport: budget.WrapTransport(&http.Transport{
+			Transport: budget.WrapTransportGuarded(&http.Transport{
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 32,
 				IdleConnTimeout:     90 * time.Second,
-			}),
+			}, ap),
+			CheckRedirect: netguard.Config{AllowPrivate: ap}.CheckRedirect(),
 		},
 		cfg:  cfg,
 		seen: make(map[string]bool),

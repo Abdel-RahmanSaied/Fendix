@@ -241,3 +241,98 @@ func TestWrapTransport_NilDefaultsToHTTPDefault(t *testing.T) {
 		t.Errorf("got status %d, want 204", resp.StatusCode)
 	}
 }
+
+// --- F-H1: budget + SSRF egress guard composition (WrapTransportGuarded) ---
+
+// TestTransportGuarded_AllowPrivate_ReachesLoopback confirms the guard is a
+// passthrough when allowPrivate is true: a request to a loopback httptest
+// server succeeds and is still counted by the budget wrapper.
+func TestTransportGuarded_AllowPrivate_ReachesLoopback(t *testing.T) {
+	resetForTest(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	rt := TransportGuarded(true)
+	resp, err := rt.RoundTrip(makeReq(t, srv.URL))
+	if err != nil {
+		t.Fatalf("guarded passthrough to loopback: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if sent, _ := Stats(); sent != 1 {
+		t.Errorf("sent = %d, want 1 (counter still wraps the guard)", sent)
+	}
+}
+
+// TestTransportGuarded_BlocksLoopback confirms the SSRF guard refuses a
+// loopback connection when allowPrivate is false. The attempt still counts as
+// `sent` — it failed at dial, like any connect error — so the budget
+// semantics are unchanged.
+func TestTransportGuarded_BlocksLoopback(t *testing.T) {
+	resetForTest(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	rt := TransportGuarded(false)
+	_, err := rt.RoundTrip(makeReq(t, srv.URL))
+	if err == nil {
+		t.Fatal("expected guarded transport to refuse loopback")
+	}
+	if sent, _ := Stats(); sent != 1 {
+		t.Errorf("sent = %d, want 1 (blocked attempt still counted)", sent)
+	}
+}
+
+// TestTransportGuarded_StillEnforcesCap confirms the budget cap fires the same
+// way through the guarded path: the counter is the outer wrapper.
+func TestTransportGuarded_StillEnforcesCap(t *testing.T) {
+	resetForTest(t)
+	SetMaxRequests(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	rt := TransportGuarded(true)
+	if _, err := rt.RoundTrip(makeReq(t, srv.URL)); err != nil {
+		t.Fatalf("first request should pass: %v", err)
+	}
+	_, err := rt.RoundTrip(makeReq(t, srv.URL))
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("second request: got %v, want ErrBudgetExceeded", err)
+	}
+}
+
+// TestWrapTransportGuarded_PreservesBaseFields confirms a customised base
+// transport's fields survive composition with the guard (the crawler relies on
+// this to keep its keep-alive pool).
+func TestWrapTransportGuarded_PreservesBaseFields(t *testing.T) {
+	resetForTest(t)
+	base := &http.Transport{MaxIdleConns: 32, MaxIdleConnsPerHost: 32}
+	rt := WrapTransportGuarded(base, true)
+	bt, ok := rt.(*budgetTransport)
+	if !ok {
+		t.Fatalf("WrapTransportGuarded should return a *budgetTransport, got %T", rt)
+	}
+	inner, ok := bt.inner.(*http.Transport)
+	if !ok {
+		t.Fatalf("inner should be *http.Transport, got %T", bt.inner)
+	}
+	if inner.MaxIdleConns != 32 || inner.MaxIdleConnsPerHost != 32 {
+		t.Errorf("base transport fields not preserved: %+v", inner)
+	}
+	if inner.DialContext == nil {
+		t.Error("guarded transport must install a DialContext")
+	}
+	// The base transport must be cloned, not mutated, so the caller's
+	// original transport keeps its nil DialContext.
+	if base.DialContext != nil {
+		t.Error("WrapTransportGuarded must not mutate the caller's base transport")
+	}
+}

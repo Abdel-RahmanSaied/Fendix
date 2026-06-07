@@ -576,6 +576,9 @@ func TestFromSpec_URL_JSON(t *testing.T) {
 	crawler := NewCrawler(&models.ScanConfig{
 		SpecPath: srv.URL + "/openapi.json",
 		Timeout:  5,
+		// --spec is fetched from a loopback httptest server; relax the SSRF
+		// guard the same way a real private-target scan auto-does.
+		AllowPrivate: true,
 	})
 
 	endpoints, err := crawler.fromSpec(context.Background())
@@ -609,8 +612,9 @@ paths:
 
 	crawler := NewCrawler(&models.ScanConfig{
 		// No suffix on the URL — exercises Content-Type fallback.
-		SpecPath: srv.URL + "/spec",
-		Timeout:  5,
+		SpecPath:     srv.URL + "/spec",
+		Timeout:      5,
+		AllowPrivate: true,
 	})
 
 	endpoints, err := crawler.fromSpec(context.Background())
@@ -631,8 +635,9 @@ func TestFromSpec_URL_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	crawler := NewCrawler(&models.ScanConfig{
-		SpecPath: srv.URL + "/missing.json",
-		Timeout:  5,
+		SpecPath:     srv.URL + "/missing.json",
+		Timeout:      5,
+		AllowPrivate: true,
 	})
 
 	_, err := crawler.fromSpec(context.Background())

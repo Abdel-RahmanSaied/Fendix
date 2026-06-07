@@ -6,9 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -22,10 +20,7 @@ const evilOrigin = "https://evil.example.com"
 //  3. Reflected arbitrary origin → HIGH
 //  4. Non-standard methods allowed → LOW
 func CheckCORS(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-	}
+	client := guardedClient(cfg)
 
 	req, err := http.NewRequestWithContext(ctx, "OPTIONS", endpoint.FullURL, nil)
 	if err != nil {

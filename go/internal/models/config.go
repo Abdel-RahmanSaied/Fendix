@@ -108,4 +108,13 @@ type ScanConfig struct {
 	// back to English at render time; the CLI wrapper warns when a
 	// passed --lang isn't a supported translation.
 	Lang string
+	// AllowPrivate disables the SSRF egress guard (internal/netguard) so the
+	// scanner may connect to private/loopback/link-local addresses and the
+	// cloud metadata IP. Default false: those addresses are refused at dial
+	// time (anti-SSRF / anti-DNS-rebinding) and redirects into them are
+	// re-blocked per hop. The scan command sets this from
+	// --allow-private-targets and auto-enables it when the operator's own
+	// --url target already resolves to a private/loopback IP (scanning your
+	// own internal/staging/localhost target must keep working).
+	AllowPrivate bool
 }
