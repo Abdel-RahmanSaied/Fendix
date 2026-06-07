@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from analyzers.deps import (
+    _MAX_MANIFEST_BYTES,
     DepsAnalyzer,
     _extract_pinned_version,
     _is_vulnerable,
@@ -23,6 +24,7 @@ from analyzers.deps import (
     _parse_package_json,
     _parse_requirements,
     _parse_version,
+    _read_capped,
 )
 
 
@@ -568,3 +570,62 @@ class TestGovulncheckIntegration:
             # govulncheck should never have been looked up
             assert not any(call.args[0] == "govulncheck"
                            for call in which_mock.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# F-L10: manifest size cap — an oversized requirements.txt / package.json must
+# be skipped (logged, no findings, no OOM), not slurped whole into memory.
+# ---------------------------------------------------------------------------
+
+class TestManifestSizeCap:
+    def test_read_capped_skips_oversized_file(self) -> None:
+        """_read_capped returns None for a file over the manifest cap without
+        reading its contents."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            big = Path(tmpdir) / "requirements.txt"
+            big.write_text("x" * (_MAX_MANIFEST_BYTES + 1))
+            assert _read_capped(big) is None
+
+    def test_read_capped_reads_small_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            small = Path(tmpdir) / "requirements.txt"
+            small.write_text("requests==2.19.0\n")
+            assert _read_capped(small) == "requests==2.19.0\n"
+
+    def test_oversized_requirements_is_skipped(self) -> None:
+        """An oversized requirements.txt produces no findings and does not
+        raise — the curated local check is never reached."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Pad a known-vulnerable pin out past the cap; the bulk is a long
+            # comment so it stays parseable-shaped but is too large to read.
+            content = "requests==2.19.0\n" + ("# " + "a" * 78 + "\n") * (
+                (_MAX_MANIFEST_BYTES // 80) + 1
+            )
+            (Path(tmpdir) / "requirements.txt").write_text(content)
+            findings: list[dict] = []
+            with patch("shutil.which", return_value=None):  # no pip-audit
+                DepsAnalyzer(tmpdir).run(findings.append)
+            # Over-cap file is skipped: no requests CVE finding surfaces.
+            assert findings == []
+
+    def test_oversized_package_json_is_skipped(self) -> None:
+        """An oversized package.json produces no findings and does not raise."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            padding = "x" * (_MAX_MANIFEST_BYTES + 1)
+            # Valid-shaped JSON, but the value is huge so the file blows the cap.
+            content = '{"dependencies": {"lodash": "4.17.20", "pad": "%s"}}' % padding
+            (Path(tmpdir) / "package.json").write_text(content)
+            findings: list[dict] = []
+            with patch("shutil.which", return_value=None):  # no npm
+                DepsAnalyzer(tmpdir).run(findings.append)
+            assert findings == []
+
+    def test_under_cap_requirements_still_detected(self) -> None:
+        """A normal-size vulnerable manifest is still scanned (cap doesn't
+        suppress legitimate findings)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "requirements.txt").write_text("requests==2.19.0\n")
+            findings: list[dict] = []
+            with patch("shutil.which", return_value=None):
+                DepsAnalyzer(tmpdir).run(findings.append)
+            assert any("CVE-2018-18074" in f.get("references", []) for f in findings)

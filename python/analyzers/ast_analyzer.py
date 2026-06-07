@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -22,6 +23,14 @@ _SKIP_DIRS: frozenset[str] = frozenset({
 })
 
 _MAX_FILE_BYTES = 1_048_576  # 1 MB
+
+# Hard cap on taint-chain hops (F-H5b). A crafted "assignment bomb" — a long
+# linear chain `a0 = source; a1 = a0; a2 = a1; ...; sink(aN)` — would otherwise
+# drive `_trace_to_source` into deep recursion and a RecursionError. We cap the
+# number of hops the walker takes (and therefore the emitted taint_chain
+# length) so one hostile file can't abort the whole injection pass. The cap is
+# comfortably above any real-world dataflow depth.
+_MAX_TAINT_HOPS = 50
 
 # ---------------------------------------------------------------------------
 # JavaScript heuristic patterns (regex-based; no JS AST required)
@@ -86,6 +95,21 @@ class ASTAnalyzer:
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
             for fname in filenames:
                 fpath = Path(dirpath) / fname
+
+                # F-L12: skip symlinked source FILES. os.walk already does not
+                # follow symlinked DIRECTORIES (it lstat-walks, so a dir symlink
+                # shows up in dirnames but is never descended into), but a
+                # symlinked FILE is still yielded here and would be read —
+                # surfacing out-of-tree file content (e.g. a /tmp link to
+                # /etc/passwd) in 'evidence'. Mirror the Go textscan symlink
+                # skip (internal/scanner/textscan): refuse symlinked files
+                # unconditionally. islink() does not raise on a broken link.
+                try:
+                    if fpath.is_symlink():
+                        continue
+                except OSError:
+                    continue
+
                 rel = str(fpath.relative_to(root))
 
                 if fpath.suffix == ".py":
@@ -109,8 +133,28 @@ class ASTAnalyzer:
         except (OSError, SyntaxError):
             return
 
+        # F-H5b: isolate the per-file AST walk. A crafted file (deeply nested
+        # expression, a recursive node shape ast.parse accepted, or any other
+        # visitor edge case) could raise RecursionError or another exception
+        # mid-walk. Without this guard that single hostile file would abort the
+        # whole os.walk in `run()` and zero findings would be reported for the
+        # rest of the tree. Catch, log to stderr, and continue to the next file
+        # — findings already emitted for this file stay emitted (emit_fn is
+        # called incrementally), and the engine still exits cleanly.
         visitor = _PythonSecurityVisitor(source.splitlines(), rel, emit_fn)
-        visitor.visit(tree)
+        try:
+            visitor.visit(tree)
+        except RecursionError:
+            print(
+                f"[fendix-engine] ast_analyzer: recursion limit hit on {rel}; "
+                "skipping rest of file",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let one file abort the pass
+            print(
+                f"[fendix-engine] ast_analyzer: failed to analyze {rel}: {exc}",
+                file=sys.stderr,
+            )
 
     # ------------------------------------------------------------------
     # JavaScript heuristic analysis
@@ -266,20 +310,36 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 self._link(sink_lineno, sink_expr),
             ]
 
-        prefix = self._trace_to_source(sink_arg, frozenset())
+        prefix = self._trace_to_source(sink_arg, frozenset(), 0)
         if prefix is None:
             return None
-        return prefix + [self._link(sink_lineno, sink_expr)]
+        # Cap the emitted chain length too (F-H5b). The `visited` set already
+        # bounds the prefix to the number of distinct Names, but a crafted file
+        # could declare thousands of distinct intermediates; trim to the most
+        # recent _MAX_TAINT_HOPS links (source-first ordering preserved) so the
+        # taint_chain stays small and the report/IPC line stays well under the
+        # 1MiB readFindings cap.
+        chain = prefix + [self._link(sink_lineno, sink_expr)]
+        if len(chain) > _MAX_TAINT_HOPS:
+            chain = chain[-_MAX_TAINT_HOPS:]
+        return chain
 
     def _trace_to_source(
-        self, expr: ast.AST, visited: frozenset[str]
+        self, expr: ast.AST, visited: frozenset[str], depth: int
     ) -> list[dict] | None:
         """Recursively trace Names in ``expr`` through scope assignments.
 
         Returns the chain prefix (oldest assignment first) up to and
         including the assignment that introduced the request source.
         ``visited`` guards against assignment cycles (``a = b; b = a``).
+        ``depth`` is the current hop count; once it reaches
+        ``_MAX_TAINT_HOPS`` we stop descending and return None cleanly
+        (F-H5b) so a long linear assignment chain can't drive Python into a
+        RecursionError. Returning None just means "no proven source within
+        the hop budget" — the sink still emits, only without a taint_chain.
         """
+        if depth >= _MAX_TAINT_HOPS:
+            return None
         for n in ast.walk(expr):
             if not isinstance(n, ast.Name) or n.id in visited:
                 continue
@@ -291,7 +351,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 link = self._link(lineno, _ast_expr_text(assigned))
                 if _references_request_input(assigned):
                     return [link]
-                deeper = self._trace_to_source(assigned, visited | {n.id})
+                deeper = self._trace_to_source(assigned, visited | {n.id}, depth + 1)
                 if deeper is not None:
                     return deeper + [link]
                 # Name resolved but didn't lead to a source; don't keep

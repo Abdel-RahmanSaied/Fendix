@@ -7,11 +7,38 @@ HTTP-only (non-TLS) server URLs.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+# Response size cap for remote (--spec URL) fetches (F-L9). Mirrors the Go
+# crawler's `maxSpecBytes` (internal/scanner/crawler.go) so a hostile or
+# accidentally-huge spec endpoint cannot stream gigabytes into memory and OOM
+# the engine. GitHub's own OpenAPI spec is ~12 MB, so 50 MB leaves headroom.
+_MAX_SPEC_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+class _HTTPSOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that refuses to follow a redirect off ``https://``.
+
+    F-L9 defence in depth: a hostile --spec endpoint could 30x-redirect to
+    ``http://`` (downgrade) or to a non-HTTP scheme. urllib's default handler
+    already blocks ``file:``/``data:`` redirects, but we additionally pin the
+    scheme to https so the transport guarantee from the original URL holds for
+    every hop. Re-validating on redirect mirrors the Go crawler posture.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
+        if not newurl.lower().startswith("https://"):
+            raise urllib.error.HTTPError(
+                newurl, code,
+                f"refusing redirect to non-https URL: {newurl}",
+                headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class SpecParser:
@@ -66,7 +93,13 @@ class SpecParser:
         """Emit findings for authentication/authorization issues in the spec."""
         try:
             spec = self.load()
-        except (OSError, yaml.YAMLError, json.JSONDecodeError, ValueError) as exc:
+        except (OSError, yaml.YAMLError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+            # F-L8: RecursionError is included so a deeply-nested YAML/JSON spec
+            # (a parser-recursion "bomb") is reported as an unparseable spec
+            # rather than propagating out and aborting the whole auth check.
+            # str(RecursionError) is often empty; fall back to the class name so
+            # the evidence field is never blank.
+            evidence = str(exc) or type(exc).__name__
             emit_fn({
                 "id": "SEC-SPEC-PARSE",
                 "title": "OpenAPI spec could not be parsed",
@@ -74,7 +107,7 @@ class SpecParser:
                 "source": "whitebox",
                 "category": "auth",
                 "endpoint": self.spec_path,
-                "evidence": str(exc),
+                "evidence": evidence,
                 "fix": "Ensure the OpenAPI spec is valid YAML or JSON.",
                 "references": [],
                 "confidence": "HIGH",
@@ -269,16 +302,28 @@ class SpecParser:
         """
         src = self.spec_path
         lower = src.lower()
-        if lower.startswith(("http://", "https://")):
-            req = urllib.request.Request(
-                src,
-                headers={"Accept": "application/json, application/yaml, */*"},
+        if lower.startswith("http://"):
+            # F-L9: reject plaintext HTTP for the spec SOURCE as defence in
+            # depth (SSRF-allowlist parity with the Go crawler is accepted;
+            # the must-fix is the size cap below). A spec fetched over http://
+            # can be tampered with in transit and is the easiest pivot for an
+            # attacker-controlled --spec endpoint. https only.
+            raise ValueError(
+                "refusing to fetch spec over plaintext HTTP; use https://"
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-                text = resp.read().decode("utf-8")
-            is_json = lower.endswith(".json") or "json" in (resp.headers.get("Content-Type") or "")
+        if lower.startswith("https://"):
+            text, is_json = self._fetch_url(src, lower)
         else:
             path = Path(src)
+            # F-L10/F-L9: cap the LOCAL spec read too. A local --spec path under
+            # an untrusted repo could be an inflated multi-GB file; refuse to
+            # slurp anything over the same size cap used for remote fetches.
+            # The size guard runs before read_text() so we never buffer the
+            # whole file. ValueError is turned into SEC-SPEC-PARSE by check_auth.
+            if path.stat().st_size > _MAX_SPEC_BYTES:
+                raise ValueError(
+                    f"spec too large (> {_MAX_SPEC_BYTES} bytes): {src}"
+                )
             text = path.read_text(encoding="utf-8")
             is_json = path.suffix == ".json"
         if is_json:
@@ -290,6 +335,38 @@ class SpecParser:
                 f"Expected a YAML/JSON object (dict) but got {type(result).__name__}"
             )
         return result
+
+    def _fetch_url(self, src: str, lower: str) -> tuple[str, bool]:
+        """Fetch a spec from an ``https://`` URL with a hard size cap.
+
+        F-L9: streams at most ``_MAX_SPEC_BYTES`` bytes from the response so a
+        hostile or accidentally-huge --spec endpoint can't OOM the engine —
+        the LimitReader equivalent of the Go crawler's ``maxSpecBytes`` cap.
+        We read one extra byte and raise if the body exceeds the cap rather
+        than silently truncating a valid-but-large spec into invalid YAML.
+
+        Redirects are re-validated to stay on ``https://`` via
+        ``_HTTPSOnlyRedirectHandler`` (defence in depth: a redirect to
+        http:// or to a non-HTTP scheme is rejected).
+        """
+        opener = urllib.request.build_opener(_HTTPSOnlyRedirectHandler())
+        req = urllib.request.Request(
+            src,
+            headers={"Accept": "application/json, application/yaml, */*"},
+        )
+        with opener.open(req, timeout=30) as resp:  # noqa: S310
+            # Read cap+1 bytes; anything beyond the cap means the body is too
+            # large to trust. read(n) on an http response is bounded, so this
+            # never buffers more than _MAX_SPEC_BYTES+1 bytes.
+            raw = resp.read(_MAX_SPEC_BYTES + 1)
+            content_type = resp.headers.get("Content-Type") or ""
+        if len(raw) > _MAX_SPEC_BYTES:
+            raise ValueError(
+                f"spec too large (> {_MAX_SPEC_BYTES} bytes) from {src}"
+            )
+        text = raw.decode("utf-8")
+        is_json = lower.endswith(".json") or "json" in content_type
+        return text, is_json
 
     def _version(self, spec: dict) -> str:
         """Return '2' for Swagger 2.0, '3' for OpenAPI 3.x."""

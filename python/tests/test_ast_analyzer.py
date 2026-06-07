@@ -1282,3 +1282,164 @@ class TestPathTraversalReachable:
             assert len(pt) >= 1
             # No taint chain proven, so reachable should not be True
             assert not pt[0].get("reachable")
+
+
+# ---------------------------------------------------------------------------
+# F-H5b: untrusted-repo robustness — a crafted "assignment bomb" file (a long
+# linear taint chain) must not abort the whole injection pass, and a real
+# command-injection sink in a SEPARATE file must still be reported. The
+# per-file visit is isolated and the taint walker is depth-capped.
+# ---------------------------------------------------------------------------
+
+def _bomb_chain_source(depth: int) -> str:
+    """Build a file with a `depth`-long linear assignment chain ending in a
+    tainted os.system() sink. Without the hop cap, tracing the chain would
+    recurse `depth` levels deep and blow the stack on a large `depth`.
+    """
+    lines = [
+        "import os",
+        "from flask import request",
+        "def handler():",
+        "    a0 = request.args.get('cmd')",
+    ]
+    for i in range(1, depth):
+        lines.append(f"    a{i} = a{i - 1}")
+    lines.append(f"    os.system(a{depth - 1})")
+    return "\n".join(lines) + "\n"
+
+
+class TestAssignmentBombResilience:
+    def test_deep_chain_does_not_raise(self) -> None:
+        """A 5000-hop linear assignment chain must analyze cleanly — no
+        RecursionError propagating out of run()."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "bomb.py").write_text(_bomb_chain_source(5000))
+            # Must not raise.
+            findings = _collect(tmpdir)
+            # The sink is still flagged (deep chain, but it IS os.system on a
+            # variable that ultimately traces to request input).
+            assert "SEC-PY_OS_SYSTEM" in _ids(findings)
+
+    def test_deep_chain_taint_chain_is_capped(self) -> None:
+        """If a taint_chain is attached, its length is bounded by the hop cap."""
+        from analyzers.ast_analyzer import _MAX_TAINT_HOPS
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "bomb.py").write_text(_bomb_chain_source(5000))
+            findings = _collect(tmpdir)
+            for f in findings:
+                chain = f.get("taint_chain")
+                if chain is not None:
+                    assert len(chain) <= _MAX_TAINT_HOPS
+
+    def test_bomb_alongside_real_sink_still_reports_real_sink(self) -> None:
+        """The crafted bomb file sits next to a SEPARATE file with a real
+        command-injection sink (tainted request input → shell exec). The real
+        sink must STILL be reported (total > 0) even though the bomb file is
+        in the same scan tree."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Crafted recursion-bomb file.
+            Path(tmpdir, "bomb.py").write_text(_bomb_chain_source(8000))
+            # Separate, ordinary command-injection vuln the existing rules
+            # detect: request input flowing straight into subprocess shell.
+            Path(tmpdir, "real_vuln.py").write_text(
+                "import subprocess\n"
+                "from flask import request\n"
+                "def run():\n"
+                "    cmd = request.args.get('q')\n"
+                "    subprocess.run(cmd, shell=True)\n"
+            )
+            findings = _collect(tmpdir)
+            assert len(findings) > 0
+            assert "SEC-PY_SUBPROCESS_SHELL" in _ids(findings)
+
+    def test_engine_exits_zero_with_bomb_and_real_sink(self) -> None:
+        """End-to-end: the engine subprocess must exit 0 and still report the
+        real sink when a recursion-bomb file is present in the scan tree."""
+        import json
+        import subprocess
+        import sys
+
+        engine = Path(__file__).parent.parent / "engine.py"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "bomb.py").write_text(_bomb_chain_source(8000))
+            Path(tmpdir, "real_vuln.py").write_text(
+                "import subprocess\n"
+                "from flask import request\n"
+                "def run():\n"
+                "    cmd = request.args.get('q')\n"
+                "    subprocess.run(cmd, shell=True)\n"
+            )
+            request = {
+                "mode": "whitebox",
+                "checks": ["injection"],
+                "code_path": tmpdir,
+            }
+            proc = subprocess.run(
+                [sys.executable, str(engine)],
+                input=json.dumps(request),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert proc.returncode == 0, proc.stderr
+            lines = [ln for ln in proc.stdout.strip().split("\n") if ln]
+            objects = [json.loads(ln) for ln in lines]
+            terminator = objects[-1]
+            assert terminator["done"] is True
+            # Real sink still reported despite the bomb file.
+            assert terminator["total"] > 0
+            ids = {o.get("id") for o in objects if "id" in o}
+            assert "SEC-PY_SUBPROCESS_SHELL" in ids
+
+
+# ---------------------------------------------------------------------------
+# F-L12: symlinked source FILES are skipped so out-of-tree file content can't
+# surface in 'evidence'. Mirrors the Go textscan symlink skip.
+# ---------------------------------------------------------------------------
+
+class TestSymlinkSkip:
+    def test_symlinked_file_is_not_read(self) -> None:
+        """A symlink inside the scan tree pointing at an out-of-tree file with
+        a dangerous sink must NOT be analyzed — no findings from its content."""
+        with tempfile.TemporaryDirectory() as outside, \
+                tempfile.TemporaryDirectory() as scan_root:
+            # Out-of-tree file with an unmistakable sink.
+            target = Path(outside) / "secret.py"
+            target.write_text(
+                "import os\n"
+                "def x(c):\n"
+                "    os.system(c)\n"
+            )
+            link = Path(scan_root) / "linked.py"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                pytest.skip("symlinks not supported in this environment")
+            findings = _collect(scan_root)
+            # The symlinked file's path must never appear in any finding,
+            # and its os.system sink must not be reported.
+            for f in findings:
+                assert "linked.py" not in f.get("endpoint", "")
+                assert "linked.py" not in f.get("line", "")
+            assert "SEC-PY_OS_SYSTEM" not in _ids(findings)
+
+    def test_real_file_alongside_symlink_still_analyzed(self) -> None:
+        """A genuine in-tree file next to a skipped symlink is still scanned."""
+        with tempfile.TemporaryDirectory() as outside, \
+                tempfile.TemporaryDirectory() as scan_root:
+            target = Path(outside) / "secret.py"
+            target.write_text("import os\ndef x(c):\n    os.system(c)\n")
+            link = Path(scan_root) / "linked.py"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                pytest.skip("symlinks not supported in this environment")
+            # Real file with a dynamic-eval sink — must be flagged.
+            Path(scan_root, "real.py").write_text(
+                "def f(e):\n    return eval(e)\n"
+            )
+            findings = _collect(scan_root)
+            assert "SEC-PY_EVAL" in _ids(findings)
+            # And nothing from the symlink.
+            assert "SEC-PY_OS_SYSTEM" not in _ids(findings)
