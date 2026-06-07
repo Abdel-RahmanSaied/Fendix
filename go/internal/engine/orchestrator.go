@@ -16,6 +16,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/plugin"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
@@ -189,6 +190,33 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	pool := NewWorkerPool(o.cfg.Workers, o.cfg.DelayMs, checks)
 	findings := pool.Run(ctx, o.cfg, endpoints)
 
+	// scanStatus accumulates the per-scanner outcome (F-L7/F-L13/F-L14).
+	// Every code-scanner below records ok / skipped / failed here instead
+	// of the old bare slog.Warn-and-continue, so failures land in
+	// ScanMetadata.ScannerStatus, a scan-end summary line, the SARIF
+	// invocations[].executionSuccessful flag, and (opt-in) the exit code.
+	var scanStatus scannerStatusList
+
+	// --offline (F-M4/F-H4): load the air-gapped snapshot once. In offline
+	// mode the orchestrator MUST NOT make any outbound call — pip/npm
+	// consult this snapshot and govulncheck (which needs vuln.go.dev) is
+	// recorded SKIPPED. A snapshot that won't load is a hard skip for the
+	// dep scanners, NOT a silent fall-through to the network.
+	var offlineSnap *offline.Snapshot
+	if o.cfg.Offline {
+		dbPath := o.cfg.OfflineDBPath
+		if dbPath == "" {
+			dbPath = offline.DefaultDBPath()
+		}
+		snap, err := offline.Read(dbPath)
+		if err != nil {
+			slog.Warn("offline mode: snapshot unavailable — dep-CVE scanners cannot run hermetically", "path", dbPath, "error", err)
+		} else {
+			offlineSnap = snap
+			slog.Info("offline mode: loaded snapshot", "path", dbPath, "advisories", len(snap.Advisories))
+		}
+	}
+
 	// 3.5. Native dep-CVE scanners (TASK-119). Run in-process before
 	// the Python whitebox engine spawns, so the Python deps.py path
 	// can be retired in Phase 17b (TASK-118) without losing coverage.
@@ -201,18 +229,30 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	//       v2/v3 (full transitive tree), cached 24h.
 	//
 	// Each ecosystem has an ErrNo... sentinel for silent-skip; other
-	// errors slog.Warn and continue so a network blip doesn't stop a
-	// scan from reporting other findings.
+	// errors are RECORDED (per-scanner status) and the scan continues so
+	// a network blip doesn't stop a scan from reporting other findings.
 	if o.cfg.CodePath != "" && !o.cfg.NoNativeDeps {
-		nativeFindings, err := govulncheck.Scan(ctx, o.cfg.CodePath)
-		switch {
-		case err == nil:
-			slog.Info("native go deps scan complete", "findings", len(nativeFindings))
-			findings = append(findings, nativeFindings...)
-		case errors.Is(err, govulncheck.ErrNoGoMod):
-			slog.Debug("no go.mod at code path, skipping native go deps scan")
-		default:
-			slog.Warn("native go deps scan failed", "error", err)
+		// govulncheck needs the live vuln.go.dev DB and a build of the
+		// target module; it has no snapshot-only mode. In --offline we do
+		// NOT call it (that would be a silent outbound call) — record it
+		// SKIPPED and move on.
+		if o.cfg.Offline {
+			slog.Info("offline mode: skipping native go deps scan (govulncheck requires vuln.go.dev)")
+			scanStatus.skip("govulncheck", "offline mode: requires vuln.go.dev")
+		} else {
+			nativeFindings, err := govulncheck.Scan(ctx, o.cfg.CodePath)
+			switch {
+			case err == nil:
+				slog.Info("native go deps scan complete", "findings", len(nativeFindings))
+				findings = append(findings, nativeFindings...)
+				scanStatus.ok("govulncheck")
+			case errors.Is(err, govulncheck.ErrNoGoMod):
+				slog.Debug("no go.mod at code path, skipping native go deps scan")
+				scanStatus.skip("govulncheck", "no go.mod at code path")
+			default:
+				slog.Warn("native go deps scan failed", "error", err)
+				scanStatus.fail("govulncheck", err)
+			}
 		}
 
 		// pip-audit walks the scan root recursively up to
@@ -223,52 +263,51 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		// Twiscope_Main_App/, not the repo root. Vendored / cache dirs
 		// (.venv, node_modules, .git, etc.) are skipped regardless of
 		// depth — see recurseSkipDirs in the pip package.
-		pipMode := "OSV.dev"
-		if o.cfg.UsePipAudit {
-			pipMode = "pip-audit subprocess"
-		}
-		slog.Debug("native pypi dep-CVE scan starting", "mode", pipMode)
-		pipFindings, err := pip.ScanRecursiveWithOptions(
-			ctx, o.cfg.CodePath, pip.DefaultRecurseDepth,
-			pip.Options{UsePipAudit: o.cfg.UsePipAudit},
+		//
+		// In --offline the pip pass routes through the snapshot instead of
+		// osv.dev; without a loadable snapshot it's SKIPPED (never the
+		// network). --use-pip-audit is ignored offline because pip-audit
+		// itself reaches out to osv.dev.
+		var (
+			pipFindings []models.Finding
+			pipErr      error
 		)
 		switch {
-		case err == nil:
-			if len(pipFindings) > 0 {
-				slog.Info("native pypi deps scan complete", "findings", len(pipFindings))
-				findings = append(findings, pipFindings...)
-			} else {
-				slog.Debug("native pypi deps scan found no manifests under code path")
-			}
+		case o.cfg.Offline && offlineSnap == nil:
+			slog.Warn("offline mode: skipping native pypi deps scan (no usable snapshot)")
+			scanStatus.skip("pip", "offline mode: no usable snapshot")
+		case o.cfg.Offline:
+			slog.Debug("native pypi dep-CVE scan starting", "mode", "offline snapshot")
+			pipFindings, pipErr = pip.ScanOffline(o.cfg.CodePath, pip.DefaultRecurseDepth, offlineSnap)
+			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, pipFindings, pipErr)
 		default:
-			slog.Warn("native pypi deps scan failed", "error", err)
+			pipMode := "OSV.dev"
+			if o.cfg.UsePipAudit {
+				pipMode = "pip-audit subprocess"
+			}
+			slog.Debug("native pypi dep-CVE scan starting", "mode", pipMode)
+			pipFindings, pipErr = pip.ScanRecursiveWithOptions(
+				ctx, o.cfg.CodePath, pip.DefaultRecurseDepth,
+				pip.Options{UsePipAudit: o.cfg.UsePipAudit},
+			)
+			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, pipFindings, pipErr)
 		}
 
-		npmFindings, err := npm.Scan(ctx, o.cfg.CodePath)
+		// npm: same offline routing as pip.
+		var (
+			npmFindings []models.Finding
+			npmErr      error
+		)
 		switch {
-		case err == nil:
-			slog.Info("native npm deps scan complete", "findings", len(npmFindings))
-			findings = append(findings, npmFindings...)
-		case errors.Is(err, npm.ErrLockfileMissingButPackageJsonPresent):
-			// Single INFO finding — flag the gap without producing noise.
-			// Surfaced by the Track 4 heavy-eval on Juice Shop / dvna / etc.
-			slog.Info("npm deps scan: package.json present but lock file missing — emitting advisory finding")
-			findings = append(findings, models.Finding{
-				ID:         "SEC-NPM_LOCKFILE_MISSING",
-				Title:      "npm dep-CVE scan skipped — package-lock.json missing",
-				Severity:   models.SeverityInfo,
-				Source:     models.SourceWhitebox,
-				Category:   "config",
-				Endpoint:   filepath.Join(o.cfg.CodePath, "package.json"),
-				Evidence:   "package.json was found at the scan root but no package-lock.json. Without the lock file, fendix's npm-audit scanner can't resolve transitive versions and skips the dep-CVE pass.",
-				Fix:        "Run `npm install` (or `npm ci`) to materialise package-lock.json, then re-scan. For yarn or pnpm projects this scanner is currently silent; that gap is tracked separately. CWE-1395.",
-				References: []string{"https://cwe.mitre.org/data/definitions/1395.html"},
-				Confidence: models.ConfidenceHigh,
-			})
-		case errors.Is(err, npm.ErrNoLockfile):
-			slog.Debug("no package-lock.json at code path, skipping native npm deps scan")
+		case o.cfg.Offline && offlineSnap == nil:
+			slog.Warn("offline mode: skipping native npm deps scan (no usable snapshot)")
+			scanStatus.skip("npm", "offline mode: no usable snapshot")
+		case o.cfg.Offline:
+			npmFindings, npmErr = npm.ScanOffline(o.cfg.CodePath, offlineSnap)
+			findings = o.recordNpmScanResult(&scanStatus, &findings, npmFindings, npmErr)
 		default:
-			slog.Warn("native npm deps scan failed", "error", err)
+			npmFindings, npmErr = npm.Scan(ctx, o.cfg.CodePath)
+			findings = o.recordNpmScanResult(&scanStatus, &findings, npmFindings, npmErr)
 		}
 	}
 
@@ -276,17 +315,21 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// python/analyzers/secrets.py; runs unconditionally when CodePath
 	// is set, regardless of Python availability. Same SEC-* IDs as the
 	// Python implementation so any overlap (e.g. user explicitly passes
-	// --checks secrets) dedupes cleanly.
+	// --checks secrets) dedupes cleanly. No network access — runs in
+	// offline mode unchanged.
 	if o.cfg.CodePath != "" {
 		secretFindings, err := secrets.Scan(ctx, o.cfg.CodePath)
 		switch {
 		case err == nil:
 			slog.Info("native secrets scan complete", "findings", len(secretFindings))
 			findings = append(findings, secretFindings...)
+			scanStatus.ok("secrets")
 		case errors.Is(err, secrets.ErrCodePathMissing):
 			slog.Debug("code path missing — skipping native secrets scan")
+			scanStatus.skip("secrets", "code path missing")
 		default:
 			slog.Warn("native secrets scan failed", "error", err)
+			scanStatus.fail("secrets", err)
 		}
 	}
 
@@ -302,12 +345,16 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		case err == nil:
 			slog.Info("native semgrep scan complete", "findings", len(semgrepFindings))
 			findings = append(findings, semgrepFindings...)
+			scanStatus.ok("semgrep")
 		case errors.Is(err, semgrep.ErrSemgrepUnavailable):
 			slog.Info("semgrep not installed — skipping (install with: pip install semgrep)")
+			scanStatus.skip("semgrep", "semgrep binary not installed")
 		case errors.Is(err, semgrep.ErrCodePathMissing):
 			slog.Debug("code path missing — skipping native semgrep scan")
+			scanStatus.skip("semgrep", "code path missing")
 		default:
 			slog.Warn("native semgrep scan failed", "error", err)
+			scanStatus.fail("semgrep", err)
 		}
 	}
 
@@ -317,11 +364,16 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// because it's filename-extension-routed line scanning.
 	if o.cfg.CodePath != "" {
 		textFindings, err := textscan.Scan(o.cfg.CodePath, textscan.AllRules())
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Warn("native textscan failed", "error", err)
-		} else if len(textFindings) > 0 {
-			slog.Info("native textscan complete", "findings", len(textFindings))
-			findings = append(findings, textFindings...)
+			scanStatus.fail("textscan", err)
+		default:
+			if len(textFindings) > 0 {
+				slog.Info("native textscan complete", "findings", len(textFindings))
+				findings = append(findings, textFindings...)
+			}
+			scanStatus.ok("textscan")
 		}
 	}
 
@@ -394,14 +446,21 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)
 	}
 
-	// 8. Apply ignore rules from .fendix-ignore
+	// 8. Apply ignore rules from .fendix-ignore.
+	//
+	// F-L14: an explicit-but-unparseable --ignore file is a HARD error
+	// (exit 2), consistent with --config policy parse failures in
+	// main.go. Pre-fix this logged at ERROR and continued — which meant a
+	// typo'd suppression file silently scanned with zero suppressions, the
+	// opposite of fail-closed for a security control.
 	if o.cfg.IgnorePath != "" {
 		ignoreFile, err := ParseIgnoreFile(o.cfg.IgnorePath)
 		if err != nil {
 			slog.Error("failed to parse ignore file — check YAML syntax and file path", "path", o.cfg.IgnorePath, "error", err)
-		} else {
-			findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
+			fmt.Fprintf(os.Stderr, "fendix: cannot parse --ignore file %s: %v\n", o.cfg.IgnorePath, err)
+			return 2
 		}
+		findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
 	}
 
 	// 9. Apply baseline diff if --baseline provided
@@ -443,12 +502,22 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		EndpointsCount: len(endpoints),
 		ActiveProbes:   o.cfg.EnableActive,
 		ChecksRun:      checksRun,
+		ScannerStatus:  []reporters.ScannerStatus(scanStatus),
 	}
 
-	// 10. Save baseline if requested (before sanitization, so credentials are available for future diff)
+	// 10. Save baseline if requested (before sanitization, so credentials
+	// are available for future diff).
+	//
+	// F-L14: a requested-but-failed --save-baseline is a HARD error (exit
+	// 2). Pre-fix this logged at ERROR and continued, so a CI job that
+	// asked to capture a baseline could exit 0 having silently written
+	// nothing — the next diff run would then report every finding as
+	// "new". Consistent with the --ignore parse-failure handling above.
 	if o.cfg.SaveBaselinePath != "" {
 		if err := SaveBaseline(findings, o.cfg.SaveBaselinePath); err != nil {
 			slog.Error("failed to save baseline — check that the directory exists and is writable", "error", err)
+			fmt.Fprintf(os.Stderr, "fendix: cannot save --save-baseline to %s: %v\n", o.cfg.SaveBaselinePath, err)
+			return 2
 		}
 	}
 
@@ -477,6 +546,29 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// emissions). One Info line per scan; empty when no events occurred.
 	if attrs := logagg.Summary(); len(attrs) > 0 {
 		slog.Info("warning summary", attrs...)
+	}
+
+	// F-L7/F-L13: surface a one-line scanner-status summary at scan end so
+	// a degraded run (a scanner that errored or was skipped) is visible
+	// without grepping the WARN stream. Only emitted when at least one
+	// code scanner ran.
+	if len(scanStatus) > 0 {
+		var ok, skipped, failed int
+		for _, s := range scanStatus {
+			switch s.State {
+			case reporters.ScannerOK:
+				ok++
+			case reporters.ScannerSkipped:
+				skipped++
+			case reporters.ScannerFailed:
+				failed++
+			}
+		}
+		args := []any{"ok", ok, "skipped", skipped, "failed", failed}
+		if failed > 0 {
+			args = append(args, "failed_scanners", strings.Join(scanStatus.failedNames(), ","))
+		}
+		slog.Info("scanner status summary", args...)
 	}
 
 	// Surface scan-budget telemetry whenever a cap was set, regardless of
@@ -508,6 +600,20 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		} else {
 			slog.Info("debug bundle written", "path", o.cfg.DebugBundlePath)
 		}
+	}
+
+	// F-L7/F-L13/F-L14: --fail-on-scanner-error makes any recorded
+	// scanner failure force a non-zero exit, independent of the --fail-on
+	// severity threshold. A scanner crash is a coverage gap, not a clean
+	// run, and CI should be able to treat it as a build failure. Skipped
+	// scanners (missing manifest, offline govulncheck) do NOT trip this —
+	// only scanners that ran and errored. Exit 2 (error) so it's
+	// distinguishable from the exit-1 "findings at/above threshold" path.
+	if o.cfg.FailOnScannerError && scanStatus.hasFailure() {
+		slog.Error("scanner failure recorded and --fail-on-scanner-error set — exiting non-zero",
+			"failed_scanners", strings.Join(scanStatus.failedNames(), ","))
+		fmt.Fprintf(os.Stderr, "fendix: scanner(s) failed and --fail-on-scanner-error is set: %s\n", strings.Join(scanStatus.failedNames(), ", "))
+		return 2
 	}
 
 	// 8. Check fail-on threshold

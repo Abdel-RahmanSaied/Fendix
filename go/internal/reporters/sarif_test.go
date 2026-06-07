@@ -3,6 +3,7 @@ package reporters
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -420,6 +421,69 @@ func TestRenderSARIF_Invocation(t *testing.T) {
 	}
 	if !log.Runs[0].Invocations[0].ExecutionSuccessful {
 		t.Error("expected executionSuccessful to be true")
+	}
+}
+
+// TestRenderSARIF_ExecutionSuccessfulFalseOnScannerFailure verifies F-L13:
+// a recorded scanner failure flips executionSuccessful to false and emits a
+// toolExecutionNotification, so SARIF consumers see a degraded run.
+func TestRenderSARIF_ExecutionSuccessfulFalseOnScannerFailure(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{
+		Version: "dev",
+		ScannerStatus: []ScannerStatus{
+			{Name: "secrets", State: ScannerOK},
+			{Name: "govulncheck", State: ScannerSkipped, Detail: "offline mode"},
+			{Name: "pip", State: ScannerFailed, Detail: "osv.dev returned 503"},
+		},
+	}
+
+	if err := RenderSARIF(&buf, sampleFindings(), meta); err != nil {
+		t.Fatalf("RenderSARIF failed: %v", err)
+	}
+
+	var log SARIFLog
+	json.Unmarshal(buf.Bytes(), &log)
+
+	inv := log.Runs[0].Invocations[0]
+	if inv.ExecutionSuccessful {
+		t.Error("expected executionSuccessful=false when a scanner failed")
+	}
+	if len(inv.ToolExecutionNotifications) != 1 {
+		t.Fatalf("expected 1 notification (only the failed scanner), got %d", len(inv.ToolExecutionNotifications))
+	}
+	n := inv.ToolExecutionNotifications[0]
+	if n.Level != "error" {
+		t.Errorf("notification level = %q; want error", n.Level)
+	}
+	if !strings.Contains(n.Message.Text, "pip") || !strings.Contains(n.Message.Text, "503") {
+		t.Errorf("notification message %q should name the failed scanner and detail", n.Message.Text)
+	}
+}
+
+// TestRenderSARIF_ExecutionSuccessfulTrueOnSkipOnly verifies that skips
+// alone (no failures) keep executionSuccessful=true and emit no
+// notifications — a skip is not a degraded run.
+func TestRenderSARIF_ExecutionSuccessfulTrueOnSkipOnly(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{
+		Version: "dev",
+		ScannerStatus: []ScannerStatus{
+			{Name: "govulncheck", State: ScannerSkipped, Detail: "offline mode"},
+			{Name: "semgrep", State: ScannerSkipped, Detail: "not installed"},
+		},
+	}
+	if err := RenderSARIF(&buf, sampleFindings(), meta); err != nil {
+		t.Fatalf("RenderSARIF failed: %v", err)
+	}
+	var log SARIFLog
+	json.Unmarshal(buf.Bytes(), &log)
+	inv := log.Runs[0].Invocations[0]
+	if !inv.ExecutionSuccessful {
+		t.Error("expected executionSuccessful=true when only skips are recorded")
+	}
+	if len(inv.ToolExecutionNotifications) != 0 {
+		t.Errorf("expected no notifications for skip-only run, got %d", len(inv.ToolExecutionNotifications))
 	}
 }
 

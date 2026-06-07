@@ -98,9 +98,24 @@ type SARIFLogicalLocation struct {
 }
 
 // SARIFInvocation captures metadata about the scan run.
+//
+// executionSuccessful is false (F-L13) when any required scanner errored,
+// derived from ScanMetadata.ScannerStatus. A false value tells SARIF
+// consumers (GitHub Code Scanning, sarif-multitool) that the analysis was
+// degraded — results may be incomplete — rather than presenting a partial
+// scan as a clean pass. Per-scanner failures are itemised in
+// toolExecutionNotifications.
 type SARIFInvocation struct {
-	ExecutionSuccessful bool   `json:"executionSuccessful"`
-	CommandLine         string `json:"commandLine,omitempty"`
+	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	CommandLine                string              `json:"commandLine,omitempty"`
+	ToolExecutionNotifications []SARIFNotification `json:"toolExecutionNotifications,omitempty"`
+}
+
+// SARIFNotification is a tool-execution notification (SARIF §3.58). Used
+// to itemise scanner failures behind a false executionSuccessful.
+type SARIFNotification struct {
+	Level   string       `json:"level,omitempty"`
+	Message SARIFMessage `json:"message"`
 }
 
 // SARIFProperties holds custom key-value pairs.
@@ -284,6 +299,25 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		results = append(results, result)
 	}
 
+	// F-L13: executionSuccessful is false when any required scanner
+	// errored, and each failure becomes a toolExecutionNotification.
+	// Derived from ScanMetadata.ScannerStatus — a degraded scan must not
+	// present as a clean pass to SARIF consumers.
+	invocation := SARIFInvocation{ExecutionSuccessful: true}
+	for _, s := range meta.ScannerStatus {
+		if s.Failed() {
+			invocation.ExecutionSuccessful = false
+			msg := s.Name + " scanner failed"
+			if s.Detail != "" {
+				msg += ": " + s.Detail
+			}
+			invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications, SARIFNotification{
+				Level:   "error",
+				Message: SARIFMessage{Text: msg},
+			})
+		}
+	}
+
 	log := SARIFLog{
 		Version: "2.1.0",
 		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
@@ -297,10 +331,8 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 						Rules:          rules,
 					},
 				},
-				Results: results,
-				Invocations: []SARIFInvocation{
-					{ExecutionSuccessful: true},
-				},
+				Results:     results,
+				Invocations: []SARIFInvocation{invocation},
 			},
 		},
 	}

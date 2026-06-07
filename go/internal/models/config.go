@@ -108,4 +108,26 @@ type ScanConfig struct {
 	// back to English at render time; the CLI wrapper warns when a
 	// passed --lang isn't a supported translation.
 	Lang string
+
+	// Offline puts the dep-CVE scanners (govulncheck / pip / npm) into
+	// air-gapped mode (F-M4/F-H4). When true the orchestrator MUST NOT
+	// make any outbound call: pip/npm consult the local offline snapshot
+	// at OfflineDBPath instead of osv.dev, and any scanner that cannot
+	// run hermetically (govulncheck needs vuln.go.dev) is recorded as
+	// SKIPPED in ScanMetadata rather than silently hitting the network.
+	// See internal/offline (the snapshot is produced by `fendix db`).
+	Offline bool
+	// OfflineDBPath is the path to the offline-db snapshot consulted in
+	// --offline mode. Empty falls back to offline.DefaultDBPath()
+	// (~/.fendix/offline-db.json). Only effective with Offline=true.
+	OfflineDBPath string
+
+	// FailOnScannerError makes any recorded per-scanner failure
+	// (F-L7/F-L13/F-L14) force a non-zero exit, regardless of the
+	// --fail-on severity threshold. Opt-in for CI pipelines that want a
+	// scanner crash (govulncheck/pip/npm/secrets/semgrep/textscan) to
+	// fail the build instead of silently degrading coverage. Skipped
+	// scanners (e.g. govulncheck in offline mode) do not count as
+	// failures — only scanners that ran and errored.
+	FailOnScannerError bool
 }

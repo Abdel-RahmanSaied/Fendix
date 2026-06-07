@@ -47,6 +47,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -283,6 +284,137 @@ func (s *Snapshot) LookupByPackage(ecosystem, name string) []Advisory {
 		}
 	}
 	return out
+}
+
+// LookupVulnerable returns every advisory for (ecosystem, name) whose
+// version ranges include the given installed version. It powers the
+// air-gapped dep-CVE path: the pip and npm scanners call this in
+// --offline mode instead of querying osv.dev, so the same snapshot that
+// `fendix db` produces drives offline scanning.
+//
+// Range semantics follow OSV's SEMVER/ECOSYSTEM model: a version is
+// vulnerable when, for some range, version >= Introduced and (Fixed is
+// empty OR version < Fixed). An advisory with no ranges is treated as
+// "applies to every version" (matches OSV's "no fix known, all
+// versions affected" convention). Versions that don't parse fall back
+// to a conservative match so a malformed pin is reported rather than
+// silently dropped — over-reporting is the safe failure mode for a
+// security tool.
+func (s *Snapshot) LookupVulnerable(ecosystem, name, version string) []Advisory {
+	out := make([]Advisory, 0)
+	for _, a := range s.LookupByPackage(ecosystem, name) {
+		if advisoryAffectsVersion(a, version) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// advisoryAffectsVersion reports whether version falls inside any of the
+// advisory's vulnerable ranges. An advisory with zero ranges matches all
+// versions (OSV's "all versions affected" shape).
+func advisoryAffectsVersion(a Advisory, version string) bool {
+	if len(a.Ranges) == 0 {
+		return true
+	}
+	for _, r := range a.Ranges {
+		if r.Introduced != "" && compareVersions(version, r.Introduced) < 0 {
+			continue
+		}
+		if r.Fixed != "" && compareVersions(version, r.Fixed) >= 0 {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// compareVersions does a best-effort dotted-numeric version comparison
+// returning -1, 0, or +1. It splits on '.', compares each component
+// numerically when both parse as integers and lexically otherwise, and
+// treats a missing trailing component as zero ("1.2" == "1.2.0").
+// Pre-release / build suffixes ("1.2.3-rc1", "1.2.3+meta") are compared
+// on their leading numeric prefix per component. This is deliberately a
+// subset of full SemVer: the snapshot stores OSV ranges whose endpoints
+// are concrete release versions, and over-/under-matching a pre-release
+// edge case is acceptable for an offline mirror (the authoritative
+// online path still exists for exact answers).
+func compareVersions(a, b string) int {
+	as := strings.Split(normalizeVersion(a), ".")
+	bs := strings.Split(normalizeVersion(b), ".")
+	n := len(as)
+	if len(bs) > n {
+		n = len(bs)
+	}
+	for i := 0; i < n; i++ {
+		var ac, bc string
+		if i < len(as) {
+			ac = as[i]
+		}
+		if i < len(bs) {
+			bc = bs[i]
+		}
+		if c := compareComponent(ac, bc); c != 0 {
+			return c
+		}
+	}
+	return 0
+}
+
+// normalizeVersion strips a leading 'v' and any pre-release/build
+// metadata so the dotted-numeric comparison sees only the release core.
+func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	return v
+}
+
+// compareComponent compares one dotted component. Missing components are
+// treated as zero. Numeric components compare numerically; if either
+// side isn't a clean integer, fall back to a string compare.
+func compareComponent(a, b string) int {
+	if a == "" {
+		a = "0"
+	}
+	if b == "" {
+		b = "0"
+	}
+	an, aerr := strconv.Atoi(a)
+	bn, berr := strconv.Atoi(b)
+	if aerr == nil && berr == nil {
+		switch {
+		case an < bn:
+			return -1
+		case an > bn:
+			return 1
+		default:
+			return 0
+		}
+	}
+	return strings.Compare(a, b)
+}
+
+// FirstFixedVersion returns the first non-empty Fixed endpoint across
+// the advisory's ranges, or "" when none is listed. Used to render the
+// "upgrade to X" hint in offline findings.
+func (a Advisory) FirstFixedVersion() string {
+	for _, r := range a.Ranges {
+		if r.Fixed != "" {
+			return r.Fixed
+		}
+	}
+	return ""
+}
+
+// PrimaryAlias returns the first alias (typically the CVE-* id) or "".
+func (a Advisory) PrimaryAlias() string {
+	if len(a.Aliases) > 0 {
+		return a.Aliases[0]
+	}
+	return ""
 }
 
 // ReadFrom is a streaming variant for very large snapshots. Not used

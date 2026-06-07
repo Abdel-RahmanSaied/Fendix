@@ -19,7 +19,46 @@ type ScanMetadata struct {
 	EndpointsCount int       `json:"endpoints_scanned"`
 	ActiveProbes   bool      `json:"active_probes"`
 	ChecksRun      []string  `json:"checks_run,omitempty"`
+	// ScannerStatus records the per-scanner outcome for the dep-CVE,
+	// secrets, semgrep, and textscan passes (F-L7/F-L13/F-L14). It ends
+	// the historical fail-open behaviour where a scanner crash was logged
+	// at WARN and silently dropped: every failure is now recorded here,
+	// surfaced in a scan-end summary line, and (with --fail-on-scanner-error)
+	// can force a non-zero exit. SARIF derives invocations[].executionSuccessful
+	// from it. Empty for pure black-box scans that run no code scanners.
+	ScannerStatus []ScannerStatus `json:"scanner_status,omitempty"`
 }
+
+// ScannerStatusState enumerates the terminal state of one scanner pass.
+type ScannerStatusState string
+
+const (
+	// ScannerOK means the scanner ran to completion without error.
+	ScannerOK ScannerStatusState = "ok"
+	// ScannerSkipped means the scanner did not run because its
+	// precondition was absent (no manifest, tool not installed) or it
+	// cannot run in the current mode (e.g. govulncheck in --offline,
+	// which needs vuln.go.dev). A skip is not a failure.
+	ScannerSkipped ScannerStatusState = "skipped"
+	// ScannerFailed means the scanner ran but errored (network blip,
+	// malformed output, parse failure). Counts as a failure for
+	// --fail-on-scanner-error and for SARIF executionSuccessful.
+	ScannerFailed ScannerStatusState = "failed"
+)
+
+// ScannerStatus is the recorded outcome of a single scanner pass. Name
+// is the scanner identity ("govulncheck", "pip", "npm", "secrets",
+// "semgrep", "textscan"); Detail is a short human-readable reason
+// (skip cause or error excerpt).
+type ScannerStatus struct {
+	Name   string             `json:"name"`
+	State  ScannerStatusState `json:"state"`
+	Detail string             `json:"detail,omitempty"`
+}
+
+// Failed reports whether this scanner ran and errored. Skips and OK
+// states return false.
+func (s ScannerStatus) Failed() bool { return s.State == ScannerFailed }
 
 // SeverityCounts holds the count of findings per severity level.
 type SeverityCounts struct {

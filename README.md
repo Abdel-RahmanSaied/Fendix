@@ -19,11 +19,12 @@ The trust statement, before anything else.
 |---|---|
 | **Default scan** (`fendix scan --url ...`) | Only HTTP requests to the URL you passed. Nothing to `fendix.dev`, nothing to a vendor. |
 | **Active probing** (`--enable-active`) | Probe payloads to the same target, only. Audit-logged. Off by default. |
-| **`fendix scan --code ...` (white-box only)** | Zero outbound. Reads source from disk. |
+| **`fendix scan --code ...` (white-box only)** | Reads source from disk. For dependency-CVE detection it queries **`api.osv.dev`** (Python/`requirements.txt` and npm/`package-lock.json`) and **`vuln.go.dev`** (Go modules, via govulncheck) by default. Everything else (secrets, semgrep, textscan) is local. Pass `--no-native-deps` to skip the Go dep scanner, or `--offline` to consult a local snapshot and make **zero** outbound calls. |
+| **Air-gapped scan** (`--offline`) | Zero outbound. The pip and npm dep-CVE scanners read the local snapshot at `--offline-db` (default `~/.fendix/offline-db.json`, built with `fendix db update`); the Go dep scanner needs `vuln.go.dev` and is recorded as `SKIPPED` rather than silently reaching the network. |
 | **`fendix scan` with no flags** | Errors out — there's no work to do. Zero outbound. |
 | **Telemetry / phone-home / usage stats** | None. There is no telemetry code. Verify with `tcpdump`, or read [`go/internal/`](go/internal/) — there's nothing to find. |
 
-If a future release adds anything that talks to a non-target host, it'll be opt-in, documented in this section, and named in the CHANGELOG. That's the contract.
+Dependency-CVE lookups are the only non-target traffic Fendix makes, they only happen when you pass `--code` (or `--spec`), and `--offline` turns them off entirely. If a future release adds anything else that talks to a non-target host, it'll be opt-in, documented in this section, and named in the CHANGELOG. That's the contract.
 
 ---
 
@@ -300,13 +301,16 @@ fendix report --input findings.json --format html --output report.html
 | `-o, --output` | string | stdout | Output file path |
 | `-f, --format` | string | `json` | Output format: `json`, `html`, `sarif` |
 | `--fail-on` | string | | Exit 1 if findings at this severity: `CRITICAL`, `HIGH`, `MEDIUM` |
+| `--fail-on-scanner-error` | bool | `false` | Exit 2 if any scanner (`govulncheck`/`pip`/`npm`/`secrets`/`semgrep`/`textscan`) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners don't count. |
 | `--baseline` | string | | Path to previous findings JSON for diff mode |
 | `--save-baseline` | string | | Save current findings to this path |
 | `--enable-active` | bool | `false` | Enable active injection probes |
+| `--offline` | bool | `false` | Air-gapped mode: read dep CVEs from a local snapshot instead of `api.osv.dev`/`vuln.go.dev`. Makes zero outbound calls; the Go dep scanner is recorded `SKIPPED`. |
+| `--offline-db` | string | `~/.fendix/offline-db.json` | Path to the offline-db snapshot (build it with `fendix db update`). Only effective with `--offline`. |
 | `-w, --workers` | int | `10` | Concurrent HTTP workers |
 | `--timeout` | int | `10` | HTTP timeout in seconds |
 | `--delay` | int | `100` | Milliseconds between HTTP requests |
-| `--ignore` | string | | Path to `.fendix-ignore` suppression file |
+| `--ignore` | string | | Path to `.fendix-ignore` suppression file (an unparseable file is a hard error: exit 2) |
 | `-v, --verbose` | bool | `false` | Print all requests and raw findings |
 
 ### Exit Codes
