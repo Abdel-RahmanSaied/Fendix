@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -119,7 +120,10 @@ type SARIFProperties struct {
 // across runs so that suppression baselines and PR-grouping tools (GitHub
 // Code Scanning, sarif-multitool) treat repeat findings as one rule.
 func ruleKeyFor(f models.Finding) string {
-	cat := strings.ToLower(strings.TrimSpace(f.Category))
+	// Neutralize first: the category is embedded verbatim in the rule ID
+	// (consumers group/suppress by it), so a zero-width or control char
+	// must not leak through even though slug() sanitizes the title half.
+	cat := strings.ToLower(strings.TrimSpace(NeutralizeText(f.Category)))
 	if cat == "" {
 		cat = "uncategorized"
 	}
@@ -181,6 +185,70 @@ func sarifHelpURI(refs []string) string {
 	return ""
 }
 
+// uriSchemeRE matches a leading URI scheme ("javascript:", "http://",
+// "file:", "data:", …). Per RFC 3986 a scheme is an ASCII letter
+// followed by letters/digits/'+'/'-'/'.' and a ':'. We strip it so an
+// artifactLocation.uri can never carry an executable or absolute-URL
+// scheme into a SARIF viewer.
+var uriSchemeRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*:`)
+
+// normalizeArtifactURI sanitizes a file path destined for a SARIF
+// artifactLocation.uri. SARIF consumers (GitHub Code Scanning, IDEs)
+// resolve these against the project root, so a value carrying a scheme
+// ("javascript:alert(1)"), an absolute path, or ".." traversal can be
+// abused. We coerce the value into a safe relative path:
+//
+//   - control/bidi characters are stripped (NeutralizeText);
+//   - any leading URI scheme is removed;
+//   - the path is split on '/', and "", ".", and ".." segments are
+//     dropped (so "../../etc/passwd" → "etc/passwd" and "/abs" → "abs");
+//   - backslashes are treated as separators too (Windows-style paths).
+//
+// The result is always a relative path with no scheme and no traversal.
+func normalizeArtifactURI(uri string) string {
+	uri = NeutralizeText(uri)
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return ""
+	}
+	// Drop a leading scheme ("javascript:", "http://", "file:", …).
+	uri = uriSchemeRE.ReplaceAllString(uri, "")
+	// Normalise Windows separators so traversal segments can't slip
+	// through as "..\..".
+	uri = strings.ReplaceAll(uri, "\\", "/")
+
+	segs := strings.Split(uri, "/")
+	clean := make([]string, 0, len(segs))
+	for _, seg := range segs {
+		switch seg {
+		case "", ".", "..":
+			// Drop empty (collapses "//" and leading "/"), current-dir,
+			// and parent-dir traversal segments.
+			continue
+		default:
+			clean = append(clean, seg)
+		}
+	}
+	return strings.Join(clean, "/")
+}
+
+// neutralizeTags strips control/bidi characters from each reference tag.
+// References feed both helpUri (already scheme-filtered) and the SARIF
+// rule's properties.tags array; the tags are free text and must not
+// carry invisible or reordering characters into a SARIF viewer. Returns
+// nil for an empty/nil input so the omitempty JSON tag still drops the
+// field.
+func neutralizeTags(refs []string) []string {
+	if len(refs) == 0 {
+		return refs
+	}
+	out := make([]string, len(refs))
+	for i, ref := range refs {
+		out[i] = NeutralizeText(ref)
+	}
+	return out
+}
+
 // parseLine extracts file path and line number from a "file:line" string.
 func parseLine(line *string) (string, int) {
 	if line == nil || *line == "" {
@@ -217,16 +285,19 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		idx := len(rules)
 		ruleMap[key] = idx
 
+		// Strip control/bidi from human-facing rule fields. helpUri is
+		// left to sarifHelpURI, which already restricts it to http/https.
+		ruleName := NeutralizeText(f.Title)
 		rule := SARIFRule{
 			ID:               key,
-			Name:             f.Title,
-			ShortDescription: SARIFMessage{Text: f.Title},
-			Help:             SARIFMessage{Text: f.Fix},
+			Name:             ruleName,
+			ShortDescription: SARIFMessage{Text: ruleName},
+			Help:             SARIFMessage{Text: NeutralizeText(f.Fix)},
 			HelpURI:          sarifHelpURI(f.References),
 			DefaultConfig:    SARIFRuleConfig{Level: sarifLevel(f.Severity)},
 			Properties: SARIFProperties{
-				Category:   f.Category,
-				Tags:       f.References,
+				Category:   NeutralizeText(f.Category),
+				Tags:       neutralizeTags(f.References),
 				Confidence: string(f.Confidence),
 			},
 		}
@@ -241,7 +312,7 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 			RuleID:    key,
 			RuleIndex: ruleMap[key],
 			Level:     sarifLevel(f.Severity),
-			Message:   SARIFMessage{Text: f.Evidence},
+			Message:   SARIFMessage{Text: NeutralizeText(f.Evidence)},
 		}
 
 		// Build locations from either line (whitebox) or endpoint(s) (blackbox).
@@ -250,9 +321,11 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		// want for deduplicated findings (TASK-088).
 		if f.Line != nil && *f.Line != "" {
 			filePath, lineNum := parseLine(f.Line)
+			// Coerce the artifact URI into a safe relative path: no
+			// scheme (javascript:/http://), no leading slash, no "..".
 			loc := SARIFLocation{
 				PhysicalLocation: &SARIFPhysicalLocation{
-					ArtifactLocation: SARIFArtifactLocation{URI: filePath},
+					ArtifactLocation: SARIFArtifactLocation{URI: normalizeArtifactURI(filePath)},
 				},
 			}
 			if lineNum > 0 {
@@ -272,7 +345,9 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				for _, ep := range endpoints {
 					locs = append(locs, SARIFLocation{
 						LogicalLocations: []SARIFLogicalLocation{{
-							Name: ep,
+							// Endpoint string is an untrusted logical
+							// location name — strip control/bidi chars.
+							Name: NeutralizeText(ep),
 							Kind: "endpoint",
 						}},
 					})

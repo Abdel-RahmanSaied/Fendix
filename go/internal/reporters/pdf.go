@@ -41,6 +41,13 @@ func RenderPDF(w io.Writer, findings []models.Finding, meta ScanMetadata, opts P
 		classification = "INTERNAL"
 	}
 
+	// Strip bidi/zero-width/control characters from untrusted finding
+	// fields before rendering. fpdf substitutes glyphs it can't draw
+	// (the accepted glyph/font limit) but does nothing about bidi
+	// reordering or invisible control chars — neutralize them here so
+	// the PDF can't be spoofed the way a Trojan-Source title would.
+	findings = NeutralizeFindings(findings)
+
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetMargins(15, 20, 15)
 	pdf.SetAutoPageBreak(true, 20)

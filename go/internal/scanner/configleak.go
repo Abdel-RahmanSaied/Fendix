@@ -2,7 +2,6 @@ package scanner
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -106,12 +105,6 @@ func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpo
 	client := &http.Client{
 		Timeout:   time.Duration(cfg.Timeout) * time.Second,
 		Transport: budget.Transport(),
-	}
-	// We deliberately don't require TLS verification for the probe
-	// itself — the user's --url may point at a staging host with a
-	// self-signed cert. The same posture as the rest of the scanner.
-	if t, ok := client.Transport.(*http.Transport); ok && t.TLSClientConfig == nil {
-		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: false}
 	}
 
 	resp, err := client.Do(req)

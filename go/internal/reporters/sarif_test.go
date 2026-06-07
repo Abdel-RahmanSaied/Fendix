@@ -3,6 +3,7 @@ package reporters
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +249,156 @@ func TestRenderSARIF_AffectedEndpointsAsMultipleLocations(t *testing.T) {
 		if !wantSet[n] {
 			t.Errorf("unexpected endpoint name in SARIFLocation: %q (got names: %v)", n, gotNames)
 		}
+	}
+}
+
+// TestNormalizeArtifactURI covers F-L3: an artifactLocation.uri must
+// never carry a scheme (javascript:/http://), an absolute path, or a
+// ".." traversal — SARIF consumers resolve these against the project
+// root.
+func TestNormalizeArtifactURI(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain relative", "src/app.py", "src/app.py"},
+		{"javascript scheme", "javascript:alert(1)", "alert(1)"},
+		{"http scheme", "http://evil.com/x", "evil.com/x"},
+		{"https scheme", "https://evil.com/x", "evil.com/x"},
+		{"file scheme", "file:///etc/passwd", "etc/passwd"},
+		{"data scheme", "data:text/html,evil", "text/html,evil"},
+		{"absolute path", "/etc/passwd", "etc/passwd"},
+		{"parent traversal", "../../etc/passwd", "etc/passwd"},
+		{"embedded traversal", "src/../../secret", "src/secret"},
+		{"current-dir segments", "./a/./b", "a/b"},
+		{"windows separators + traversal", "..\\..\\windows\\system32", "windows/system32"},
+		{"collapses double slash", "a//b", "a/b"},
+		{"control char stripped", "src/\x07app.py", "src/app.py"},
+		{"empty", "", ""},
+		{"only traversal", "../..", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeArtifactURI(tt.in)
+			if got != tt.want {
+				t.Errorf("normalizeArtifactURI(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRenderSARIF_RejectsTraversalAndSchemeURI is the F-L3 integration
+// check: a whitebox finding whose Line carries a traversal/scheme path
+// must serialize a safe relative artifactLocation.uri.
+func TestRenderSARIF_RejectsTraversalAndSchemeURI(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Version: "dev"}
+	line := "../../etc/passwd:14"
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Traversal path", Severity: models.SeverityHigh,
+			Source: models.SourceWhitebox, Category: "secrets",
+			Endpoint: "../../etc/passwd:14", Evidence: "x", Fix: "y",
+			Confidence: models.ConfidenceHigh, References: []string{}, Line: &line,
+		},
+	}
+	if err := RenderSARIF(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	uri := log.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI
+	if strings.Contains(uri, "..") {
+		t.Errorf("artifactLocation.uri must not contain '..': %q", uri)
+	}
+	if strings.HasPrefix(uri, "/") {
+		t.Errorf("artifactLocation.uri must be relative: %q", uri)
+	}
+	if uri != "etc/passwd" {
+		t.Errorf("expected normalized uri 'etc/passwd', got %q", uri)
+	}
+}
+
+// TestRenderSARIF_NeutralizesControlAndBidi is the F-L3 integration
+// check for message/name/tags: bidi and control chars in untrusted
+// finding fields must not survive into the SARIF output.
+func TestRenderSARIF_NeutralizesControlAndBidi(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Version: "dev"}
+	findings := []models.Finding{
+		{
+			ID:       "SEC-001",
+			Title:    "SQL" + rlo + "injection",
+			Severity: models.SeverityCritical, Source: models.SourceBlackbox,
+			Category: "inj" + zwsp + "ection",
+			Endpoint: "GET /api" + rlo + "/users",
+			Evidence: "payload" + zwsp + "=1",
+			Fix:      "use" + rlo + "params",
+			// A reference tag carrying a control char (and a legit CWE).
+			References: []string{"CWE-89", "tag" + zwsp + "evil"},
+			Confidence: models.ConfidenceHigh,
+		},
+	}
+	if err := RenderSARIF(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	out := buf.String()
+	for _, bad := range []string{rlo, zwsp} {
+		if strings.Contains(out, bad) {
+			t.Errorf("SARIF output still contains a bidi/zero-width char %U", []rune(bad)[0])
+		}
+	}
+
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	rule := log.Runs[0].Tool.Driver.Rules[0]
+	if containsAnyNeutralized(rule.Name) {
+		t.Errorf("rule.Name not neutralized: %q", rule.Name)
+	}
+	if containsAnyNeutralized(rule.Help.Text) {
+		t.Errorf("rule.Help.Text not neutralized: %q", rule.Help.Text)
+	}
+	if containsAnyNeutralized(rule.Properties.Category) {
+		t.Errorf("rule.Properties.Category not neutralized: %q", rule.Properties.Category)
+	}
+	for _, tag := range rule.Properties.Tags {
+		if containsAnyNeutralized(tag) {
+			t.Errorf("rule tag not neutralized: %q", tag)
+		}
+	}
+	res := log.Runs[0].Results[0]
+	if containsAnyNeutralized(res.Message.Text) {
+		t.Errorf("result.Message.Text not neutralized: %q", res.Message.Text)
+	}
+	if containsAnyNeutralized(res.Locations[0].LogicalLocations[0].Name) {
+		t.Errorf("logical location Name not neutralized: %q", res.Locations[0].LogicalLocations[0].Name)
+	}
+}
+
+// TestRenderSARIF_HelpURIUnchanged confirms F-L3 left the existing
+// http/https helpUri filtering intact (we explicitly do NOT touch it).
+func TestRenderSARIF_HelpURIUnchanged(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Version: "dev"}
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "X", Severity: models.SeverityHigh, Source: models.SourceBlackbox,
+			Endpoint: "GET /x", References: []string{"https://owasp.org/api-security"},
+		},
+	}
+	if err := RenderSARIF(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	var log SARIFLog
+	json.Unmarshal(buf.Bytes(), &log)
+	if log.Runs[0].Tool.Driver.Rules[0].HelpURI != "https://owasp.org/api-security" {
+		t.Errorf("helpUri should pass through unchanged, got %q",
+			log.Runs[0].Tool.Driver.Rules[0].HelpURI)
 	}
 }
 
