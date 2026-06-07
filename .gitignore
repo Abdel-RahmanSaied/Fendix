@@ -60,3 +60,5 @@ fp-corpus-results/
 # Archives
 *.zip
 scripts/heavy-eval/corpus-cache/
+
+.remember
