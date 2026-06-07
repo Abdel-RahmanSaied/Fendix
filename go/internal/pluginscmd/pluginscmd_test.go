@@ -275,7 +275,10 @@ func TestListCmd_WithPlugins(t *testing.T) {
 	writeFakePluginDir(t, filepath.Join(repoLocalRoot, "plugin-a"), "plugin-a")
 	writeFakePluginDir(t, filepath.Join(repoLocalRoot, "plugin-b"), "plugin-b")
 
+	// Repo-local plugins are opt-in (F-H2); list must be told to include
+	// them, mirroring the same flag on `fendix scan`.
 	cmd := newListCmd()
+	cmd.SetArgs([]string{"--allow-repo-local-plugins"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -295,11 +298,35 @@ func TestListCmd_WithPlugins(t *testing.T) {
 	}
 }
 
+// TestListCmd_RepoLocalOmittedByDefault pins F-H2: without the opt-in
+// flag, a plugin sitting in the repo-local root is NOT listed (and the
+// "no plugins found" path documents the gated root).
+func TestListCmd_RepoLocalOmittedByDefault(t *testing.T) {
+	cwd := withTempCwd(t)
+	repoLocalRoot := filepath.Join(cwd, ".fendix", "plugins")
+	writeFakePluginDir(t, filepath.Join(repoLocalRoot, "repo-evil"), "repo-evil")
+
+	cmd := newListCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "repo-evil") {
+		t.Errorf("repo-local plugin must not be listed without --allow-repo-local-plugins; got: %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// Regression test for the symlink-discovery fix folded in from TASK-127.
+// Symlinked plugin directories are SKIPPED (F-H2). This reverses the
+// TASK-127-era "follow symlinks" behaviour: following a symlink lets a
+// discovery-root entry escape the root, so a poisoned repo (or hostile
+// package) can't redirect discovery at an attacker-staged tree.
 // ---------------------------------------------------------------------------
 
-func TestDiscover_FollowsSymlinkedPluginDirs(t *testing.T) {
+func TestDiscover_SkipsSymlinkedPluginDirs(t *testing.T) {
 	rootDir := t.TempDir()
 	// Real plugin dir lives in a separate location...
 	realPluginDir := filepath.Join(t.TempDir(), "the-real-plugin")
@@ -318,10 +345,18 @@ func TestDiscover_FollowsSymlinkedPluginDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if len(plugins) != 1 {
-		t.Fatalf("expected 1 plugin discovered via symlink, got %d", len(plugins))
+	if len(plugins) != 0 {
+		t.Fatalf("expected symlinked plugin dir to be skipped, got %d", len(plugins))
 	}
-	if plugins[0].Name != "symlinked-plugin" {
-		t.Errorf("plugin name = %q; want symlinked-plugin", plugins[0].Name)
+
+	// A real (copied) directory in the same root is still discovered —
+	// the skip is specific to symlinks, not a blanket discovery failure.
+	writeFakePluginDir(t, filepath.Join(pluginsRoot, "real-plugin"), "real-plugin")
+	plugins, err = plugin.Discover([]string{pluginsRoot})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(plugins) != 1 || plugins[0].Name != "real-plugin" {
+		t.Fatalf("expected only the real plugin discovered, got %+v", plugins)
 	}
 }

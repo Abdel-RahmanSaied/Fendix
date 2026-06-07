@@ -10,12 +10,21 @@
 //
 // Discovery walks two roots in order:
 //
-//  1. <repo>/.fendix/plugins/    (repo-local; takes precedence)
-//  2. ~/.fendix/plugins/         (user-global)
+//  1. <repo>/.fendix/plugins/    (repo-local; OPT-IN — see below)
+//  2. ~/.fendix/plugins/         (user-global; trusted)
 //
 // On collision (same plugin name in both roots) the repo-local
 // version wins, so a project can pin a specific plugin version
 // without affecting the developer's other repos.
+//
+// Repo-local plugins are NOT auto-discovered by default (F-H2): a
+// repository under scan is attacker-controlled in the poisoned-
+// pipeline threat model (a malicious PR can drop a `.fendix/plugins/`
+// directory and get arbitrary code executed in CI). The repo-local
+// root is therefore gated behind explicit opt-in (the
+// AllowRepoLocalPlugins config flag, threaded into Roots). The
+// user-global ~/.fendix/plugins root the operator populated by hand
+// stays trusted and is always searched.
 package plugin
 
 import (
@@ -38,61 +47,85 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
-// secretEnvPrefixes lists env var name *prefixes* that the plugin
-// runner strips before invoking a plugin subprocess. A plugin runs
-// arbitrary third-party code at the operator's privilege; inheriting
-// the full operator environment is unnecessary and gives plugin code
-// trivial access to credentials it has no business reading.
+// envAllowlist is the fixed set of operator env var names a plugin
+// subprocess inherits. A plugin runs arbitrary third-party code at
+// the operator's privilege; inheriting the full operator environment
+// gives plugin code trivial access to credentials it has no business
+// reading. An *allowlist* (rather than the older substring denylist,
+// FX-PLUG-2 / F-I1) fails closed: a credential in a variable nobody
+// anticipated — `SNYK_TOKEN`, `VAULT_ADDR`, a bespoke `MY_CREDS` —
+// is dropped because it isn't on the list, instead of surviving
+// because no denylist entry happened to match its name.
 //
-// The list intentionally over-redacts: it's easier for a plugin author
-// to ask for an env var they need than to recover credentials a
-// malicious plugin exfiltrated. Operators who genuinely need a custom
-// env var passed through can set it inside the plugin (the manifest
-// doesn't currently surface "required env" — see follow-up FX-PLUG-2).
-var secretEnvPrefixes = []string{
-	// Cloud / hosting credentials
-	"AWS_", "AZURE_", "GCP_", "GOOGLE_", "DO_", "HEROKU_",
-	// Source-control + registry tokens
-	"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT", "GITLAB_TOKEN",
-	"BITBUCKET_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "CARGO_REGISTRY_TOKEN",
-	// AI/ML provider keys
-	"OPENAI_", "ANTHROPIC_", "COHERE_", "HUGGINGFACE_", "REPLICATE_",
-	// Generic secret-shaped names
-	"API_KEY", "SECRET", "SECRET_KEY", "PRIVATE_KEY", "PASSWORD", "PASSWD",
-	"TOKEN", "ACCESS_KEY", "CLIENT_SECRET",
-	// Database connection strings
-	"DATABASE_URL", "DB_PASSWORD", "POSTGRES_PASSWORD", "MYSQL_PASSWORD",
-	"REDIS_PASSWORD",
-	// Fendix's own per-user state
-	"FENDIX_AUTH",
+// The list is deliberately minimal: just what a plugin needs to find
+// its interpreter and behave like a well-mannered CLI process. The
+// FENDIX_PLUGIN_* vars Run sets explicitly are always passed through
+// (they're appended after redaction, not inherited). Plugins that
+// need an extra var can declare it in the manifest's optional `env:`
+// allowlist — see Spec.Env and redactPluginEnv.
+var envAllowlist = map[string]struct{}{
+	"PATH":   {}, // find the interpreter + child tools
+	"HOME":   {}, // language runtimes resolve config/cache relative to it
+	"LANG":   {}, // locale; harmless and some tools mis-encode without it
+	"TMPDIR": {}, // scratch space; many runtimes honour it
 }
 
-// redactPluginEnv returns the operator's environment with names that
-// match any prefix in secretEnvPrefixes removed. The match is a
-// case-sensitive substring check on the variable's *name*, not value,
-// so a custom `MY_SECRET_THING=...` is dropped (matches `SECRET`) but
-// `PATH` containing the string "secret" is not.
+// envAllowlistPrefixes lists name *prefixes* that are passed through
+// in addition to the exact-match envAllowlist. LC_* covers the POSIX
+// locale category vars (LC_ALL, LC_CTYPE, …) and FENDIX_PLUGIN_*
+// covers the vars Run injects (kept here so a manifest can't be
+// tricked into shadowing them and so the allowlist is self-describing).
+var envAllowlistPrefixes = []string{
+	"LC_",
+	"FENDIX_PLUGIN_",
+}
+
+// redactPluginEnv returns the operator's environment filtered down to
+// the allowlist: an entry survives only if its *name* is in
+// envAllowlist, matches an envAllowlistPrefixes prefix, or is named in
+// the optional per-plugin extra allowlist (the manifest's `env:`
+// field; pass nil for none). The match is case-sensitive on the
+// variable's name, not its value.
 //
 // Exported via a package-level var so tests can verify behaviour
 // without spawning a subprocess.
-func redactPluginEnv(env []string) []string {
+func redactPluginEnv(env []string, extra []string) []string {
+	allowExtra := make(map[string]struct{}, len(extra))
+	for _, name := range extra {
+		allowExtra[name] = struct{}{}
+	}
 	out := make([]string, 0, len(env))
-NEXT:
 	for _, kv := range env {
 		eq := strings.IndexByte(kv, '=')
 		if eq <= 0 {
-			out = append(out, kv)
+			// Malformed (no '=' or leading '='); Go's os.Environ never
+			// produces these, but if a caller hand-builds one, drop it —
+			// it can't be matched against the allowlist by name.
 			continue
 		}
 		name := kv[:eq]
-		for _, p := range secretEnvPrefixes {
-			if strings.Contains(name, p) {
-				continue NEXT
-			}
+		if envNameAllowed(name, allowExtra) {
+			out = append(out, kv)
 		}
-		out = append(out, kv)
 	}
 	return out
+}
+
+// envNameAllowed reports whether an env var name passes the allowlist
+// (fixed set + prefix set + the per-plugin extra set).
+func envNameAllowed(name string, extra map[string]struct{}) bool {
+	if _, ok := envAllowlist[name]; ok {
+		return true
+	}
+	if _, ok := extra[name]; ok {
+		return true
+	}
+	for _, p := range envAllowlistPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultTimeout caps a single plugin invocation when the manifest
@@ -129,6 +162,15 @@ type Spec struct {
 	Mode        Mode          `yaml:"mode"`
 	Categories  []string      `yaml:"categories,omitempty"`
 	Timeout     time.Duration `yaml:"timeout,omitempty"`
+	// Env is an optional allowlist of extra environment variable names
+	// the plugin needs passed through from the operator's environment
+	// (F-I1). By default the runner inherits only a minimal fixed
+	// allowlist (PATH, HOME, LANG/LC_*, TMPDIR) plus the FENDIX_PLUGIN_*
+	// vars it sets; a plugin that needs, say, a corporate proxy var can
+	// name it here. This is the plugin author *requesting* a var — it
+	// does not grant access the operator hasn't already exported.
+	// Backwards-compatible: omitting it preserves the minimal default.
+	Env []string `yaml:"env,omitempty"`
 }
 
 // Plugin is a discovered, validated plugin ready to run.
@@ -166,9 +208,17 @@ type doneMessage struct {
 // Discover walks the given roots in order, parses every plugin.yaml
 // it finds, and returns the resulting Plugin list deduplicated by
 // Name (earlier roots win — pass repo-local first, user-global
-// second). A malformed plugin.yaml in one directory does not stop
-// discovery in others; the error for that directory is logged at
-// WARN level and the plugin is skipped.
+// second; see DefaultRoots). A malformed plugin.yaml in one directory
+// does not stop discovery in others; the error for that directory is
+// logged at WARN level and the plugin is skipped.
+//
+// Symlinked plugin *directories* are skipped (F-H2): following a
+// symlink lets a directory entry point outside the discovery root —
+// a poisoned repo could symlink its `.fendix/plugins/x` at an
+// attacker-staged tree, and an operator's `~/.fendix/plugins/y` could
+// be redirected by a hostile package. Only real directories are
+// discovered; copy (or `git clone`) a plugin into the root rather
+// than symlinking it.
 //
 // Discover is intentionally tolerant of missing roots: a fresh
 // install with no plugin directories returns ([], nil), not an error.
@@ -186,14 +236,17 @@ func Discover(roots []string) ([]Plugin, error) {
 		}
 		for _, e := range entries {
 			dir := filepath.Join(root, e.Name())
-			// Follow symlinks: e.IsDir() returns false for a symlinked
-			// directory because the DirEntry reflects the symlink itself,
-			// not the target. Stat the entry so symlinked plugin dirs
-			// (e.g. `ln -s ../my-plugin .fendix/plugins/`) discover too.
-			// TASK-130 / surfaced during TASK-127 audit.
-			info, err := os.Stat(dir)
+			// Lstat (not Stat) so a symlinked entry reports as a symlink
+			// rather than its target. Symlinked plugin directories are
+			// skipped: following them lets a discovery-root entry escape
+			// the root (F-H2). Real directories only.
+			info, err := os.Lstat(dir)
 			if err != nil {
 				slog.Debug("plugin entry unstable", "dir", dir, "err", err)
+				continue
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				slog.Warn("plugin skipped: symlinked plugin directory not followed", "dir", dir)
 				continue
 			}
 			if !info.IsDir() {
@@ -296,15 +349,28 @@ func (p Plugin) Run(ctx context.Context, req ScanRequest) ([]models.Finding, err
 	if timeout == 0 {
 		timeout = DefaultTimeout
 	}
+
+	// Re-validate the on-disk entrypoint just before exec (F-H2): the
+	// manifest parse rejected `..`/absolute paths, but the resolved
+	// path and its in-dir parent chain can still be a symlink escaping
+	// the plugin dir, group/other-writable, or owned by another uid —
+	// all of which let a second party swap the code we're about to run
+	// (TOCTOU on a shared/CI checkout). Best-effort on non-Unix.
+	entrypoint := filepath.Join(p.Dir, p.Entrypoint)
+	if err := checkEntrypointSafe(p.Dir, entrypoint); err != nil {
+		return nil, fmt.Errorf("plugin %s: %w", p.Name, err)
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, filepath.Join(p.Dir, p.Entrypoint))
+	cmd := exec.CommandContext(runCtx, entrypoint)
 	cmd.Dir = p.Dir
-	// Strip credentials from the inherited environment before handing
-	// it to third-party code (see secretEnvPrefixes for the redaction
-	// list and rationale).
-	cmd.Env = append(redactPluginEnv(os.Environ()),
+	// Filter the inherited environment down to a minimal allowlist
+	// before handing it to third-party code (see envAllowlist + Spec.Env
+	// for the policy and rationale). FENDIX_PLUGIN_* are appended below,
+	// not inherited.
+	cmd.Env = append(redactPluginEnv(os.Environ(), p.Env),
 		"FENDIX_PLUGIN_NAME="+p.Name,
 		"FENDIX_PLUGIN_DIR="+p.Dir,
 	)
@@ -419,16 +485,23 @@ func sourceForMode(m Mode) models.Source {
 	}
 }
 
-// DefaultRoots returns the canonical plugin search path: repo-local
-// first, then user-global. cwd is the working directory whose
-// .fendix/plugins should be searched (typically the scan root). If
-// cwd is empty, only the user-global root is returned.
+// DefaultRoots returns the canonical plugin search path. The
+// user-global root (~/.fendix/plugins) is always included — the
+// operator populated it by hand, so it's trusted. The repo-local root
+// (<cwd>/.fendix/plugins) is included only when allowRepoLocal is true
+// (F-H2): the scanned repo is attacker-controlled in the poisoned-
+// pipeline threat model, so a `.fendix/plugins/` committed by a
+// hostile PR must not auto-execute in CI. When repo-local is allowed,
+// it's listed first so it shadows a same-named user-global plugin.
 //
-// On systems where os.UserHomeDir fails (very rare) the user-global
-// root is silently omitted.
-func DefaultRoots(cwd string) []string {
+// cwd is the working directory whose .fendix/plugins should be
+// searched (typically the scan root). If cwd is empty, the repo-local
+// root is omitted regardless of allowRepoLocal. On systems where
+// os.UserHomeDir fails (very rare) the user-global root is silently
+// omitted.
+func DefaultRoots(cwd string, allowRepoLocal bool) []string {
 	var roots []string
-	if cwd != "" {
+	if allowRepoLocal && cwd != "" {
 		roots = append(roots, filepath.Join(cwd, ".fendix", "plugins"))
 	}
 	if home, err := os.UserHomeDir(); err == nil {

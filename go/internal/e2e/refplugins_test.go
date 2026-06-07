@@ -49,8 +49,9 @@ func referencePluginRoot(t *testing.T) string {
 
 // installPlugin copies one reference plugin from examples/plugins/<name>
 // into <scanRoot>/.fendix/plugins/<name>/. Returns the destination path.
-// Uses cp -R rather than ln -s — the symlink-discovery fix from TASK-130
-// makes both work, but cp -R matches what users in real installs do.
+// Uses cp -R rather than ln -s: symlinked plugin directories are skipped
+// during discovery (F-H2), and cp -R matches what users in real installs
+// do anyway.
 func installPlugin(t *testing.T, scanRoot, name string) string {
 	t.Helper()
 	src := filepath.Join(referencePluginRoot(t), name)
@@ -84,7 +85,11 @@ func runScanAndDecode(t *testing.T, scanArgs []string) map[string]interface{} {
 	t.Helper()
 	bin := fendixBinary(t)
 	outFile := filepath.Join(t.TempDir(), "report.json")
-	args := append([]string{"scan", "--format", "json", "--output", outFile}, scanArgs...)
+	// Reference plugins are installed under <scanRoot>/.fendix/plugins/,
+	// which is the repo-local root. Repo-local discovery is opt-in
+	// (F-H2), so the smoke test must explicitly enable it — exactly as a
+	// trusted first-party scan would.
+	args := append([]string{"scan", "--format", "json", "--output", outFile, "--allow-repo-local-plugins"}, scanArgs...)
 	cmd := exec.Command(bin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

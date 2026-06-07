@@ -72,10 +72,21 @@ type ScanConfig struct {
 	DebugBundlePath string
 	// NoPlugins disables out-of-tree plugin discovery and execution
 	// (TASK-113). When false (default), the orchestrator walks
-	// .fendix/plugins/ + ~/.fendix/plugins/ after the embedded
+	// ~/.fendix/plugins/ (and, only when AllowRepoLocalPlugins is set,
+	// the repo-local .fendix/plugins/) after the embedded
 	// blackbox/whitebox checks and feeds plugin findings through the
 	// same correlation/dedup pipeline.
 	NoPlugins bool
+	// AllowRepoLocalPlugins opts in to discovering repo-local plugins
+	// under <scan-cwd>/.fendix/plugins/ (F-H2). Default false: the
+	// scanned repository is attacker-controlled in the poisoned-pipeline
+	// threat model, so a `.fendix/plugins/` directory committed by a
+	// malicious PR must NOT auto-execute in CI. The user-global
+	// ~/.fendix/plugins/ root the operator populated by hand is always
+	// trusted and searched regardless of this flag. Enable only when the
+	// scanned tree is trusted (e.g. a first-party repo on a protected
+	// branch), never on untrusted PRs.
+	AllowRepoLocalPlugins bool
 	// NoNativeDeps disables the in-process Go dep-CVE scanner
 	// (TASK-119 / internal/scanner/deps/govulncheck). When false
 	// (default), the orchestrator runs the native scanner against any
