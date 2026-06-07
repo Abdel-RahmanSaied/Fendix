@@ -231,6 +231,7 @@ func newScanCmd() *cobra.Command {
 			respectRobots, _ := flags.GetBool("respect-robots")
 			debugBundleFlag, _ := flags.GetString("debug-bundle")
 			noPluginsFlag, _ := flags.GetBool("no-plugins")
+			allowRepoLocalPluginsFlag, _ := flags.GetBool("allow-repo-local-plugins")
 			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
 			usePipAuditFlag, _ := flags.GetBool("use-pip-audit")
 			pythonEngineFlag, _ := flags.GetBool("python-engine")
@@ -272,33 +273,34 @@ func newScanCmd() *cobra.Command {
 			}
 
 			cfg := &models.ScanConfig{
-				URL:                  urlFlag,
-				SpecPath:             specFlag,
-				CodePath:             codeFlag,
-				EnableActive:         enableActive,
-				MaxProbesPerEndpoint: maxProbesPerEndpoint,
-				Workers:              workers,
-				Timeout:              timeout,
-				DelayMs:              delay,
-				Verbose:              verbose,
-				IgnorePath:           ignoreFlag,
-				BaselinePath:         baselineFlag,
-				SaveBaselinePath:     saveBaselineFlag,
-				OutputPath:           outputFlag,
-				Format:               formatFlag,
-				FailOn:               failOnFlag,
-				WordlistPath:         wordlistFlag,
-				CrawlDepth:           crawlDepth,
-				MaxEndpoints:         maxEndpoints,
-				MaxRequests:          maxRequests,
-				MaxDuration:          maxDuration,
-				RespectRobots:        respectRobots,
-				DebugBundlePath:      debugBundleFlag,
-				NoPlugins:            noPluginsFlag,
-				NoNativeDeps:         noNativeDepsFlag,
-				UsePipAudit:          usePipAuditFlag,
-				PythonEngine:         pythonEngineFlag,
-				Lang:                 resolveLang(langFlag, cmd.ErrOrStderr()),
+				URL:                   urlFlag,
+				SpecPath:              specFlag,
+				CodePath:              codeFlag,
+				EnableActive:          enableActive,
+				MaxProbesPerEndpoint:  maxProbesPerEndpoint,
+				Workers:               workers,
+				Timeout:               timeout,
+				DelayMs:               delay,
+				Verbose:               verbose,
+				IgnorePath:            ignoreFlag,
+				BaselinePath:          baselineFlag,
+				SaveBaselinePath:      saveBaselineFlag,
+				OutputPath:            outputFlag,
+				Format:                formatFlag,
+				FailOn:                failOnFlag,
+				WordlistPath:          wordlistFlag,
+				CrawlDepth:            crawlDepth,
+				MaxEndpoints:          maxEndpoints,
+				MaxRequests:           maxRequests,
+				MaxDuration:           maxDuration,
+				RespectRobots:         respectRobots,
+				DebugBundlePath:       debugBundleFlag,
+				NoPlugins:             noPluginsFlag,
+				AllowRepoLocalPlugins: allowRepoLocalPluginsFlag,
+				NoNativeDeps:          noNativeDepsFlag,
+				UsePipAudit:           usePipAuditFlag,
+				PythonEngine:          pythonEngineFlag,
+				Lang:                  resolveLang(langFlag, cmd.ErrOrStderr()),
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -389,6 +391,7 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("respect-robots", false, "Treat robots.txt Disallow as a hard restriction (default: queue as discovery hints)")
 	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
 	flags.Bool("no-plugins", false, "Disable out-of-tree plugin discovery in .fendix/plugins/ + ~/.fendix/plugins/")
+	flags.Bool("allow-repo-local-plugins", false, "Opt in to running repo-local plugins under <scan-dir>/.fendix/plugins/ (UNSAFE on untrusted PRs; ~/.fendix/plugins/ is always trusted)")
 	flags.Bool("no-native-deps", false, "Disable the in-process Go dep-CVE scanner (TASK-119). Defer to the Python deps.py path instead.")
 	flags.Bool("use-pip-audit", false, "Shell out to the pip-audit binary for Python dep-CVE scanning instead of the native OSV.dev client. Falls back to OSV.dev with a warning if pip-audit is not on PATH.")
 	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")

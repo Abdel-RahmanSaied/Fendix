@@ -43,8 +43,9 @@ func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugins",
 		Short: "Manage out-of-tree plugins",
-		Long: "Manage Fendix plugins discovered under .fendix/plugins/ (repo-local)\n" +
-			"and ~/.fendix/plugins/ (user-global).\n\n" +
+		Long: "Manage Fendix plugins discovered under ~/.fendix/plugins/ (user-global,\n" +
+			"trusted) and — only with --allow-repo-local-plugins — the repo-local\n" +
+			".fendix/plugins/ (opt-in; the scanned repo is attacker-controlled in CI).\n\n" +
 			"Subcommands:\n" +
 			"  list                 Show every plugin the scanner would discover\n" +
 			"  install <git-url>    Clone a plugin repo into the user-global root\n\n" +
@@ -64,23 +65,27 @@ func NewCmd() *cobra.Command {
 // an empty discovery returns "no plugins found" on stdout, not an
 // error. This is informational tooling, not a CI gate.
 func newListCmd() *cobra.Command {
-	return &cobra.Command{
+	var allowRepoLocal bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List every plugin the scanner would discover",
-		Long: "Walk .fendix/plugins/ (in the current directory) and ~/.fendix/plugins/\n" +
-			"and print each plugin's name, version, mode, and on-disk directory.\n\n" +
+		Long: "Walk ~/.fendix/plugins/ (and, with --allow-repo-local-plugins, the\n" +
+			"repo-local .fendix/plugins/ in the current directory) and print each\n" +
+			"plugin's name, version, mode, and on-disk directory.\n\n" +
 			"The walk order mirrors what a 'fendix scan' invocation does, so\n" +
-			"what this command prints is exactly what would run. A plugin in the\n" +
-			"repo-local root with the same name as one in the user-global root\n" +
-			"shadows the user-global version (and only the winning entry is\n" +
-			"shown).",
+			"what this command prints is exactly what would run. By default the\n" +
+			"repo-local root is NOT searched (F-H2): the scanned repo is\n" +
+			"attacker-controlled in CI. Pass --allow-repo-local-plugins to include\n" +
+			"it, matching the same flag on 'fendix scan'. A repo-local plugin with\n" +
+			"the same name as a user-global one shadows it (only the winning entry\n" +
+			"is shown).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("plugins list: resolve cwd: %w", err)
 			}
-			roots := plugin.DefaultRoots(cwd)
+			roots := plugin.DefaultRoots(cwd, allowRepoLocal)
 			plugins, err := plugin.Discover(roots)
 			if err != nil {
 				return fmt.Errorf("plugins list: discover: %w", err)
@@ -118,6 +123,9 @@ func newListCmd() *cobra.Command {
 			return tw.Flush()
 		},
 	}
+	cmd.Flags().BoolVar(&allowRepoLocal, "allow-repo-local-plugins", false,
+		"Include repo-local .fendix/plugins/ in the listing (UNSAFE on untrusted PRs; off by default)")
+	return cmd
 }
 
 // validInstallURL accepts only the transports we trust to feed into

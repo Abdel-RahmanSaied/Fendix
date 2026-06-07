@@ -126,14 +126,32 @@ built-in secrets analyzer would.
 
 **Discovery roots** (in precedence order):
 
-| Order | Root | Use case |
-|-------|------|----------|
-| 1 | `<scan-cwd>/.fendix/plugins/` | Repo-pinned plugins (commit them with the code) |
-| 2 | `~/.fendix/plugins/` | User-global plugins (install once, use across repos) |
+| Order | Root | Trust | Use case |
+|-------|------|-------|----------|
+| 1 | `<scan-cwd>/.fendix/plugins/` | **opt-in** | Repo-pinned plugins (commit them with the code) |
+| 2 | `~/.fendix/plugins/` | trusted | User-global plugins (install once, use across repos) |
 
-A plugin in root #1 with the same `name:` as one in root #2
-shadows the user-global version. Pass `--no-plugins` on any scan to
-skip plugin discovery entirely.
+The user-global root (#2) is always searched — you populated it by
+hand, so the engine trusts it.
+
+The repo-local root (#1) is **not searched by default**. The repository
+under scan is attacker-controlled in the poisoned-pipeline threat model:
+a malicious PR can commit a `.fendix/plugins/` directory and, if it ran
+automatically, get arbitrary code executed in your CI at the runner's
+privilege. Repo-local discovery is therefore gated behind an explicit
+opt-in:
+
+```bash
+# Only on a TRUSTED tree (e.g. your own repo on a protected branch):
+fendix scan --code ./ --allow-repo-local-plugins
+```
+
+Never pass `--allow-repo-local-plugins` when scanning an untrusted pull
+request. See [Security model](#security-model) below.
+
+A plugin in root #1 (when enabled) with the same `name:` as one in root
+#2 shadows the user-global version. Pass `--no-plugins` on any scan to
+skip plugin discovery entirely (both roots).
 
 ---
 
@@ -149,6 +167,8 @@ mode: blackbox | whitebox | hybrid # required
 categories:                        # optional; informational only
   - secrets
 timeout: 30s                       # optional; default 30s, max 5m
+env:                               # optional; extra env vars to pass through
+  - HTTPS_PROXY                    #   (see "Environment variables" below)
 ```
 
 Unknown fields are **rejected** with a clear error message — same
@@ -340,10 +360,39 @@ are still preserved.
 
 ### Environment variables
 
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `FENDIX_PLUGIN_NAME` | The plugin's `name:` from manifest | Useful for log prefixing |
-| `FENDIX_PLUGIN_DIR` | Absolute path to plugin directory | Use for loading bundled rule packs / signature lists |
+A plugin runs arbitrary code at the operator's privilege, so the engine
+does **not** hand it the full operator environment. Instead it passes a
+minimal **allowlist** (F-I1) — only these names survive:
+
+| Variable(s) | Purpose |
+|-------------|---------|
+| `PATH` | Find the interpreter and any child tools |
+| `HOME` | Where language runtimes resolve config/cache |
+| `LANG`, `LC_*` | Locale (POSIX category vars) |
+| `TMPDIR` | Scratch space |
+| `FENDIX_PLUGIN_NAME` | The plugin's `name:` from manifest — useful for log prefixing |
+| `FENDIX_PLUGIN_DIR` | Absolute path to the plugin directory — use for loading bundled rule packs / signature lists |
+
+Everything else is dropped, including any credential-shaped variable
+(`AWS_*`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, a bespoke `MY_CREDS`, …).
+This is an allowlist, not a denylist: a secret in a variable nobody
+anticipated is dropped because it isn't on the list, so the runner
+fails closed.
+
+If your plugin genuinely needs an extra variable from the operator's
+environment (a corporate `HTTPS_PROXY`, a feature flag, etc.), declare
+it in the manifest's optional `env:` allowlist:
+
+```yaml
+env:
+  - HTTPS_PROXY
+  - MY_PLUGIN_FEATURE_FLAG
+```
+
+The named variables are passed through **only if the operator has them
+set** — declaring them does not grant access to anything the operator
+hasn't already exported. Keep the list as small as your plugin needs;
+never list credential names "just in case".
 
 Always use `FENDIX_PLUGIN_DIR` to find your bundled assets — never
 assume the working directory. The engine spawns plugins with `cwd =
@@ -379,20 +428,24 @@ terminator) is a bug in the plugin, not the engine.
 
 ### Smoke-test inside the engine
 
-Symlink or copy your plugin into the per-repo root and run a normal
-scan:
+Copy your plugin into the per-repo root and run a normal scan. The
+repo-local root is opt-in (see [Security model](#security-model)), so
+pass `--allow-repo-local-plugins` — only ever on a tree you trust:
 
 ```bash
 mkdir -p .fendix/plugins
 cp -R /path/to/my-plugin .fendix/plugins/
-fendix scan --code ./src --verbose
+fendix scan --code ./src --allow-repo-local-plugins --verbose
 ```
 
-> **Use `cp -R`, not `ln -s`.** The discovery walk treats symlinks as
-> regular files and skips them. `git clone` and `cp -R` produce real
-> directories that are discovered correctly. (This is a known
-> limitation tracked for fix in v0.10's `fendix plugins install`
-> subcommand — see [TASK-130](../tasks/PHASES.md).)
+> **Use `cp -R`, not `ln -s`.** Symlinked plugin *directories* are
+> deliberately **skipped** during discovery (F-H2): following a symlink
+> lets a discovery-root entry escape the root, which a poisoned repo (or
+> a hostile package redirecting your `~/.fendix/plugins/`) could abuse.
+> `git clone` and `cp -R` produce real directories that are discovered
+> correctly. For a user-global install, prefer
+> `fendix plugins install <git-url>`, which clones a real tree into
+> `~/.fendix/plugins/`.
 
 `--verbose` will print every plugin invocation + the raw findings it
 emitted. If you see `plugin skipped (no whitebox target)`, your
@@ -407,7 +460,8 @@ plugin's `mode:` doesn't match the scan's input flags.
 | `plugin failed name=my-plugin error="..."` | Non-zero exit or error terminator |
 | `plugin skipped (no whitebox target)` | Mode mismatch — not an error |
 | `plugin skipped name=my-plugin err="parse plugin.yaml: ..."` | Manifest invalid |
-| `plugin shadowed by earlier root` | Same name in `.fendix/plugins/` and `~/.fendix/plugins/` — repo-local wins |
+| `plugin skipped: symlinked plugin directory not followed` | Plugin dir is a symlink — discovery skips it (F-H2); use `cp -R` |
+| `plugin shadowed by earlier root` | Same name in repo-local `.fendix/plugins/` (opt-in) and `~/.fendix/plugins/` — repo-local wins |
 
 ---
 
@@ -415,7 +469,9 @@ plugin's `mode:` doesn't match the scan's input flags.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Plugin not discovered, no log lines mention it | Installed via `ln -s` | Use `cp -R` or `git clone` |
+| Plugin not discovered, no log lines mention it | Installed via `ln -s` (symlinked dirs are skipped, F-H2), or it's a repo-local plugin and `--allow-repo-local-plugins` wasn't passed | Use `cp -R` / `git clone`; for repo-local plugins on a trusted tree add `--allow-repo-local-plugins` |
+| `plugin skipped: symlinked plugin directory not followed` | Plugin dir is a symlink | Replace the symlink with a real directory (`cp -R`) |
+| `is group/other-writable` / `is a symlink escaping the plugin dir` / `owned by uid …` | The entrypoint or one of its in-dir parents fails the pre-exec safety check (F-H2) | `chmod` the entrypoint chain to `0o755`/`0o700`, remove the escaping symlink, and ensure the plugin tree is owned by the user running `fendix` |
 | `parse plugin.yaml: field "entry_point" not found in type plugin.Spec` | Field name typo (e.g. `entry_point` vs `entrypoint`) | Match the [manifest schema](#the-pluginyaml-manifest) exactly |
 | Findings missing from report despite plugin running | `title` or `severity` not set on the Finding | Required fields must be present and non-empty |
 | Plugin runs but report shows zero findings | Terminator emitted before findings, or stdout buffered | Flush stdout after each finding (`sys.stdout.flush()` in Python; `process.stdout.write` is synchronous in Node) |
@@ -503,6 +559,10 @@ The engine applies these guardrails:
 
 | Guardrail | Effect |
 |-----------|--------|
+| Repo-local opt-in (F-H2) | Plugins under the scanned repo's `.fendix/plugins/` are **not** discovered unless `--allow-repo-local-plugins` is passed. A poisoned PR can't auto-run code in CI. `~/.fendix/plugins/` stays trusted. |
+| Symlinked dirs skipped (F-H2) | A symlinked plugin *directory* is skipped during discovery, so a discovery-root entry can't escape the root to an attacker-staged tree |
+| Pre-exec entrypoint check (F-H2) | Before exec, the resolved entrypoint and its in-dir parent chain are rejected if any component is a symlink escaping the plugin dir, is group/other-writable, or is owned by a different uid (best-effort on non-Unix) — closes the swap-the-binary TOCTOU on a shared/CI checkout |
+| Env allowlist (F-I1) | Only `PATH`, `HOME`, `LANG`/`LC_*`, `TMPDIR`, the `FENDIX_PLUGIN_*` vars, and the manifest's optional `env:` extras reach the plugin; every credential-shaped var is dropped (fail-closed) |
 | Per-plugin timeout (default 30s, max 5m) | Runaway plugins can't pin a CI job |
 | Manifest path validation | Entrypoint must be relative; no `..` traversal accepted |
 | Mode filter | Whitebox plugins don't run on blackbox-only scans (less attack surface per scan) |

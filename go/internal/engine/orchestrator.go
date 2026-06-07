@@ -569,7 +569,11 @@ func (o *Orchestrator) checkFailOn(findings []models.Finding) int {
 // interrupt the embedded engines.
 func (o *Orchestrator) runPlugins(ctx context.Context) []models.Finding {
 	cwd, _ := os.Getwd()
-	roots := plugin.DefaultRoots(cwd)
+	// Repo-local plugins (<cwd>/.fendix/plugins) are opt-in (F-H2): the
+	// scanned repo is attacker-controlled in CI, so a `.fendix/plugins/`
+	// from a hostile PR must not auto-execute. The user-global root is
+	// always searched.
+	roots := plugin.DefaultRoots(cwd, o.cfg.AllowRepoLocalPlugins)
 	plugins, err := plugin.Discover(roots)
 	if err != nil {
 		slog.Warn("plugin discovery failed", "error", err)

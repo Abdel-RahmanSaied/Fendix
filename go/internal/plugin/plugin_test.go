@@ -313,13 +313,25 @@ echo '{"done":true,"total":1}'
 	}
 }
 
-func TestDefaultRoots_OrdersRepoLocalFirst(t *testing.T) {
+func TestDefaultRoots_OrdersRepoLocalFirstWhenAllowed(t *testing.T) {
 	cwd := t.TempDir()
-	roots := DefaultRoots(cwd)
+	roots := DefaultRoots(cwd, true)
 	if len(roots) == 0 {
 		t.Fatal("DefaultRoots returned no roots")
 	}
 	if !strings.HasPrefix(roots[0], cwd) {
-		t.Fatalf("expected first root under cwd, got %q", roots[0])
+		t.Fatalf("expected first root under cwd when repo-local allowed, got %q", roots[0])
+	}
+}
+
+func TestDefaultRoots_OmitsRepoLocalByDefault(t *testing.T) {
+	// F-H2: with allowRepoLocal=false the repo-local root must NOT be
+	// returned — the scanned repo is attacker-controlled in CI.
+	cwd := t.TempDir()
+	roots := DefaultRoots(cwd, false)
+	for _, r := range roots {
+		if strings.HasPrefix(r, cwd) {
+			t.Fatalf("repo-local root %q must be omitted without opt-in; roots=%v", r, roots)
+		}
 	}
 }
