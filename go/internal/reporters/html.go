@@ -230,6 +230,11 @@ func RenderHTMLOpts(w io.Writer, findings []models.Finding, meta ScanMetadata, o
 	if lang == "" {
 		lang = "en"
 	}
+	// Strip bidi/zero-width/control characters from untrusted finding
+	// fields before they hit the template. html/template auto-escaping
+	// handles metachars, but not Trojan-Source bidi reordering or
+	// invisible control chars — NeutralizeFindings closes that gap.
+	findings = NeutralizeFindings(findings)
 	data := htmlTemplateData{
 		JSONReport: JSONReport{
 			Metadata: meta,

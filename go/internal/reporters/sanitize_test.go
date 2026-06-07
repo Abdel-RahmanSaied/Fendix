@@ -126,3 +126,169 @@ func TestSanitizeFindings_RedactsInTitle(t *testing.T) {
 		t.Errorf("title should be redacted: %s", sanitized[0].Title)
 	}
 }
+
+// Invisible Unicode characters are built from rune code points so the
+// source file itself stays free of bidi/zero-width chars (a literal BOM
+// mid-source is even a hard compile error).
+var (
+	rlo  = string(rune(0x202e)) // RIGHT-TO-LEFT OVERRIDE (Trojan-Source classic)
+	lre  = string(rune(0x202a)) // LEFT-TO-RIGHT EMBEDDING
+	pdf  = string(rune(0x202c)) // POP DIRECTIONAL FORMATTING
+	lri  = string(rune(0x2066)) // LEFT-TO-RIGHT ISOLATE
+	pdi  = string(rune(0x2069)) // POP DIRECTIONAL ISOLATE
+	lrm  = string(rune(0x200e)) // LEFT-TO-RIGHT MARK
+	rlm  = string(rune(0x200f)) // RIGHT-TO-LEFT MARK
+	zwsp = string(rune(0x200b)) // ZERO WIDTH SPACE
+	zwnj = string(rune(0x200c)) // ZERO WIDTH NON-JOINER
+	zwj  = string(rune(0x200d)) // ZERO WIDTH JOINER
+	bom  = string(rune(0xfeff)) // ZERO WIDTH NO-BREAK SPACE / BOM
+)
+
+func TestNeutralizeText_StripsBidiAndControl(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Trojan-Source RLO override (U+202E) reorders the visible text.
+		{"RLO override", "admin" + rlo + "gnp.txt", "admingnp.txt"},
+		{"LRE/PDF pair", "a" + lre + "b" + pdf + "c", "abc"},
+		{"isolates", "x" + lri + "y" + pdi + "z", "xyz"},
+		{"LRM/RLM marks", "a" + lrm + "b" + rlm + "c", "abc"},
+		{"zero-width space", "se" + zwsp + "cret", "secret"},
+		{"ZWNJ/ZWJ", "a" + zwnj + "b" + zwj + "c", "abc"},
+		{"BOM / ZWNBSP", bom + "text", "text"},
+		{"C0 controls dropped", "a\x00b\x07c", "abc"},
+		{"DEL dropped", "a\x7fb", "ab"},
+		{"bare CR dropped", "line1\rline2", "line1line2"},
+		{"C1 controls dropped (NEL)", "a\u0085b", "ab"},
+		// Legitimate layout characters survive.
+		{"newline preserved", "line1\nline2", "line1\nline2"},
+		{"tab preserved", "a\tb", "a\tb"},
+		// Non-control Unicode (RTL script, emoji) survives untouched.
+		{"arabic preserved", "مرحبا", "مرحبا"},
+		{"emoji preserved", "shield \U0001f6e1", "shield \U0001f6e1"},
+		{"empty", "", ""},
+		{"plain ASCII unchanged", "GET /api/users", "GET /api/users"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NeutralizeText(tt.in)
+			if got != tt.want {
+				t.Errorf("NeutralizeText(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNeutralizeText_DropsInvalidUTF8 covers the F-L4 robustness goal:
+// raw, malformed UTF-8 bytes (e.g. a lone 0x80..0xFF) must be dropped
+// rather than emitted as a U+FFFD replacement char, and must not panic.
+func TestNeutralizeText_DropsInvalidUTF8(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"lone continuation byte", "a\x80b", "ab"},
+		{"lone high byte", "a\xffb", "ab"},
+		{"truncated multibyte", "a\xe2\x82c", "ac"},
+		{"C1 as proper codepoint", "a\u009fb", "ab"},
+		{"valid after invalid", "\xffvalid", "valid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NeutralizeText(tt.in)
+			if got != tt.want {
+				t.Errorf("NeutralizeText(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if strings.ContainsRune(got, '�') {
+				t.Errorf("output should not contain U+FFFD replacement char: %q", got)
+			}
+		})
+	}
+}
+
+func TestNeutralizeFindings_StripsAllHumanFacingFields(t *testing.T) {
+	findings := []models.Finding{
+		{
+			Title:             "SQL" + rlo + "injection",
+			Evidence:          "payload" + zwsp + "=1",
+			Fix:               "use\x07params",
+			Endpoint:          "GET /api" + rlo + "/users",
+			Category:          "inj" + bom + "ection",
+			AffectedEndpoints: []string{"GET /a" + zwj + "b", "POST /c" + rlo + "d"},
+			TaintChain: []models.TaintLink{
+				{File: "src" + rlo + "/app.py", Line: 10, Expr: "run(" + zwsp + "x)"},
+			},
+		},
+	}
+
+	out := NeutralizeFindings(findings)
+
+	f := out[0]
+	if containsAnyNeutralized(f.Title) {
+		t.Errorf("Title not neutralized: %q", f.Title)
+	}
+	if containsAnyNeutralized(f.Evidence) {
+		t.Errorf("Evidence not neutralized: %q", f.Evidence)
+	}
+	if strings.ContainsRune(f.Fix, '\x07') {
+		t.Errorf("Fix not neutralized: %q", f.Fix)
+	}
+	if containsAnyNeutralized(f.Endpoint) {
+		t.Errorf("Endpoint not neutralized: %q", f.Endpoint)
+	}
+	if containsAnyNeutralized(f.Category) {
+		t.Errorf("Category not neutralized: %q", f.Category)
+	}
+	for _, ep := range f.AffectedEndpoints {
+		if containsAnyNeutralized(ep) {
+			t.Errorf("AffectedEndpoints entry not neutralized: %q", ep)
+		}
+	}
+	if containsAnyNeutralized(f.TaintChain[0].File) {
+		t.Errorf("TaintChain File not neutralized: %q", f.TaintChain[0].File)
+	}
+	if containsAnyNeutralized(f.TaintChain[0].Expr) {
+		t.Errorf("TaintChain Expr not neutralized: %q", f.TaintChain[0].Expr)
+	}
+	// Line is a numeric field carried through unchanged.
+	if f.TaintChain[0].Line != 10 {
+		t.Errorf("TaintChain Line should be untouched, got %d", f.TaintChain[0].Line)
+	}
+}
+
+func TestNeutralizeFindings_DoesNotMutateOriginal(t *testing.T) {
+	original := []models.Finding{
+		{
+			Title:             "evil" + rlo + "title",
+			AffectedEndpoints: []string{"GET /a" + zwj + "b"},
+			TaintChain:        []models.TaintLink{{File: "x" + rlo + "y", Expr: "z" + zwsp}},
+		},
+	}
+
+	_ = NeutralizeFindings(original)
+
+	if !strings.Contains(original[0].Title, rlo) {
+		t.Error("original Title should not be mutated")
+	}
+	if !strings.Contains(original[0].AffectedEndpoints[0], zwj) {
+		t.Error("original AffectedEndpoints should not be mutated")
+	}
+	if !strings.Contains(original[0].TaintChain[0].File, rlo) {
+		t.Error("original TaintChain should not be mutated")
+	}
+}
+
+// containsAnyNeutralized reports whether s still contains any of the
+// bidi/zero-width characters used in these tests — a quick assertion
+// that NeutralizeText scrubbed the field.
+func containsAnyNeutralized(s string) bool {
+	for _, c := range []string{rlo, lre, pdf, lri, pdi, lrm, rlm, zwsp, zwnj, zwj, bom} {
+		if strings.Contains(s, c) {
+			return true
+		}
+	}
+	return false
+}

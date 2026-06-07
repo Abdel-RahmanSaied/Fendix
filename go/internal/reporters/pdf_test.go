@@ -80,6 +80,56 @@ func TestRenderPDF_HonoursClassificationOption(t *testing.T) {
 	}
 }
 
+// TestRenderPDF_NeutralizesAndDoesNotPanic covers F-L4: exotic input
+// (bidi overrides, zero-width, C0/C1 controls, and malformed UTF-8) must
+// not panic the renderer, must still produce a valid PDF, and the raw
+// multi-byte sequences of those characters must not be embedded verbatim
+// in the output — i.e. NeutralizeFindings ran before fpdf saw the text.
+//
+// We deliberately do NOT assert byte-equality against a hand-stripped
+// finding: fpdf registers fonts via internal Go maps, so font-object
+// ordering (and therefore the exact byte stream) is not stable across
+// separate fpdf.New() instances even for identical content.
+func TestRenderPDF_NeutralizesAndDoesNotPanic(t *testing.T) {
+	meta := ScanMetadata{Target: "https://example.com", Version: "dev"}
+
+	exotic := []models.Finding{
+		{
+			ID:       "SEC-001",
+			Title:    "SQL" + rlo + "injection" + bom,
+			Severity: models.SeverityCritical,
+			Endpoint: "GET /api" + rlo + "/users",
+			// \x07 (C0 control) plus a trailing ZWSP exercise the strip path.
+			Fix: "use\x07parameterisedqueries" + zwsp,
+			// Lone invalid UTF-8 byte: must not panic.
+			Evidence: "raw\xffbyte",
+			TaintChain: []models.TaintLink{
+				{File: "src" + rlo + "/db.py", Line: 1, Expr: "q" + zwj + "1"},
+			},
+			Confidence: models.ConfidenceHigh,
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := RenderPDF(&buf, exotic, meta, PDFOptions{}); err != nil {
+		t.Fatalf("RenderPDF (exotic): %v", err)
+	}
+	out := buf.Bytes()
+	if !bytes.HasPrefix(out, []byte("%PDF-")) {
+		t.Error("exotic-input PDF missing magic header")
+	}
+	if len(out) < 1000 {
+		t.Errorf("exotic-input PDF too small: %d bytes", len(out))
+	}
+	// The raw UTF-8 byte sequences of the bidi/zero-width chars must not
+	// appear anywhere in the rendered PDF.
+	for _, bad := range []string{rlo, zwsp, zwj, bom} {
+		if bytes.Contains(out, []byte(bad)) {
+			t.Errorf("PDF output embeds raw bytes for %U", []rune(bad)[0])
+		}
+	}
+}
+
 func TestTopNBySeverity_OrdersCorrectly(t *testing.T) {
 	findings := []models.Finding{
 		{ID: "low", Severity: models.SeverityLow},

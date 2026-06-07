@@ -337,6 +337,73 @@ func TestRenderHTML_AffectedEndpointsList(t *testing.T) {
 	}
 }
 
+// TestRenderHTML_NeutralizesBidiAndControl covers F-L1/F-L2: bidi
+// override / zero-width / control characters in untrusted finding
+// fields must not survive into the rendered HTML.
+func TestRenderHTML_NeutralizesBidiAndControl(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+	findings := []models.Finding{
+		{
+			ID:                "SEC-001",
+			Title:             "Trojan" + rlo + "title",
+			Severity:          models.SeverityCritical,
+			Source:            models.SourceBlackbox,
+			Category:          "data" + zwsp + "exposure",
+			Endpoint:          "GET /api" + rlo + "/users",
+			Evidence:          "leak" + zwj + "ed token",
+			Fix:               "rotate\x07now",
+			AffectedEndpoints: []string{"GET /a" + bom + "b", "POST /c" + rlo + "d"},
+			References:        []string{},
+		},
+	}
+	if err := RenderHTML(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	out := buf.String()
+	for _, bad := range []string{rlo, zwsp, zwj, bom} {
+		if strings.Contains(out, bad) {
+			t.Errorf("HTML output still contains a bidi/zero-width char %U", []rune(bad)[0])
+		}
+	}
+	if strings.ContainsRune(out, '\x07') {
+		t.Error("HTML output still contains a C0 control char")
+	}
+}
+
+// TestRenderHTML_AutoEscapingHolds confirms that neutralization runs
+// BEFORE html/template auto-escaping and does not disable it: HTML
+// metacharacters in a finding title must still be entity-escaped, not
+// emitted as live markup.
+func TestRenderHTML_AutoEscapingHolds(t *testing.T) {
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://test.com", Version: "dev", Mode: "blackbox"}
+	findings := []models.Finding{
+		{
+			ID:         "SEC-001",
+			Title:      `<script>alert(1)</script>` + rlo,
+			Severity:   models.SeverityHigh,
+			Source:     models.SourceBlackbox,
+			Endpoint:   "GET /x",
+			References: []string{},
+		},
+	}
+	if err := RenderHTML(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "<script>alert(1)</script>") {
+		t.Error("html/template auto-escaping regressed: raw <script> survived")
+	}
+	if !strings.Contains(out, "&lt;script&gt;") {
+		t.Error("expected entity-escaped <script> in output")
+	}
+	// And the bidi char must still be stripped.
+	if strings.Contains(out, rlo) {
+		t.Error("bidi char survived alongside escaped markup")
+	}
+}
+
 // TestRenderHTML_SingletonHasNoAffectedSection: a finding without
 // AffectedEndpoints (the common case) must NOT render an empty
 // "Affected endpoints" block — that would just be visual noise.
