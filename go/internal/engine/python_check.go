@@ -47,10 +47,15 @@ func CheckPython(pythonBin string) PythonStatus {
 
 // PythonRequiredMessage returns a user-friendly message explaining that
 // Python is needed for whitebox scanning.
+//
+// Post-TASK-118 the secrets and semgrep checks run natively in Go, so they
+// are NOT listed here — only the still-Python auth/injection/deps AST checks
+// require the interpreter. Listing secrets/semgrep would wrongly imply they
+// get skipped without Python.
 func PythonRequiredMessage() string {
 	return fmt.Sprintf(
-		"Python 3 is required for whitebox analysis (secrets, semgrep, AST checks).\n" +
+		"Python 3 is required for the whitebox AST analysis (auth, injection, deps checks).\n" +
 			"Install Python 3: https://www.python.org/downloads/\n" +
-			"The scan will continue with blackbox checks only.",
+			"The scan will continue with blackbox checks plus the native Go secrets and semgrep checks.",
 	)
 }

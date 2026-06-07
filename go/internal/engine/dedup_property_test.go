@@ -18,12 +18,16 @@ import (
 //   - For each output group, the union of AffectedEndpoints is the
 //     same across input permutations.
 //
-// What ISN'T order-invariant (documented, not a bug):
-//   - The Evidence/Fix/ID fields are taken from the *first* finding
-//     in each group, so a different permutation can pick a different
-//     primary representative. The test does NOT assert on those.
-//   - The relative order of output groups follows first-occurrence,
-//     which IS order-sensitive. The test compares sorted output.
+// F-L6 update: this comment used to record the primary representative
+// (Evidence/Fix/Endpoint) as legitimately order-dependent — "first
+// seen wins". That nondeterminism leaked into the orchestrator's
+// Endpoint-keyed sort and made report SEC-NNN ID assignment vary
+// between otherwise-identical scans (the worker pool interleaves
+// results non-deterministically). Deduplicate now picks the primary
+// by a total order (findingLess), so the primary is a pure function of
+// the group's member set. TestDeduplicate_PrimaryIsDeterministic
+// below asserts that stronger property directly; this test keeps the
+// set/union checks.
 //
 // Failure mode this catches: a future refactor that picks group
 // keys from a non-deterministic source, or accidentally drops
@@ -100,6 +104,60 @@ func TestDeduplicate_OrderInvariance(t *testing.T) {
 					t.Errorf("trial %d: CSP group endpoint count = %d, want %d (AffectedEndpoints=%v, Endpoint=%q)",
 						trial, totalEps, wantEndpointsCSP, f.AffectedEndpoints, f.Endpoint)
 				}
+			}
+		}
+	}
+}
+
+// TestDeduplicate_PrimaryIsDeterministic pins F-L6: the merged
+// finding's identity fields (Endpoint, Evidence, Fix, Line) are a pure
+// function of the group's member SET, independent of input order.
+// Before the fix the primary was "first seen", so a re-ordered scan
+// could emit a different Endpoint/Evidence for the same group — which
+// then changed the orchestrator's Endpoint-keyed sort and the assigned
+// SEC-NNN IDs. The corpus deliberately varies Evidence/Fix/Line per
+// occurrence so a first-seen primary would be visibly unstable.
+//
+// Groups are matched by dedupKey (not output position): the relative
+// ORDER of groups still follows first-occurrence, which is order-
+// sensitive by design and re-sorted downstream by the orchestrator.
+// What F-L6 fixes is *which* representative each group keeps.
+func TestDeduplicate_PrimaryIsDeterministic(t *testing.T) {
+	line := func(s string) *string { return &s }
+	corpus := []models.Finding{
+		{Title: "Missing CSP", Category: "headers", Severity: models.SeverityHigh, Endpoint: "/c", Evidence: "no CSP on /c", Fix: "add CSP", Confidence: models.ConfidenceLow},
+		{Title: "Missing CSP", Category: "headers", Severity: models.SeverityHigh, Endpoint: "/a", Evidence: "no CSP on /a", Fix: "add CSP", Confidence: models.ConfidenceMedium},
+		{Title: "Missing CSP", Category: "headers", Severity: models.SeverityHigh, Endpoint: "/b", Evidence: "no CSP on /b", Fix: "add CSP", Confidence: models.ConfidenceHigh},
+		{Title: "SQLi", Category: "injection", Severity: models.SeverityCritical, Endpoint: "/users", Evidence: "users param", Fix: "parameterize", Line: line("dao.py:90"), Confidence: models.ConfidenceHigh},
+		{Title: "SQLi", Category: "injection", Severity: models.SeverityCritical, Endpoint: "/search", Evidence: "search param", Fix: "parameterize", Line: line("dao.py:12"), Confidence: models.ConfidenceHigh},
+		{Title: "Stack trace", Category: "exposure", Severity: models.SeverityMedium, Endpoint: "/debug", Evidence: "trace leaked"},
+	}
+
+	// primaryFingerprint maps dedupKey → "endpoint|evidence|fix|line".
+	primaryFingerprint := func(findings []models.Finding) map[string]string {
+		m := make(map[string]string, len(findings))
+		for _, f := range findings {
+			m[dedupKey(f)] = f.Endpoint + "|" + f.Evidence + "|" + f.Fix + "|" + derefLine(f.Line)
+		}
+		return m
+	}
+
+	ref := primaryFingerprint(Deduplicate(append([]models.Finding(nil), corpus...)))
+
+	rng := rand.New(rand.NewSource(20260607))
+	const trials = 200
+	for trial := 0; trial < trials; trial++ {
+		perm := append([]models.Finding(nil), corpus...)
+		rng.Shuffle(len(perm), func(i, j int) { perm[i], perm[j] = perm[j], perm[i] })
+
+		got := primaryFingerprint(Deduplicate(perm))
+		if len(got) != len(ref) {
+			t.Fatalf("trial %d: group count %d != reference %d", trial, len(got), len(ref))
+		}
+		for key, want := range ref {
+			if got[key] != want {
+				t.Errorf("trial %d: group %q primary not deterministic.\n  ref: %q\n  got: %q",
+					trial, key, want, got[key])
 			}
 		}
 	}
