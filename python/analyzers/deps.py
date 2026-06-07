@@ -21,6 +21,37 @@ import sys
 from pathlib import Path
 from typing import Callable, NamedTuple
 
+# Manifest size cap (F-L10). Mirrors ast_analyzer.py's `_MAX_FILE_BYTES`
+# pattern: refuse to read_text() a requirements.txt / package.json that an
+# untrusted repo has inflated to gigabytes, which would OOM the engine. A real
+# manifest is a few KB; even huge monorepos stay well under 4 MB.
+_MAX_MANIFEST_BYTES = 4 * 1024 * 1024  # 4 MB
+
+
+def _read_capped(path: Path) -> str | None:
+    """Read ``path`` as UTF-8 text, or return None if it's too large to trust.
+
+    F-L10: stat the file first and skip (logging to stderr) anything over
+    ``_MAX_MANIFEST_BYTES`` so a hostile oversized manifest can't be slurped
+    whole into memory. OSError (unreadable/missing) also returns None — the
+    caller treats both as "no manifest to scan".
+    """
+    try:
+        if path.stat().st_size > _MAX_MANIFEST_BYTES:
+            print(
+                f"[fendix-engine] deps: skipping {path.name} — exceeds "
+                f"{_MAX_MANIFEST_BYTES}-byte manifest cap",
+                file=sys.stderr,
+            )
+            return None
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"[fendix-engine] deps: could not read {path.name}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
 # ---------------------------------------------------------------------------
 # Local known-vulnerable package list (fallback when pip-audit is absent)
 # Each entry: (package_name, max_safe_version_exclusive, cve_id, severity, description)
@@ -272,7 +303,9 @@ class DepsAnalyzer:
         no findings were emitted — that masked a regex-key bug for months
         because no exception ever surfaced to the user.
         """
-        text = req_file.read_text(encoding="utf-8")
+        text = _read_capped(req_file)
+        if text is None:  # F-L10: oversized/unreadable manifest — skip
+            return
         packages = _parse_requirements(text)
 
         if shutil.which("pip-audit"):
@@ -426,7 +459,9 @@ class DepsAnalyzer:
         manifest — without one it errors out. Either case (missing tool or
         missing lockfile) trips the fallback so users always get something.
         """
-        text = pkg_file.read_text(encoding="utf-8")
+        text = _read_capped(pkg_file)
+        if text is None:  # F-L10: oversized/unreadable manifest — skip
+            return
         packages = _parse_package_json(text)
 
         if shutil.which("npm") and self._has_npm_lockfile(pkg_file.parent):

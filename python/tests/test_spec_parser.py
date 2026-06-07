@@ -172,3 +172,105 @@ class TestErrorHandling:
         SpecParser(fname).check_auth(findings.append)
         # Should not have a parse error
         assert not any(f["id"] == "SEC-SPEC-PARSE" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# F-L8: a deeply-nested YAML spec (parser-recursion "bomb") must be reported
+# as SEC-SPEC-PARSE, not propagate a RecursionError out of check_auth.
+# ---------------------------------------------------------------------------
+
+class TestDeeplyNestedYaml:
+    def test_deeply_nested_yaml_emits_parse_error(self) -> None:
+        """A deeply-nested flow-sequence YAML (`[[[...]]]`) overflows the
+        YAML constructor's recursion; check_auth must catch RecursionError and
+        emit SEC-SPEC-PARSE rather than crash."""
+        depth = 6000
+        bomb = "[" * depth + "]" * depth
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(bomb)
+            fname = f.name
+        findings: list[dict] = []
+        # Must not raise.
+        SpecParser(fname).check_auth(findings.append)
+        assert any(f["id"] == "SEC-SPEC-PARSE" for f in findings)
+
+    def test_parse_error_finding_has_evidence(self) -> None:
+        """The SEC-SPEC-PARSE finding must carry non-empty evidence even when
+        str(RecursionError) is blank (we fall back to the class name)."""
+        depth = 6000
+        bomb = "[" * depth + "]" * depth
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(bomb)
+            fname = f.name
+        findings: list[dict] = []
+        SpecParser(fname).check_auth(findings.append)
+        parse_findings = [f for f in findings if f["id"] == "SEC-SPEC-PARSE"]
+        assert parse_findings
+        assert parse_findings[0]["evidence"]
+
+
+# ---------------------------------------------------------------------------
+# F-L9: remote --spec fetch must cap the response size (mirrors the Go
+# crawler's ~50 MB maxSpecBytes) and refuse plaintext HTTP / non-https
+# redirects, so a hostile/huge endpoint cannot OOM the engine.
+# ---------------------------------------------------------------------------
+
+class TestRemoteSpecHardening:
+    def test_oversized_response_is_rejected(self) -> None:
+        """A response larger than the size cap must raise (surfaced as
+        SEC-SPEC-PARSE), not be buffered whole into memory."""
+        from unittest.mock import MagicMock, patch
+
+        from analyzers import spec_parser as sp
+
+        # Fake response that would yield cap+extra bytes from read(n).
+        oversized = b"x" * (sp._MAX_SPEC_BYTES + 100)
+
+        fake_resp = MagicMock()
+        # read(n) returns at most n bytes; the parser asks for cap+1.
+        fake_resp.read.side_effect = lambda n: oversized[:n]
+        fake_resp.headers.get.return_value = "application/yaml"
+        fake_resp.__enter__.return_value = fake_resp
+        fake_resp.__exit__.return_value = False
+
+        fake_opener = MagicMock()
+        fake_opener.open.return_value = fake_resp
+
+        findings: list[dict] = []
+        with patch.object(sp.urllib.request, "build_opener", return_value=fake_opener):
+            SpecParser("https://evil.example.com/huge.yaml").check_auth(findings.append)
+
+        assert any(f["id"] == "SEC-SPEC-PARSE" for f in findings)
+        parse = next(f for f in findings if f["id"] == "SEC-SPEC-PARSE")
+        assert "too large" in parse["evidence"]
+        # Never read more than cap+1 bytes in a single read.
+        assert fake_resp.read.call_args[0][0] == sp._MAX_SPEC_BYTES + 1
+
+    def test_under_cap_response_is_parsed(self) -> None:
+        """A small valid spec fetched over https parses fine (no parse error)."""
+        from unittest.mock import MagicMock, patch
+
+        from analyzers import spec_parser as sp
+
+        body = b"openapi: 3.0.3\ninfo:\n  title: T\n  version: '1.0'\npaths: {}\n"
+
+        fake_resp = MagicMock()
+        fake_resp.read.side_effect = lambda n: body[:n]
+        fake_resp.headers.get.return_value = "application/yaml"
+        fake_resp.__enter__.return_value = fake_resp
+        fake_resp.__exit__.return_value = False
+
+        fake_opener = MagicMock()
+        fake_opener.open.return_value = fake_resp
+
+        findings: list[dict] = []
+        with patch.object(sp.urllib.request, "build_opener", return_value=fake_opener):
+            SpecParser("https://api.example.com/openapi.yaml").check_auth(findings.append)
+
+        assert not any(f["id"] == "SEC-SPEC-PARSE" for f in findings)
+
+    def test_plaintext_http_spec_is_refused(self) -> None:
+        """An http:// spec source is refused (SEC-SPEC-PARSE), defence in depth."""
+        findings: list[dict] = []
+        SpecParser("http://api.example.com/openapi.yaml").check_auth(findings.append)
+        assert any(f["id"] == "SEC-SPEC-PARSE" for f in findings)
