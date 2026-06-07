@@ -1,5 +1,23 @@
 package i18n
 
+// IsBeta reports whether a supported language is still a machine-translated
+// beta awaiting native-speaker security review (F-I3). Arabic ships as a
+// TRANSLATION_REVIEW_NEEDED baseline (see Arabic() and i18n.go's translation
+// policy), so it's beta until that review clears. English is the source
+// language and is never beta. Unknown codes are not beta — they fall back to
+// English at render time, so there's nothing unreviewed to warn about.
+//
+// The CLI uses this to decide whether to emit the "machine-translated, beta"
+// notice; the gate itself lives in reporters.ResolveLang.
+func IsBeta(lang string) bool {
+	switch normalize(lang) {
+	case "ar":
+		return true
+	default:
+		return false
+	}
+}
+
 // Arabic returns the Arabic Strings. Every value is marked
 // TRANSLATION_REVIEW_NEEDED in the comments — a native-speaker
 // security professional must review and replace before Fendix is

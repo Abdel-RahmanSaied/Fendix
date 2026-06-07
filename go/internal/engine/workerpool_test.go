@@ -118,6 +118,63 @@ func TestWorkerPool_EmptyEndpoints(t *testing.T) {
 	}
 }
 
+// TestWorkerPool_PanicIsContained pins the per-job recover() contract: a
+// check that panics on one endpoint must NOT abort the scan. The panicking
+// job is recorded as a synthetic INFO finding ("Scanner check panicked") and
+// every other job still runs to completion.
+func TestWorkerPool_PanicIsContained(t *testing.T) {
+	var goodCalls atomic.Int32
+	good := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+		goodCalls.Add(1)
+		return []models.Finding{{Title: "ok " + ep.Path, Severity: models.SeverityLow, Source: models.SourceBlackbox}}
+	}
+	boom := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+		panic("synthetic check failure on " + ep.Path)
+	}
+
+	// Single worker so the panicking job and the good jobs share the same
+	// goroutine — proves recover() lets the worker survive and keep pulling.
+	pool := NewWorkerPool(1, 0, []scanner.CheckFn{boom, good})
+	endpoints := []scanner.Endpoint{
+		{Method: "GET", Path: "/a", FullURL: "http://localhost/a"},
+		{Method: "GET", Path: "/b", FullURL: "http://localhost/b"},
+		{Method: "GET", Path: "/c", FullURL: "http://localhost/c"},
+	}
+
+	cfg := &models.ScanConfig{Timeout: 10}
+	findings := pool.Run(context.Background(), cfg, endpoints)
+
+	// The good check must have run on all 3 endpoints despite the panics.
+	if got := goodCalls.Load(); got != 3 {
+		t.Errorf("expected good check to run on all 3 endpoints, got %d (panic aborted other jobs?)", got)
+	}
+
+	var ok, panicked int
+	for _, f := range findings {
+		switch f.Title {
+		case "Scanner check panicked":
+			panicked++
+			if f.Severity != models.SeverityInfo {
+				t.Errorf("panic note should be INFO severity, got %s", f.Severity)
+			}
+			if f.Category != "engine" {
+				t.Errorf("panic note should have category 'engine', got %q", f.Category)
+			}
+			if f.Endpoint == "" {
+				t.Errorf("panic note should record the endpoint, got empty")
+			}
+		default:
+			ok++
+		}
+	}
+	if ok != 3 {
+		t.Errorf("expected 3 good findings, got %d", ok)
+	}
+	if panicked != 3 {
+		t.Errorf("expected 3 synthetic panic notes (one per endpoint), got %d", panicked)
+	}
+}
+
 func TestWorkerPool_SingleWorker(t *testing.T) {
 	var maxConcurrent atomic.Int32
 	var current atomic.Int32

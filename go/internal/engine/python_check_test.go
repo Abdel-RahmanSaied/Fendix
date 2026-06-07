@@ -50,4 +50,22 @@ func TestPythonRequiredMessage(t *testing.T) {
 	if !strings.Contains(msg, "blackbox") {
 		t.Error("message should mention blackbox fallback")
 	}
+
+	// Post-TASK-118: the Python-dependent checks are auth/injection/deps.
+	// secrets and semgrep moved to native Go, so the "Python is required"
+	// message must scope itself to the AST checks that still need Python.
+	for _, want := range []string{"auth", "injection", "deps"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message should scope the Python requirement to %q (auth/injection/deps), got: %q", want, msg)
+		}
+	}
+	// The message must not present secrets/semgrep as *blocked* on Python.
+	// It may still mention them as the native-Go fallback, but only in the
+	// same clause that calls them native Go — assert that framing instead
+	// of forbidding the words outright.
+	if strings.Contains(msg, "secrets") || strings.Contains(msg, "semgrep") {
+		if !strings.Contains(msg, "native Go") {
+			t.Errorf("message mentions secrets/semgrep but not as native Go — would wrongly imply they need Python: %q", msg)
+		}
+	}
 }

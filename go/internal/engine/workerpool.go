@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 				default:
 				}
 
-				findings := job.check(ctx, cfg, job.endpoint)
+				findings := runCheck(ctx, cfg, job, workerID)
 				if len(findings) > 0 {
 					select {
 					case results <- findings:
@@ -115,4 +116,32 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 
 	slog.Info("worker pool complete", "endpoints", len(endpoints), "checks", len(wp.checks), "findings", len(allFindings))
 	return allFindings
+}
+
+// runCheck invokes a single check with a per-job recover() so a panic in
+// one check is contained to that job: it's logged, recorded as a synthetic
+// INFO finding, and the worker moves on to the next job instead of letting
+// the panic unwind the worker goroutine and abort the whole scan.
+//
+// Returning the panic as a finding (rather than swallowing it) keeps the
+// failure visible in the report — operators see *which* check died on
+// *which* endpoint, which is the support signal a silent skip would lose.
+func runCheck(ctx context.Context, cfg *models.ScanConfig, job scanJob, workerID int) (findings []models.Finding) {
+	defer func() {
+		if r := recover(); r != nil {
+			epLabel := fmt.Sprintf("%s %s", job.endpoint.Method, job.endpoint.Path)
+			slog.Error("scanner check panicked — job contained, scan continues",
+				"worker", workerID, "endpoint", epLabel, "panic", r)
+			findings = []models.Finding{{
+				Title:      "Scanner check panicked",
+				Severity:   models.SeverityInfo,
+				Source:     models.SourceBlackbox,
+				Category:   "engine",
+				Endpoint:   epLabel,
+				Evidence:   fmt.Sprintf("A scanner check panicked while scanning %s and was skipped: %v", epLabel, r),
+				Confidence: models.ConfidenceLow,
+			}}
+		}
+	}()
+	return job.check(ctx, cfg, job.endpoint)
 }

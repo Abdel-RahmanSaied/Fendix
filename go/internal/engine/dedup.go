@@ -19,7 +19,12 @@ import (
 // black-box + white-box pairs) are deduped against each other too.
 //
 // Merge rules:
-//   - Primary kept = first-seen finding (preserves Evidence, Fix, ID order)
+//   - Primary kept = the total-order-minimum finding in the group (F-L6).
+//     Picking by a deterministic tiebreaker — not "first seen" — means the
+//     merged Evidence/Fix/Endpoint/Line are identical no matter what order
+//     the findings arrived in (worker-pool result interleaving is
+//     non-deterministic). The tiebreaker is endpoint, then evidence, then
+//     fix, then line (see findingLess).
 //   - AffectedEndpoints = sorted, deduped list of all endpoints in the group
 //     (includes the primary so consumers can iterate one field)
 //   - References = union of all groups' References, deduped, sorted
@@ -29,8 +34,9 @@ import (
 //     existing correlated entry would have been merged by Correlate already,
 //     so this fallback only matters for same-source groups.
 //
-// Findings are returned in the same relative order as the first occurrence
-// of each group's primary in the input.
+// Findings are returned in first-occurrence order of each group's key, with
+// the dedupKey itself as a total-order tiebreaker so the output sequence is
+// fully determined by the input SET (F-L6) rather than the input permutation.
 func Deduplicate(findings []models.Finding) []models.Finding {
 	if len(findings) <= 1 {
 		return findings
@@ -40,7 +46,7 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 		primary   models.Finding
 		endpoints map[string]bool
 		refs      map[string]bool
-		// firstIdx keeps the primary in its original relative position so
+		// firstIdx keeps the group in its original relative position so
 		// downstream sort/ID assignment stays stable.
 		firstIdx int
 	}
@@ -62,23 +68,40 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 			order = append(order, key)
 			continue
 		}
-		// Merge endpoint, references, and upgrade severity-adjacent fields.
+		// Merge endpoint and references.
 		if f.Endpoint != "" {
 			g.endpoints[f.Endpoint] = true
 		}
 		for _, r := range f.References {
 			g.refs[r] = true
 		}
-		if confidenceRank(f.Confidence) > confidenceRank(g.primary.Confidence) {
-			g.primary.Confidence = f.Confidence
+		// Severity-adjacent fields are accumulated independently of which
+		// finding ends up being the primary, so they stay order-invariant.
+		mergedConfidence := g.primary.Confidence
+		if confidenceRank(f.Confidence) > confidenceRank(mergedConfidence) {
+			mergedConfidence = f.Confidence
 		}
-		g.primary.Source = mergeSource(g.primary.Source, f.Source)
+		mergedSource := mergeSource(g.primary.Source, f.Source)
+		// Deterministic primary: adopt f's identity fields only when it
+		// sorts strictly before the current primary. This makes the kept
+		// Evidence/Fix/Endpoint/Line a pure function of the group's member
+		// SET, not the arrival order (F-L6).
+		if findingLess(f, g.primary) {
+			g.primary = f
+		}
+		g.primary.Confidence = mergedConfidence
+		g.primary.Source = mergedSource
 	}
 
-	// Sort group keys back to insertion order so the output preserves first-
-	// occurrence ordering. (map iteration is random in Go.)
+	// Order groups by first-occurrence, with the dedupKey as a total-order
+	// tiebreaker. firstIdx alone is permutation-dependent; appending the key
+	// gives a deterministic sequence for any input ordering of the same set.
 	sort.SliceStable(order, func(i, j int) bool {
-		return groups[order[i]].firstIdx < groups[order[j]].firstIdx
+		gi, gj := groups[order[i]], groups[order[j]]
+		if gi.firstIdx != gj.firstIdx {
+			return gi.firstIdx < gj.firstIdx
+		}
+		return order[i] < order[j]
 	})
 
 	out := make([]models.Finding, 0, len(order))
@@ -102,6 +125,35 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 // should still collapse.
 func dedupKey(f models.Finding) string {
 	return string(f.Severity) + "|" + f.Category + "|" + f.Title
+}
+
+// findingLess is the total order used to pick a group's primary
+// representative deterministically (F-L6). Two findings in the same group
+// share (Severity, Category, Title) by construction, so the discriminating
+// fields are the per-occurrence ones: Endpoint, then Evidence, then Fix,
+// then Line. Comparing these — rather than relying on arrival order — makes
+// the kept Evidence/Fix/Endpoint a pure function of the group's member set,
+// so a re-ordered scan produces the byte-identical merged finding.
+func findingLess(a, b models.Finding) bool {
+	if a.Endpoint != b.Endpoint {
+		return a.Endpoint < b.Endpoint
+	}
+	if a.Evidence != b.Evidence {
+		return a.Evidence < b.Evidence
+	}
+	if a.Fix != b.Fix {
+		return a.Fix < b.Fix
+	}
+	return derefLine(a.Line) < derefLine(b.Line)
+}
+
+// derefLine flattens a *string Line into a comparable value; a nil pointer
+// sorts before any present value so the order is total and nil-safe.
+func derefLine(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // confidenceRank returns a numeric rank so we can pick the highest in a group.
