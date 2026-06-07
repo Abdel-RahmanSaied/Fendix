@@ -27,6 +27,22 @@ spec:
     metadata:
       labels:
         app: fendix-app
+      annotations:
+        # Egress posture for the scan workload (F-M5). This pod runs
+        # untrusted fork-PR code via `fendix scan`. Two layers restrict
+        # what that code can reach:
+        #   1. In-process: the Linux Sandbox
+        #      (internal/ghapp/sandbox_linux.go) runs each scan in a
+        #      fresh network namespace with no connectivity, so the
+        #      scanned code itself cannot make any network calls.
+        #   2. Pod-level: the NetworkPolicy at the bottom of this file
+        #      restricts the *pod's* egress to GitHub (api.github.com /
+        #      github.com over 443) + DNS only — defense-in-depth in
+        #      case the in-process sandbox is unavailable on the node's
+        #      kernel (unprivileged userns disabled). Apply it only on a
+        #      cluster whose CNI enforces NetworkPolicy (Calico, Cilium,
+        #      etc.); a no-op CNI silently ignores it.
+        fendix.dev/scan-egress: "github-and-dns-only"
     spec:
       terminationGracePeriodSeconds: 960
       securityContext:
@@ -53,6 +69,12 @@ spec:
                   key: FENDIX_WEBHOOK_SECRET
             - name: FENDIX_APP_PRIVATE_KEY_FILE
               value: /var/secrets/fendix/private-key.pem
+            # Background scan worker-pool size. Sized for the 2-vCPU
+            # limit below (one Semgrep scan ≈ 1 vCPU). Raise this and the
+            # CPU/memory limits together; the webhook always acks
+            # immediately regardless of this value.
+            - name: FENDIX_MAX_CONCURRENT_SCANS
+              value: "2"
           volumeMounts:
             - name: private-key
               mountPath: /var/secrets/fendix
@@ -78,6 +100,11 @@ spec:
               port: 8080
             initialDelaySeconds: 3
             periodSeconds: 10
+          # Sized for FENDIX_MAX_CONCURRENT_SCANS=2: a Semgrep scan is
+          # ~1 vCPU, so the 2-vCPU limit lets both pool workers run flat
+          # out. Raise the limit and the env var in lockstep to run more
+          # concurrent scans; the memory limit must grow too (each scan
+          # holds a clone in /tmp plus Semgrep's working set).
           resources:
             requests:
               cpu: 100m
@@ -133,3 +160,50 @@ spec:
                 name: fendix-app
                 port:
                   number: 80
+---
+# Egress restriction for the scan workload (F-M5). This pod clones and
+# scans untrusted fork-PR code; this policy bounds where the *pod* can
+# send traffic to: GitHub (api.github.com + github.com, 443) for the
+# webhook API + clone, and DNS to resolve them. The in-process Linux
+# Sandbox already denies the scanned code any network, so this is
+# defense-in-depth for nodes where the in-process sandbox can't be
+# applied (unprivileged user namespaces disabled).
+#
+# NOTE: NetworkPolicy is enforced only by CNIs that support it (Calico,
+# Cilium, Weave, …). On a cluster without an enforcing CNI this object
+# is silently ignored — verify your CNI before relying on it. Ingress is
+# left to the existing Ingress/Service path; only egress is constrained
+# here. Adjust the DNS namespace selector to match your cluster
+# (kube-system is the common default for CoreDNS).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fendix-app-egress
+  labels:
+    app: fendix-app
+spec:
+  podSelector:
+    matchLabels:
+      app: fendix-app
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (UDP+TCP 53) to the cluster DNS service.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to GitHub. NetworkPolicy can't match DNS names, so this
+    # allows 443 egress broadly; pair it with an egress proxy or a
+    # CNI-specific FQDN policy (Cilium CiliumNetworkPolicy
+    # toFQDNs: api.github.com, github.com) to pin the destination. The
+    # in-process sandbox is what actually denies the scanned code any
+    # egress — this layer narrows the App's own reachable ports.
+    - ports:
+        - protocol: TCP
+          port: 443

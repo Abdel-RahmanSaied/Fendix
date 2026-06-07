@@ -275,3 +275,114 @@ func TestPostPRComment_Non201(t *testing.T) {
 		t.Errorf("expected response body in err: %v", err)
 	}
 }
+
+// F-I2: an error built from a GitHub response body must not echo the
+// installation token even if GitHub reflects it back. (GitHub doesn't
+// normally do this, but scanner.go redacts defensively and comment.go
+// must be consistent.)
+func TestPostPRComment_RedactsTokenInError(t *testing.T) {
+	const token = "ghs_should_not_leak"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		// Reflect the bearer token back in the body to simulate a
+		// misbehaving proxy / verbose error.
+		_, _ = io.WriteString(w, `{"message":"bad credentials: `+token+`"}`)
+	}))
+	defer srv.Close()
+
+	err := PostPRComment(context.Background(), srv.Client(), srv.URL,
+		token, "o", "r", 1, "x")
+	if err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("error leaked the installation token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("expected redaction marker in error: %v", err)
+	}
+}
+
+// F-L11: a crafted finding title must not break out of the rendered
+// Markdown — no raw heading injection, no list-item forgery, no inline
+// HTML/markup leaking through unescaped.
+func TestRenderPRComment_MaliciousTitleNeutralized(t *testing.T) {
+	body, err := RenderPRComment([]byte(`{
+		"metadata":{"mode":"blackbox","endpoints_scanned":1,"duration":"1s"},
+		"summary":{"critical":1,"high":0,"medium":0,"low":0,"info":0},
+		"sources":{"blackbox":1,"whitebox":0,"correlated":0},
+		"total":1,
+		"findings":[
+			{"severity":"CRITICAL","title":"pwn\n## Fake heading\n- **[CRITICAL]** spoofed finding","category":"x","endpoint":"GET /a"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("RenderPRComment: %v", err)
+	}
+	// The injected newline must be collapsed so the title can't forge a
+	// second heading or a fake finding line of its own.
+	if strings.Contains(body, "\n## Fake heading") {
+		t.Errorf("title injected a raw heading:\n%s", body)
+	}
+	// The '#' that begins the fake heading must be backslash-escaped in
+	// the title's text context.
+	if !strings.Contains(body, `\#\# Fake heading`) {
+		t.Errorf("heading metacharacters not escaped:\n%s", body)
+	}
+	// Exactly one genuine finding line — the spoofed one is neutralised
+	// (escaped + on the same line), so the "- **[" finding prefix still
+	// appears only once at the start of a line.
+	if got := strings.Count(body, "\n- **["); got != 1 {
+		t.Errorf("expected exactly one finding line, got %d:\n%s", got, body)
+	}
+}
+
+// F-L11: a title containing a code fence must not close the suppression
+// snippet's ```yaml block early and inject content after it.
+func TestRenderPRComment_TitleCannotBreakCodeFence(t *testing.T) {
+	body, err := RenderPRComment([]byte(`{
+		"metadata":{"mode":"blackbox","endpoints_scanned":1,"duration":"1s"},
+		"summary":{"critical":0,"high":0,"medium":1,"low":0,"info":0},
+		"sources":{"blackbox":1,"whitebox":0,"correlated":0},
+		"total":1,
+		"findings":[
+			{"severity":"MEDIUM","title":"x","category":"c","endpoint":"GET /a ` + "```" + ` echo pwned ` + "```" + `"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("RenderPRComment: %v", err)
+	}
+	// The yaml fence the renderer opens must be a longer backtick run
+	// than anything inside the snippet, so the snippet's embedded ```
+	// can't terminate it. Verify a >=4-backtick fence is used.
+	if !strings.Contains(body, "````yaml") {
+		t.Errorf("expected an escaped (>=4 backtick) yaml fence when content holds ```:\n%s", body)
+	}
+}
+
+// F-L11: an endpoint full of backticks must render inside a code span
+// that still closes correctly (the span delimiter is longer than any
+// run inside it).
+func TestInlineCode_BacktickSafe(t *testing.T) {
+	got := inlineCode("a``b")
+	// Longest internal run is 2, so the fence must be 3 backticks, with
+	// space padding because the content doesn't start/end with a tick.
+	if got != "```a``b```" {
+		t.Errorf("inlineCode(a``b) = %q", got)
+	}
+	// Content that begins/ends with a backtick gets space padding.
+	got = inlineCode("`x`")
+	if got != "`` `x` ``" {
+		t.Errorf("inlineCode(`+\"`x`\"+`) = %q", got)
+	}
+}
+
+func TestEscapeMarkdown(t *testing.T) {
+	in := "a*b_c`d[e](f)#g"
+	got := escapeMarkdown(in)
+	for _, meta := range []string{`\*`, `\_`, "\\`", `\[`, `\]`, `\(`, `\)`, `\#`} {
+		if !strings.Contains(got, meta) {
+			t.Errorf("escapeMarkdown(%q) missing %q: %q", in, meta, got)
+		}
+	}
+}

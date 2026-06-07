@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeScanner returns canned ScanResult bytes and records the
@@ -53,9 +55,30 @@ func newTestHandler(t *testing.T, scanner Scanner) (*Handler, *httptest.Server) 
 	creds := &AppCredentials{AppID: 1, PrivateKey: genTestKey(t)}
 	tokens := NewTokenSource(creds, tokenSrv.Client(), tokenSrv.URL)
 
-	h := NewHandler(tokens, "", tokenSrv.Client())
+	// Single worker so concurrency-sensitive assertions are deterministic;
+	// individual tests that exercise the cap construct their own pool.
+	h := NewHandler(tokens, "", tokenSrv.Client(), 1)
 	h.Scanner = scanner
+	// F-H5a: scans now run on the background pool. Drain it on cleanup so
+	// goroutines don't outlive the test.
+	t.Cleanup(func() {
+		_ = h.Shutdown(context.Background())
+	})
 	return h, tokenSrv
+}
+
+// drainScans waits until the Handler's background pool has finished all
+// queued + in-flight scans. Scans run asynchronously (F-H5a), so tests
+// that assert scan side effects must synchronise on completion. It
+// shuts the pool down (idempotent) and waits for the workers to drain,
+// then is safe to call again from the t.Cleanup hook.
+func drainScans(t *testing.T, h *Handler) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.Shutdown(ctx); err != nil {
+		t.Fatalf("drainScans: pool did not drain: %v", err)
+	}
 }
 
 func eventCtx() Context {
@@ -147,6 +170,7 @@ func TestHandlePullRequest_FullFlow(t *testing.T) {
 	if err := h.HandlePullRequest(eventCtx(), samplePullRequestPayload("opened", 123)); err != nil {
 		t.Fatalf("HandlePullRequest: %v", err)
 	}
+	drainScans(t, h)
 	if scanner.called.Load() != 1 {
 		t.Errorf("scanner called %d times, want 1", scanner.called.Load())
 	}
@@ -225,19 +249,26 @@ func TestHandlePullRequest_SARIFFailureNonFatal(t *testing.T) {
 		sarif:    []byte(`{"runs":[]}`),
 	}
 	h, _ := newTestHandler(t, scanner)
+	var commentMu sync.Mutex
 	commentCalled := 0
 	h.PostComment = func(_ context.Context, _, _, _ string, _ int, _ string) error {
+		commentMu.Lock()
 		commentCalled++
+		commentMu.Unlock()
 		return nil
 	}
 	h.UploadSARIF = func(_ context.Context, _, _, _, _, _ string, _ []byte) error {
 		return io.ErrUnexpectedEOF
 	}
-	// Even when SARIF upload fails, the handler returns nil — failure
-	// should be logged, not propagated.
+	// Even when SARIF upload fails, the scan still posts the comment and
+	// does not propagate — failure is logged, not surfaced. The webhook
+	// is acknowledged immediately; drain the pool before asserting.
 	if err := h.HandlePullRequest(eventCtx(), samplePullRequestPayload("synchronize", 123)); err != nil {
-		t.Fatalf("expected nil err with SARIF failure, got: %v", err)
+		t.Fatalf("expected nil err from immediate ack, got: %v", err)
 	}
+	drainScans(t, h)
+	commentMu.Lock()
+	defer commentMu.Unlock()
 	if commentCalled != 1 {
 		t.Errorf("expected comment to post even with SARIF failure")
 	}
@@ -265,6 +296,7 @@ func TestHandleCheckRun_Rerequested(t *testing.T) {
 	if err := h.HandleCheckRun(eventCtx(), payload); err != nil {
 		t.Fatalf("HandleCheckRun: %v", err)
 	}
+	drainScans(t, h)
 	if scanner.called.Load() != 1 {
 		t.Errorf("scanner not invoked on rerequested, called %d", scanner.called.Load())
 	}
@@ -288,7 +320,8 @@ func TestHandleCheckRun_OtherActionsNoOp(t *testing.T) {
 }
 
 func TestNewHandler_DefaultsWired(t *testing.T) {
-	h := NewHandler(nil, "", nil)
+	h := NewHandler(nil, "", nil, 0)
+	t.Cleanup(func() { _ = h.Shutdown(context.Background()) })
 	if h.BaseURL != "https://api.github.com" {
 		t.Errorf("default BaseURL: %q", h.BaseURL)
 	}
@@ -303,6 +336,9 @@ func TestNewHandler_DefaultsWired(t *testing.T) {
 	}
 	if h.UploadSARIF == nil {
 		t.Errorf("default UploadSARIF not set")
+	}
+	if h.pool == nil {
+		t.Errorf("default pool not constructed")
 	}
 }
 
