@@ -16,8 +16,37 @@ primary_region = "iad"
 [build]
   dockerfile = "Dockerfile.app"
 
+# Hardening — matches the k8s securityContext intent in
+# deploy/k8s/fendix-app.yaml as far as the Fly.io platform exposes it:
+#
+#   * Non-root: enforced by the image itself (Dockerfile.app ends with
+#     `USER fendix`). Fly runs the image's configured user, so the
+#     server and every `git`/`fendix` child it spawns run unprivileged.
+#     There is no equivalent here to set runAsNonRoot at the platform
+#     layer — it is the image's responsibility, and the Dockerfile owns
+#     it. Do NOT add a `USER root` override.
+#   * No persistent writable state: the only writes are per-scan temp
+#     clones under /tmp (Fly machines get an ephemeral writable rootfs;
+#     there are no Fly volumes mounted, so nothing survives a restart).
+#     Fly does not expose readOnlyRootFilesystem; keeping /tmp the sole
+#     write target is the closest equivalent.
+#   * Privilege drop / no-new-privs: applied inside the app at scan time
+#     by the Linux Sandbox (internal/ghapp/sandbox_linux.go), which runs
+#     untrusted fork-PR scans in a network + user namespace when the
+#     kernel allows it. Fly machines are Firecracker microVMs, so the
+#     scan is already VM-isolated from other tenants; the in-app sandbox
+#     adds defense-in-depth (no egress for the scanned code).
+
 [env]
   FENDIX_LISTEN_ADDR = ":8080"
+  # Max clone+scan jobs the background worker pool runs at once. Sized
+  # for the 2-vCPU VM below: a single Semgrep scan is roughly 1 vCPU, so
+  # 2 keeps both cores busy without oversubscribing. Each in-flight scan
+  # also needs a temp clone (the /tmp budget below) plus headroom in the
+  # memory limit, so raise the VM size before raising this. The webhook
+  # endpoint always acks immediately regardless of this value; this only
+  # bounds how fast the backlog drains.
+  FENDIX_MAX_CONCURRENT_SCANS = "2"
 
 [http_service]
   internal_port = 8080
@@ -39,13 +68,23 @@ primary_region = "iad"
   timeout = "5s"
 
 [[vm]]
+  # 2 vCPUs / 1 GiB sized for FENDIX_MAX_CONCURRENT_SCANS = 2: one
+  # Semgrep scan is ~1 vCPU and a few hundred MiB of working set, so two
+  # concurrent scans fit. To run more concurrent scans, scale this VM up
+  # (cpus + memory) and raise FENDIX_MAX_CONCURRENT_SCANS together — the
+  # two settings must move in lockstep or scans will thrash / OOM.
   size = "shared-cpu-2x"
   memory = "1024mb"
 
 [processes]
   app = ""
 
-# Allow 15-minute scans to finish during deploys/shutdowns.
-# The webhook handler responds 200 immediately and processes async,
-# but clone+scan is goroutine-local, so we need this grace period.
+# Graceful shutdown budget. The webhook handler ACKs 200 immediately and
+# runs clone+scan on a bounded background worker pool (F-H5a); this is
+# now actually async — see internal/ghapp/handler.go. On deploy/SIGTERM
+# the server stops accepting connections, then drains in-flight scans
+# (Handler.Shutdown) up to the per-scan timeout (HandlerScanTimeout,
+# 15m). This grace period must exceed that drain window so a deploy
+# doesn't sever an in-progress scan; only scans that blow the per-scan
+# timeout are force-cancelled.
 kill_timeout = "920s"

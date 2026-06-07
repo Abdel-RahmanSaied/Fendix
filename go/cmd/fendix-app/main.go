@@ -17,6 +17,9 @@
 //	FENDIX_LISTEN_ADDR       HTTP listen address. Default: :8080.
 //	FENDIX_GITHUB_API_URL    GitHub REST base URL. Default:
 //	                         https://api.github.com (override for GHES).
+//	FENDIX_MAX_CONCURRENT_SCANS  Max number of clone+scan jobs the
+//	                         background worker pool runs at once.
+//	                         Default: 2 (sized for a 2-vCPU machine).
 //
 // Setup walkthrough lives in docs/github-app.md.
 package main
@@ -58,7 +61,7 @@ func main() {
 	}
 	tokens := ghapp.NewTokenSource(creds, http.DefaultClient, cfg.GitHubAPIURL)
 
-	handler := ghapp.NewHandler(tokens, cfg.GitHubAPIURL, http.DefaultClient)
+	handler := ghapp.NewHandler(tokens, cfg.GitHubAPIURL, http.DefaultClient, cfg.MaxConcurrentScans)
 	server := ghapp.NewServer(cfg.WebhookSecret, handler, logger)
 
 	mux := http.NewServeMux()
@@ -99,21 +102,33 @@ func main() {
 		}
 	}
 
+	// Stop accepting new connections first, then drain in-flight scans.
+	// The HTTP handler acknowledges webhooks immediately and runs the
+	// scan on Handler's background pool, so HTTP shutdown is quick while
+	// scan drain may take up to a scan's worth of time — give it the
+	// larger of the two budgets (matches the deploy kill_timeout /
+	// terminationGracePeriodSeconds in fly.toml / k8s).
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown failed", "err", err)
 		os.Exit(1)
 	}
+	scanDrainCtx, scanDrainCancel := context.WithTimeout(context.Background(), ghapp.HandlerScanTimeout)
+	defer scanDrainCancel()
+	if err := handler.Shutdown(scanDrainCtx); err != nil {
+		logger.Warn("scan pool drain incomplete; cancelling in-flight scans", "err", err)
+	}
 	logger.Info("shutdown complete")
 }
 
 type config struct {
-	AppID         int64
-	PrivateKeyPEM []byte
-	WebhookSecret []byte
-	ListenAddr    string
-	GitHubAPIURL  string
+	AppID              int64
+	PrivateKeyPEM      []byte
+	WebhookSecret      []byte
+	ListenAddr         string
+	GitHubAPIURL       string
+	MaxConcurrentScans int
 }
 
 func loadConfig() (*config, error) {
@@ -145,12 +160,22 @@ func loadConfig() (*config, error) {
 		apiURL = "https://api.github.com"
 	}
 
+	maxScans := 0 // 0 → NewHandler applies DefaultMaxConcurrentScans
+	if v := os.Getenv("FENDIX_MAX_CONCURRENT_SCANS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("FENDIX_MAX_CONCURRENT_SCANS must be a positive integer, got %q", v)
+		}
+		maxScans = n
+	}
+
 	return &config{
-		AppID:         appID,
-		PrivateKeyPEM: pemBytes,
-		WebhookSecret: []byte(secret),
-		ListenAddr:    listenAddr,
-		GitHubAPIURL:  apiURL,
+		AppID:              appID,
+		PrivateKeyPEM:      pemBytes,
+		WebhookSecret:      []byte(secret),
+		ListenAddr:         listenAddr,
+		GitHubAPIURL:       apiURL,
+		MaxConcurrentScans: maxScans,
 	}, nil
 }
 

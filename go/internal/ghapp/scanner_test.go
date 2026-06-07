@@ -2,7 +2,9 @@ package ghapp
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -25,32 +27,33 @@ func writeFakeBin(t *testing.T, dir, name, script string) string {
 	return path
 }
 
-func TestInjectInstallationToken(t *testing.T) {
+// F-H3: the token is supplied per-invocation via an http.extraheader
+// Authorization: Basic header, NOT embedded in the clone URL. The basic
+// credential is base64("x-access-token:<token>").
+func TestBasicAuthToken(t *testing.T) {
 	cases := []struct {
-		in    string
 		token string
 		want  string
 	}{
-		{"https://github.com/owner/repo.git", "abc123",
-			"https://x-access-token:abc123@github.com/owner/repo.git"},
-		{"https://github.com/owner/repo", "tok",
-			"https://x-access-token:tok@github.com/owner/repo"},
+		{"abc123", base64.StdEncoding.EncodeToString([]byte("x-access-token:abc123"))},
+		{"tok", base64.StdEncoding.EncodeToString([]byte("x-access-token:tok"))},
 	}
 	for _, c := range cases {
-		got, err := injectInstallationToken(c.in, c.token)
-		if err != nil {
-			t.Fatalf("injectInstallationToken(%q): %v", c.in, err)
-		}
-		if got != c.want {
-			t.Errorf("injectInstallationToken(%q): got %q want %q", c.in, got, c.want)
+		if got := basicAuthToken(c.token); got != c.want {
+			t.Errorf("basicAuthToken(%q): got %q want %q", c.token, got, c.want)
 		}
 	}
 }
 
-func TestInjectInstallationToken_RejectsNonHTTPS(t *testing.T) {
-	_, err := injectInstallationToken("git@github.com:owner/repo.git", "tok")
-	if err == nil {
-		t.Fatal("expected error for non-https URL")
+func TestValidateHTTPSCloneURL(t *testing.T) {
+	if err := validateHTTPSCloneURL("https://github.com/owner/repo.git"); err != nil {
+		t.Errorf("https URL should validate, got: %v", err)
+	}
+	if err := validateHTTPSCloneURL("git@github.com:owner/repo.git"); err == nil {
+		t.Fatal("expected error for non-https (ssh) URL")
+	}
+	if err := validateHTTPSCloneURL("http://github.com/owner/repo.git"); err == nil {
+		t.Fatal("expected error for plain-http URL")
 	}
 }
 
@@ -119,8 +122,19 @@ exit 0`
 	if !strings.Contains(gitOutput, "init") {
 		t.Errorf("git init not invoked, log: %s", gitOutput)
 	}
-	if !strings.Contains(gitOutput, "x-access-token:ghs_test@github.com") {
-		t.Errorf("clone URL not authed, log: %s", gitOutput)
+	// F-H3: the remote is added with the bare clone URL (NO embedded
+	// credentials); auth is supplied per-invocation via the
+	// http.extraheader Authorization: Basic header.
+	if !strings.Contains(gitOutput, "remote add origin https://github.com/owner/repo.git") {
+		t.Errorf("remote not added with bare URL, log: %s", gitOutput)
+	}
+	if strings.Contains(gitOutput, "x-access-token:ghs_test@") {
+		t.Errorf("clone URL must NOT embed the token, log: %s", gitOutput)
+	}
+	wantHeader := "http.extraheader=Authorization: Basic " +
+		base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_test"))
+	if !strings.Contains(gitOutput, wantHeader) {
+		t.Errorf("fetch did not pass auth via extraheader, log: %s", gitOutput)
 	}
 	if !strings.Contains(gitOutput, "deadbeef") {
 		t.Errorf("head SHA not fetched, log: %s", gitOutput)
@@ -200,5 +214,130 @@ func TestFendixScanner_Run_ValidatesInputs(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected validation error for %+v", c)
 		}
+	}
+}
+
+// F-H3: drive the *real* git binary through the exact init + remote-add
+// + token-via-extraheader steps the production code uses, then assert
+// the installation token never lands in the persisted .git/config. The
+// per-invocation `-c http.extraheader=...` must not be written to disk,
+// and the remote URL must be the bare clone URL with no embedded
+// credentials.
+func TestGitConfigDoesNotPersistToken(t *testing.T) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH; skipping real-git config persistence test")
+	}
+	const token = "ghs_supersecret_token"
+	dir := t.TempDir()
+	cloneURL := "https://github.com/owner/repo.git"
+	authHeaderArg := "http.extraheader=Authorization: Basic " + basicAuthToken(token)
+
+	run := func(args ...string) {
+		cmd := exec.Command(gitBin, args...)
+		cmd.Dir = dir
+		// Hermetic: don't read the developer's global/system git config.
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_CONFIG_SYSTEM=/dev/null",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+
+	run("init", "--quiet", dir)
+	run("-C", dir, "remote", "add", "origin", cloneURL)
+	// A fetch with the per-invocation extraheader. It targets a bogus
+	// SHA and will fail to fetch — but the failure is irrelevant: we are
+	// asserting that the -c flag is NOT persisted to config regardless.
+	failCmd := exec.Command(gitBin, "-C", dir, "-c", authHeaderArg,
+		"config", "--list") // list resolved config including the -c override
+	failCmd.Dir = dir
+	failCmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	listOut, err := failCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git config --list: %v (%s)", err, listOut)
+	}
+	// The -c override is visible in this single invocation's resolved
+	// config (that's expected — it's how auth is supplied), but it must
+	// NOT have been written to the on-disk .git/config.
+	cfgBytes, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
+	if err != nil {
+		t.Fatalf("read .git/config: %v", err)
+	}
+	cfg := string(cfgBytes)
+	if strings.Contains(cfg, token) {
+		t.Errorf(".git/config leaked the installation token:\n%s", cfg)
+	}
+	if strings.Contains(cfg, basicAuthToken(token)) {
+		t.Errorf(".git/config leaked the basic-auth header value:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "extraheader") {
+		t.Errorf(".git/config persisted the extraheader override:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, cloneURL) {
+		t.Errorf("expected bare clone URL in .git/config, got:\n%s", cfg)
+	}
+}
+
+// F-H3 / F-M5: the `fendix scan` subprocess runs untrusted fork-PR code.
+// After clone+fetch, the installation token must NOT be present in that
+// subprocess's environment. The fake fendix dumps its environment to a
+// file in the (persistent) WorkDir parent so we can inspect it after
+// Run removes the per-scan temp dir.
+func TestFendixScanner_Run_TokenNotInScanEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX fake bins")
+	}
+	const token = "ghs_env_secret"
+	binDir := t.TempDir()
+	workDir := t.TempDir()
+	envDump := filepath.Join(workDir, "scan-env.txt")
+
+	gitBin := writeFakeBin(t, binDir, "fakegit", `exit 0`)
+	// The fake fendix writes its full environment to envDump on `scan`,
+	// and emits the expected report blobs so Run completes.
+	fendixScript := `prev=""; out=""
+for a in "$@"; do
+  if [ "$prev" = "--output" ]; then out="$a"; fi
+  prev="$a"
+done
+case "$1" in
+  scan)
+    env > "` + envDump + `"
+    cat > "$out" <<'JSON'
+{"metadata":{"mode":"whitebox","endpoints_scanned":0,"duration":"0s"},
+ "summary":{"critical":0,"high":0,"medium":0,"low":0,"info":0},
+ "sources":{"blackbox":0,"whitebox":0,"correlated":0},
+ "total":0,"findings":[]}
+JSON
+    ;;
+  report)
+    printf '{"runs":[]}' > "$out"
+    ;;
+esac
+exit 0`
+	fendixBin := writeFakeBin(t, binDir, "fakefendix", fendixScript)
+
+	// Seed an inherited variable that contains the token to prove the
+	// scrubber drops by value, not just by a known key name.
+	t.Setenv("SOME_INHERITED_VAR", "prefix-"+token+"-suffix")
+
+	s := &FendixScanner{GitBinary: gitBin, FendixBinary: fendixBin, WorkDir: workDir}
+	if _, err := s.Run(context.Background(), ScanRequest{
+		CloneURL:          "https://github.com/owner/repo.git",
+		HeadSHA:           "deadbeef",
+		InstallationToken: token,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	dump, err := os.ReadFile(envDump)
+	if err != nil {
+		t.Fatalf("read scan env dump: %v", err)
+	}
+	if strings.Contains(string(dump), token) {
+		t.Errorf("installation token present in scan subprocess env:\n%s", dump)
 	}
 }

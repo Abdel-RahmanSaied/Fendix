@@ -138,13 +138,22 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 			if where == "" {
 				where = f.Line
 			}
-			fmt.Fprintf(&b, "- **[%s]** %s — `%s`\n", f.Severity, f.Title, where)
+			// F-L11: Title and endpoint are attacker-controlled (they
+			// come from a fork PR's code/config). Escape Markdown
+			// metacharacters in the title's text context and render the
+			// location in a backtick-safe inline code span so a crafted
+			// title can't inject Markdown, break out of the inline code,
+			// or spoof a fake finding/heading.
+			fmt.Fprintf(&b, "- **[%s]** %s — %s\n",
+				escapeSeverity(f.Severity), escapeMarkdown(f.Title), inlineCode(where))
 			// TASK-124: one-click suppression snippet. Keyed on
 			// (endpoint, category) — the (title, category, endpoint)
 			// hash in the trailing comment lets users map back to the
-			// originating finding after they paste.
-			fmt.Fprintf(&b, "  ```yaml\n  %s\n  ```\n",
-				suppressionSnippet(f.Title, f.Category, where))
+			// originating finding after they paste. The fence is built
+			// with a guarded helper so neither endpoint nor category can
+			// close the code block and inject content after it.
+			fmt.Fprintf(&b, "%s\n",
+				fencedYAML(suppressionSnippet(f.Title, f.Category, where)))
 		}
 		if total > 5 {
 			fmt.Fprintf(&b, "\n_…and %d more in the SARIF report._\n", total-5)
@@ -157,6 +166,90 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 	b.WriteString("<sub>Open the **Security** tab for inline annotations. ")
 	b.WriteString("Re-run this workflow to refresh.</sub>\n")
 	return b.String(), nil
+}
+
+// markdownMeta is the set of GitHub-Flavored-Markdown metacharacters
+// that, left unescaped in a text context, let attacker-controlled
+// content (a fork PR's finding title) inject formatting, headings,
+// links, or list items into the rendered comment (F-L11).
+const markdownMeta = "\\`*_{}[]()#+-.!|<>~"
+
+// escapeMarkdown renders untrusted text safe to drop into a Markdown
+// text context. It backslash-escapes GFM metacharacters and collapses
+// newlines to spaces so a crafted multi-line title can't break the list
+// item it sits in or forge a new heading / finding line.
+func escapeMarkdown(s string) string {
+	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		if strings.ContainsRune(markdownMeta, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// escapeSeverity escapes a severity label for use inside the bold
+// "**[...]**" prefix. Severity originates from our own scanner JSON,
+// but escaping it defensively costs nothing and keeps the rendering
+// path uniformly safe against a malformed/forged findings file.
+func escapeSeverity(s string) string {
+	return escapeMarkdown(s)
+}
+
+// inlineCode wraps untrusted text in a Markdown inline code span that
+// cannot be broken out of, no matter how many backticks the text
+// contains. Per the GFM spec, a code span delimited by a run of N
+// backticks can contain any shorter run; we pick a delimiter one longer
+// than the longest backtick run in s, and pad with spaces when the
+// content begins or ends with a backtick (otherwise the delimiter would
+// merge with the content). Newlines are collapsed so the span stays on
+// one line.
+func inlineCode(s string) string {
+	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	fence := strings.Repeat("`", longestBacktickRun(s)+1)
+	pad := ""
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") || s == "" {
+		pad = " "
+	}
+	return fence + pad + s + pad + fence
+}
+
+// fencedYAML emits a fenced code block tagged `yaml` containing content,
+// indented two spaces to nest under its list item (matching the
+// existing layout). The fence length is chosen longer than any backtick
+// run in content so attacker-controlled endpoint/category values inside
+// the snippet cannot close the block early and inject Markdown after it
+// (F-L11). Newlines in content are collapsed defensively — the
+// suppression snippet is single-line by construction.
+func fencedYAML(content string) string {
+	content = strings.NewReplacer("\r", " ", "\n", " ").Replace(content)
+	fenceLen := longestBacktickRun(content) + 1
+	if fenceLen < 3 {
+		fenceLen = 3
+	}
+	fence := strings.Repeat("`", fenceLen)
+	return "  " + fence + "yaml\n  " + content + "\n  " + fence
+}
+
+// longestBacktickRun returns the length of the longest consecutive run
+// of backtick characters in s (0 if none). Used to size code-span and
+// code-fence delimiters so content can never close them prematurely.
+func longestBacktickRun(s string) int {
+	longest, cur := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			cur++
+			if cur > longest {
+				longest = cur
+			}
+		} else {
+			cur = 0
+		}
+	}
+	return longest
 }
 
 // PostPRComment posts a comment on a pull request using the GitHub
@@ -197,12 +290,18 @@ func PostPRComment(ctx context.Context, httpClient *http.Client, baseURL, instal
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("post comment: %w", err)
+		// F-I2: the transport error can echo the request URL/headers in
+		// some clients; redact the token to match scanner.go's handling
+		// so a logged error never leaks the installation token.
+		return fmt.Errorf("post comment: %s", redactToken(err.Error(), installationToken))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("post comment: %s: %s", resp.Status, string(responseBody))
+		// F-I2: GitHub error bodies can reflect request material; redact
+		// the token from the embedded response body before surfacing it.
+		return fmt.Errorf("post comment: %s: %s",
+			resp.Status, redactToken(string(responseBody), installationToken))
 	}
 	return nil
 }
