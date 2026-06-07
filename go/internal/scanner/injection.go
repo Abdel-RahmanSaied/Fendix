@@ -455,29 +455,39 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			auditLog.Record(record)
 
 			confidence := models.ConfidenceMedium
-			// Run a second probe to confirm timing isn't a one-off blip.
-			start2 := time.Now()
-			req2, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
-			if err == nil {
-				addAuth(req2, cfg)
-				resp2, err := client.Do(req2)
-				elapsed2 := time.Since(start2)
+			// Run a second probe to confirm timing isn't a one-off blip —
+			// but only if recording it won't push this endpoint past the
+			// per-endpoint probe budget. The primary record above already
+			// consumed a slot, so the confirmation (which records a 2nd
+			// slot) is what historically overshot maxProbes by +1 (F-I4).
+			// When the budget is exhausted we keep the MEDIUM-confidence
+			// finding and skip confirmation rather than overshooting the
+			// cap the operator set to bound load on the target.
+			if auditLog.Count(endpoint.FullURL) < maxProbes {
+				// Run a second probe to confirm timing isn't a one-off blip.
+				start2 := time.Now()
+				req2, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
 				if err == nil {
-					resp2.Body.Close()
-					if elapsed2 > threshold {
-						confidence = models.ConfidenceHigh
+					addAuth(req2, cfg)
+					resp2, err := client.Do(req2)
+					elapsed2 := time.Since(start2)
+					if err == nil {
+						resp2.Body.Close()
+						if elapsed2 > threshold {
+							confidence = models.ConfidenceHigh
+						}
+						auditLog.Record(ProbeRecord{
+							Timestamp: start2,
+							Endpoint:  endpoint.FullURL,
+							ProbeType: ProbeSQLi,
+							Payload:   p.Payload + " (confirmation)",
+							Parameter: param,
+							Method:    endpoint.Method,
+							Status:    resp2.StatusCode,
+							Duration:  elapsed2.Round(time.Millisecond).String(),
+							Finding:   elapsed2 > threshold,
+						})
 					}
-					auditLog.Record(ProbeRecord{
-						Timestamp: start2,
-						Endpoint:  endpoint.FullURL,
-						ProbeType: ProbeSQLi,
-						Payload:   p.Payload + " (confirmation)",
-						Parameter: param,
-						Method:    endpoint.Method,
-						Status:    resp2.StatusCode,
-						Duration:  elapsed2.Round(time.Millisecond).String(),
-						Finding:   elapsed2 > threshold,
-					})
 				}
 			}
 

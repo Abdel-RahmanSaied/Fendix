@@ -71,6 +71,20 @@ func NewOrchestratorWithSpawner(cfg *models.ScanConfig, spawner *PythonSpawner) 
 	}
 }
 
+// reportVersion is the version string stamped into report metadata
+// (SARIF/PDF/JSON). Real builds inject it via NewOrchestrator (-ldflags
+// -X main.Version); the WithSpawner test constructor leaves o.version
+// empty, so fall back to "dev" there rather than emitting a blank
+// version — empty would break Code Scanning provenance / audit
+// reproducibility just as the hardcoded "dev" did (FENDIX_VC quality
+// finding: report Version was hardcoded "dev").
+func reportVersion(v string) string {
+	if v == "" {
+		return "dev"
+	}
+	return v
+}
+
 // Run executes the full scan pipeline and returns an exit code.
 // 0 = no findings above threshold, 1 = findings found, 2 = error.
 func (o *Orchestrator) Run(ctx context.Context) int {
@@ -497,7 +511,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		Target:         o.cfg.URL,
 		StartedAt:      startTime,
 		Duration:       duration.Round(time.Millisecond).String(),
-		Version:        "dev",
+		Version:        reportVersion(o.version),
 		Mode:           scanMode,
 		EndpointsCount: len(endpoints),
 		ActiveProbes:   o.cfg.EnableActive,
