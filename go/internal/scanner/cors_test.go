@@ -1,5 +1,11 @@
 package scanner
 
+// These tests scan loopback httptest servers. The SSRF egress guard
+// (internal/netguard) refuses loopback/private addresses by default, so each
+// config sets AllowPrivate: true — exactly what a real scan auto-applies when
+// the --url target resolves to a private/loopback host (see allowPrivate /
+// netguard.TargetIsPrivate).
+
 import (
 	"context"
 	"net/http"
@@ -18,7 +24,7 @@ func TestCheckCORS_WildcardWithCredentials(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -40,7 +46,7 @@ func TestCheckCORS_WildcardWithoutCredentials(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/public", FullURL: server.URL + "/api/public"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -62,7 +68,7 @@ func TestCheckCORS_ReflectedOrigin(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -85,7 +91,7 @@ func TestCheckCORS_NonStandardMethods(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -103,7 +109,7 @@ func TestCheckCORS_NoCORSHeaders(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/safe", FullURL: server.URL + "/api/safe"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -123,7 +129,7 @@ func TestCheckCORS_SkipsOn404(t *testing.T) {
 	}))
 	defer server.Close()
 	ep := Endpoint{Method: "GET", Path: "/.env.local", FullURL: server.URL + "/.env.local"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -141,7 +147,7 @@ func TestCheckCORS_ProperConfiguration(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/secure", FullURL: server.URL + "/api/secure"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -158,7 +164,7 @@ func TestCheckCORS_MultipleIssues(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/bad", FullURL: server.URL + "/api/bad"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 2 {

@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+
+	"github.com/Abdel-RahmanSaied/Fendix/internal/netguard"
 )
 
 // ErrBudgetExceeded is returned by the wrapped RoundTripper when the
@@ -135,4 +137,34 @@ func WrapTransport(rt http.RoundTripper) http.RoundTripper {
 // black-box check except the crawler).
 func Transport() http.RoundTripper {
 	return WrapTransport(http.DefaultTransport)
+}
+
+// WrapTransportGuarded composes the SSRF egress guard (internal/netguard)
+// UNDERNEATH the budget counter. The returned RoundTripper is:
+//
+//	budgetTransport → netguard-dialing http.Transport
+//
+// Layering matters. The budget counter stays the outer wrapper so every
+// attempt is still counted exactly once and the --max-requests cap fires the
+// same way it does for the unguarded path; the guard lives in the transport's
+// DialContext, so a connection that the guard refuses still counts as a `sent`
+// attempt (it failed at dial, like any other connect error). When
+// allowPrivate is true the guard is a passthrough and this behaves identically
+// to WrapTransport.
+//
+// `base` is the transport whose fields (MaxIdleConnsPerHost, timeouts, …)
+// should be preserved; pass nil to start from http.DefaultTransport. Callers
+// with a customised *http.Transport (e.g. the crawler's keep-alive transport)
+// pass it here so the guard composes onto it rather than replacing it.
+func WrapTransportGuarded(base *http.Transport, allowPrivate bool) http.RoundTripper {
+	guarded := netguard.Config{AllowPrivate: allowPrivate}.Transport(base)
+	return WrapTransport(guarded)
+}
+
+// TransportGuarded returns the budget+SSRF-guarded wrapper over a default
+// transport. Convenience for the simple black-box checks (cors, injection,
+// …) that don't customise the transport but must not be SSRF'd into the
+// host's own network. Equivalent to WrapTransportGuarded(nil, allowPrivate).
+func TransportGuarded(allowPrivate bool) http.RoundTripper {
+	return WrapTransportGuarded(nil, allowPrivate)
 }

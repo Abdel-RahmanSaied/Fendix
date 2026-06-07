@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -356,14 +355,21 @@ func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoi
 		return nil
 	}
 
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-	}
+	client := guardedClient(cfg)
 	var findings []models.Finding
 	maxProbes := effectiveMaxProbes(cfg)
 
 	for _, t := range targetsForEndpoint(endpoint) {
+		// F-L5: stop iterating targets when the scan context is cancelled
+		// (soft-stop / --max-requests cap / --max-duration). Mirrors the
+		// select-on-ctx.Done() guard in ratelimit.go so a soft-stop stops
+		// probing the remaining targets instead of running every payload.
+		select {
+		case <-ctx.Done():
+			return findings
+		default:
+		}
+
 		if auditLog.Count(endpoint.FullURL) >= maxProbes {
 			logagg.Warn("injection", "max probes reached for endpoint", "endpoint", endpoint.FullURL, "max", maxProbes)
 			break
@@ -399,6 +405,14 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	}
 
 	for _, p := range sqliPayloads() {
+		// F-L5: per-payload soft-stop check — abandon remaining SQLi payloads
+		// the moment the scan context is cancelled.
+		select {
+		case <-ctx.Done():
+			return findings
+		default:
+		}
+
 		if auditLog.Count(endpoint.FullURL) >= maxProbes {
 			break
 		}

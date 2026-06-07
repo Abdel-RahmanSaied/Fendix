@@ -1,5 +1,14 @@
 package scanner
 
+// Integration tests here drive CheckInjection / CheckInjectionWithAudit against
+// loopback httptest servers. Those entry points build their client through
+// guardedClient, whose SSRF egress guard (internal/netguard) refuses loopback
+// by default. Each such config therefore sets AllowPrivate: true — the same
+// relaxation a real scan auto-applies when --url resolves to a private/loopback
+// host (see allowPrivate / netguard.TargetIsPrivate). Tests that call the
+// individual probe* functions with their own *http.Client are unaffected and
+// don't need the field.
+
 import (
 	"bytes"
 	"context"
@@ -8,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -399,6 +409,7 @@ func TestCheckInjection_FullPipeline(t *testing.T) {
 	cfg := &models.ScanConfig{
 		EnableActive: true,
 		Timeout:      5,
+		AllowPrivate: true,
 	}
 	ep := Endpoint{
 		Method:  "GET",
@@ -436,7 +447,7 @@ func TestCheckInjection_DefaultParam(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/api/test",
@@ -537,6 +548,7 @@ func TestIntegration_VulnerableServer_CMDiAndCRLF(t *testing.T) {
 	cfg := &models.ScanConfig{
 		EnableActive: true,
 		Timeout:      5,
+		AllowPrivate: true,
 	}
 	ep := Endpoint{
 		Method:  "GET",
@@ -598,7 +610,7 @@ func TestIntegration_SafeServer_NoFindings(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/api/safe",
@@ -647,7 +659,7 @@ func TestIntegration_MultipleParams(t *testing.T) {
 	// max-probes budget (20) hits before all 3 params are exhausted. Bump the
 	// budget for this test — its job is to verify per-param finding emission,
 	// not budget enforcement (which has its own test).
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 200}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 200, AllowPrivate: true}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/api/exec",
@@ -686,6 +698,7 @@ func TestIntegration_WithAuth(t *testing.T) {
 		EnableActive: true,
 		Timeout:      5,
 		Auth:         &models.AuthContext{Type: "bearer", Value: "test-token"},
+		AllowPrivate: true,
 	}
 	ep := Endpoint{
 		Method:  "GET",
@@ -714,7 +727,7 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 10}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 10, AllowPrivate: true}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/api/slow",
@@ -728,6 +741,41 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 	// Should not panic or hang — should return gracefully
 	findings := CheckInjectionWithAudit(ctx, cfg, ep, auditLog)
 	_ = findings // May or may not have findings, but should not hang
+}
+
+// TestCheckInjection_SoftStopOnCancelledContext is the F-L5 regression: when
+// the scan context is ALREADY cancelled at entry (soft-stop / --max-requests
+// cap / --max-duration), the per-target loop must short-circuit before sending
+// any probe. Pre-fix the loop ran every payload regardless of cancellation.
+func TestCheckInjection_SoftStopOnCancelledContext(t *testing.T) {
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before any probe runs
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, AllowPrivate: true}
+	ep := Endpoint{
+		Method:  "GET",
+		Path:    "/api/x",
+		FullURL: ts.URL + "/api/x",
+		Params:  []string{"a", "b", "c"},
+	}
+	auditLog := NewProbeAuditLog()
+
+	findings := CheckInjectionWithAudit(ctx, cfg, ep, auditLog)
+	if len(findings) != 0 {
+		t.Errorf("expected no findings on cancelled context, got %d", len(findings))
+	}
+	// The target loop's select-on-ctx.Done() must fire on the first iteration,
+	// so no probe should ever reach the server.
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Errorf("expected 0 requests after pre-cancel soft-stop, got %d", got)
+	}
 }
 
 // --- TASK-086 tests: body/header probing, error/boolean SQLi, --max-probes-per-endpoint ---
@@ -890,7 +938,7 @@ func TestCheckInjection_BodyProbing(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 100}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 100, AllowPrivate: true}
 	ep := Endpoint{
 		Method:     "POST",
 		Path:       "/users",
@@ -918,7 +966,7 @@ func TestCheckInjection_HeaderProbing(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 100}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 100, AllowPrivate: true}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/items",
@@ -942,7 +990,7 @@ func TestEffectiveMaxProbes_Override(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 3}
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, MaxProbesPerEndpoint: 3, AllowPrivate: true}
 	ep := Endpoint{
 		Method:  "GET",
 		Path:    "/x",

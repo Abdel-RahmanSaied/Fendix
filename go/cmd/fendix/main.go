@@ -229,6 +229,7 @@ func newScanCmd() *cobra.Command {
 			maxRequests, _ := flags.GetInt64("max-requests")
 			maxDuration, _ := flags.GetDuration("max-duration")
 			respectRobots, _ := flags.GetBool("respect-robots")
+			allowPrivateTargets, _ := flags.GetBool("allow-private-targets")
 			debugBundleFlag, _ := flags.GetString("debug-bundle")
 			noPluginsFlag, _ := flags.GetBool("no-plugins")
 			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
@@ -293,6 +294,7 @@ func newScanCmd() *cobra.Command {
 				MaxRequests:          maxRequests,
 				MaxDuration:          maxDuration,
 				RespectRobots:        respectRobots,
+				AllowPrivate:         allowPrivateTargets,
 				DebugBundlePath:      debugBundleFlag,
 				NoPlugins:            noPluginsFlag,
 				NoNativeDeps:         noNativeDepsFlag,
@@ -387,6 +389,7 @@ func newScanCmd() *cobra.Command {
 	flags.Int64("max-requests", 0, "Soft-cap on total HTTP requests across all checks (0 = no cap)")
 	flags.Duration("max-duration", 0, "Soft-cap on total scan wall-clock time, e.g. 5m (0 = no cap)")
 	flags.Bool("respect-robots", false, "Treat robots.txt Disallow as a hard restriction (default: queue as discovery hints)")
+	flags.Bool("allow-private-targets", false, "Allow the scanner to connect to private/loopback/link-local addresses and the cloud metadata IP (disables the SSRF egress guard). Auto-enabled when --url already resolves to a private/loopback host.")
 	flags.String("debug-bundle", "", "Write a redacted diagnostic tarball to this path at scan end (intended for bug reports)")
 	flags.Bool("no-plugins", false, "Disable out-of-tree plugin discovery in .fendix/plugins/ + ~/.fendix/plugins/")
 	flags.Bool("no-native-deps", false, "Disable the in-process Go dep-CVE scanner (TASK-119). Defer to the Python deps.py path instead.")
