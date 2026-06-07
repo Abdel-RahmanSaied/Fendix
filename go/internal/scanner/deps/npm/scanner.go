@@ -45,6 +45,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 )
 
 // ErrLockfileMissingButPackageJsonPresent is returned when the
@@ -196,6 +197,72 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 
 	sortFindingsByID(findings)
 	return findings, nil
+}
+
+// ScanOffline reads package-lock.json at codePath and matches every
+// resolved version against the in-memory offline snapshot instead of
+// osv.dev. It makes ZERO network calls — the air-gapped dep-CVE path
+// (F-M4/F-H4). Findings carry the identical shape to the online path so
+// dedup/correlation/reporters cannot tell the two apart.
+//
+// ErrNoLockfile / ErrLockfileMissingButPackageJsonPresent are returned
+// for the same conditions as the online Scan, so the orchestrator can
+// errors.Is-check them and emit the same advisory / skip.
+func ScanOffline(codePath string, snap *offline.Snapshot) ([]models.Finding, error) {
+	if snap == nil {
+		return nil, errors.New("npm: offline snapshot is nil")
+	}
+	abs, err := filepath.Abs(codePath)
+	if err != nil {
+		return nil, fmt.Errorf("npm: resolve path: %w", err)
+	}
+	lockfile := filepath.Join(abs, "package-lock.json")
+	if _, err := os.Stat(lockfile); err != nil {
+		if os.IsNotExist(err) {
+			if _, perr := os.Stat(filepath.Join(abs, "package.json")); perr == nil {
+				return nil, ErrLockfileMissingButPackageJsonPresent
+			}
+			return nil, ErrNoLockfile
+		}
+		return nil, fmt.Errorf("npm: stat package-lock.json: %w", err)
+	}
+
+	content, err := os.ReadFile(lockfile)
+	if err != nil {
+		return nil, fmt.Errorf("npm: read package-lock.json: %w", err)
+	}
+	pkgs, err := parseLockfile(content)
+	if err != nil {
+		return nil, fmt.Errorf("npm: parse lockfile: %w", err)
+	}
+	if len(pkgs) == 0 {
+		return nil, nil
+	}
+
+	const manifestName = "package-lock.json"
+	var findings []models.Finding
+	for _, p := range pkgs {
+		for _, a := range snap.LookupVulnerable("npm", p.name, p.version) {
+			findings = append(findings, buildFinding(p, advisoryToOSV(a), manifestName))
+		}
+	}
+	sortFindingsByID(findings)
+	return findings, nil
+}
+
+// advisoryToOSV adapts an offline snapshot Advisory to the osvVuln shape
+// buildFinding consumes, so the offline path reuses the exact online
+// finding constructor (one source of truth for the finding shape).
+func advisoryToOSV(a offline.Advisory) osvVuln {
+	v := osvVuln{
+		ID:      a.ID,
+		Summary: a.Summary,
+		Aliases: a.Aliases,
+	}
+	if fix := a.FirstFixedVersion(); fix != "" {
+		v.Affected = []osvAffected{{Ranges: []osvRange{{Events: []osvEvent{{Fixed: fix}}}}}}
+	}
+	return v
 }
 
 // pkgWithManifest carries the manifest stamp for a resolvedPackage.

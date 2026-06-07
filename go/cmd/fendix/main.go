@@ -247,6 +247,14 @@ func newScanCmd() *cobra.Command {
 			}
 			configFlag, _ := flags.GetString("config")
 			langFlag, _ := flags.GetString("lang")
+			// --offline / --offline-db are registered below; read them into
+			// ScanConfig so the orchestrator can run the dep-CVE scanners
+			// against the local snapshot instead of osv.dev/vuln.go.dev
+			// (F-M4/F-H4). --fail-on-scanner-error opts a CI run into a
+			// non-zero exit on any recorded scanner failure (F-L7/F-L13).
+			offlineFlag, _ := flags.GetBool("offline")
+			offlineDBFlag, _ := flags.GetString("offline-db")
+			failOnScannerErrorFlag, _ := flags.GetBool("fail-on-scanner-error")
 
 			// Resolve --config: explicit path takes precedence; if
 			// absent and a .fendix.yaml exists in the cwd, pick it up
@@ -301,6 +309,9 @@ func newScanCmd() *cobra.Command {
 				UsePipAudit:          usePipAuditFlag,
 				PythonEngine:         pythonEngineFlag,
 				Lang:                 resolveLang(langFlag, cmd.ErrOrStderr()),
+				Offline:              offlineFlag,
+				OfflineDBPath:        offlineDBFlag,
+				FailOnScannerError:   failOnScannerErrorFlag,
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -397,8 +408,9 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("python-engine", false, "Spawn the Python whitebox engine for auth/injection/deps checks (TASK-118). Default off — secrets and semgrep are now native Go and the embedded Python distribution is no longer bundled. Requires a local python/ source tree or FENDIX_ENGINE pointing at one.")
 	flags.String("config", "", "Path to .fendix.yaml policy file (default: auto-detect .fendix.yaml in cwd)")
 	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
-	flags.Bool("offline", false, "Air-gapped mode (Sprint 09): consult the local offline-db snapshot for dep CVEs instead of osv.dev/golang.org/x/vuln. Today this is a no-op honest stub — the snapshot is created via `fendix db update`; per-scanner integration is wired sprint-by-sprint (see internal/offline/offline.go).")
+	flags.Bool("offline", false, "Air-gapped mode: consult the local offline-db snapshot for dep CVEs instead of osv.dev/vuln.go.dev. The pip and npm scanners run against the snapshot (create it with `fendix db update`); govulncheck needs vuln.go.dev and is recorded SKIPPED. No outbound network call is made.")
 	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
+	flags.Bool("fail-on-scanner-error", false, "Exit non-zero (2) if any scanner (govulncheck/pip/npm/secrets/semgrep/textscan) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners do not count.")
 
 	return cmd
 }

@@ -43,6 +43,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 )
 
 // ErrNoRequirements is returned by Scan when codePath has no
@@ -218,6 +219,75 @@ func ScanRecursiveWithOptions(ctx context.Context, codePath string, maxDepth int
 		// intentional fallthrough to OSV.dev path
 	}
 	return scanViaOSV(ctx, codePath, maxDepth)
+}
+
+// ScanOffline scans every requirements.txt under codePath (recursing up
+// to maxDepth) against the in-memory offline snapshot instead of
+// osv.dev. It makes ZERO network calls — the air-gapped dep-CVE path
+// (F-M4/F-H4). Findings carry the identical shape to the online path
+// (same SEC-DEPS-<id> IDs, Title/Fix/References) so dedup, correlation,
+// and the reporters cannot tell the two apart.
+//
+// Returns the empty slice (not ErrNoRequirements) when the walk finds
+// no manifests, matching scanViaOSV's "checked everywhere, nothing to
+// scan" contract.
+func ScanOffline(codePath string, maxDepth int, snap *offline.Snapshot) ([]models.Finding, error) {
+	if snap == nil {
+		return nil, errors.New("pip: offline snapshot is nil")
+	}
+	if maxDepth < 0 {
+		maxDepth = 0
+	}
+	abs, err := filepath.Abs(codePath)
+	if err != nil {
+		return nil, fmt.Errorf("pip: resolve path: %w", err)
+	}
+	manifests, err := findRequirementsManifests(abs, maxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("pip: walk for requirements.txt: %w", err)
+	}
+	if len(manifests) == 0 {
+		return []models.Finding{}, nil
+	}
+
+	var findings []models.Finding
+	for _, m := range manifests {
+		content, err := os.ReadFile(m)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[fendix] pip: read %s failed: %v\n", m, err)
+			continue
+		}
+		pkgs := parseRequirements(string(content))
+		if len(pkgs) == 0 {
+			continue
+		}
+		rel, _ := filepath.Rel(abs, m)
+		if rel == "" {
+			rel = "requirements.txt"
+		}
+		for _, p := range pkgs {
+			for _, a := range snap.LookupVulnerable("PyPI", p.name, p.version) {
+				findings = append(findings, buildFinding(p, advisoryToOSV(a), rel))
+			}
+		}
+	}
+	sortFindingsByID(findings)
+	return findings, nil
+}
+
+// advisoryToOSV adapts an offline snapshot Advisory to the osvVuln shape
+// buildFinding consumes, so the offline path reuses the exact online
+// finding constructor (one source of truth for the finding shape).
+func advisoryToOSV(a offline.Advisory) osvVuln {
+	v := osvVuln{
+		ID:      a.ID,
+		Summary: a.Summary,
+		Aliases: a.Aliases,
+	}
+	if fix := a.FirstFixedVersion(); fix != "" {
+		v.Affected = []osvAffected{{Ranges: []osvRange{{Events: []osvEvent{{Fixed: fix}}}}}}
+	}
+	return v
 }
 
 // scanViaOSV scans every requirements.txt manifest under codePath
