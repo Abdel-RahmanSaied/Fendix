@@ -151,4 +151,31 @@ type ScanConfig struct {
 	// scanners (e.g. govulncheck in offline mode) do not count as
 	// failures — only scanners that ran and errored.
 	FailOnScannerError bool
+
+	// Diff enables diff-aware scanning: the whitebox scanners
+	// (secrets/textscan/semgrep) are scoped to only the files git reports
+	// as changed, and the dep-CVE scanners run only when their manifest
+	// changed. This is the engine half of `fendix scan --diff[=ref]
+	// --staged` — the "runs on every commit" developer-workflow feature.
+	// When false (default) every scanner sees the full CodePath tree,
+	// exactly as before. Diff mode can only narrow the file set, never
+	// alter detection logic, so it does not move the heavy-eval F1 score.
+	Diff bool
+	// DiffRef is the git ref the diff is computed against (a branch, tag,
+	// or commit-ish like "origin/main" or "HEAD~1"). Empty diffs against
+	// HEAD. Only meaningful when Diff is true.
+	DiffRef string
+	// DiffStaged restricts the diff to staged changes (`git diff
+	// --cached`) — the set a pre-commit hook scans. Only meaningful when
+	// Diff is true.
+	DiffStaged bool
+
+	// Fast runs only the instant native scanners (secrets + textscan),
+	// skipping semgrep (whose process startup is ~1.5s) and the dep-CVE
+	// scanners (which make network calls). This is the <1s budget the
+	// pre-commit hook needs: on a real monorepo a staged diff scan in fast
+	// mode completes in tens of milliseconds. Detection logic is unchanged
+	// — fast mode only drops the two slow scanners, so it never alters the
+	// findings the remaining scanners would have produced.
+	Fast bool
 }

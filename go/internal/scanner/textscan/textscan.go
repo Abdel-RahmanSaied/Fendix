@@ -49,6 +49,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -76,6 +77,16 @@ type Rule struct {
 // Errors during file reads are logged via the slog default and
 // skipped — one unreadable file doesn't fail the scan.
 func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
+	return ScanWithAllowlist(rootDir, rules, nil)
+}
+
+// ScanWithAllowlist is Scan scoped to a diff-aware file allowlist. When
+// allow is nil the behaviour is identical to Scan (full walk). When set,
+// only files whose absolute path is in the allowlist are scanned — the
+// engine half of `fendix scan --diff`. Directories are still walked (so
+// skip-dir pruning still happens) but non-allowlisted files are skipped
+// before they are read, keeping diff scans sub-second on large trees.
+func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) ([]models.Finding, error) {
 	const maxFileBytes = 1 << 20 // 1 MiB
 	var findings []models.Finding
 
@@ -109,6 +120,11 @@ func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
 				name == ".cache" || name == "target" {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Diff-aware scoping: skip files outside the allowlist before any
+		// read. A nil allowlist allows everything (full-scan default).
+		if !allow.Allows(path) {
 			return nil
 		}
 		// Find which rules apply to this path.
@@ -225,6 +241,7 @@ func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
 				Title:      r.Title,
 				Severity:   r.Severity,
 				Source:     models.SourceWhitebox,
+				SourceTier: models.TierNativeGo,
 				Category:   r.Category,
 				Endpoint:   endpoint,
 				Evidence:   snippet,

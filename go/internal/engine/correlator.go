@@ -252,13 +252,21 @@ func categoryRelated(relCats []string, bbCat string) bool {
 // confirmed-finding-only-when-both-agree wedge promised in the README hero.
 func mergeFindings(bb, wb models.Finding) models.Finding {
 	severity := escalateSeverity(higherSeverity(bb.Severity, wb.Severity))
-	if wb.Reachable {
+	// Proven Path v1 / tier-provenance enforcement: the second "reachable"
+	// escalation is the strong claim ("we can show the exploit path"), so it
+	// is only granted to the high-trust tree-sitter taint tier. A
+	// semgrep_shim finding that never cleared the F1≥0.95 gate must not ride
+	// correlation up to CRITICAL — that would silently bypass the gate the
+	// roadmap explicitly protects. Empty tier (legacy/native) keeps the
+	// prior behaviour so this change can't regress existing escalations.
+	if wb.Reachable && wb.SourceTier != models.TierSemgrepShim {
 		severity = escalateSeverity(severity)
 	}
 	merged := models.Finding{
 		Title:      bb.Title,
 		Severity:   severity,
 		Source:     models.SourceCorrelated,
+		SourceTier: wb.SourceTier,
 		Category:   bb.Category,
 		Endpoint:   bb.Endpoint,
 		Evidence:   bb.Evidence + " | Code: " + wb.Evidence,
@@ -268,6 +276,7 @@ func mergeFindings(bb, wb models.Finding) models.Finding {
 		Line:       wb.Line,
 		TaintChain: wb.TaintChain,
 		Reachable:  wb.Reachable,
+		Route:      wb.Route,
 	}
 	return merged
 }

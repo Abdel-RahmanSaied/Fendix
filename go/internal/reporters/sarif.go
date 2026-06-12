@@ -67,12 +67,50 @@ type SARIFResult struct {
 	Level     string          `json:"level"`
 	Message   SARIFMessage    `json:"message"`
 	Locations []SARIFLocation `json:"locations,omitempty"`
+	// CodeFlows renders a finding's taint chain as a step-through path
+	// (Proven Path v1). GitHub Code Scanning renders these as an
+	// expandable source→sink walk in the alert UI — the "screenshot that
+	// sells" proof. Empty for findings without a proven chain.
+	CodeFlows  []SARIFCodeFlow        `json:"codeFlows,omitempty"`
+	Properties *SARIFResultProperties `json:"properties,omitempty"`
+}
+
+// SARIFResultProperties carries fendix-specific provenance on a result so
+// SARIF consumers (and our own re-ingestion) can see the detection tier and
+// route binding that back the Proven Path claim.
+type SARIFResultProperties struct {
+	SourceTier   string `json:"source_tier,omitempty"`
+	Reachable    bool   `json:"reachable,omitempty"`
+	RouteMethod  string `json:"route_method,omitempty"`
+	RoutePattern string `json:"route_pattern,omitempty"`
+	RouteHandler string `json:"route_handler,omitempty"`
+}
+
+// SARIFCodeFlow groups one or more threadFlows (SARIF §3.36). A taint chain
+// is a single thread of execution, so we emit exactly one threadFlow per
+// code flow.
+type SARIFCodeFlow struct {
+	ThreadFlows []SARIFThreadFlow `json:"threadFlows"`
+}
+
+// SARIFThreadFlow is an ordered sequence of locations along one execution
+// thread (SARIF §3.37) — here, source → intermediate hops → sink.
+type SARIFThreadFlow struct {
+	Locations []SARIFThreadFlowLocation `json:"locations"`
+}
+
+// SARIFThreadFlowLocation wraps one location in a threadFlow (SARIF §3.38).
+type SARIFThreadFlowLocation struct {
+	Location SARIFLocation `json:"location"`
 }
 
 // SARIFLocation describes where a finding was detected.
 type SARIFLocation struct {
 	PhysicalLocation *SARIFPhysicalLocation `json:"physicalLocation,omitempty"`
 	LogicalLocations []SARIFLogicalLocation `json:"logicalLocations,omitempty"`
+	// Message labels a location within a threadFlow step (the taint
+	// expression at that hop). Omitted for ordinary result locations.
+	Message *SARIFMessage `json:"message,omitempty"`
 }
 
 // SARIFPhysicalLocation points to a file and line.
@@ -124,6 +162,53 @@ type SARIFProperties struct {
 	Category   string   `json:"category,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	Confidence string   `json:"confidence,omitempty"`
+}
+
+// taintChainToCodeFlow converts a finding's taint chain into a SARIF
+// codeFlow with one threadFlow whose locations are the source→sink steps,
+// each carrying the expression as its location message. Returns nil for an
+// empty chain so the codeFlows field is omitted (omitempty) on findings
+// without a proven path.
+func taintChainToCodeFlow(chain []models.TaintLink) *SARIFCodeFlow {
+	if len(chain) == 0 {
+		return nil
+	}
+	locs := make([]SARIFThreadFlowLocation, 0, len(chain))
+	for _, link := range chain {
+		loc := SARIFLocation{
+			PhysicalLocation: &SARIFPhysicalLocation{
+				ArtifactLocation: SARIFArtifactLocation{URI: normalizeArtifactURI(link.File)},
+			},
+		}
+		if link.Line > 0 {
+			loc.PhysicalLocation.Region = &SARIFRegion{StartLine: link.Line}
+		}
+		// The expression text is untrusted source; neutralize control/bidi
+		// chars before embedding it as the step message.
+		tfl := SARIFThreadFlowLocation{Location: loc}
+		tfl.Location.Message = &SARIFMessage{Text: NeutralizeText(link.Expr)}
+		locs = append(locs, tfl)
+	}
+	return &SARIFCodeFlow{ThreadFlows: []SARIFThreadFlow{{Locations: locs}}}
+}
+
+// sarifResultProperties stamps fendix provenance (detection tier, reachable
+// flag, route binding) into a result's properties. Returns nil when there's
+// nothing to record so the field stays omitted.
+func sarifResultProperties(f models.Finding) *SARIFResultProperties {
+	if f.SourceTier == "" && !f.Reachable && f.Route == nil {
+		return nil
+	}
+	p := &SARIFResultProperties{
+		SourceTier: string(f.SourceTier),
+		Reachable:  f.Reachable,
+	}
+	if f.Route != nil {
+		p.RouteMethod = f.Route.Method
+		p.RoutePattern = f.Route.Pattern
+		p.RouteHandler = f.Route.Handler
+	}
+	return p
 }
 
 // ruleKeyFor returns a stable, human-readable rule ID for a finding's
@@ -369,6 +454,16 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				}
 				result.Locations = locs
 			}
+		}
+
+		// Proven Path v1: render the taint chain as a codeFlow so GitHub
+		// shows the source→sink step-through, and stamp provenance
+		// (source_tier, reachable, route binding) into result properties.
+		if cf := taintChainToCodeFlow(f.TaintChain); cf != nil {
+			result.CodeFlows = []SARIFCodeFlow{*cf}
+		}
+		if props := sarifResultProperties(f); props != nil {
+			result.Properties = props
 		}
 
 		results = append(results, result)

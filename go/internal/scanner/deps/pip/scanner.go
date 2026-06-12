@@ -257,13 +257,13 @@ func ScanOffline(codePath string, maxDepth int, snap *offline.Snapshot) ([]model
 			fmt.Fprintf(os.Stderr, "[fendix] pip: read %s failed: %v\n", m, err)
 			continue
 		}
-		pkgs := parseRequirements(string(content))
+		pkgs := parseManifest(m, string(content))
 		if len(pkgs) == 0 {
 			continue
 		}
 		rel, _ := filepath.Rel(abs, m)
 		if rel == "" {
-			rel = "requirements.txt"
+			rel = filepath.Base(m)
 		}
 		for _, p := range pkgs {
 			for _, a := range snap.LookupVulnerable("PyPI", p.name, p.version) {
@@ -332,13 +332,13 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Fi
 			fmt.Fprintf(os.Stderr, "[fendix] pip: read %s failed: %v\n", m, err)
 			continue
 		}
-		pkgs := parseRequirements(string(content))
+		pkgs := parseManifest(m, string(content))
 		if len(pkgs) == 0 {
 			continue
 		}
 		rel, _ := filepath.Rel(abs, m)
 		if rel == "" {
-			rel = "requirements.txt"
+			rel = filepath.Base(m)
 		}
 		for _, p := range pkgs {
 			allPairs = append(allPairs, pkgWithManifest{pkg: p, manifest: rel})
@@ -686,7 +686,7 @@ func findRequirementsManifests(root string, maxDepth int) ([]string, error) {
 			}
 			return nil
 		}
-		if d.Name() == "requirements.txt" {
+		if isPythonManifest(d.Name()) {
 			manifests = append(manifests, path)
 		}
 		return nil
@@ -696,6 +696,34 @@ func findRequirementsManifests(root string, maxDepth int) ([]string, error) {
 	}
 	sort.Strings(manifests)
 	return manifests, nil
+}
+
+// isPythonManifest reports whether a filename is a Python dependency
+// manifest the pip scanner knows how to parse. requirements.txt carries
+// direct (==-pinned) deps; poetry.lock and Pipfile.lock carry the fully
+// resolved transitive closure (90-day cut, item 3 — "locks ARE the
+// transitive closure"). All three resolve to PyPI packages, so they share
+// the downstream OSV batch/cache/offline machinery unchanged.
+func isPythonManifest(name string) bool {
+	switch name {
+	case "requirements.txt", "poetry.lock", "Pipfile.lock":
+		return true
+	}
+	return false
+}
+
+// parseManifest dispatches to the right parser by the manifest's base name.
+// All parsers return the same pinnedPackage slice so the OSV query path is
+// identical regardless of source format.
+func parseManifest(path, content string) []pinnedPackage {
+	switch filepath.Base(path) {
+	case "poetry.lock":
+		return parsePoetryLock(content)
+	case "Pipfile.lock":
+		return parsePipfileLock(content)
+	default: // requirements.txt
+		return parseRequirements(content)
+	}
 }
 
 // pinnedPackage is one `==`-pinned line from requirements.txt.

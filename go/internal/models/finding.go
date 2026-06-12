@@ -32,6 +32,44 @@ const (
 	SourceCorrelated Source = "correlated"
 )
 
+// SourceTier records WHICH analysis engine tier produced a whitebox
+// finding (Proven Path v1 / roadmap "Tier provenance enforcement"). The
+// correlator weights tiers differently when escalating confidence: a
+// CRITICAL driven by a Tier-3 semgrep regex that never cleared the
+// F1≥0.95 gate must not escalate to CRITICAL via correlation. Preserved
+// end-to-end through NDJSON IPC → correlator → ScanFinding → UI so the
+// F1 gate can't be silently bypassed by the correlation moat.
+//
+// Empty for blackbox findings (no code tier produced them) and for
+// pre-existing findings emitted before the field existed — treat empty
+// as "unknown tier", which the correlator scores most conservatively.
+type SourceTier string
+
+const (
+	// TierNativeGo: in-binary Go analysis (textscan today; gosast later).
+	TierNativeGo SourceTier = "native_go"
+	// TierTreeSitter: the Python/tree-sitter sidecar (the AST taint
+	// analyzer that emits taint chains — the highest-trust SAST tier).
+	TierTreeSitter SourceTier = "tree_sitter_sidecar"
+	// TierSemgrepShim: shelled-out semgrep (breadth, lowest trust until a
+	// rule pack clears the F1 gate).
+	TierSemgrepShim SourceTier = "semgrep_shim"
+)
+
+// Route binds a finding to the HTTP route that reaches its sink (Proven
+// Path v1). Populated by the Python route extractor for whitebox findings
+// whose enclosing function is a registered Django/Flask/FastAPI handler;
+// the correlator uses it to bind a blackbox endpoint to the exact handler
+// + taint chain instead of fuzzy path matching. Empty when no route could
+// be bound (e.g. a finding in a helper not directly wired to a URL).
+type Route struct {
+	Method  string `json:"method,omitempty"`  // GET, POST, … ("" = any/unknown)
+	Pattern string `json:"pattern,omitempty"` // URL pattern, e.g. /users/<id>
+	Handler string `json:"handler,omitempty"` // handler symbol, e.g. views.get_user
+	File    string `json:"file,omitempty"`    // file the route is declared in
+	Line    int    `json:"line,omitempty"`    // line of the route declaration
+}
+
 // TaintLink is one step in a dataflow chain from a source (e.g.
 // request.args.get) to a sink (e.g. cursor.execute). The Python AST
 // analyzer records these chains for SQLi, SSRF, and open-redirect
@@ -73,6 +111,13 @@ type Finding struct {
 	Line              *string     `json:"line"`
 	TaintChain        []TaintLink `json:"taint_chain,omitempty"`
 	Reachable         bool        `json:"reachable,omitempty"`
+	// SourceTier records the analysis engine tier (Proven Path v1). Empty
+	// for blackbox / pre-field findings. See SourceTier doc.
+	SourceTier SourceTier `json:"source_tier,omitempty"`
+	// Route binds the finding to its HTTP route (Proven Path v1). Empty
+	// when unbound. A non-empty Route + a TaintChain is the v1 "proof":
+	// route → handler → source→sink taint path.
+	Route *Route `json:"route,omitempty"`
 }
 
 // SeverityRank returns a numeric rank for severity comparison.

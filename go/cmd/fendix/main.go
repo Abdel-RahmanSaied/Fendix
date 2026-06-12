@@ -17,6 +17,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/cli"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/democmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/hookcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/ignorecmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -90,6 +91,7 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(newEngineCmd())
 	root.AddCommand(pluginscmd.NewCmd())
 	root.AddCommand(ignorecmd.NewCmd())
+	root.AddCommand(hookcmd.NewCmd())
 
 	return root
 }
@@ -256,6 +258,26 @@ func newScanCmd() *cobra.Command {
 			offlineFlag, _ := flags.GetBool("offline")
 			offlineDBFlag, _ := flags.GetString("offline-db")
 			failOnScannerErrorFlag, _ := flags.GetBool("fail-on-scanner-error")
+			// --diff enables diff-aware scanning. It's a string flag with a
+			// NoOptDefVal of "HEAD", so bare `--diff` diffs against HEAD and
+			// `--diff=origin/main` diffs against that ref. `flags.Changed`
+			// tells us the user actually passed it (vs. the zero value).
+			diffEnabled := flags.Changed("diff")
+			diffRefFlag, _ := flags.GetString("diff")
+			diffStagedFlag, _ := flags.GetBool("staged")
+			// `--staged` implies diff mode even without an explicit --diff,
+			// so a pre-commit hook can run `fendix scan --code . --staged`.
+			if diffStagedFlag {
+				diffEnabled = true
+			}
+			// The sentinel "HEAD" from NoOptDefVal means "no explicit ref" —
+			// ChangedFiles treats an empty ref as "diff against HEAD", so
+			// normalise it back to empty to keep the staged/unstaged default
+			// (which must NOT pass a ref arg to git).
+			if diffRefFlag == "HEAD" {
+				diffRefFlag = ""
+			}
+			fastFlag, _ := flags.GetBool("fast")
 
 			// Resolve --config: explicit path takes precedence; if
 			// absent and a .fendix.yaml exists in the cwd, pick it up
@@ -314,6 +336,10 @@ func newScanCmd() *cobra.Command {
 				Offline:               offlineFlag,
 				OfflineDBPath:         offlineDBFlag,
 				FailOnScannerError:    failOnScannerErrorFlag,
+				Diff:                  diffEnabled,
+				DiffRef:               diffRefFlag,
+				DiffStaged:            diffStagedFlag,
+				Fast:                  fastFlag,
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -414,6 +440,15 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("offline", false, "Air-gapped mode: consult the local offline-db snapshot for dep CVEs instead of osv.dev/vuln.go.dev. The pip and npm scanners run against the snapshot (create it with `fendix db update`); govulncheck needs vuln.go.dev and is recorded SKIPPED. No outbound network call is made.")
 	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
 	flags.Bool("fail-on-scanner-error", false, "Exit non-zero (2) if any scanner (govulncheck/pip/npm/secrets/semgrep/textscan) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners do not count.")
+	// Diff-aware scanning (90-day cut, item 1). `--diff` alone diffs the
+	// working tree against HEAD; `--diff=origin/main` against that ref;
+	// `--staged` scopes to the index (what a pre-commit hook scans) and
+	// implies diff mode. NoOptDefVal lets `--diff` work as a bare flag
+	// while still accepting `--diff=<ref>`.
+	flags.String("diff", "", "Diff-aware scan: only scan files changed vs a git ref (bare --diff = vs HEAD, --diff=origin/main = vs that ref). Whitebox scanners are scoped to the changed files; dep-CVE scanners run only when a manifest changed.")
+	flags.Lookup("diff").NoOptDefVal = "HEAD"
+	flags.Bool("staged", false, "Diff-aware scan over staged changes only (git diff --cached). Implies --diff. This is what the pre-commit hook runs.")
+	flags.Bool("fast", false, "Fast mode: run only the instant native scanners (secrets + textscan), skipping semgrep (~1.5s startup) and the network dep-CVE scanners. Sub-second on a real monorepo; pairs with --staged for the pre-commit hook.")
 
 	return cmd
 }

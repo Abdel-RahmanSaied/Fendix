@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -294,6 +295,16 @@ var envPatterns = []pattern{
 // The context is checked between files; cancellation aborts the walk
 // with ctx.Err().
 func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
+	return ScanWithAllowlist(ctx, codePath, nil)
+}
+
+// ScanWithAllowlist is Scan scoped to a diff-aware file allowlist. A nil
+// allowlist scans every eligible file (full-scan parity with Scan). When
+// set, only files whose absolute path is in the allowlist are read — the
+// secrets half of `fendix scan --diff`. The directory walk and skip-dir
+// pruning are unchanged; non-allowlisted files are skipped before scanFile
+// opens them.
+func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]models.Finding, error) {
 	if codePath == "" {
 		return nil, ErrCodePathMissing
 	}
@@ -333,6 +344,12 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 			if _, skip := skipDirs[d.Name()]; skip {
 				return fs.SkipDir
 			}
+			return nil
+		}
+
+		// Diff-aware scoping: skip files outside the allowlist before any
+		// read. A nil allowlist allows everything (full-scan default).
+		if !allow.Allows(path) {
 			return nil
 		}
 

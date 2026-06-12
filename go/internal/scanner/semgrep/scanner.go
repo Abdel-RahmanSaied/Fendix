@@ -39,6 +39,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -92,6 +93,20 @@ var commandContext = exec.CommandContext
 // subprocess. A 120s deadline is layered onto ctx if ctx has no
 // shorter deadline already.
 func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
+	return ScanWithAllowlist(ctx, codePath, nil)
+}
+
+// ScanWithAllowlist is Scan scoped to a diff-aware file allowlist. A nil
+// allowlist scans the whole codePath (full-scan parity). When set, the
+// changed files are passed to semgrep as `--include` path filters so the
+// engine only analyses the diff — the semgrep half of `fendix scan --diff`.
+//
+// semgrep's --include takes a glob/path relative to the scan root; passing
+// the exact relative path of each changed file restricts the run to those
+// files. An empty (non-nil) allowlist would make semgrep scan everything
+// (no --include narrows nothing), so the caller short-circuits that case;
+// here we simply skip adding includes when there are no relative paths.
+func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]models.Finding, error) {
 	if codePath == "" {
 		return nil, ErrCodePathMissing
 	}
@@ -117,13 +132,19 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	runCtx, cancel := contextWithDefaultTimeout(ctx, defaultTimeout)
 	defer cancel()
 
-	cmd := commandContext(runCtx, bin,
+	args := []string{
 		"--config", rules,
 		"--json",
 		"--no-git-ignore",
 		"--quiet",
-		codePath,
-	)
+	}
+	// Diff scoping: one --include per changed file (relative to codePath).
+	for _, rel := range allow.RelPaths(codePath) {
+		args = append(args, "--include", rel)
+	}
+	args = append(args, codePath)
+
+	cmd := commandContext(runCtx, bin, args...)
 	stdout, err := cmd.Output()
 	if err != nil {
 		// Context errors (cancel/deadline) are always real failures —
@@ -282,6 +303,7 @@ func mapResult(r *semgrepResult, absRoot string) (models.Finding, bool) {
 		Title:      title,
 		Severity:   resolveSeverity(r),
 		Source:     models.SourceWhitebox,
+		SourceTier: models.TierSemgrepShim,
 		Category:   resolveCategory(r),
 		Endpoint:   endpoint,
 		Evidence:   snippet,

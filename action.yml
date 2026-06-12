@@ -1,0 +1,153 @@
+# Fendix GitHub Action — Marketplace listing.
+#
+# Runs a Fendix security scan in CI. On pull requests it defaults to a
+# diff-aware scan (only files changed in the PR), so the check is fast and
+# only surfaces issues the PR actually introduced. Uploads SARIF so findings
+# render inline in the GitHub Security tab and as PR annotations.
+#
+# Usage (minimal — SAST/secrets/SCA on changed code in a PR):
+#
+#   - uses: actions/checkout@v4
+#     with: { fetch-depth: 0 }          # diff mode needs history
+#   - uses: abdel-rahmansaied/fendix@v1
+#     with:
+#       code: .
+#
+# Usage (full — add a DAST target + fail the build on HIGH):
+#
+#   - uses: abdel-rahmansaied/fendix@v1
+#     with:
+#       url: ${{ secrets.STAGING_API_URL }}
+#       code: .
+#       spec: openapi.yaml
+#       fail-on: HIGH
+name: "Fendix Security Scan"
+description: "DAST + SAST in one PR check — fails only when both engines confirm. Diff-aware on pull requests."
+author: "Fendix"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  code:
+    description: "Path to source code to scan (white-box SAST/secrets/SCA). Empty to skip."
+    required: false
+    default: "."
+  url:
+    description: "Target URL for black-box DAST scanning. Empty to skip DAST."
+    required: false
+    default: ""
+  spec:
+    description: "Path to an OpenAPI/Swagger spec to seed endpoint discovery."
+    required: false
+    default: ""
+  fail-on:
+    description: "Fail the build when a finding at or above this severity is found (CRITICAL, HIGH, MEDIUM). Empty never fails the build."
+    required: false
+    default: "HIGH"
+  diff:
+    description: "Diff-aware scan: 'auto' scopes to PR-changed files on pull_request events and runs a full scan otherwise; 'true' forces diff vs the base ref; 'false' always full-scans."
+    required: false
+    default: "auto"
+  format:
+    description: "Report format: sarif (default, for the Security tab), json, html."
+    required: false
+    default: "sarif"
+  output:
+    description: "Path to write the report to."
+    required: false
+    default: "fendix-results.sarif"
+  upload-sarif:
+    description: "Upload the SARIF report to GitHub code scanning (only effective when format=sarif)."
+    required: false
+    default: "true"
+  version:
+    description: "Fendix version to install (e.g. v0.15.0). 'latest' installs the newest release."
+    required: false
+    default: "latest"
+  extra-args:
+    description: "Additional raw arguments appended to the fendix scan command."
+    required: false
+    default: ""
+
+outputs:
+  report:
+    description: "Path to the generated report file."
+    value: ${{ steps.scan.outputs.report }}
+  exit-code:
+    description: "The fendix exit code (0 clean, 1 findings at/above fail-on, 2 error)."
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Fendix
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          curl -fsSL https://get.fendix.dev/install.sh | sh
+        else
+          curl -fsSL https://get.fendix.dev/install.sh | sh -s -- --version "${{ inputs.version }}"
+        fi
+        fendix version
+
+    - name: Run Fendix scan
+      id: scan
+      shell: bash
+      run: |
+        set -uo pipefail
+        args=()
+        [ -n "${{ inputs.code }}" ] && args+=(--code "${{ inputs.code }}")
+        [ -n "${{ inputs.url }}" ]  && args+=(--url "${{ inputs.url }}")
+        [ -n "${{ inputs.spec }}" ] && args+=(--spec "${{ inputs.spec }}")
+        [ -n "${{ inputs.fail-on }}" ] && args+=(--fail-on "${{ inputs.fail-on }}")
+        args+=(--format "${{ inputs.format }}" --output "${{ inputs.output }}")
+
+        # Diff-aware scoping. On a pull_request event, 'auto'/'true' scope the
+        # scan to files changed versus the PR base ref, so the check is fast
+        # and only flags net-new issues. Requires fetch-depth: 0 on checkout.
+        diff_mode="${{ inputs.diff }}"
+        if [ "$diff_mode" = "true" ] || { [ "$diff_mode" = "auto" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; }; then
+          base="${GITHUB_BASE_REF:-}"
+          if [ -n "$base" ]; then
+            git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
+            args+=(--diff="origin/$base")
+          else
+            args+=(--diff)
+          fi
+        fi
+
+        [ -n "${{ inputs.extra-args }}" ] && args+=(${{ inputs.extra-args }})
+
+        echo "fendix scan ${args[*]}"
+        set +e
+        fendix scan "${args[@]}"
+        code=$?
+        set -e
+        echo "report=${{ inputs.output }}" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        # Don't abort the job here on exit 1 — let the SARIF upload run first,
+        # then re-raise the failure in the final step so findings are visible.
+        exit 0
+
+    - name: Upload SARIF to code scanning
+      if: ${{ inputs.upload-sarif == 'true' && inputs.format == 'sarif' && always() }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.output }}
+
+    - name: Enforce fail-on threshold
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        code="${{ steps.scan.outputs.exit-code }}"
+        if [ "$code" = "0" ]; then
+          echo "✓ Fendix: no findings at or above the fail-on threshold."
+        elif [ "$code" = "1" ]; then
+          echo "✗ Fendix: findings at or above '${{ inputs.fail-on }}' — see the Security tab."
+          exit 1
+        else
+          echo "✗ Fendix: scan error (exit $code)."
+          exit "$code"
+        fi

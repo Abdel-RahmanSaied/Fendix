@@ -91,6 +91,13 @@ class ASTAnalyzer:
         if not root.exists():
             return
 
+        # Proven Path v1: pre-pass builds a project-wide handler→route index
+        # so a finding's sink can be bound to the route that reaches it —
+        # even when the route is declared in urls.py and the view lives in a
+        # different file (Django). Best-effort and metadata-only; a failure
+        # here leaves binding off and never blocks the security pass.
+        self._routes_by_func = self._build_route_index(root)
+
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
             for fname in filenames:
@@ -117,6 +124,34 @@ class ASTAnalyzer:
                 elif fpath.suffix in {".js", ".ts", ".jsx", ".tsx"}:
                     self._analyze_js_heuristic(fpath, rel, emit_fn)
 
+    def _build_route_index(self, root: Path):
+        """Walk the tree once and merge every file's routes into one
+        function-name → Route index. Keyed on the handler function's name so
+        a Django urls.py route binds to its view defined elsewhere. Returns a
+        RouteTable; on any import/IO failure returns an empty one (binding
+        simply stays off)."""
+        try:
+            from analyzers.route_extractor import RouteTable, extract_routes
+        except Exception:  # noqa: BLE001 — binding is optional
+            return None
+        index = RouteTable()
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+            for fname in filenames:
+                if not fname.endswith(".py"):
+                    continue
+                fpath = Path(dirpath) / fname
+                try:
+                    if fpath.is_symlink() or fpath.stat().st_size > _MAX_FILE_BYTES:
+                        continue
+                    src = fpath.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                rel = str(fpath.relative_to(root))
+                for route in extract_routes(src, rel).routes:
+                    index.add(route)
+        return index
+
     # ------------------------------------------------------------------
     # Python AST analysis
     # ------------------------------------------------------------------
@@ -141,7 +176,10 @@ class ASTAnalyzer:
         # rest of the tree. Catch, log to stderr, and continue to the next file
         # — findings already emitted for this file stay emitted (emit_fn is
         # called incrementally), and the engine still exits cleanly.
-        visitor = _PythonSecurityVisitor(source.splitlines(), rel, emit_fn)
+        visitor = _PythonSecurityVisitor(
+            source.splitlines(), rel, emit_fn,
+            route_table=getattr(self, "_routes_by_func", None),
+        )
         try:
             visitor.visit(tree)
         except RecursionError:
@@ -223,10 +261,16 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         source_lines: list[str],
         rel_path: str,
         emit_fn: Callable[[dict], None],
+        route_table=None,
     ) -> None:
         self._lines = source_lines
         self._rel = rel_path
         self._emit = emit_fn
+        # Proven Path v1: route table for this file (or None). When a finding
+        # with a taint chain sits inside a registered handler, we bind the
+        # route so the report can show route → handler → sink. None disables
+        # binding (findings emit exactly as before).
+        self._route_table = route_table
         # Stack of variable-assignment scopes. Outermost element is module
         # scope; each FunctionDef pushes a new scope. Used by `_is_sql_injection`
         # to resolve `cursor.execute(name)` to the value `name` was assigned —
@@ -264,6 +308,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             "title": title,
             "severity": severity,
             "source": "whitebox",
+            # Proven Path v1: this AST taint analyzer is the tree-sitter
+            # sidecar tier — the highest-trust SAST tier. Preserved
+            # end-to-end so the correlator can weight it above semgrep_shim
+            # and the F1 gate can't be bypassed via correlation.
+            "source_tier": "tree_sitter_sidecar",
             "category": category,
             "endpoint": f"{self._rel}:{lineno}",
             "evidence": self._line_text(lineno),
@@ -281,7 +330,21 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             # {file, line, expr}; the engine treats this as opaque metadata.
             finding["taint_chain"] = taint_chain
             finding["reachable"] = True
+            # Proven Path v1: bind the route that reaches this sink, when the
+            # enclosing function is a registered handler. route → handler →
+            # source→sink chain is the v1 proof.
+            route = self._bound_route()
+            if route is not None:
+                finding["route"] = route.as_dict()
         self._emit(finding)
+
+    def _bound_route(self):
+        """Return the Route whose handler is the innermost enclosing
+        function, or None when there's no route table or no match."""
+        if self._route_table is None or not self._func_stack:
+            return None
+        func_name = self._func_stack[-1].name
+        return self._route_table.for_function(func_name)
 
     # ------------------------------------------------------------------
     # Taint-chain helpers (TASK-114)

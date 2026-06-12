@@ -14,6 +14,7 @@ import (
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
@@ -231,6 +232,35 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		}
 	}
 
+	// 3.4. Resolve the diff-aware file allowlist (`fendix scan --diff`).
+	// When --diff is set we ask git for the changed files under CodePath
+	// and scope the whitebox scanners + SCA gate to that set. A nil
+	// allowlist (the default, --diff off) means every scanner walks the
+	// full tree, exactly as before — diff mode can only narrow the file
+	// set, never change detection logic. If git fails (not a repo, bad
+	// ref) we log and fall back to a full scan rather than failing closed:
+	// a missing diff context should degrade to "scan everything", which is
+	// safe, not "scan nothing", which would silently pass a dirty commit.
+	var allow *gitdiff.Allowlist
+	if o.cfg.Diff && o.cfg.CodePath != "" {
+		changed, derr := gitdiff.ChangedFiles(ctx, gitdiff.Options{
+			RepoRoot: o.cfg.CodePath,
+			Ref:      o.cfg.DiffRef,
+			Staged:   o.cfg.DiffStaged,
+		})
+		if derr != nil {
+			slog.Warn("diff-aware scan: git diff failed — falling back to full scan",
+				"error", derr, "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
+		} else {
+			allow = gitdiff.NewAllowlist(o.cfg.CodePath, changed)
+			slog.Info("diff-aware scan: scoped to changed files",
+				"files", allow.Len(), "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
+			if allow.Empty() {
+				slog.Info("diff-aware scan: no changed files — whitebox scanners will report nothing")
+			}
+		}
+	}
+
 	// 3.5. Native dep-CVE scanners (TASK-119). Run in-process before
 	// the Python whitebox engine spawns, so the Python deps.py path
 	// can be retired in Phase 17b (TASK-118) without losing coverage.
@@ -245,7 +275,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// Each ecosystem has an ErrNo... sentinel for silent-skip; other
 	// errors are RECORDED (per-scanner status) and the scan continues so
 	// a network blip doesn't stop a scan from reporting other findings.
-	if o.cfg.CodePath != "" && !o.cfg.NoNativeDeps {
+	if o.cfg.CodePath != "" && !o.cfg.NoNativeDeps && !o.cfg.Fast {
 		// govulncheck needs the live vuln.go.dev DB and a build of the
 		// target module; it has no snapshot-only mode. In --offline we do
 		// NOT call it (that would be a silent outbound call) — record it
@@ -253,6 +283,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		if o.cfg.Offline {
 			slog.Info("offline mode: skipping native go deps scan (govulncheck requires vuln.go.dev)")
 			scanStatus.skip("govulncheck", "offline mode: requires vuln.go.dev")
+		} else if !allow.ContainsBase("go.mod", "go.sum") {
+			// Diff-aware: no Go manifest changed → nothing new to flag.
+			slog.Debug("diff-aware scan: go.mod/go.sum unchanged, skipping govulncheck")
+			scanStatus.skip("govulncheck", "diff: go.mod/go.sum unchanged")
 		} else {
 			nativeFindings, err := govulncheck.Scan(ctx, o.cfg.CodePath)
 			switch {
@@ -287,6 +321,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			pipErr      error
 		)
 		switch {
+		case !allow.ContainsBase("requirements.txt", "Pipfile.lock", "poetry.lock", "pyproject.toml"):
+			// Diff-aware: no Python manifest/lockfile changed → skip.
+			slog.Debug("diff-aware scan: no python manifest changed, skipping pip scan")
+			scanStatus.skip("pip", "diff: no python manifest changed")
 		case o.cfg.Offline && offlineSnap == nil:
 			slog.Warn("offline mode: skipping native pypi deps scan (no usable snapshot)")
 			scanStatus.skip("pip", "offline mode: no usable snapshot")
@@ -313,6 +351,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			npmErr      error
 		)
 		switch {
+		case !allow.ContainsBase("package-lock.json", "package.json"):
+			// Diff-aware: no npm manifest/lockfile changed → skip.
+			slog.Debug("diff-aware scan: no npm manifest changed, skipping npm scan")
+			scanStatus.skip("npm", "diff: no npm manifest changed")
 		case o.cfg.Offline && offlineSnap == nil:
 			slog.Warn("offline mode: skipping native npm deps scan (no usable snapshot)")
 			scanStatus.skip("npm", "offline mode: no usable snapshot")
@@ -332,7 +374,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// --checks secrets) dedupes cleanly. No network access — runs in
 	// offline mode unchanged.
 	if o.cfg.CodePath != "" {
-		secretFindings, err := secrets.Scan(ctx, o.cfg.CodePath)
+		secretFindings, err := secrets.ScanWithAllowlist(ctx, o.cfg.CodePath, allow)
 		switch {
 		case err == nil:
 			slog.Info("native secrets scan complete", "findings", len(secretFindings))
@@ -353,8 +395,8 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// graceful absence matches the existing posture for missing
 	// Python. Same SEC-* IDs as the Python wrapper so dedup absorbs
 	// any overlap when a user opts the Python path back in.
-	if o.cfg.CodePath != "" {
-		semgrepFindings, err := semgrep.Scan(ctx, o.cfg.CodePath)
+	if o.cfg.CodePath != "" && !o.cfg.Fast {
+		semgrepFindings, err := semgrep.ScanWithAllowlist(ctx, o.cfg.CodePath, allow)
 		switch {
 		case err == nil:
 			slog.Info("native semgrep scan complete", "findings", len(semgrepFindings))
@@ -377,7 +419,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// no external tooling required. Fast (<1s on typical repos)
 	// because it's filename-extension-routed line scanning.
 	if o.cfg.CodePath != "" {
-		textFindings, err := textscan.Scan(o.cfg.CodePath, textscan.AllRules())
+		textFindings, err := textscan.ScanWithAllowlist(o.cfg.CodePath, textscan.AllRules(), allow)
 		switch {
 		case err != nil:
 			slog.Warn("native textscan failed", "error", err)

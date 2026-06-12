@@ -2,7 +2,26 @@
 
 > Draft for HN / r/devops / r/golang / r/netsec.
 > Adapt tone per platform. HN version first (Show HN format).
-> **Updated for v0.11.0 + Phase 17 complete (2026-05-13).**
+> **Updated for the 90-day cut (2026-06-12): diff-aware scans, pre-commit hook, Proven Path v1, poetry/Pipfile SCA.**
+
+---
+
+## The 90-day wedge (lead with this for the API-first ICP)
+
+Three things turn Fendix from a CI scanner into a tool you run on every commit:
+
+1. **Diff-aware scans.** `fendix scan --code . --staged --fast` scans only the files a commit touches. On a 200-file monorepo that's **~18 ms** — fast enough to be a pre-commit hook, not a CI-only gate.
+2. **Pre-commit hook.** `fendix hook install` drops a hook that blocks a commit the moment a secret (or any HIGH+ finding) is staged. `git commit --no-verify` is the escape hatch.
+3. **Proven Path v1.** For Python/Django/Flask/FastAPI, a confirmed SQLi now ships as a single SARIF `codeFlow`: **route → handler → source→sink taint chain**, with a `source_tier` provenance tag so a regex-tier finding can never ride correlation up to CRITICAL. GitHub renders the step-through inline in the Security tab — the proof, not just the alert:
+
+   ```
+   GET /users  →  list_users()
+     L7  uid = request.args.get("id")        ← source
+     L8  q = "SELECT ... id = " + uid          ← taint
+     L9  cursor.execute(q)                     ← sink
+   ```
+
+Plus **transitive SCA**: `poetry.lock` and `Pipfile.lock` are parsed as the full resolved closure, so a CVE three dependencies deep is no longer invisible the way it is with `requirements.txt` alone.
 
 ---
 

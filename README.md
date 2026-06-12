@@ -45,6 +45,35 @@ That's it. Fendix scans the API for missing security headers, CORS misconfigurat
 
 ---
 
+## Runs on every commit
+
+Fendix is fast enough to run on the diff, not the repo. Scope a scan to just the files you changed and it finishes in milliseconds — fast enough for a pre-commit hook.
+
+```bash
+# Scan only what changed vs HEAD (working tree)
+fendix scan --code . --diff
+
+# Scan only what's staged — what a commit is about to introduce
+fendix scan --code . --staged --fast      # secrets + textscan, sub-second
+
+# Scan what changed in a PR vs the base branch
+fendix scan --code . --diff=origin/main
+```
+
+`--diff` scopes the white-box scanners (secrets, textscan, semgrep) to the changed files and runs the dependency-CVE scanners only when a manifest changed. `--fast` drops semgrep (≈1.5 s startup) and the network dep lookups, leaving the instant native scanners — a staged scan of a 200-file monorepo completes in tens of milliseconds.
+
+### Pre-commit hook
+
+```bash
+fendix hook install        # writes .git/hooks/pre-commit
+fendix hook status
+fendix hook uninstall
+```
+
+The hook runs `fendix scan --code . --staged --fast --fail-on HIGH` on every commit and aborts the commit if a HIGH-or-worse finding (e.g. a hardcoded secret) is staged. Bypass a single commit with `git commit --no-verify`. It honours `core.hooksPath` and refuses to clobber a pre-existing non-Fendix hook (pass `--force` to replace it).
+
+---
+
 ## Installation
 
 > Engine source lives in this private repo; install artifacts (binaries, Homebrew formula, install script) are published to the public mirror at [`Abdel-RahmanSaied/homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix). All install paths below pull from the mirror.
@@ -411,19 +440,39 @@ merging into your single `config.yml`).
 
 ### GitHub Actions
 
+The fastest path is the [Fendix Action](action.yml) from the Marketplace. On pull requests it runs a **diff-aware** scan (only PR-changed files) and uploads SARIF so findings land in the Security tab and as PR annotations:
+
 ```yaml
 name: Security Scan
 on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write    # required for the SARIF upload
 
 jobs:
   fendix:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # diff-aware scanning needs git history
 
+      - uses: abdel-rahmansaied/fendix@v1
+        with:
+          code: .
+          url: ${{ secrets.STAGING_API_URL }}   # optional — adds DAST
+          spec: openapi.yaml                     # optional
+          fail-on: HIGH
+```
+
+<details>
+<summary>Or wire it by hand (install script + raw CLI)</summary>
+
+```yaml
+      - uses: actions/checkout@v4
       - name: Install Fendix
         run: curl -fsSL https://get.fendix.dev/install.sh | sh
-
       - name: Run scan
         run: |
           fendix scan \
@@ -433,13 +482,14 @@ jobs:
             --fail-on HIGH \
             --format sarif \
             --output results.sarif
-
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
 ```
+
+</details>
 
 ### Baseline diff in PRs
 
