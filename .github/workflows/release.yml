@@ -3,7 +3,13 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      # Only cut a release for semver tags (vX.Y.Z). This deliberately
+      # excludes moving major-version pointers like `v1` (used by the
+      # GitHub Action Marketplace via `uses: …/fendix@v1`), so re-pointing
+      # that tag doesn't trigger a duplicate release run. GitHub tag globs
+      # support `[0-9]` classes and `*` but not regex `+`, so `[0-9]*`
+      # matches one-or-more digits per segment.
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 permissions:
   contents: write
