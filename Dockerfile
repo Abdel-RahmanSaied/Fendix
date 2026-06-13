@@ -36,7 +36,7 @@ RUN make embed-engine && \
     -o /fendix ./cmd/fendix/
 
 # ---- Stage 2: Runtime image ----
-FROM python:3.14-slim@sha256:7a500125bc50693f2214e842a621440a1b1b9cbb2188f74ab045d29ed2ea5856
+FROM python:3.14-slim@sha256:d7a925f9eb9639a93e455b9f12c167569358818c0f62b51b88edbc8fcf34c421
 
 # Install Python dependencies for whitebox analysis.
 # build-essential (gcc + libc6-dev + standard C headers) is needed
