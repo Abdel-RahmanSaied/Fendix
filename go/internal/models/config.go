@@ -113,6 +113,16 @@ type ScanConfig struct {
 	// pointing at one (the binary no longer carries an embedded copy).
 	PythonEngine bool
 
+	// PythonEngineExplicit is true only when the user passed --python-engine
+	// directly (not when --code auto-enabled PythonEngine). It controls how a
+	// missing engine is handled: an EXPLICIT request that can't be resolved is
+	// a hard exit-2 error (the user asked for the AST taint engine and we have
+	// nowhere to run it); an IMPLICIT one (auto-enabled by --code) degrades to
+	// a WARN + native-Go-only scan, because the user didn't opt into SAST by
+	// name and shouldn't have a plugin/native-only --code scan aborted just
+	// because the optional Python tree isn't present. Default false.
+	PythonEngineExplicit bool
+
 	// Lang controls the HTML reporter's language (Sprint 10). Today's
 	// values: "en" (default) and "ar". Other formats (JSON, SARIF) stay
 	// English because they're machine-consumed. Unknown values fall

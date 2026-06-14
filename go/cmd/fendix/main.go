@@ -238,13 +238,20 @@ func newScanCmd() *cobra.Command {
 			noNativeDepsFlag, _ := flags.GetBool("no-native-deps")
 			usePipAuditFlag, _ := flags.GetBool("use-pip-audit")
 			pythonEngineFlag, _ := flags.GetBool("python-engine")
+			// pythonEngineExplicit records that the user opted into SAST BY
+			// NAME (--python-engine), as opposed to the implicit auto-enable
+			// below. A missing engine is fatal only for the explicit case;
+			// an implicit --code scan degrades to native-Go-only (see
+			// ScanConfig.PythonEngineExplicit and orchestrator.Run).
+			pythonEngineExplicit := flags.Changed("python-engine") && pythonEngineFlag
 			// Auto-enable the Python engine for whitebox scans unless the
 			// user explicitly disabled it. Without this, `fendix scan --code
-			// <path>` runs only the native-Go checks (secrets / semgrep /
-			// deps) and silently skips the AST injection / open-redirect /
-			// SSTI / path-traversal / pickle / yaml-load analyzer entirely.
-			// When the engine isn't discoverable, NewOrchestrator logs a
-			// debug-level message and continues with the Go-only checks.
+			// <path>` runs only the native-Go checks and silently skips the
+			// AST taint analyzer (injection / open-redirect / SSTI / path
+			// traversal / unsafe-deserialize) entirely. When the engine isn't
+			// discoverable for this implicit path, NewOrchestrator logs a WARN
+			// and continues with the Go-only checks — it is NOT a hard error,
+			// because the user didn't ask for SAST by name.
 			if codeFlag != "" && !flags.Changed("python-engine") {
 				pythonEngineFlag = true
 			}
@@ -332,6 +339,7 @@ func newScanCmd() *cobra.Command {
 				NoNativeDeps:          noNativeDepsFlag,
 				UsePipAudit:           usePipAuditFlag,
 				PythonEngine:          pythonEngineFlag,
+				PythonEngineExplicit:  pythonEngineExplicit,
 				Lang:                  resolveLang(langFlag, cmd.ErrOrStderr()),
 				Offline:               offlineFlag,
 				OfflineDBPath:         offlineDBFlag,

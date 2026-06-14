@@ -45,13 +45,17 @@ func TestRun_PythonEngineMissing_IsFatal(t *testing.T) {
 	t.Setenv("FENDIX_ENGINE", filepath.Join(dir, "no-such-engine"))
 
 	cfg := &models.ScanConfig{
-		// 2. --code on the vuln.py fixture, SAST explicitly requested.
-		CodePath:     dir,
-		PythonEngine: true,
-		Workers:      2,
-		Timeout:      10,
-		Format:       "json",
-		OutputPath:   outputPath,
+		// 2. --code on the vuln.py fixture, SAST requested EXPLICITLY
+		// (--python-engine by name). Only the explicit opt-in is fatal on a
+		// missing engine; the implicit --code auto-enable degrades (see
+		// TestRun_PythonEngineMissing_ImplicitCode_IsNotFatal).
+		CodePath:             dir,
+		PythonEngine:         true,
+		PythonEngineExplicit: true,
+		Workers:              2,
+		Timeout:              10,
+		Format:               "json",
+		OutputPath:           outputPath,
 	}
 
 	orch := NewOrchestrator(cfg, "dev")
@@ -59,7 +63,7 @@ func TestRun_PythonEngineMissing_IsFatal(t *testing.T) {
 
 	// 3. The scan must exit non-zero.
 	if exitCode == 0 {
-		t.Fatalf("expected non-zero exit when Python engine is missing and --code requested, got exit %d", exitCode)
+		t.Fatalf("expected non-zero exit when Python engine is missing and --python-engine requested, got exit %d", exitCode)
 	}
 
 	// 4. The resolution error must name the missing engine.
@@ -113,5 +117,52 @@ func TestRun_PythonEngineMissing_NonSAST_IsNotFatal(t *testing.T) {
 	}
 	if _, err := os.ReadFile(outputPath); err != nil {
 		t.Fatalf("expected a report to be written for the non-SAST scan: %v", err)
+	}
+}
+
+// TestRun_PythonEngineMissing_ImplicitCode_IsNotFatal guards the middle case:
+// a `--code` scan auto-enables the Python engine (PythonEngine=true) but the
+// user did NOT pass --python-engine by name (PythonEngineExplicit=false). When
+// the engine can't be resolved, this must degrade to a native-Go-only scan —
+// WARN + continue, report written, no exit 2 — NOT hard-fail. This is the
+// regression the e2e refplugins smoke tests hit: a plugin/native-only --code
+// scan on a CI runner with no python/ tree must still complete.
+func TestRun_PythonEngineMissing_ImplicitCode_IsNotFatal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vuln.py"), []byte(vulnPyFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(dir, "report.json")
+
+	// Engine deliberately unresolvable, exactly as in the fatal test...
+	t.Setenv("FENDIX_ENGINE", filepath.Join(dir, "no-such-engine"))
+
+	cfg := &models.ScanConfig{
+		// ...but SAST was only IMPLICITLY enabled by --code (Explicit=false).
+		CodePath:             dir,
+		PythonEngine:         true,
+		PythonEngineExplicit: false,
+		Fast:                 true, // keep it quick: native scanners only
+		Workers:              2,
+		Timeout:              10,
+		Format:               "json",
+		OutputPath:           outputPath,
+	}
+
+	orch := NewOrchestrator(cfg, "dev")
+	exitCode := orch.Run(context.Background())
+
+	// Must NOT hard-fail (exit 2) — it degrades to the native-Go scanners.
+	if exitCode == 2 {
+		t.Fatalf("an implicit --code scan must not hard-fail on a missing Python engine; got exit 2")
+	}
+	// engineErr must be nil — the implicit path does not promote the missing
+	// engine to a fatal error.
+	if orch.engineErr != nil {
+		t.Fatalf("implicit --code scan must not record a fatal engine error, got: %v", orch.engineErr)
+	}
+	// A report must be written — we still ran (native-Go) scanners.
+	if _, err := os.ReadFile(outputPath); err != nil {
+		t.Fatalf("expected a report to be written for the degraded implicit scan: %v", err)
 	}
 }
