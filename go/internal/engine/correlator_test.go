@@ -710,3 +710,282 @@ func TestRelatedCategories(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Proven Path v1 — route-pattern match (GAP 1)
+//
+// These exercise the highest-priority correlation strategy: when a whitebox
+// finding carries a Route (populated by the Python route extractor) whose
+// Pattern matches a blackbox endpoint segment-for-segment, the merged finding
+// is RouteConfirmed. When the whitebox half is also Reachable, it becomes a
+// ProvenPath CRITICAL.
+//
+// Note: the Finding struct has no Method field — a blackbox endpoint encodes
+// its method as a "<METHOD> <path>" prefix (e.g. "GET /users/42"), which is
+// how the correlator (and these tests) recover it for the method gate.
+// ---------------------------------------------------------------------------
+
+// routeWB builds a reachable whitebox finding bound to the given route. The
+// tree_sitter tier is the high-trust tier that clears the F1 gate, so Proven
+// Path escalation is allowed.
+func routeWB(category string, route *models.Route, reachable bool) models.Finding {
+	wb := models.Finding{
+		Title:      "SQL injection in handler",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Category:   category,
+		Endpoint:   "app/views.py:42",
+		Evidence:   "cursor.execute(f\"...{request.GET['id']}\")",
+		Fix:        "Use parameterized queries",
+		References: []string{"CWE-89"},
+		Confidence: models.ConfidenceHigh,
+		Line:       linePtr("app/views.py:42"),
+		SourceTier: models.TierTreeSitter,
+		Route:      route,
+	}
+	if reachable {
+		wb.Reachable = true
+		wb.TaintChain = []models.TaintLink{{File: "app/views.py", Line: 42, Expr: "request.GET['id']"}}
+	}
+	return wb
+}
+
+// routeBB builds a blackbox finding at a concrete endpoint. `endpoint` should
+// include the method prefix when the test exercises the method gate, e.g.
+// "GET /users/42".
+func routeBB(category, endpoint string) models.Finding {
+	return models.Finding{
+		Title:      "Injection confirmed by live scan",
+		Severity:   models.SeverityMedium,
+		Source:     models.SourceBlackbox,
+		Category:   category,
+		Endpoint:   endpoint,
+		Evidence:   "500 on payload",
+		Fix:        "Sanitize input",
+		References: []string{"CWE-89"},
+		Confidence: models.ConfidenceHigh,
+	}
+}
+
+func TestRoutePatternMatch_DjangoStyle(t *testing.T) {
+	wb := routeWB("injection", &models.Route{
+		Method:  "GET",
+		Pattern: "/users/<int:pk>/",
+		Handler: "views.get_user",
+	}, false)
+	bb := routeBB("injection", "GET /users/42/")
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	f := result[0]
+	if f.Source != models.SourceCorrelated {
+		t.Fatalf("expected correlated source, got %s", f.Source)
+	}
+	if !f.RouteConfirmed {
+		t.Errorf("expected RouteConfirmed=true for Django route /users/<int:pk>/ vs /users/42/")
+	}
+	if f.Route == nil || f.Route.Pattern != "/users/<int:pk>/" {
+		t.Errorf("expected Route to be preserved, got %+v", f.Route)
+	}
+}
+
+func TestRoutePatternMatch_FastAPIStyle(t *testing.T) {
+	wb := routeWB("injection", &models.Route{
+		Pattern: "/items/{item_id}", // no method declared
+		Handler: "read_item",
+	}, false)
+	bb := routeBB("injection", "/items/99") // no method prefix
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	if !result[0].RouteConfirmed {
+		t.Errorf("expected RouteConfirmed=true for FastAPI route /items/{item_id} vs /items/99")
+	}
+}
+
+func TestRoutePatternMatch_Express(t *testing.T) {
+	wb := routeWB("injection", &models.Route{
+		Pattern: "/users/:id", // Express-style param, no method declared
+		Handler: "getUser",
+	}, false)
+	bb := routeBB("injection", "/users/7")
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	if !result[0].RouteConfirmed {
+		t.Errorf("expected RouteConfirmed=true for Express route /users/:id vs /users/7")
+	}
+}
+
+func TestRoutePatternMatch_MethodMismatch(t *testing.T) {
+	wb := routeWB("injection", &models.Route{
+		Method:  "POST",
+		Pattern: "/users/{id}",
+		Handler: "create_user",
+	}, false)
+	bb := routeBB("injection", "GET /users/42") // method GET != route POST
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	// The route match is blocked by the method gate. The findings may still
+	// correlate via a fallback strategy (fuzzy "users" segment), but they must
+	// NOT be route-confirmed.
+	for _, f := range result {
+		if f.RouteConfirmed {
+			t.Errorf("expected RouteConfirmed=false on method mismatch (POST route vs GET endpoint), got true on %q", f.Title)
+		}
+		if f.ProvenPath {
+			t.Errorf("method mismatch must never yield ProvenPath, got true on %q", f.Title)
+		}
+	}
+}
+
+func TestRoutePatternMatch_NilRoute(t *testing.T) {
+	// wf.Route == nil — the route block must be skipped silently and the
+	// existing exact/suffix/fuzzy strategies must still run (and here, match
+	// on the shared path), with no panic and RouteConfirmed=false.
+	wb := models.Finding{
+		Title:      "Missing auth",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Category:   "auth",
+		Endpoint:   "/api/v1/users",
+		Evidence:   "no @login_required",
+		Confidence: models.ConfidenceHigh,
+		Route:      nil, // explicit
+	}
+	bb := models.Finding{
+		Title:      "Auth bypass confirmed",
+		Severity:   models.SeverityCritical,
+		Source:     models.SourceBlackbox,
+		Category:   "auth_bypass",
+		Endpoint:   "http://example.com/api/v1/users",
+		Evidence:   "200 without auth",
+		Confidence: models.ConfidenceHigh,
+	}
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected existing strategies to still correlate (1 finding), got %d", len(result))
+	}
+	if result[0].RouteConfirmed {
+		t.Errorf("nil Route must yield RouteConfirmed=false")
+	}
+	if result[0].ProvenPath {
+		t.Errorf("nil Route must yield ProvenPath=false")
+	}
+}
+
+func TestProvenPathEscalation(t *testing.T) {
+	// RouteConfirmed (route pattern match) + Reachable (taint chain) →
+	// forced CRITICAL + ProvenPath=true, even though the base severities are
+	// well below CRITICAL (whitebox HIGH, blackbox MEDIUM).
+	wb := routeWB("injection", &models.Route{
+		Method:  "GET",
+		Pattern: "/users/{id}",
+		Handler: "get_user",
+	}, true) // reachable
+	bb := routeBB("injection", "GET /users/42")
+
+	result := Correlate([]models.Finding{bb, wb})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	f := result[0]
+	if !f.RouteConfirmed {
+		t.Fatalf("precondition: expected RouteConfirmed=true")
+	}
+	if !f.ProvenPath {
+		t.Errorf("expected ProvenPath=true when RouteConfirmed && Reachable")
+	}
+	if f.Severity != models.SeverityCritical {
+		t.Errorf("expected Proven Path to force CRITICAL, got %s", f.Severity)
+	}
+}
+
+// TestProvenPath_NotSetFromRouteConfirmedAlone guards the rule: ProvenPath must
+// require BOTH route_confirmed AND reachable — a route match on a NON-reachable
+// finding must not flip ProvenPath. Severities are kept low (both LOW) so the
+// ordinary single correlation-escalation (LOW→MEDIUM) lands below CRITICAL,
+// isolating the Proven Path forced-CRITICAL effect: without reachability the
+// finding must NOT be forced to CRITICAL.
+func TestProvenPath_NotSetFromRouteConfirmedAlone(t *testing.T) {
+	wb := routeWB("injection", &models.Route{
+		Method:  "GET",
+		Pattern: "/users/{id}",
+		Handler: "get_user",
+	}, false) // NOT reachable
+	wb.Severity = models.SeverityLow
+	bb := routeBB("injection", "GET /users/42")
+	bb.Severity = models.SeverityLow
+
+	result := Correlate([]models.Finding{bb, wb})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 correlated finding, got %d", len(result))
+	}
+	f := result[0]
+	if !f.RouteConfirmed {
+		t.Fatalf("precondition: expected RouteConfirmed=true")
+	}
+	if f.ProvenPath {
+		t.Errorf("ProvenPath must be false when not reachable, even with RouteConfirmed")
+	}
+	// LOW+LOW correlated escalates once to MEDIUM; without reachability there
+	// is no second/forced bump, so it must stay below CRITICAL.
+	if f.Severity == models.SeverityCritical {
+		t.Errorf("non-reachable route-confirmed finding must not be forced to CRITICAL, got %s", f.Severity)
+	}
+}
+
+// TestNormalizeRoutePattern covers the four framework dialects plus the
+// trailing-slash / double-slash / leading-slash normalization rules.
+func TestNormalizeRoutePattern(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/users/<int:pk>/", "/users/{}"},                      // Django typed
+		{"/users/<id>", "/users/{}"},                           // Flask / Django untyped
+		{"/items/{item_id}", "/items/{}"},                      // FastAPI
+		{"/users/:id", "/users/{}"},                            // Express
+		{"users/<int:id>", "/users/{}"},                        // missing leading slash
+		{"/a//b/", "/a/b"},                                     // double slash collapse + trailing
+		{"/orders/<int:oid>/items/{i}", "/orders/{}/items/{}"}, // mixed
+		{"", ""},   // empty stays empty
+		{"/", "/"}, // root
+	}
+	for _, c := range cases {
+		if got := normalizeRoutePattern(c.in); got != c.want {
+			t.Errorf("normalizeRoutePattern(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestPathSegmentsMatch covers the wildcard-segment matcher's exactness:
+// segment count must match and literals must match; {} matches one segment.
+func TestPathSegmentsMatch(t *testing.T) {
+	cases := []struct {
+		pattern, endpoint string
+		want              bool
+	}{
+		{"/users/{}", "/users/42", true},
+		{"/users/{}", "/users/42/edit", false},     // segment count
+		{"/users/{}/edit", "/users/42/edit", true}, // wildcard mid-path
+		{"/users/{}", "/orders/42", false},         // literal mismatch
+		{"/users/{}", "/api/v3/users/42", false},   // base-path skew NOT a route match
+		{"/{}", "/anything", true},                 // single wildcard
+	}
+	for _, c := range cases {
+		if got := pathSegmentsMatch(c.pattern, c.endpoint); got != c.want {
+			t.Errorf("pathSegmentsMatch(%q, %q) = %v, want %v", c.pattern, c.endpoint, got, c.want)
+		}
+	}
+}

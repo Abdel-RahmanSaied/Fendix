@@ -37,6 +37,14 @@ func TestEnsureEngine_FallbackToLocal(t *testing.T) {
 		t.Skip("engine is embedded — cannot test local fallback")
 	}
 
+	// Isolate HOME so a real ~/.fendix/config pin on the dev machine (written
+	// by a prior `fendix engine sync`) can't shadow the CWD "python" fallback
+	// we're exercising here — step 2b would otherwise return the pinned
+	// absolute path before step 4 runs. Also clear FENDIX_ENGINE for the same
+	// reason. t.Setenv restores both on cleanup.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FENDIX_ENGINE", "")
+
 	// Test that when no embedded engine and no explicit dir, it tries local "python"
 	// This test's behavior depends on CWD
 	result, err := EnsureEngine("", "dev")

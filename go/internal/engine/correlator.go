@@ -130,11 +130,11 @@ func Correlate(findings []models.Finding) []models.Finding {
 		// on every (W,B) comparison.
 		wbSegments := pathSegments(wbNorm)
 
-		bbIdx, matchKind := findCorrelationMatch(wbNorm, wbSegments, relCats, blackbox, bbNorm, bbSegments, bbIndex, bbCorrelated)
+		bbIdx, matchKind, routeConfirmed := findCorrelationMatch(wf, wbNorm, wbSegments, relCats, blackbox, bbNorm, bbSegments, bbIndex, bbCorrelated)
 		if bbIdx >= 0 {
 			bf := blackbox[bbIdx]
 			bbCorrelated[bbIdx] = true
-			merged := mergeFindings(bf, wf)
+			merged := mergeFindings(bf, wf, routeConfirmed)
 			result = append(result, merged)
 			slog.Info("correlated finding",
 				"wb_endpoint", wf.Endpoint,
@@ -142,6 +142,8 @@ func Correlate(findings []models.Finding) []models.Finding {
 				"wb_category", wf.Category,
 				"bb_category", bf.Category,
 				"match_kind", matchKind,
+				"route_confirmed", routeConfirmed,
+				"proven_path", merged.ProvenPath,
 			)
 			continue
 		}
@@ -172,8 +174,9 @@ func Correlate(findings []models.Finding) []models.Finding {
 }
 
 // findCorrelationMatch returns the index of a blackbox finding that matches
-// the whitebox finding identified by `wbNorm` + `relCats`, plus the match
-// kind ("exact", "suffix", or "fuzzy"). Returns (-1, "") if no match.
+// the whitebox finding `wf` (identified by `wbNorm` + `relCats`), the match
+// kind ("route", "exact", "suffix", or "fuzzy"), and whether the match was
+// route-pattern-confirmed. Returns (-1, "", false) if no match.
 //
 // `bbNorm` and `bbSegments` are the pre-computed normalized endpoint and
 // segment-set for each blackbox finding (avoids re-running url.Parse and
@@ -181,7 +184,13 @@ func Correlate(findings []models.Finding) []models.Finding {
 // the current whitebox finding. The `taken` set excludes blackbox
 // findings already merged into another correlated finding so each
 // blackbox is consumed at most once.
+//
+// Match priority (Proven Path v1): route-pattern match runs FIRST so a
+// confirmed route→endpoint binding outranks a fuzzy URL match. The existing
+// three strategies are unchanged and run, in order, only when no route match
+// fires (or `wf.Route` is nil/empty).
 func findCorrelationMatch(
+	wf models.Finding,
 	wbNorm string,
 	wbSegments []string,
 	relCats []string,
@@ -190,13 +199,41 @@ func findCorrelationMatch(
 	bbSegments [][]string,
 	bbIndex map[correlationKey][]int,
 	taken map[int]bool,
-) (int, string) {
+) (int, string, bool) {
+	// 0. Route-pattern match (highest priority, Proven Path v1). Degrades
+	// gracefully: a nil Route or empty Pattern simply skips this block and
+	// falls through to the existing endpoint-only strategies.
+	if wf.Route != nil && wf.Route.Pattern != "" {
+		normalizedPattern := normalizeRoutePattern(wf.Route.Pattern)
+		for i, bf := range blackbox {
+			if taken[i] {
+				continue
+			}
+			if !categoryRelated(relCats, bf.Category) {
+				continue
+			}
+			if !pathSegmentsMatch(normalizedPattern, bbNorm[i]) {
+				continue
+			}
+			// Method gate: only block the match when BOTH sides declare a
+			// method and they disagree. An unknown method on either side
+			// ("" route method, or a blackbox endpoint with no "<METHOD> "
+			// prefix) does not block — we can't prove a mismatch.
+			bbMethod := blackboxMethod(bf.Endpoint)
+			if wf.Route.Method != "" && bbMethod != "" &&
+				!strings.EqualFold(wf.Route.Method, bbMethod) {
+				continue
+			}
+			return i, "route", true
+		}
+	}
+
 	// 1. Exact match via index (fast path).
 	for _, cat := range relCats {
 		key := correlationKey{endpoint: wbNorm, category: cat}
 		for _, idx := range bbIndex[key] {
 			if !taken[idx] {
-				return idx, "exact"
+				return idx, "exact", false
 			}
 		}
 	}
@@ -210,7 +247,7 @@ func findCorrelationMatch(
 			continue
 		}
 		if pathSuffixMatch(wbNorm, bbNorm[i]) {
-			return i, "suffix"
+			return i, "suffix", false
 		}
 	}
 
@@ -225,11 +262,11 @@ func findCorrelationMatch(
 			continue
 		}
 		if segmentsRelated(wbSegments, bbSegments[i]) {
-			return i, "fuzzy"
+			return i, "fuzzy", false
 		}
 	}
 
-	return -1, ""
+	return -1, "", false
 }
 
 // categoryRelated reports whether `bbCat` is in the related-categories list.
@@ -250,7 +287,7 @@ func categoryRelated(relCats []string, bbCat string) bool {
 // the chain plus Reachable=true and gets a *second* severity escalation. This
 // is the "DAST + SAST agree AND we can show the path" case — exactly the
 // confirmed-finding-only-when-both-agree wedge promised in the README hero.
-func mergeFindings(bb, wb models.Finding) models.Finding {
+func mergeFindings(bb, wb models.Finding, routeConfirmed bool) models.Finding {
 	severity := escalateSeverity(higherSeverity(bb.Severity, wb.Severity))
 	// Proven Path v1 / tier-provenance enforcement: the second "reachable"
 	// escalation is the strong claim ("we can show the exploit path"), so it
@@ -262,23 +299,168 @@ func mergeFindings(bb, wb models.Finding) models.Finding {
 	if wb.Reachable && wb.SourceTier != models.TierSemgrepShim {
 		severity = escalateSeverity(severity)
 	}
+
+	// Proven Path signal: the blackbox endpoint was bound to this finding's
+	// route pattern AND the whitebox half proved the sink is reachable from a
+	// request-input source. That combination — "DAST hit + SAST taint path +
+	// the exact route that reaches it" — is the strongest claim the engine
+	// makes, so force it to CRITICAL regardless of base severity and flag it.
+	// Tier gate still applies: a semgrep_shim finding that hasn't cleared the
+	// F1 gate must not ride a route match up to a Proven Path CRITICAL.
+	provenPath := routeConfirmed && wb.Reachable && wb.SourceTier != models.TierSemgrepShim
+	if provenPath {
+		severity = models.SeverityCritical
+	}
+
 	merged := models.Finding{
-		Title:      bb.Title,
-		Severity:   severity,
-		Source:     models.SourceCorrelated,
-		SourceTier: wb.SourceTier,
-		Category:   bb.Category,
-		Endpoint:   bb.Endpoint,
-		Evidence:   bb.Evidence + " | Code: " + wb.Evidence,
-		Fix:        bb.Fix,
-		References: mergeRefs(bb.References, wb.References),
-		Confidence: models.ConfidenceHigh,
-		Line:       wb.Line,
-		TaintChain: wb.TaintChain,
-		Reachable:  wb.Reachable,
-		Route:      wb.Route,
+		Title:          bb.Title,
+		Severity:       severity,
+		Source:         models.SourceCorrelated,
+		SourceTier:     wb.SourceTier,
+		Category:       bb.Category,
+		Endpoint:       bb.Endpoint,
+		Evidence:       bb.Evidence + " | Code: " + wb.Evidence,
+		Fix:            bb.Fix,
+		References:     mergeRefs(bb.References, wb.References),
+		Confidence:     models.ConfidenceHigh,
+		Line:           wb.Line,
+		TaintChain:     wb.TaintChain,
+		Reachable:      wb.Reachable,
+		Route:          wb.Route,
+		RouteConfirmed: routeConfirmed,
+		ProvenPath:     provenPath,
 	}
 	return merged
+}
+
+// routeParamRe matches a single path-parameter placeholder in any of the four
+// framework styles the route extractor emits, so a route pattern can be
+// reduced to a parameter-agnostic shape for comparison against a concrete
+// blackbox URL:
+//
+//	Django   /users/<int:pk>/      → /users/{}/
+//	Flask    /users/<id>           → /users/{}/   (also covered by the <...> arm)
+//	FastAPI  /items/{item_id}      → /items/{}
+//	Express  /users/:id            → /users/{}
+//
+// The three arms are mutually exclusive per segment, so a single pass with an
+// alternation is safe. `<...>` covers both Django (`<int:pk>`) and Flask
+// (`<id>`) because both wrap the param in angle brackets; `{...}` covers
+// FastAPI; `:name` covers Express. We intentionally do not try to validate the
+// inner name — any placeholder collapses to the same `{}` token.
+var routeParamRe = regexp.MustCompile(`<[^/>]*>|\{[^/}]*\}|:[^/]+`)
+
+// doubleSlashRe collapses runs of `/` so `//users//{}` compares equal to
+// `/users/{}`. Declared at package scope to avoid recompiling per call.
+var doubleSlashRe = regexp.MustCompile(`/{2,}`)
+
+// normalizeRoutePattern reduces a framework route pattern to a
+// parameter-agnostic, trailing-slash-free, lowercase shape so it can be
+// segment-compared against a normalized blackbox endpoint. Path parameters in
+// Django (`<int:pk>` / `<id>`), FastAPI (`{item_id}`), Express (`:id`), and
+// Flask (`<id>`) all collapse to the literal token `{}`.
+//
+// Examples:
+//
+//	"/users/<int:pk>/"  → "/users/{}"
+//	"/items/{item_id}"  → "/items/{}"
+//	"/users/:id"        → "/users/{}"
+//	"users/<id>"        → "/users/{}"   (a leading slash is added for parity
+//	                                      with normalizeEndpoint output)
+func normalizeRoutePattern(pattern string) string {
+	if pattern == "" {
+		return ""
+	}
+	p := routeParamRe.ReplaceAllString(pattern, "{}")
+	p = doubleSlashRe.ReplaceAllString(p, "/")
+	p = strings.ToLower(p)
+	// Mirror normalizeEndpoint: ensure a leading slash so segment comparison
+	// lines up (the route extractor emits Django patterns without one, e.g.
+	// "users/<int:id>").
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	// Strip trailing slash(es) for comparison; keep "/" for the root.
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		p = "/"
+	}
+	return p
+}
+
+// pathSegmentsMatch reports whether a normalized route pattern matches a
+// normalized concrete endpoint segment-by-segment, treating the `{}`
+// placeholder as a wildcard that matches exactly one path segment. Both inputs
+// must already be normalized (normalizeRoutePattern / normalizeEndpoint).
+//
+// The match is exact on segment count and on every literal segment; a `{}`
+// segment in the pattern matches any single non-empty endpoint segment. This
+// is deliberately stricter than the fuzzy segment matcher — a route-confirmed
+// match is the strongest correlation signal, so a base-path-skewed endpoint
+// (e.g. blackbox "/api/v3/users/42" vs pattern "/users/{}") is NOT a
+// route-pattern match here; it can still be caught by the existing
+// suffix/fuzzy strategies that run after this one.
+//
+// Examples:
+//
+//	pattern "/users/{}"      endpoint "/users/42"      → true
+//	pattern "/users/{}"      endpoint "/users/42/edit" → false (segment count)
+//	pattern "/users/{}/edit" endpoint "/users/42/edit" → true
+//	pattern "/users/{}"      endpoint "/orders/42"     → false (literal "users")
+func pathSegmentsMatch(pattern, endpoint string) bool {
+	if pattern == "" || endpoint == "" {
+		return false
+	}
+	pSeg := splitPathSegments(pattern)
+	eSeg := splitPathSegments(endpoint)
+	if len(pSeg) != len(eSeg) {
+		return false
+	}
+	if len(pSeg) == 0 {
+		// Both normalized to root "/" — a routeless root match. Treat as a
+		// match only when both are exactly root (handled by equal length 0).
+		return pattern == endpoint
+	}
+	for i := range pSeg {
+		if pSeg[i] == "{}" {
+			// Wildcard: matches any single non-empty segment. eSeg[i] is
+			// guaranteed non-empty by splitPathSegments (it drops empties).
+			continue
+		}
+		if pSeg[i] != eSeg[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// splitPathSegments splits a normalized path into its non-empty, lowercased
+// segments WITHOUT the noise filtering that pathSegments() applies. The
+// route-pattern matcher needs every literal segment preserved (filtering out
+// "api"/"users"/etc. would make "/api/{}" match "/{}" and destroy precision),
+// so this is a separate, simpler splitter from the fuzzy-match pathSegments.
+func splitPathSegments(path string) []string {
+	raw := strings.Split(path, "/")
+	out := make([]string, 0, len(raw))
+	for _, s := range raw {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// blackboxMethod extracts the HTTP method token from a blackbox finding's
+// endpoint string, which whitebox/blackbox emitters format as "<METHOD> <PATH>"
+// (e.g. "GET /users/42"). Returns "" when no method prefix is present, which
+// the route-method check treats as "unknown — don't block the match". The
+// Finding struct has no dedicated Method field; the method lives only in this
+// prefix and on the Route struct, so this mirrors how normalizeEndpoint already
+// recovers (and strips) the prefix.
+func blackboxMethod(endpoint string) string {
+	m := methodPrefixRe.FindString(endpoint)
+	return strings.ToUpper(strings.TrimSpace(m))
 }
 
 // normalizeEndpoint extracts a comparable path from an endpoint string,

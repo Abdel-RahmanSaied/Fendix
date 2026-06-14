@@ -217,7 +217,10 @@ func WriteConfigEngineDir(engineDir string) error {
 	if path == "" {
 		return fmt.Errorf("cannot determine home directory for ~/.fendix/config")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0o700: ~/.fendix is owner-only. The config can pin the engine source
+	// tree path; this is a security product, so we keep the whole dir off
+	// other local users rather than just the file.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
 	}
 
@@ -247,7 +250,8 @@ func WriteConfigEngineDir(engineDir string) error {
 	}
 
 	content := strings.Join(out, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	// 0o600: owner read/write only — never world-readable (security review).
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil

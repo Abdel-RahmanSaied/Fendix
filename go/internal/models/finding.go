@@ -118,6 +118,17 @@ type Finding struct {
 	// when unbound. A non-empty Route + a TaintChain is the v1 "proof":
 	// route → handler → source→sink taint path.
 	Route *Route `json:"route,omitempty"`
+	// RouteConfirmed is set by the correlator when a blackbox endpoint was
+	// matched to this finding's Route.Pattern (the highest-priority match
+	// strategy). It means the live scan actually hit the route the taint
+	// chain reaches — not merely a fuzzy URL overlap.
+	RouteConfirmed bool `json:"route_confirmed,omitempty"`
+	// ProvenPath is the Proven Path v1 signal: set ONLY when RouteConfirmed
+	// AND Reachable are both true (and the source tier cleared the F1 gate).
+	// It marks the "DAST hit + SAST taint path + the exact route that reaches
+	// it" case and forces the finding to CRITICAL. Never set from
+	// RouteConfirmed alone.
+	ProvenPath bool `json:"proven_path,omitempty"`
 }
 
 // SeverityRank returns a numeric rank for severity comparison.
