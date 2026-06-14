@@ -35,6 +35,13 @@ type Orchestrator struct {
 	cfg     *models.ScanConfig
 	spawner *PythonSpawner
 	version string
+	// engineErr records a failure to resolve the Python taint engine when
+	// SAST was requested (cfg.PythonEngine). It is set in NewOrchestrator
+	// and turned into a hard, non-zero exit at the top of Run — so a missing
+	// engine can never silently degrade an explicit --code/--python-engine
+	// scan to native-Go-only output (the silent no-op bug). nil when SAST was
+	// not requested or the engine resolved cleanly.
+	engineErr error
 }
 
 // NewOrchestrator creates an orchestrator from scan config.
@@ -48,19 +55,27 @@ type Orchestrator struct {
 // gets called in that case so the spawner's empty engineDir is harmless.
 func NewOrchestrator(cfg *models.ScanConfig, version string) *Orchestrator {
 	engineDir := ""
+	var engineErr error
 	if cfg.PythonEngine {
 		dir, err := EnsureEngine("", version)
 		if err != nil {
+			// Preserve the historical WARN (TASK-118 log contract) AND
+			// record the error: SAST was explicitly requested, so Run will
+			// promote this to a hard, non-zero exit rather than silently
+			// running the native-Go scanners only. The WARN stays so the
+			// existing log-grep tooling keeps working; the fatal is additive.
 			slog.Warn("python engine not available — whitebox scanning disabled", "error", err)
+			engineErr = err
 		} else {
 			engineDir = dir
 		}
 	}
 
 	return &Orchestrator{
-		cfg:     cfg,
-		spawner: NewPythonSpawner("", engineDir),
-		version: version,
+		cfg:       cfg,
+		spawner:   NewPythonSpawner("", engineDir),
+		version:   version,
+		engineErr: engineErr,
 	}
 }
 
@@ -90,6 +105,22 @@ func reportVersion(v string) string {
 // 0 = no findings above threshold, 1 = findings found, 2 = error.
 func (o *Orchestrator) Run(ctx context.Context) int {
 	startTime := time.Now()
+
+	// Fail closed when SAST was requested but the Python taint engine could
+	// not be resolved. cfg.PythonEngine is the SAST opt-in (set by --code or
+	// --python-engine in main.go), and NewOrchestrator only attempts engine
+	// resolution — and only sets o.engineErr — on that path. So a non-nil
+	// engineErr means "the user asked for the AST taint engine and we have
+	// nowhere to run it." Exit 2 (error) BEFORE any scanning so we never
+	// render a report containing only the native-Go findings as if the SAST
+	// engine had run (the silent no-op bug: WARN-then-1-finding-at-exit-0).
+	// DAST-only / secrets-only scans never reach this branch — engineErr is
+	// nil — so they keep the WARN+skip degrade path unchanged.
+	if o.engineErr != nil {
+		slog.Error("python taint engine could not be resolved and SAST was requested — aborting", "error", o.engineErr)
+		fmt.Fprintln(os.Stderr, "fendix: "+o.engineErr.Error())
+		return 2
+	}
 
 	// Reset per-check WARN aggregator. Real-world scans against unreliable
 	// hosts can emit thousands of "request failed" lines without this — one

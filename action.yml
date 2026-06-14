@@ -69,6 +69,10 @@ inputs:
     description: "Additional raw arguments appended to the fendix scan command."
     required: false
     default: ""
+  engine_path:
+    description: "Path to the Fendix Python engine directory. Leave empty to use auto-resolution."
+    required: false
+    default: ""
 
 outputs:
   report:
@@ -91,6 +95,17 @@ runs:
           curl -fsSL https://get.fendix.dev/install.sh | sh -s -- --version "${{ inputs.version }}"
         fi
         fendix version
+
+    # Pin the Python taint engine before scanning. With engine_path set this
+    # pins that explicit tree; left empty it pins the binary's embedded engine
+    # (and is a no-op resolution for binaries that have one). Either way the
+    # scan step that follows fails loudly here if the SAST engine can't be
+    # resolved, instead of silently degrading to native-Go-only findings.
+    - name: Sync Fendix Python engine
+      shell: bash
+      run: fendix engine sync
+      env:
+        FENDIX_ENGINE: ${{ inputs.engine_path || '' }}
 
     - name: Run Fendix scan
       id: scan
