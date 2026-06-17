@@ -8,6 +8,7 @@ Terminates with {"done": true, "total": N}.
 Usage:
     echo '{"mode":"whitebox","code_path":"./src","checks":["secrets"]}' | python engine.py
 """
+
 import json
 import sys
 from typing import Callable
@@ -45,7 +46,27 @@ def main() -> None:
         print(json.dumps({"done": True, "total": 0, "error": str(exc)}), flush=True)
         sys.exit(2)
 
-    checks = request.get("checks", [])
+    # A top-level JSON array/scalar parses fine but isn't a ScanRequest object;
+    # route it through the same done-line+error path instead of crashing with an
+    # AttributeError and empty stdout (audit contract robustness).
+    if not isinstance(request, dict):
+        _log(f"ScanRequest must be a JSON object, got {type(request).__name__}")
+        print(
+            json.dumps(
+                {
+                    "done": True,
+                    "total": 0,
+                    "error": f"ScanRequest must be a JSON object, got {type(request).__name__}",
+                }
+            ),
+            flush=True,
+        )
+        sys.exit(2)
+
+    # `"checks": null` (explicit JSON null) yields None from .get with a default;
+    # coerce to an empty list so the membership tests below never raise on a
+    # non-iterable (audit contract robustness).
+    checks = request.get("checks") or []
     code_path = request.get("code_path", "")
     spec_path = request.get("spec", "")
     language = request.get("language")
@@ -75,7 +96,11 @@ def main() -> None:
     if "auth" in checks and spec_path:
         from analyzers.spec_parser import SpecParser
 
-        _run_check("auth (spec)", lambda: SpecParser(spec_path).check_auth(emit_finding), verbose)
+        _run_check(
+            "auth (spec)",
+            lambda: SpecParser(spec_path).check_auth(emit_finding),
+            verbose,
+        )
 
     if "injection" in checks and code_path:
         from analyzers.ast_analyzer import ASTAnalyzer

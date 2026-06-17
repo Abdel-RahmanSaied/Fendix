@@ -99,11 +99,16 @@ def extract_routes(source: str, rel_path: str) -> RouteTable:
     table = RouteTable()
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, RecursionError, ValueError):
+        # audit #18: a file we can't parse (or that trips the recursion limit /
+        # "too many nested" guard) contributes no routes — never aborts.
         return table
 
-    _DecoratorRouteVisitor(table, rel_path).visit(tree)
-    _DjangoUrlpatternsVisitor(table, rel_path).visit(tree)
+    try:
+        _DecoratorRouteVisitor(table, rel_path).visit(tree)
+        _DjangoUrlpatternsVisitor(table, rel_path).visit(tree)
+    except RecursionError:
+        return table
     return table
 
 
@@ -199,8 +204,10 @@ class _DjangoUrlpatternsVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         func = node.func
-        name = func.id if isinstance(func, ast.Name) else (
-            func.attr if isinstance(func, ast.Attribute) else ""
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else (func.attr if isinstance(func, ast.Attribute) else "")
         )
         if name in _DJANGO_ROUTE_FUNCS and len(node.args) >= 2:
             pattern = _str_const(node.args[0])

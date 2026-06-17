@@ -4,6 +4,7 @@ Supports OpenAPI 2.0 (Swagger) and 3.x specifications in YAML or JSON format.
 Checks for missing authentication, insecure auth schemes, and undocumented
 HTTP-only (non-TLS) server URLs.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,9 +35,11 @@ class _HTTPSOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
         if not newurl.lower().startswith("https://"):
             raise urllib.error.HTTPError(
-                newurl, code,
+                newurl,
+                code,
                 f"refusing redirect to non-https URL: {newurl}",
-                headers, fp,
+                headers,
+                fp,
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -79,50 +82,77 @@ class SpecParser:
                 op = path_item.get(method)
                 if not isinstance(op, dict):
                     continue
-                results.append({
-                    "method": method.upper(),
-                    "path": path,
-                    "parameters": op.get("parameters", []),
-                    "security": op.get("security"),  # None = inherits global
-                    "operation_id": op.get("operationId", ""),
-                    "tags": op.get("tags", []),
-                })
+                results.append(
+                    {
+                        "method": method.upper(),
+                        "path": path,
+                        "parameters": op.get("parameters", []),
+                        "security": op.get("security"),  # None = inherits global
+                        "operation_id": op.get("operationId", ""),
+                        "tags": op.get("tags", []),
+                    }
+                )
         return results
 
     def check_auth(self, emit_fn: Callable[[dict], None]) -> None:
         """Emit findings for authentication/authorization issues in the spec."""
         try:
             spec = self.load()
-        except (OSError, yaml.YAMLError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        except (
+            OSError,
+            yaml.YAMLError,
+            json.JSONDecodeError,
+            ValueError,
+            RecursionError,
+        ) as exc:
             # F-L8: RecursionError is included so a deeply-nested YAML/JSON spec
             # (a parser-recursion "bomb") is reported as an unparseable spec
             # rather than propagating out and aborting the whole auth check.
             # str(RecursionError) is often empty; fall back to the class name so
             # the evidence field is never blank.
             evidence = str(exc) or type(exc).__name__
-            emit_fn({
-                "id": "SEC-SPEC-PARSE",
-                "title": "OpenAPI spec could not be parsed",
-                "severity": "MEDIUM",
-                "source": "whitebox",
-                "category": "auth",
-                "endpoint": self.spec_path,
-                "evidence": evidence,
-                "fix": "Ensure the OpenAPI spec is valid YAML or JSON.",
-                "references": [],
-                "confidence": "HIGH",
-                "line": self.spec_path,
-            })
+            emit_fn(
+                {
+                    "id": "SEC-SPEC-PARSE",
+                    "title": "OpenAPI spec could not be parsed",
+                    "severity": "MEDIUM",
+                    "source": "whitebox",
+                    "category": "auth",
+                    "endpoint": self.spec_path,
+                    "evidence": evidence,
+                    "fix": "Ensure the OpenAPI spec is valid YAML or JSON.",
+                    "references": [],
+                    "confidence": "HIGH",
+                    "line": self.spec_path,
+                }
+            )
             return
 
         self._check_no_global_security(spec, emit_fn)
         self._check_http_scheme(spec, emit_fn)
         self._check_per_endpoint_auth(spec, emit_fn)
         self._check_basic_auth_over_http(spec, emit_fn)
+        self._check_apikey_in_query(spec, emit_fn)
 
     # ------------------------------------------------------------------
     # Private checks
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _allows_anon(security) -> bool:
+        """True if a `security` requirement permits anonymous access.
+
+        Audit #30: in OpenAPI 3.x both `security: []` and a list containing the
+        empty object `security: [{}]` make auth optional. `bool([{}])` is True,
+        so a plain truthiness test wrongly treats `[{}]` as 'secured'.
+        """
+        if security is None:
+            return False
+        if security == []:
+            return True
+        if isinstance(security, list):
+            return any(req == {} for req in security)
+        return False
 
     def _check_no_global_security(
         self, spec: dict, emit_fn: Callable[[dict], None]
@@ -131,69 +161,85 @@ class SpecParser:
         schemes = self._security_schemes(spec)
         global_security = spec.get("security")
 
-        if schemes and not global_security:
-            emit_fn({
-                "id": "SEC-SPEC-NO-GLOBAL-AUTH",
-                "title": "OpenAPI spec defines security schemes but no global security requirement",
-                "severity": "MEDIUM",
-                "source": "whitebox",
-                "category": "auth",
-                "endpoint": self.spec_path,
-                "evidence": (
-                    f"securityDefinitions/securitySchemes defined "
-                    f"({', '.join(list(schemes)[:5])}) but no top-level 'security' applied."
-                ),
-                "fix": (
-                    "Add a top-level 'security' field to enforce authentication by default, "
-                    "then override with [] only on endpoints that are intentionally public."
-                ),
-                "references": ["CWE-306"],
-                "confidence": "MEDIUM",
-                "line": self.spec_path,
-            })
+        # audit #32: distinguish "security key absent" from an explicit
+        # `security: []` (auth disabled) so the evidence is accurate.
+        if global_security is None:
+            present_note = "but no top-level 'security' applied."
+        elif self._allows_anon(global_security):
+            present_note = (
+                "but the top-level 'security' permits anonymous access ([] or [{}])."
+            )
+        else:
+            present_note = ""
 
-    def _check_http_scheme(
-        self, spec: dict, emit_fn: Callable[[dict], None]
-    ) -> None:
+        if schemes and present_note:
+            emit_fn(
+                {
+                    "id": "SEC-SPEC-NO-GLOBAL-AUTH",
+                    "title": "OpenAPI spec defines security schemes but no global security requirement",
+                    "severity": "MEDIUM",
+                    "source": "whitebox",
+                    "category": "auth",
+                    "endpoint": self.spec_path,
+                    "evidence": (
+                        f"securityDefinitions/securitySchemes defined "
+                        f"({', '.join(list(schemes)[:5])}) {present_note}"
+                    ),
+                    "fix": (
+                        "Add a top-level 'security' field to enforce authentication by default, "
+                        "then override with [] only on endpoints that are intentionally public."
+                    ),
+                    "references": ["CWE-306"],
+                    "confidence": "MEDIUM",
+                    "line": self.spec_path,
+                }
+            )
+
+    def _check_http_scheme(self, spec: dict, emit_fn: Callable[[dict], None]) -> None:
         """Flag specs that allow HTTP (non-TLS) as a scheme or server URL."""
         version = self._version(spec)
 
         if version == "2":
-            schemes = spec.get("schemes", [])
+            schemes = spec.get("schemes") or []
             if "http" in schemes:
-                emit_fn({
-                    "id": "SEC-SPEC-HTTP-SCHEME",
-                    "title": "API allows unencrypted HTTP transport",
-                    "severity": "HIGH",
-                    "source": "whitebox",
-                    "category": "auth",
-                    "endpoint": self.spec_path,
-                    "evidence": "Swagger 2.0 'schemes' includes 'http'.",
-                    "fix": "Remove 'http' from 'schemes'. Only 'https' should be listed.",
-                    "references": ["CWE-319"],
-                    "confidence": "HIGH",
-                    "line": self.spec_path,
-                })
+                emit_fn(
+                    {
+                        "id": "SEC-SPEC-HTTP-SCHEME",
+                        "title": "API allows unencrypted HTTP transport",
+                        "severity": "HIGH",
+                        "source": "whitebox",
+                        "category": "auth",
+                        "endpoint": self.spec_path,
+                        "evidence": "Swagger 2.0 'schemes' includes 'http'.",
+                        "fix": "Remove 'http' from 'schemes'. Only 'https' should be listed.",
+                        "references": ["CWE-319"],
+                        "confidence": "HIGH",
+                        "line": self.spec_path,
+                    }
+                )
         else:
-            servers = spec.get("servers", [])
+            servers = spec.get("servers") or []
             http_servers = [
-                s.get("url", "") for s in servers
+                s.get("url", "")
+                for s in servers
                 if isinstance(s, dict) and s.get("url", "").startswith("http://")
             ]
             if http_servers:
-                emit_fn({
-                    "id": "SEC-SPEC-HTTP-SERVER",
-                    "title": "API server URL uses unencrypted HTTP",
-                    "severity": "HIGH",
-                    "source": "whitebox",
-                    "category": "auth",
-                    "endpoint": self.spec_path,
-                    "evidence": f"Server URL(s) use http://: {', '.join(http_servers[:3])}",
-                    "fix": "Change server URLs to use https:// to enforce TLS.",
-                    "references": ["CWE-319"],
-                    "confidence": "HIGH",
-                    "line": self.spec_path,
-                })
+                emit_fn(
+                    {
+                        "id": "SEC-SPEC-HTTP-SERVER",
+                        "title": "API server URL uses unencrypted HTTP",
+                        "severity": "HIGH",
+                        "source": "whitebox",
+                        "category": "auth",
+                        "endpoint": self.spec_path,
+                        "evidence": f"Server URL(s) use http://: {', '.join(http_servers[:3])}",
+                        "fix": "Change server URLs to use https:// to enforce TLS.",
+                        "references": ["CWE-319"],
+                        "confidence": "HIGH",
+                        "line": self.spec_path,
+                    }
+                )
 
     def _check_per_endpoint_auth(
         self, spec: dict, emit_fn: Callable[[dict], None]
@@ -207,47 +253,51 @@ class SpecParser:
             if ep_security is None:
                 # Inherits global — only flag if global is also absent
                 if not global_security:
-                    emit_fn({
-                        "id": "SEC-SPEC-NO-AUTH",
-                        "title": "Endpoint has no authentication requirement",
-                        "severity": "HIGH",
+                    emit_fn(
+                        {
+                            "id": "SEC-SPEC-NO-AUTH",
+                            "title": "Endpoint has no authentication requirement",
+                            "severity": "HIGH",
+                            "source": "whitebox",
+                            "category": "auth",
+                            "endpoint": f"{ep['method']} {ep['path']}",
+                            "evidence": (
+                                f"{ep['method']} {ep['path']} has no security defined and "
+                                f"there is no global security requirement."
+                            ),
+                            "fix": (
+                                "Add a security requirement to this endpoint or define a global "
+                                "security policy in the spec."
+                            ),
+                            "references": ["CWE-306"],
+                            "confidence": "MEDIUM",
+                            "line": self.spec_path,
+                        }
+                    )
+            elif ep_security == []:
+                # Explicitly open — flag as informational if global auth exists
+                severity = "MEDIUM" if global_security else "HIGH"
+                emit_fn(
+                    {
+                        "id": "SEC-SPEC-OPEN-ENDPOINT",
+                        "title": "Endpoint explicitly allows unauthenticated access",
+                        "severity": severity,
                         "source": "whitebox",
                         "category": "auth",
                         "endpoint": f"{ep['method']} {ep['path']}",
                         "evidence": (
-                            f"{ep['method']} {ep['path']} has no security defined and "
-                            f"there is no global security requirement."
+                            f"{ep['method']} {ep['path']} has 'security: []' "
+                            f"(explicitly unauthenticated)."
                         ),
                         "fix": (
-                            "Add a security requirement to this endpoint or define a global "
-                            "security policy in the spec."
+                            "Verify this endpoint should truly be public. If so, document why. "
+                            "If not, add the required security scheme."
                         ),
                         "references": ["CWE-306"],
-                        "confidence": "MEDIUM",
+                        "confidence": "HIGH",
                         "line": self.spec_path,
-                    })
-            elif ep_security == []:
-                # Explicitly open — flag as informational if global auth exists
-                severity = "MEDIUM" if global_security else "HIGH"
-                emit_fn({
-                    "id": "SEC-SPEC-OPEN-ENDPOINT",
-                    "title": "Endpoint explicitly allows unauthenticated access",
-                    "severity": severity,
-                    "source": "whitebox",
-                    "category": "auth",
-                    "endpoint": f"{ep['method']} {ep['path']}",
-                    "evidence": (
-                        f"{ep['method']} {ep['path']} has 'security: []' "
-                        f"(explicitly unauthenticated)."
-                    ),
-                    "fix": (
-                        "Verify this endpoint should truly be public. If so, document why. "
-                        "If not, add the required security scheme."
-                    ),
-                    "references": ["CWE-306"],
-                    "confidence": "HIGH",
-                    "line": self.spec_path,
-                })
+                    }
+                )
 
     def _check_basic_auth_over_http(
         self, spec: dict, emit_fn: Callable[[dict], None]
@@ -255,37 +305,81 @@ class SpecParser:
         """Flag specs using HTTP Basic Auth (credentials in cleartext if not TLS)."""
         schemes = self._security_schemes(spec)
         basic_schemes = [
-            name for name, defn in schemes.items()
+            name
+            for name, defn in schemes.items()
             if isinstance(defn, dict) and defn.get("type") == "basic"
         ]
         if not basic_schemes:
             # OpenAPI 3.x uses "http" type with scheme: basic
             basic_schemes = [
-                name for name, defn in schemes.items()
+                name
+                for name, defn in schemes.items()
                 if isinstance(defn, dict)
                 and defn.get("type") == "http"
                 and defn.get("scheme", "").lower() == "basic"
             ]
 
         if basic_schemes:
-            emit_fn({
-                "id": "SEC-SPEC-BASIC-AUTH",
-                "title": "API uses HTTP Basic Authentication",
-                "severity": "MEDIUM",
-                "source": "whitebox",
-                "category": "auth",
-                "endpoint": self.spec_path,
-                "evidence": (
-                    f"Security scheme(s) use HTTP Basic auth: {', '.join(basic_schemes)}."
-                ),
-                "fix": (
-                    "Replace Basic Authentication with a more secure scheme such as "
-                    "OAuth 2.0, OpenID Connect, or API keys over TLS."
-                ),
-                "references": ["CWE-522"],
-                "confidence": "HIGH",
-                "line": self.spec_path,
-            })
+            emit_fn(
+                {
+                    "id": "SEC-SPEC-BASIC-AUTH",
+                    "title": "API uses HTTP Basic Authentication",
+                    "severity": "MEDIUM",
+                    "source": "whitebox",
+                    "category": "auth",
+                    "endpoint": self.spec_path,
+                    "evidence": (
+                        f"Security scheme(s) use HTTP Basic auth: {', '.join(basic_schemes)}."
+                    ),
+                    "fix": (
+                        "Replace Basic Authentication with a more secure scheme such as "
+                        "OAuth 2.0, OpenID Connect, or API keys over TLS."
+                    ),
+                    "references": ["CWE-522"],
+                    "confidence": "HIGH",
+                    "line": self.spec_path,
+                }
+            )
+
+    def _check_apikey_in_query(
+        self, spec: dict, emit_fn: Callable[[dict], None]
+    ) -> None:
+        """Flag apiKey security schemes that pass the key in the query string.
+
+        A query-string API key leaks into access logs, proxies, browser
+        history and the Referer header (CWE-598 / OWASP API2:2023). Peer to
+        the existing Basic-auth check.
+        """
+        schemes = self._security_schemes(spec)
+        query_schemes = [
+            name
+            for name, defn in schemes.items()
+            if isinstance(defn, dict)
+            and defn.get("type") == "apiKey"
+            and str(defn.get("in", "")).lower() == "query"
+        ]
+        if query_schemes:
+            emit_fn(
+                {
+                    "id": "SEC-SPEC-APIKEY-QUERY",
+                    "title": "API key passed in the query string",
+                    "severity": "MEDIUM",
+                    "source": "whitebox",
+                    "category": "auth",
+                    "endpoint": self.spec_path,
+                    "evidence": (
+                        f"apiKey scheme(s) with in: query: {', '.join(query_schemes)}. "
+                        "Query-string keys leak via logs, proxies, history and Referer."
+                    ),
+                    "fix": (
+                        "Move the API key to a header (in: header) or use a bearer "
+                        "token. Never transmit credentials in the URL."
+                    ),
+                    "references": ["CWE-598"],
+                    "confidence": "HIGH",
+                    "line": self.spec_path,
+                }
+            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -308,9 +402,7 @@ class SpecParser:
             # the must-fix is the size cap below). A spec fetched over http://
             # can be tampered with in transit and is the easiest pivot for an
             # attacker-controlled --spec endpoint. https only.
-            raise ValueError(
-                "refusing to fetch spec over plaintext HTTP; use https://"
-            )
+            raise ValueError("refusing to fetch spec over plaintext HTTP; use https://")
         if lower.startswith("https://"):
             text, is_json = self._fetch_url(src, lower)
         else:
@@ -321,9 +413,7 @@ class SpecParser:
             # The size guard runs before read_text() so we never buffer the
             # whole file. ValueError is turned into SEC-SPEC-PARSE by check_auth.
             if path.stat().st_size > _MAX_SPEC_BYTES:
-                raise ValueError(
-                    f"spec too large (> {_MAX_SPEC_BYTES} bytes): {src}"
-                )
+                raise ValueError(f"spec too large (> {_MAX_SPEC_BYTES} bytes): {src}")
             text = path.read_text(encoding="utf-8")
             is_json = path.suffix == ".json"
         if is_json:
@@ -361,9 +451,7 @@ class SpecParser:
             raw = resp.read(_MAX_SPEC_BYTES + 1)
             content_type = resp.headers.get("Content-Type") or ""
         if len(raw) > _MAX_SPEC_BYTES:
-            raise ValueError(
-                f"spec too large (> {_MAX_SPEC_BYTES} bytes) from {src}"
-            )
+            raise ValueError(f"spec too large (> {_MAX_SPEC_BYTES} bytes) from {src}")
         text = raw.decode("utf-8")
         is_json = lower.endswith(".json") or "json" in content_type
         return text, is_json

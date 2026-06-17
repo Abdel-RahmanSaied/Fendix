@@ -11,6 +11,7 @@ runs but fails (subprocess error, malformed JSON, non-success exit code), the
 analyzer falls back to the curated list rather than swallowing the error and
 emitting zero findings — that was a real bug pre-TASK-090.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,15 +53,17 @@ def _read_capped(path: Path) -> str | None:
         )
         return None
 
+
 # ---------------------------------------------------------------------------
 # Local known-vulnerable package list (fallback when pip-audit is absent)
 # Each entry: (package_name, max_safe_version_exclusive, cve_id, severity, description)
 # Version comparison: finding emitted if installed_version < max_safe_version
 # ---------------------------------------------------------------------------
 
+
 class _KnownVuln(NamedTuple):
-    package: str          # canonical PyPI name (lowercase)
-    safe_from: str        # first SAFE version (>=), e.g. "2.20.0"
+    package: str  # canonical PyPI name (lowercase)
+    safe_from: str  # first SAFE version (>=), e.g. "2.20.0"
     cve: str
     severity: str
     title: str
@@ -69,80 +72,106 @@ class _KnownVuln(NamedTuple):
 
 _KNOWN_PYPI_VULNS: list[_KnownVuln] = [
     _KnownVuln(
-        "pyyaml", "5.1",
-        "CVE-2017-18342", "CRITICAL",
+        "pyyaml",
+        "5.1",
+        "CVE-2017-18342",
+        "CRITICAL",
         "PyYAML yaml.load() arbitrary code execution",
         "Upgrade pyyaml >= 5.1 and replace yaml.load() with yaml.safe_load().",
     ),
     _KnownVuln(
-        "pyyaml", "5.4",
-        "CVE-2020-14343", "CRITICAL",
+        "pyyaml",
+        "5.4",
+        "CVE-2020-14343",
+        "CRITICAL",
         "PyYAML arbitrary code execution via yaml.load() with full Loader",
         "Upgrade pyyaml >= 5.4 and replace yaml.load() with yaml.safe_load().",
     ),
     _KnownVuln(
-        "requests", "2.20.0",
-        "CVE-2018-18074", "HIGH",
+        "requests",
+        "2.20.0",
+        "CVE-2018-18074",
+        "HIGH",
         "requests HTTP redirect leaks credentials via Referer header",
         "Upgrade requests >= 2.20.0.",
     ),
     _KnownVuln(
-        "requests", "2.31.0",
-        "CVE-2023-32681", "HIGH",
+        "requests",
+        "2.31.0",
+        "CVE-2023-32681",
+        "HIGH",
         "requests Proxy-Authorization header leak on redirect",
         "Upgrade requests >= 2.31.0.",
     ),
     _KnownVuln(
-        "lxml", "4.6.3",
-        "CVE-2021-28957", "MEDIUM",
+        "lxml",
+        "4.6.3",
+        "CVE-2021-28957",
+        "MEDIUM",
         "lxml XSS via HTML cleanup",
         "Upgrade lxml >= 4.6.3.",
     ),
     _KnownVuln(
-        "urllib3", "1.26.5",
-        "CVE-2021-33503", "HIGH",
+        "urllib3",
+        "1.26.5",
+        "CVE-2021-33503",
+        "HIGH",
         "urllib3 ReDoS via malformed percent-encoded characters",
         "Upgrade urllib3 >= 1.26.5.",
     ),
     _KnownVuln(
-        "pillow", "9.0.1",
-        "CVE-2022-22817", "CRITICAL",
+        "pillow",
+        "9.0.1",
+        "CVE-2022-22817",
+        "CRITICAL",
         "Pillow arbitrary code execution via PIL.ImageMath.eval",
         "Upgrade Pillow >= 9.0.1.",
     ),
     _KnownVuln(
-        "cryptography", "41.0.0",
-        "CVE-2023-23931", "HIGH",
+        "cryptography",
+        "41.0.0",
+        "CVE-2023-23931",
+        "HIGH",
         "cryptography NULL pointer dereference in PKCS12 parsing",
         "Upgrade cryptography >= 41.0.0.",
     ),
     _KnownVuln(
-        "django", "3.2.19",
-        "CVE-2023-31047", "HIGH",
+        "django",
+        "3.2.19",
+        "CVE-2023-31047",
+        "HIGH",
         "Django potential bypass of file upload validators",
         "Upgrade Django >= 3.2.19, 4.1.9, or 4.2.1.",
     ),
     _KnownVuln(
-        "flask", "2.3.2",
-        "CVE-2023-30861", "HIGH",
+        "flask",
+        "2.3.2",
+        "CVE-2023-30861",
+        "HIGH",
         "Flask session cookie leak via cookie policy regression",
         "Upgrade Flask >= 2.3.2.",
     ),
     _KnownVuln(
-        "jinja2", "3.1.3",
-        "CVE-2024-22195", "MEDIUM",
+        "jinja2",
+        "3.1.3",
+        "CVE-2024-22195",
+        "MEDIUM",
         "Jinja2 HTML attribute injection via xmlattr filter",
         "Upgrade Jinja2 >= 3.1.3.",
     ),
     _KnownVuln(
-        "werkzeug", "3.0.3",
-        "CVE-2024-34069", "HIGH",
+        "werkzeug",
+        "3.0.3",
+        "CVE-2024-34069",
+        "HIGH",
         "Werkzeug debugger PIN brute-force when network accessible",
         "Upgrade Werkzeug >= 3.0.3 and disable the debugger in production.",
     ),
     _KnownVuln(
-        "paramiko", "3.4.0",
-        "CVE-2023-48795", "MEDIUM",
+        "paramiko",
+        "3.4.0",
+        "CVE-2023-48795",
+        "MEDIUM",
         "Paramiko Terrapin SSH prefix truncation attack",
         "Upgrade paramiko >= 3.4.0.",
     ),
@@ -150,26 +179,34 @@ _KNOWN_PYPI_VULNS: list[_KnownVuln] = [
 
 _KNOWN_NPM_VULNS: list[_KnownVuln] = [
     _KnownVuln(
-        "lodash", "4.17.21",
-        "CVE-2021-23337", "HIGH",
+        "lodash",
+        "4.17.21",
+        "CVE-2021-23337",
+        "HIGH",
         "lodash command injection via template function",
         "Upgrade lodash >= 4.17.21.",
     ),
     _KnownVuln(
-        "axios", "0.21.1",
-        "CVE-2020-28168", "MEDIUM",
+        "axios",
+        "0.21.1",
+        "CVE-2020-28168",
+        "MEDIUM",
         "axios SSRF via server-side redirects",
         "Upgrade axios >= 0.21.1.",
     ),
     _KnownVuln(
-        "minimist", "1.2.6",
-        "CVE-2021-44906", "CRITICAL",
+        "minimist",
+        "1.2.6",
+        "CVE-2021-44906",
+        "CRITICAL",
         "minimist prototype pollution",
         "Upgrade minimist >= 1.2.6.",
     ),
     _KnownVuln(
-        "node-forge", "1.3.0",
-        "CVE-2022-0122", "MEDIUM",
+        "node-forge",
+        "1.3.0",
+        "CVE-2022-0122",
+        "MEDIUM",
         "node-forge URL parsing open redirect",
         "Upgrade node-forge >= 1.3.0.",
     ),
@@ -180,8 +217,15 @@ _KNOWN_NPM_VULNS: list[_KnownVuln] = [
 # Version parsing / comparison
 # ---------------------------------------------------------------------------
 
+
 def _parse_version(v: str) -> tuple[int, ...]:
-    """Parse a dotted version string into a tuple of ints for comparison."""
+    """Parse a dotted version string into a tuple of ints for comparison.
+
+    Retained for callers/tests that want the raw numeric tuple; the actual
+    vulnerability comparison now goes through packaging.version (see
+    `_is_vulnerable`) which understands pre-releases, epochs, and PEP 440
+    ordering (audit #34/#35). This helper still strips common spec prefixes.
+    """
     v = v.strip().lstrip("v=^~")
     parts = re.split(r"[.\-]", v)
     result = []
@@ -195,7 +239,21 @@ def _parse_version(v: str) -> tuple[int, ...]:
 
 
 def _is_vulnerable(installed: str, safe_from: str) -> bool:
-    """Return True if installed version < safe_from."""
+    """Return True if installed version < safe_from (PEP 440 ordering).
+
+    Audit #34/#35: uses packaging.version so `9.0.1rc1 < 9.0.1` is True
+    (pre-release) and `1!2.0` epoch ordering is honored. Falls back to the
+    numeric-tuple compare only if both versions are unparseable by PEP 440.
+    """
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            return Version(installed) < Version(safe_from)
+        except InvalidVersion:
+            pass
+    except Exception:  # noqa: BLE001 — packaging always present, defensive
+        pass
     try:
         return _parse_version(installed) < _parse_version(safe_from)
     except Exception:  # noqa: BLE001
@@ -207,7 +265,8 @@ def _is_vulnerable(installed: str, safe_from: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _REQ_LINE_RE = re.compile(
-    r"^\s*([A-Za-z0-9_.\-]+)\s*([><=!~^]{1,3}\s*[\d.]+.*?)?\s*(?:#.*)?$"
+    # name, optional extras `[a,b]` (audit #20), optional version spec.
+    r"^\s*([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*([><=!~^]{1,3}\s*[\d.]+.*?)?\s*(?:#.*)?$"
 )
 
 
@@ -227,14 +286,19 @@ def _parse_requirements(text: str) -> list[tuple[str, str]]:
 
 
 def _extract_pinned_version(spec: str) -> str | None:
-    """If spec is an exact pin (==X.Y.Z), return the version, else None."""
-    m = re.match(r"^==\s*([\d.]+)", spec.strip())
+    """If spec is an exact pin (==X.Y.Z or PEP 440 ===X), return the version.
+
+    Audit #33: `===` is an exact (arbitrary-equality) pin and must be treated
+    like `==`, not downgraded to an unpinned advisory.
+    """
+    m = re.match(r"^={2,3}\s*([\w.\-+!]+)", spec.strip())
     return m.group(1) if m else None
 
 
 # ---------------------------------------------------------------------------
 # package.json parser
 # ---------------------------------------------------------------------------
+
 
 def _parse_package_json(text: str) -> list[tuple[str, str]]:
     """Return list of (package_name_lower, version_spec) from package.json content."""
@@ -253,6 +317,7 @@ def _parse_package_json(text: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # Main analyzer class
 # ---------------------------------------------------------------------------
+
 
 class DepsAnalyzer:
     """Checks project dependencies for known CVEs.
@@ -314,9 +379,7 @@ class DepsAnalyzer:
             # pip-audit failed; fall through to local list
         self._local_pypi_check(packages, req_file, emit_fn)
 
-    def _run_pip_audit(
-        self, req_file: Path, emit_fn: Callable[[dict], None]
-    ) -> bool:
+    def _run_pip_audit(self, req_file: Path, emit_fn: Callable[[dict], None]) -> bool:
         """Run pip-audit and emit findings. Return True iff the run was clean.
 
         pip-audit exits 0 (no vulns) or 1 (vulns found) on success; any other
@@ -326,7 +389,10 @@ class DepsAnalyzer:
         try:
             proc = subprocess.run(
                 ["pip-audit", "-r", str(req_file), "--format", "json"],
-                capture_output=True, text=True, timeout=120, check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             print(
@@ -385,19 +451,22 @@ class DepsAnalyzer:
                     if fix_versions
                     else "Upgrade to a patched version (no fix listed by pip-audit)."
                 )
-                emit_fn({
-                    "id": f"SEC-DEPS-{vid.replace('-', '_')}",
-                    "title": f"Vulnerable dependency: {pkg}=={ver} ({vid})",
-                    "severity": "HIGH",
-                    "source": "whitebox",
-                    "category": "deps",
-                    "endpoint": req_file.name,
-                    "evidence": f"{pkg}=={ver}: {(v.get('description') or '')[:200]}",
-                    "fix": fix_text,
-                    "references": [vid] + ([v.get("aliases")[0]] if v.get("aliases") else []),
-                    "confidence": "HIGH",
-                    "line": req_file.name,
-                })
+                emit_fn(
+                    {
+                        "id": f"SEC-DEPS-{vid.replace('-', '_')}",
+                        "title": f"Vulnerable dependency: {pkg}=={ver} ({vid})",
+                        "severity": "HIGH",
+                        "source": "whitebox",
+                        "category": "deps",
+                        "endpoint": req_file.name,
+                        "evidence": f"{pkg}=={ver}: {(v.get('description') or '')[:200]}",
+                        "fix": fix_text,
+                        "references": [vid]
+                        + ([v.get("aliases")[0]] if v.get("aliases") else []),
+                        "confidence": "HIGH",
+                        "line": req_file.name,
+                    }
+                )
         return True
 
     def _local_pypi_check(
@@ -414,39 +483,43 @@ class DepsAnalyzer:
                 continue
             pinned = _extract_pinned_version(spec)
             if pinned and _is_vulnerable(pinned, vuln.safe_from):
-                emit_fn({
-                    "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
-                    "title": f"Vulnerable dependency: {vuln.package}=={pinned} ({vuln.cve})",
-                    "severity": vuln.severity,
-                    "source": "whitebox",
-                    "category": "deps",
-                    "endpoint": req_file.name,
-                    "evidence": (
-                        f"{vuln.package}=={pinned} is vulnerable to {vuln.cve}: {vuln.title}"
-                    ),
-                    "fix": vuln.fix,
-                    "references": [vuln.cve],
-                    "confidence": "HIGH",
-                    "line": req_file.name,
-                })
+                emit_fn(
+                    {
+                        "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
+                        "title": f"Vulnerable dependency: {vuln.package}=={pinned} ({vuln.cve})",
+                        "severity": vuln.severity,
+                        "source": "whitebox",
+                        "category": "deps",
+                        "endpoint": req_file.name,
+                        "evidence": (
+                            f"{vuln.package}=={pinned} is vulnerable to {vuln.cve}: {vuln.title}"
+                        ),
+                        "fix": vuln.fix,
+                        "references": [vuln.cve],
+                        "confidence": "HIGH",
+                        "line": req_file.name,
+                    }
+                )
             elif not pinned and spec:
                 # Unpinned — emit INFO advisory
-                emit_fn({
-                    "id": f"SEC-DEPS-UNPINNED-{vuln.package.upper().replace('-', '_')}",
-                    "title": (
-                        f"Dependency {vuln.package!r} is not pinned — "
-                        f"known vulnerable versions exist ({vuln.cve})"
-                    ),
-                    "severity": "INFO",
-                    "source": "whitebox",
-                    "category": "deps",
-                    "endpoint": req_file.name,
-                    "evidence": f"{vuln.package}{spec} (unpinned; {vuln.cve} affects < {vuln.safe_from})",
-                    "fix": f"Pin to a specific safe version: {vuln.package}>={vuln.safe_from}. {vuln.fix}",
-                    "references": [vuln.cve],
-                    "confidence": "LOW",
-                    "line": req_file.name,
-                })
+                emit_fn(
+                    {
+                        "id": f"SEC-DEPS-UNPINNED-{vuln.package.upper().replace('-', '_')}",
+                        "title": (
+                            f"Dependency {vuln.package!r} is not pinned — "
+                            f"known vulnerable versions exist ({vuln.cve})"
+                        ),
+                        "severity": "INFO",
+                        "source": "whitebox",
+                        "category": "deps",
+                        "endpoint": req_file.name,
+                        "evidence": f"{vuln.package}{spec} (unpinned; {vuln.cve} affects < {vuln.safe_from})",
+                        "fix": f"Pin to a specific safe version: {vuln.package}>={vuln.safe_from}. {vuln.fix}",
+                        "references": [vuln.cve],
+                        "confidence": "LOW",
+                        "line": req_file.name,
+                    }
+                )
 
     # ------------------------------------------------------------------
     # npm checks
@@ -483,9 +556,7 @@ class DepsAnalyzer:
             or (directory / "node_modules").is_dir()
         )
 
-    def _run_npm_audit(
-        self, pkg_file: Path, emit_fn: Callable[[dict], None]
-    ) -> bool:
+    def _run_npm_audit(self, pkg_file: Path, emit_fn: Callable[[dict], None]) -> bool:
         """Run `npm audit --json` and emit findings. Return True iff clean run.
 
         npm audit exits 0 (no vulns) or 1 (vulns found) on success; any other
@@ -495,7 +566,10 @@ class DepsAnalyzer:
             proc = subprocess.run(
                 ["npm", "audit", "--json"],
                 cwd=str(pkg_file.parent),
-                capture_output=True, text=True, timeout=60, check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             print(
@@ -525,28 +599,55 @@ class DepsAnalyzer:
             )
             return False
 
+        # audit #19: npm exits 1 BOTH on "vulns found" (success) and on an
+        # internal error (ENOLOCK, EAUTH, offline) where it emits an error
+        # document with non-empty stdout but no "vulnerabilities" key. The
+        # empty-stdout guard used for pip-audit won't catch this — inspect the
+        # parsed document. Treat an error doc as a failure so the local
+        # fallback fires instead of silently reporting a clean scan.
+        if isinstance(data, dict) and (
+            "error" in data or "vulnerabilities" not in data
+        ):
+            err = data.get("error")
+            detail = (
+                (err.get("summary") or err.get("code") or "")
+                if isinstance(err, dict)
+                else ""
+            )
+            print(
+                "[fendix-engine] npm audit returned an error document, "
+                f"falling back to local list. {detail}".strip(),
+                file=sys.stderr,
+            )
+            return False
+
         sev_map = {
-            "CRITICAL": "CRITICAL", "HIGH": "HIGH",
-            "MODERATE": "MEDIUM", "LOW": "LOW", "INFO": "INFO",
+            "CRITICAL": "CRITICAL",
+            "HIGH": "HIGH",
+            "MODERATE": "MEDIUM",
+            "LOW": "LOW",
+            "INFO": "INFO",
         }
         # npm audit v2 format: {"vulnerabilities": {"pkg": {...}}}
         for pkg_name, info in (data.get("vulnerabilities") or {}).items():
             severity = (info.get("severity") or "moderate").upper()
             via = info.get("via") or []
             cves = [v.get("url", "") for v in via if isinstance(v, dict)]
-            emit_fn({
-                "id": f"SEC-DEPS-NPM-{pkg_name.upper().replace('-', '_').replace('@', '')}",
-                "title": f"Vulnerable npm package: {pkg_name} (severity: {severity})",
-                "severity": sev_map.get(severity, "MEDIUM"),
-                "source": "whitebox",
-                "category": "deps",
-                "endpoint": pkg_file.name,
-                "evidence": f"npm audit found {severity} vulnerability in {pkg_name}",
-                "fix": f"Run 'npm audit fix' or update {pkg_name} manually.",
-                "references": [c for c in cves[:3] if c],
-                "confidence": "HIGH",
-                "line": pkg_file.name,
-            })
+            emit_fn(
+                {
+                    "id": f"SEC-DEPS-NPM-{pkg_name.upper().replace('-', '_').replace('@', '').replace('/', '_')}",
+                    "title": f"Vulnerable npm package: {pkg_name} (severity: {severity})",
+                    "severity": sev_map.get(severity, "MEDIUM"),
+                    "source": "whitebox",
+                    "category": "deps",
+                    "endpoint": pkg_file.name,
+                    "evidence": f"npm audit found {severity} vulnerability in {pkg_name}",
+                    "fix": f"Run 'npm audit fix' or update {pkg_name} manually.",
+                    "references": [c for c in cves[:3] if c],
+                    "confidence": "HIGH",
+                    "line": pkg_file.name,
+                }
+            )
         return True
 
     def _local_npm_check(
@@ -564,29 +665,29 @@ class DepsAnalyzer:
             # Strip semver range prefixes for comparison
             pinned = re.sub(r"^[^0-9]*", "", spec)
             if pinned and _is_vulnerable(pinned, vuln.safe_from):
-                emit_fn({
-                    "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
-                    "title": f"Vulnerable npm package: {vuln.package}@{pinned} ({vuln.cve})",
-                    "severity": vuln.severity,
-                    "source": "whitebox",
-                    "category": "deps",
-                    "endpoint": pkg_file.name,
-                    "evidence": (
-                        f"{vuln.package}@{pinned} is vulnerable to {vuln.cve}: {vuln.title}"
-                    ),
-                    "fix": vuln.fix,
-                    "references": [vuln.cve],
-                    "confidence": "HIGH",
-                    "line": pkg_file.name,
-                })
+                emit_fn(
+                    {
+                        "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
+                        "title": f"Vulnerable npm package: {vuln.package}@{pinned} ({vuln.cve})",
+                        "severity": vuln.severity,
+                        "source": "whitebox",
+                        "category": "deps",
+                        "endpoint": pkg_file.name,
+                        "evidence": (
+                            f"{vuln.package}@{pinned} is vulnerable to {vuln.cve}: {vuln.title}"
+                        ),
+                        "fix": vuln.fix,
+                        "references": [vuln.cve],
+                        "confidence": "HIGH",
+                        "line": pkg_file.name,
+                    }
+                )
 
     # ------------------------------------------------------------------
     # Go module checks (govulncheck)
     # ------------------------------------------------------------------
 
-    def _check_go_modules(
-        self, go_mod: Path, emit_fn: Callable[[dict], None]
-    ) -> None:
+    def _check_go_modules(self, go_mod: Path, emit_fn: Callable[[dict], None]) -> None:
         """Run govulncheck against a Go module if the tool is installed.
 
         No local fallback for Go: maintaining a curated Go vuln list would
@@ -603,9 +704,7 @@ class DepsAnalyzer:
             return
         self._run_govulncheck(go_mod, emit_fn)
 
-    def _run_govulncheck(
-        self, go_mod: Path, emit_fn: Callable[[dict], None]
-    ) -> bool:
+    def _run_govulncheck(self, go_mod: Path, emit_fn: Callable[[dict], None]) -> bool:
         """Run `govulncheck -json ./...` and emit findings. Return True iff clean.
 
         govulncheck exits 0 (no vulns), 3 (vulns found in called code), or
@@ -621,7 +720,10 @@ class DepsAnalyzer:
             proc = subprocess.run(
                 ["govulncheck", "-json", "./..."],
                 cwd=str(go_mod.parent),
-                capture_output=True, text=True, timeout=180, check=False,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             print(
@@ -707,9 +809,7 @@ def _parse_govulncheck_json(stdout: str) -> list[dict]:
             # but-not-called findings have a one-element trace with only
             # module+package set.
             trace = f.get("trace") or []
-            has_call = any(
-                isinstance(t, dict) and t.get("function") for t in trace
-            )
+            has_call = any(isinstance(t, dict) and t.get("function") for t in trace)
             if osv_id and has_call:
                 called_ids.add(osv_id)
 
@@ -736,19 +836,21 @@ def _parse_govulncheck_json(stdout: str) -> list[dict]:
         aliases = osv.get("aliases") or []
         refs = [osv_id] + [a for a in aliases if a]
 
-        findings.append({
-            "id": f"SEC-DEPS-GO-{osv_id.replace('-', '_')}",
-            "title": f"Vulnerable Go module: {summary} ({osv_id})",
-            "severity": "HIGH",  # govulncheck reports a real call trace
-            "source": "whitebox",
-            "category": "deps",
-            "evidence": f"{osv_id}: {details}",
-            "fix": (
-                f"Upgrade to {fix_version} or later."
-                if fix_version
-                else "Upgrade to a patched version (no fix listed)."
-            ),
-            "references": refs,
-            "confidence": "HIGH",
-        })
+        findings.append(
+            {
+                "id": f"SEC-DEPS-GO-{osv_id.replace('-', '_')}",
+                "title": f"Vulnerable Go module: {summary} ({osv_id})",
+                "severity": "HIGH",  # govulncheck reports a real call trace
+                "source": "whitebox",
+                "category": "deps",
+                "evidence": f"{osv_id}: {details}",
+                "fix": (
+                    f"Upgrade to {fix_version} or later."
+                    if fix_version
+                    else "Upgrade to a patched version (no fix listed)."
+                ),
+                "references": refs,
+                "confidence": "HIGH",
+            }
+        )
     return findings

@@ -7,6 +7,7 @@ and dangerous subprocess usage.
 JavaScript analysis uses regex-backed heuristics since a full JS AST parser
 is not a Python stdlib dependency.
 """
+
 from __future__ import annotations
 
 import ast
@@ -17,10 +18,19 @@ from pathlib import Path
 from typing import Callable
 
 # Skip directories (same as secrets analyzer)
-_SKIP_DIRS: frozenset[str] = frozenset({
-    ".git", "node_modules", "vendor", "__pycache__", ".venv", "venv",
-    "dist", "build", ".tox",
-})
+_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "vendor",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".tox",
+    }
+)
 
 _MAX_FILE_BYTES = 1_048_576  # 1 MB
 
@@ -64,7 +74,7 @@ _JS_PATTERNS: list[tuple[str, str, re.Pattern[str], str, str, str]] = [
     (
         "JS_SQL_TEMPLATE",
         "SQL query built via template literal — injection risk",
-        re.compile(r'`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{'),
+        re.compile(r"`[^`]*(?:SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{"),
         "HIGH",
         "HIGH",
         "CWE-89",
@@ -148,7 +158,13 @@ class ASTAnalyzer:
                 except OSError:
                     continue
                 rel = str(fpath.relative_to(root))
-                for route in extract_routes(src, rel).routes:
+                try:
+                    routes = extract_routes(src, rel).routes
+                except (RecursionError, Exception):  # noqa: BLE001 — binding is best-effort
+                    # audit #18: one crafted/large file must not abort the
+                    # route index (and thus the whole injection pass). Skip it.
+                    continue
+                for route in routes:
                     index.add(route)
         return index
 
@@ -177,7 +193,9 @@ class ASTAnalyzer:
         # — findings already emitted for this file stay emitted (emit_fn is
         # called incrementally), and the engine still exits cleanly.
         visitor = _PythonSecurityVisitor(
-            source.splitlines(), rel, emit_fn,
+            source.splitlines(),
+            rel,
+            emit_fn,
             route_table=getattr(self, "_routes_by_func", None),
         )
         try:
@@ -215,19 +233,23 @@ class ASTAnalyzer:
                 continue
             for pat_id, title, pattern, severity, confidence, cwe in _JS_PATTERNS:
                 if pattern.search(line):
-                    emit_fn({
-                        "id": f"SEC-{pat_id}",
-                        "title": title,
-                        "severity": severity,
-                        "source": "whitebox",
-                        "category": "injection",
-                        "endpoint": f"{rel}:{lineno}",
-                        "evidence": line.strip()[:200],
-                        "fix": _JS_FIX.get(pat_id, "Review and sanitize this usage."),
-                        "references": [cwe],
-                        "confidence": confidence,
-                        "line": f"{rel}:{lineno}",
-                    })
+                    emit_fn(
+                        {
+                            "id": f"SEC-{pat_id}",
+                            "title": title,
+                            "severity": severity,
+                            "source": "whitebox",
+                            "category": "injection",
+                            "endpoint": f"{rel}:{lineno}",
+                            "evidence": line.strip()[:200],
+                            "fix": _JS_FIX.get(
+                                pat_id, "Review and sanitize this usage."
+                            ),
+                            "references": [cwe],
+                            "confidence": confidence,
+                            "line": f"{rel}:{lineno}",
+                        }
+                    )
 
 
 # Fixes for JS patterns
@@ -252,6 +274,7 @@ _JS_FIX: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Python AST visitor
 # ---------------------------------------------------------------------------
+
 
 class _PythonSecurityVisitor(ast.NodeVisitor):
     """AST visitor that emits findings for dangerous Python patterns."""
@@ -284,6 +307,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Maps local alias → canonical module name, populated by visit_Import.
         # Lets `import pickle as p; p.loads(data)` be detected despite the alias.
         self._module_aliases: dict[str, str] = {}
+        # Maps a bare local name → (module, symbol), populated by
+        # visit_ImportFrom. Lets `from os import system; system(cmd)` and
+        # `from pickle import loads as pl; pl(x)` resolve back to os.system /
+        # pickle.loads despite the call being a bare ast.Name (audit #8-13).
+        self._from_imports: dict[str, tuple[str, str]] = {}
 
     def _line_text(self, lineno: int) -> str:
         """Return the source line (1-indexed), or empty string."""
@@ -321,6 +349,15 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             "confidence": confidence,
             "line": f"{self._rel}:{lineno}",
         }
+        # Test-file demotion: a finding in test/fixture code is almost always
+        # exercising the sink deliberately, not a production vulnerability.
+        # Keep it (a real bug in a test helper still surfaces) but force LOW
+        # confidence and tag it so the report sorts it below real findings and
+        # the correlator won't escalate it. Real-data corpus showed 98-100% of
+        # clean-library noise lives in tests/.
+        if _is_test_path(self._rel):
+            finding["confidence"] = "LOW"
+            finding["in_test"] = True
         if taint_chain:
             # TASK-114: when the visitor proves user input flows from a
             # source (request.args/POST/form/etc.) through one or more
@@ -404,21 +441,28 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if depth >= _MAX_TAINT_HOPS:
             return None
         for n in ast.walk(expr):
-            if not isinstance(n, ast.Name) or n.id in visited:
+            # Resolve Names, and attribute/subscript reads (self.q, d['k']) that
+            # were bound via _bind_target (audit #26/#27).
+            key = None
+            if isinstance(n, ast.Name):
+                key = n.id
+            elif isinstance(n, (ast.Attribute, ast.Subscript)):
+                key = _binding_key(n)
+            if key is None or key in visited:
                 continue
             for scope in reversed(self._scopes):
-                if n.id not in scope:
+                if key not in scope:
                     continue
-                assigned = scope[n.id]
+                assigned = scope[key]
                 lineno = getattr(assigned, "lineno", 0)
                 link = self._link(lineno, _ast_expr_text(assigned))
                 if _references_request_input(assigned):
                     return [link]
-                deeper = self._trace_to_source(assigned, visited | {n.id}, depth + 1)
+                deeper = self._trace_to_source(assigned, visited | {key}, depth + 1)
                 if deeper is not None:
                     return deeper + [link]
-                # Name resolved but didn't lead to a source; don't keep
-                # searching siblings — we found the assignment for n.id.
+                # Binding resolved but didn't lead to a source; don't keep
+                # searching siblings — we found the assignment for this key.
                 break
         return None
 
@@ -465,10 +509,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             and isinstance(arg.func.value, ast.Name)
         ):
             target_name = arg.func.value.id
-        elif (
-            isinstance(arg, ast.Subscript)
-            and isinstance(arg.value, ast.Name)
-        ):
+        elif isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name):
             target_name = arg.value.id
         if target_name is None:
             return False
@@ -523,7 +564,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 and isinstance(test.operand.left, ast.Name)
             ):
                 checked_name = test.operand.left.id
-                collection = test.operand.comparators[0] if test.operand.comparators else None
+                collection = (
+                    test.operand.comparators[0] if test.operand.comparators else None
+                )
             if checked_name != name or collection is None:
                 continue
             if not self._collection_is_literal(collection):
@@ -535,8 +578,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     isinstance(s, ast.Expr)
                     and isinstance(s.value, ast.Call)
                     and (
-                        (isinstance(s.value.func, ast.Name) and s.value.func.id in {"abort", "exit"})
-                        or (isinstance(s.value.func, ast.Attribute) and s.value.func.attr in {"abort", "exit"})
+                        (
+                            isinstance(s.value.func, ast.Name)
+                            and s.value.func.id in {"abort", "exit"}
+                        )
+                        or (
+                            isinstance(s.value.func, ast.Attribute)
+                            and s.value.func.attr in {"abort", "exit"}
+                        )
                     )
                 )
                 for s in stmt.body
@@ -553,7 +602,30 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if isinstance(expr, ast.Name):
             for scope in reversed(self._scopes):
                 if expr.id in scope:
-                    return isinstance(scope[expr.id], (ast.Dict, ast.Set, ast.List, ast.Tuple))
+                    return isinstance(
+                        scope[expr.id], (ast.Dict, ast.Set, ast.List, ast.Tuple)
+                    )
+        return False
+
+    # Escaping/encoding neutralizers that make a value safe to render (#24).
+    _ESCAPE_FUNCS = frozenset({"escape", "clean", "quote", "quote_plus", "escapejs"})
+
+    def _is_escaped_call(self, expr: ast.AST) -> bool:
+        """True if `expr` is a call to a recognized escaping/encoding function
+        (html.escape, markupsafe.escape, bleach.clean, urllib.parse.quote,
+        django escape/escapejs), or a Name bound to such a call (#24)."""
+        if isinstance(expr, ast.Call):
+            f = expr.func
+            name = (
+                f.attr
+                if isinstance(f, ast.Attribute)
+                else (f.id if isinstance(f, ast.Name) else "")
+            )
+            return name in self._ESCAPE_FUNCS
+        if isinstance(expr, ast.Name):
+            for scope in reversed(self._scopes):
+                if expr.id in scope:
+                    return self._is_escaped_call(scope[expr.id])
         return False
 
     def _arg_is_sanitised(self, arg: ast.AST) -> bool:
@@ -572,6 +644,8 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         """
         if self._arg_is_whitelisted_lookup(arg):
             return True
+        if self._is_escaped_call(arg):  # audit #24
+            return True
         if isinstance(arg, ast.Name):
             if self._name_is_membership_guarded(arg.id):
                 return True
@@ -586,6 +660,59 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub)
                 for sub in (arg.left, arg.right)
             )
+        # audit #16: a fully-constant f-string or an os.path.* / known dunder
+        # call over constant args is a safe path (config loaders, __file__-
+        # relative package data), not user input.
+        if self._expr_is_constant_path(arg):
+            return True
+        return False
+
+    # Dunder names that are build-time constants for path purposes (#16).
+    _CONST_PATH_DUNDERS = frozenset({"__file__", "__name__", "__doc__"})
+    _CONST_PATH_FUNCS = frozenset(
+        {"join", "expanduser", "expandvars", "abspath", "dirname", "normpath"}
+    )
+
+    def _expr_is_constant_path(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if `expr` builds a path from only constants / known dunders /
+        os.path.* over constant parts — i.e. no user input can enter (#16)."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, ast.Name):
+            if expr.id in self._CONST_PATH_DUNDERS:
+                return True
+            for scope in reversed(self._scopes):
+                if expr.id in scope:
+                    return self._expr_is_constant_path(scope[expr.id], _depth + 1)
+            return False
+        if isinstance(expr, ast.BinOp):
+            return self._expr_is_constant_path(
+                expr.left, _depth + 1
+            ) and self._expr_is_constant_path(expr.right, _depth + 1)
+        if isinstance(expr, ast.JoinedStr):
+            for v in expr.values:
+                if isinstance(
+                    v, ast.FormattedValue
+                ) and not self._expr_is_constant_path(v.value, _depth + 1):
+                    return False
+            return True
+        if isinstance(expr, ast.Call):
+            f = expr.func
+            is_ospath = (
+                isinstance(f, ast.Attribute)
+                and f.attr in self._CONST_PATH_FUNCS
+                and isinstance(f.value, ast.Attribute)
+                and f.value.attr == "path"
+                and isinstance(f.value.value, ast.Name)
+                and f.value.value.id == "os"
+            )
+            if is_ospath:
+                return all(
+                    self._expr_is_constant_path(a, _depth + 1) for a in expr.args
+                )
+            return False
         return False
 
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
@@ -615,13 +742,10 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # and was flagging as HIGH for no benefit. Variable args
         # (Name, Call, BinOp, JoinedStr) still emit; the chain decides
         # whether the variable traces back to a request source.
-        elif (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "system"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "os"
-            and self._cmdi_arg_is_dangerous(node)
-        ):
+        elif self._call_module_attr(node) == (
+            "os",
+            "system",
+        ) and self._cmdi_arg_is_dangerous(node):
             chain = None
             if node.args:
                 chain = self._collect_taint_chain(
@@ -650,13 +774,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # (bandit examples) surfaced os.popen2/3/4 as a gap — those
         # are deprecated but real in legacy code; same CWE, same fix.
         elif (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"popen", "popen2", "popen3", "popen4"}
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "os"
-            and self._cmdi_arg_is_dangerous(node)
-        ):
-            popen_variant = node.func.attr
+            lambda r: (
+                r is not None
+                and r[0] == "os"
+                and r[1] in {"popen", "popen2", "popen3", "popen4"}
+            )
+        )(self._call_module_attr(node)) and self._cmdi_arg_is_dangerous(node):
+            popen_variant = self._call_module_attr(node)[1]
             chain = None
             if node.args:
                 chain = self._collect_taint_chain(
@@ -889,7 +1013,10 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # signal is that the URL itself is dynamic.
         elif self._is_ssrf(node):
             chain = None
-            sink_name = self._ssrf_sink_name(node) or f"requests.{getattr(node.func, 'attr', '?')}"
+            sink_name = (
+                self._ssrf_sink_name(node)
+                or f"requests.{getattr(node.func, 'attr', '?')}"
+            )
             if node.args:
                 chain = self._collect_taint_chain(
                     node.args[0],
@@ -993,23 +1120,105 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
-        """Record `name = value` so later cursor.execute(name) can resolve."""
-        # Only single-target Name assignments — tuple unpacking and attribute
-        # assignment are out of scope; they'd add complexity without changing
-        # detection rate on the patterns we care about.
-        if (
-            len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and self._scopes
-        ):
-            self._scopes[-1][node.targets[0].id] = node.value
+        """Record assignments so later sinks can resolve the bound value.
+
+        Handles (audit #25-28): single Name, attribute (`self.q = ...`),
+        subscript (`d['k'] = ...`), and tuple/list unpacking. For tuple
+        unpacking from a tuple/list RHS we bind element-wise; otherwise each
+        target is bound to the whole RHS (conservative — preserves taint)."""
+        if not self._scopes:
+            self.generic_visit(node)
+            return
+        scope = self._scopes[-1]
+        for target in node.targets:
+            self._bind_target(target, node.value, scope)
         self.generic_visit(node)
+
+    def _bind_target(self, target: ast.AST, value: ast.AST, scope: dict) -> None:
+        """Bind one assignment target to `value` in `scope`."""
+        if isinstance(target, ast.Name):
+            scope[target.id] = value
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            elts = target.elts
+            if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(
+                elts
+            ):
+                for t, v in zip(elts, value.elts):
+                    self._bind_target(t, v, scope)
+            else:
+                # Non-decomposable RHS — bind every target to the whole RHS so
+                # taint is preserved (conservative).
+                for t in elts:
+                    self._bind_target(t, value, scope)
+            return
+        key = _binding_key(target)
+        if key is not None:
+            scope[key] = value
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:  # noqa: N802
+        """Record `x += value` (audit #1). Rebinds the target to a synthesized
+        BinOp(prior_or_Name, op, value) so an accumulator that starts as a
+        constant and appends tainted input is correctly seen as tainted — and
+        does NOT remain a stale constant that suppresses the sink."""
+        if self._scopes:
+            scope = self._scopes[-1]
+            key = (
+                node.target.id
+                if isinstance(node.target, ast.Name)
+                else _binding_key(node.target)
+            )
+            if key is not None:
+                prior = scope.get(key, node.target)
+                scope[key] = ast.BinOp(left=prior, op=node.op, right=node.value)
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        """Push a scope for the class body so class-level assignments don't
+        leak into module scope and falsely shadow handler-local names (#17)."""
+        self._scopes.append({})
+        self.generic_visit(node)
+        self._scopes.pop()
+
+    def visit_For(self, node: ast.For) -> None:  # noqa: N802
+        """Bind a for-loop target to the iterable so taint flows through
+        `for x in request.args.values(): sink(x)` (audit for/with gap). The
+        target is bound to the iterable expression — if the iterable traces to
+        a request source, the loop variable does too."""
+        if self._scopes:
+            self._bind_target(node.target, node.iter, self._scopes[-1])
+        self.generic_visit(node)
+
+    visit_AsyncFor = visit_For
+
+    def visit_With(self, node: ast.With) -> None:  # noqa: N802
+        """Bind `with ctx as x` targets to the context expression so taint
+        flows through `with open(request.args['f']) as fh: ...` style code
+        and `with get_payload() as p` (audit for/with gap)."""
+        if self._scopes:
+            for item in node.items:
+                if item.optional_vars is not None:
+                    self._bind_target(
+                        item.optional_vars, item.context_expr, self._scopes[-1]
+                    )
+        self.generic_visit(node)
+
+    visit_AsyncWith = visit_With
 
     def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
         """Populate _module_aliases so aliased imports are tracked."""
         for alias in node.names:
             local_name = alias.asname if alias.asname else alias.name.split(".")[0]
             self._module_aliases[local_name] = alias.name
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        """Track `from <mod> import <sym> [as <local>]` so bare-name calls of
+        dangerous symbols resolve back to their module (audit #8-13)."""
+        module = node.module or ""
+        for alias in node.names:
+            local_name = alias.asname or alias.name
+            self._from_imports[local_name] = (module, alias.name)
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:  # noqa: N802
@@ -1029,6 +1238,24 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 category="auth_bypass",
             )
         self.generic_visit(node)
+
+    def _call_module_attr(self, node: ast.Call) -> tuple[str, str] | None:
+        """Resolve a call to (canonical_module, attr) regardless of import shape.
+
+        Handles three forms (audit #8-13):
+          * `mod.attr(...)`            -> (canonical(mod), attr)  via _module_aliases
+          * `bare(...)` after `from mod import bare`  -> (mod, orig_symbol)
+          * `bare(...)` after `from mod import x as bare` -> (mod, x)
+        Returns None when the receiver can't be resolved to a known module.
+        """
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            base = self._module_aliases.get(func.value.id, func.value.id)
+            return (base, func.attr)
+        if isinstance(func, ast.Name) and func.id in self._from_imports:
+            module, symbol = self._from_imports[func.id]
+            return (module, symbol)
+        return None
 
     def _cmdi_arg_is_dangerous(self, node: ast.Call) -> bool:
         """Return True if the first positional arg to a cmdi sink is non-literal.
@@ -1054,53 +1281,179 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if isinstance(first, ast.Constant):
             return False
         # Name that resolves to a constant in the local scope is also safe.
+        # Innermost scope wins: stop at the first scope that defines the name
+        # so an outer-scope same-name constant can't veto an inner tainted
+        # binding (audit #17).
         if isinstance(first, ast.Name):
             for scope in reversed(self._scopes):
-                if first.id in scope and isinstance(scope[first.id], ast.Constant):
-                    return False
+                if first.id in scope:
+                    bound = scope[first.id]
+                    # Safe if the bound value folds to a constant (covers a
+                    # constant accumulator built with += — audit-fix follow-up).
+                    return not self._expr_folds_to_constant(bound)
+        # An inline BinOp/JoinedStr that folds to constant is also safe
+        # (e.g. os.system("echo " + "hi")).
+        if isinstance(
+            first, (ast.BinOp, ast.JoinedStr)
+        ) and self._expr_folds_to_constant(first):
+            return False
         return True
 
     def _is_subprocess_shell_true(self, node: ast.Call) -> bool:
-        """Return True if the call is subprocess.<fn>(..., shell=True)."""
-        if not isinstance(node.func, ast.Attribute):
+        """Return True for subprocess.<fn>(..., shell=True), the always-shell
+        helpers subprocess.getoutput / getstatusoutput, or
+        asyncio.create_subprocess_shell. Resolves through import aliases and
+        from-imports (audit #10 + sink-breadth gaps)."""
+        resolved = self._call_module_attr(node)
+        if resolved is None:
             return False
-        if not (
-            isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "subprocess"
-        ):
+        module, attr = resolved
+        if module == "subprocess" and attr in {"getoutput", "getstatusoutput"}:
+            return True
+        if module == "asyncio" and attr == "create_subprocess_shell":
+            return True
+        if module != "subprocess":
             return False
-        if node.func.attr not in {"run", "call", "Popen", "check_output", "check_call"}:
+        if attr not in {"run", "call", "Popen", "check_output", "check_call"}:
             return False
         for kw in node.keywords:
-            if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value:
+            if (
+                kw.arg == "shell"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value
+            ):
                 return True
         return False
 
-    def _is_sql_injection(self, node: ast.Call) -> bool:
-        """Return True if the call is cursor.execute(<unsafe>).
+    _SQL_EXEC_METHODS = {"execute", "executemany", "executescript"}
 
-        Unsafe means: an inline BinOp/JoinedStr/Call (`%`/`+`/f-string/.format()),
-        OR a Name that resolves to one of those via intra-function tracking
-        (closes the multi-step assignment gap — TASK-087).
-        """
+    def _is_sql_injection(self, node: ast.Call) -> bool:
+        """Return True if the call is cursor.execute/executemany/executescript(<unsafe>).
+
+        Unsafe means a non-constant-foldable BinOp/JoinedStr/Call
+        (`%`/`+`/f-string/.format()), OR a Name/Subscript/Attribute that
+        resolves to one of those via intra-function tracking (TASK-087 +
+        audit #15/#25-28). A fully-constant f-string / literal concat /
+        literal .format() is folded away and treated as safe (audit #15)."""
         if not (
-            isinstance(node.func, ast.Attribute) and node.func.attr == "execute"
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in self._SQL_EXEC_METHODS
         ):
             return False
         if not node.args:
             return False
         first_arg = node.args[0]
+        if isinstance(first_arg, ast.NamedExpr):  # walrus: execute(q := ...)
+            first_arg = first_arg.value
         if isinstance(first_arg, ast.Constant):
             return False
+        if isinstance(first_arg, ast.Call) and self._is_psycopg_sql_composable(
+            first_arg
+        ):
+            return False  # psycopg2.sql.SQL(...).format(Identifier(...)) is safe
         if isinstance(first_arg, (ast.BinOp, ast.JoinedStr, ast.Call)):
-            return True
-        # Name lookup in scope chain — innermost wins.
-        if isinstance(first_arg, ast.Name):
-            for scope in reversed(self._scopes):
-                if first_arg.id in scope:
-                    assigned = scope[first_arg.id]
-                    return isinstance(assigned, (ast.BinOp, ast.JoinedStr, ast.Call))
+            return not self._sql_expr_is_constant(first_arg)
+        # Name / Subscript / Attribute lookup in scope chain — innermost wins.
+        if isinstance(first_arg, (ast.Name, ast.Subscript, ast.Attribute)):
+            assigned = self._resolve_binding(first_arg)
+            if assigned is not None and isinstance(
+                assigned, (ast.BinOp, ast.JoinedStr, ast.Call)
+            ):
+                return not self._sql_expr_is_constant(assigned)
         return False
+
+    def _sql_expr_is_constant(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if a string-building expression folds to a constant (no taint
+        can enter): all-constant BinOp, an f-string with no dynamic field, or
+        a `<const>.format(<const>...)` call. Audit #15 (literal-SQL FP)."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, ast.BinOp):
+            return self._sql_expr_is_constant(
+                expr.left, _depth + 1
+            ) and self._sql_expr_is_constant(expr.right, _depth + 1)
+        if isinstance(expr, ast.JoinedStr):
+            # Constant iff every FormattedValue interpolates a constant-folding expr.
+            for v in expr.values:
+                if isinstance(v, ast.FormattedValue):
+                    if not self._sql_expr_is_constant(v.value, _depth + 1):
+                        return False
+            return True
+        if isinstance(expr, ast.Name):
+            assigned = self._resolve_binding(expr)
+            return assigned is not None and self._sql_expr_is_constant(
+                assigned, _depth + 1
+            )
+        if isinstance(expr, ast.Call):
+            # "<lit>".format(<lit>, ...) — constant iff receiver + all args constant.
+            if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                if not self._sql_expr_is_constant(expr.func.value, _depth + 1):
+                    return False
+                # Both positional AND keyword args must be constant — a tainted
+                # name=value kwarg (`"...{name}".format(name=user)`) is dynamic.
+                if not all(
+                    self._sql_expr_is_constant(a, _depth + 1) for a in expr.args
+                ):
+                    return False
+                return all(
+                    kw.value is not None
+                    and self._sql_expr_is_constant(kw.value, _depth + 1)
+                    for kw in expr.keywords
+                )
+            return False
+        return False
+
+    def _is_psycopg_sql_composable(self, node: ast.AST) -> bool:
+        """True if `node` is a psycopg2.sql Composable expression — sql.SQL(...),
+        sql.SQL(...).format(...), sql.Identifier(...), sql.Composed([...]) — which
+        is the SAFE parameterized-identifier API, NOT str.format injection
+        (TwiScope FP-6: 5 false CRITICALs)."""
+        if not isinstance(node, ast.Call):
+            return False
+        f = node.func
+        # sql.SQL(...).format(...) — the receiver of .format is itself a sql.* call.
+        if isinstance(f, ast.Attribute) and f.attr == "format":
+            return self._is_psycopg_sql_composable(f.value)
+        # sql.SQL(...) / sql.Identifier(...) / sql.Composed(...) — Attribute on `sql`.
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+            base = self._module_aliases.get(f.value.id, f.value.id)
+            return base == "sql" and f.attr in {
+                "SQL",
+                "Identifier",
+                "Composed",
+                "Literal",
+                "Placeholder",
+            }
+        # Bare SQL(...)/Identifier(...) after `from psycopg2.sql import SQL`.
+        if isinstance(f, ast.Name) and f.id in self._from_imports:
+            mod, sym = self._from_imports[f.id]
+            return mod.endswith("psycopg2.sql") or mod == "sql"
+        return False
+
+    def _expr_folds_to_constant(self, expr: ast.AST) -> bool:
+        """General 'does this string-building expr contain only constants'
+        check, shared by the cmdi / SQL suppression paths. A constant
+        accumulator (`x = 'a'; x += 'b'`) folds to constant and is NOT a sink
+        (prevents the visit_AugAssign synthesized-BinOp false positive)."""
+        return self._sql_expr_is_constant(expr)
+
+    def _resolve_binding(self, target: ast.AST) -> ast.AST | None:
+        """Resolve a Name / Subscript / Attribute target to its most recent
+        assigned value via the scope chain (innermost wins). Audit #25-28."""
+        if isinstance(target, ast.Name):
+            for scope in reversed(self._scopes):
+                if target.id in scope:
+                    return scope[target.id]
+            return None
+        key = _binding_key(target)
+        if key is None:
+            return None
+        for scope in reversed(self._scopes):
+            if key in scope:
+                return scope[key]
+        return None
 
     # ─── Django ORM SQL-injection sinks (bandit B610/B611) ──────────
 
@@ -1122,9 +1475,8 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         reconstruction has something concrete to walk back from.
         """
         # Shape 3: RawSQL(sql, params) — bare-name or attribute call.
-        is_rawsql = (
-            (isinstance(node.func, ast.Name) and node.func.id == "RawSQL")
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == "RawSQL")
+        is_rawsql = (isinstance(node.func, ast.Name) and node.func.id == "RawSQL") or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "RawSQL"
         )
         if is_rawsql:
             # First positional, or sql= kwarg, must be non-literal.
@@ -1142,7 +1494,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             return sql_arg
 
         # Shape 1: <qs>.raw(<sql>)
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "raw" and node.args:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "raw"
+            and node.args
+        ):
             sql_arg = node.args[0]
             if self._sql_value_is_safe(sql_arg):
                 return None
@@ -1195,28 +1551,53 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             return f"<qs>.{node.func.attr}"
         return "django_orm"
 
+    _DESER_MODULES = {"pickle", "cPickle", "_pickle", "marshal", "dill"}
+
     def _is_pickle_load(self, node: ast.Call) -> bool:
-        """Return True if the call is pickle.load() or pickle.loads()."""
-        if not (isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"load", "loads"}
-                and isinstance(node.func.value, ast.Name)):
+        """Return True for an unsafe-deserialization load() call: pickle/cPickle/
+        _pickle/marshal/dill .load|.loads and jsonpickle.decode, resolved through
+        import aliases and from-imports (audit #11/#13 + deser sink-breadth)."""
+        resolved = self._call_module_attr(node)
+        if resolved is None:
             return False
-        module_name = self._module_aliases.get(node.func.value.id, node.func.value.id)
-        return module_name in {"pickle", "cPickle", "_pickle"}
+        module, attr = resolved
+        # Round-trip: pickle.loads(pickle.dumps(x)) / jsonpickle.decode(
+        # jsonpickle.encode(x)) deserializes data produced in the same
+        # expression — no untrusted input crosses the boundary. Real-data FP
+        # (httpx/requests test suites). Suppress.
+        if node.args and self._arg_is_serialize_roundtrip(node.args[0]):
+            return False
+        if module == "jsonpickle" and attr in {"decode", "loads"}:
+            return True
+        return module in self._DESER_MODULES and attr in {"load", "loads"}
+
+    def _arg_is_serialize_roundtrip(self, arg: ast.AST) -> bool:
+        """True if `arg` is a serialize call (pickle.dumps / marshal.dumps /
+        jsonpickle.encode / *.dumps) — i.e. the loads() consumes freshly
+        serialized data, not untrusted input."""
+        if not isinstance(arg, ast.Call):
+            return False
+        f = arg.func
+        name = (
+            f.attr
+            if isinstance(f, ast.Attribute)
+            else (f.id if isinstance(f, ast.Name) else "")
+        )
+        return name in {"dumps", "dump", "encode"}
 
     def _is_unsafe_yaml_load(self, node: ast.Call) -> bool:
-        """Return True for yaml.load() without SafeLoader, or yaml.unsafe_load*."""
-        if not isinstance(node.func, ast.Attribute):
+        """Return True for yaml.load() without SafeLoader, or yaml.unsafe_load*.
+        Resolves through import aliases and from-imports (audit #12)."""
+        resolved = self._call_module_attr(node)
+        if resolved is None:
             return False
-        if not isinstance(node.func.value, ast.Name):
-            return False
-        module_name = self._module_aliases.get(node.func.value.id, node.func.value.id)
+        module_name, attr = resolved
         if module_name != "yaml":
             return False
         # Always-unsafe variants.
-        if node.func.attr in {"unsafe_load", "unsafe_load_all", "load_all"}:
+        if attr in {"unsafe_load", "unsafe_load_all", "load_all"}:
             return True
-        if node.func.attr != "load":
+        if attr != "load":
             return False
         # yaml.load(stream) — check for Loader= keyword that names a safe loader.
         loader_kw = next((kw for kw in node.keywords if kw.arg == "Loader"), None)
@@ -1228,7 +1609,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         """Return True if hashlib.md5/sha1 is hashing a password-like value."""
         if not isinstance(node.func, ast.Attribute):
             return False
-        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "hashlib"):
+        if not (
+            isinstance(node.func.value, ast.Name) and node.func.value.id == "hashlib"
+        ):
             return False
         algo: str | None = None
         if node.func.attr in {"md5", "sha1"}:
@@ -1278,68 +1661,240 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Name that resolves to a constant in scope is also safe.
         if isinstance(first, ast.Name):
             for scope in reversed(self._scopes):
-                if first.id in scope and isinstance(scope[first.id], ast.Constant):
-                    return False
+                if first.id in scope:
+                    if isinstance(scope[first.id], ast.Constant):
+                        return False
+                    break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
         if self._arg_is_sanitised(first):
             return False
+        # Framework URL builders produce safe internal URLs from a route NAME,
+        # not user input: Flask url_for(...), Django reverse(...). A redirect to
+        # one of these is not an open redirect (real-data FP on flask/django).
+        if self._is_safe_url_builder(first):
+            return False
         return True
+
+    def _is_safe_url_builder(self, expr: ast.AST) -> bool:
+        """True if `expr` is (or resolves to) a call to a known safe internal
+        URL builder — Flask url_for / Django reverse / reverse_lazy — whose
+        result is a server-controlled route, not attacker input."""
+        _SAFE_URL_BUILDERS = {"url_for", "reverse", "reverse_lazy"}
+        if isinstance(expr, ast.Call):
+            f = expr.func
+            name = (
+                f.attr
+                if isinstance(f, ast.Attribute)
+                else (f.id if isinstance(f, ast.Name) else "")
+            )
+            return name in _SAFE_URL_BUILDERS
+        if isinstance(expr, ast.Name):
+            for scope in reversed(self._scopes):
+                if expr.id in scope:
+                    return self._is_safe_url_builder(scope[expr.id])
+        return False
 
     # SSRF sinks the engine recognises. Each entry is the
     # display name we use in the finding title.
-    _SSRF_REQUESTS_METHODS = {"get", "post", "put", "delete", "head", "patch", "options", "request"}
+    _SSRF_REQUESTS_METHODS = {
+        "get",
+        "post",
+        "put",
+        "delete",
+        "head",
+        "patch",
+        "options",
+        "request",
+    }
     _SSRF_URLLIB_METHODS = {"urlopen", "urlretrieve"}
+
+    # Receiver Names we treat as HTTP-client instances ONLY when they resolve
+    # to a recognized client construction (TwiScope FP-3: redis/cache/db clients
+    # share .get/.delete/.post and must not be matched as SSRF sinks).
+    _HTTP_CLIENT_CTOR_MODULES = {"requests", "httpx", "aiohttp"}
+    _HTTP_CLIENT_CTOR_NAMES = {"Session", "Client", "AsyncClient", "ClientSession"}
+
+    def _receiver_is_http_client(self, name_node: ast.Name) -> bool:
+        """True if `name_node` resolves to an HTTP-client construction
+        (requests.Session(), httpx.Client(), aiohttp.ClientSession(), or a
+        bare Session()/Client() from a recognized from-import). Resolves the
+        binding through the scope chain. Conservative: an unresolved receiver
+        is NOT treated as an HTTP client (kills redis/cache .get/.delete FPs)."""
+        assigned = self._resolve_binding(name_node)
+        return assigned is not None and self._is_http_client_ctor(assigned)
+
+    def _call_arg_references_request(self, node: ast.Call) -> bool:
+        """True if any positional arg of `node` (or a Name resolving to one)
+        references request input — used to keep recall on unresolved HTTP-client
+        receivers while still suppressing redis/cache .get/.delete (whose args
+        are keys, not request input)."""
+        for a in node.args:
+            if _references_request_input(a):
+                return True
+            if isinstance(a, ast.Name):
+                assigned = self._resolve_binding(a)
+                if assigned is not None and _references_request_input(assigned):
+                    return True
+        return False
+
+    def _is_http_client_ctor(self, node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        f = node.func
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+            base = self._module_aliases.get(f.value.id, f.value.id)
+            return (
+                base in self._HTTP_CLIENT_CTOR_MODULES
+                and f.attr in self._HTTP_CLIENT_CTOR_NAMES
+            )
+        if isinstance(f, ast.Name):
+            resolved = self._from_imports.get(f.id)
+            if (
+                resolved
+                and resolved[0] in self._HTTP_CLIENT_CTOR_MODULES
+                and resolved[1] in self._HTTP_CLIENT_CTOR_NAMES
+            ):
+                return True
+            return f.id in self._HTTP_CLIENT_CTOR_NAMES
+        return False
 
     def _is_ssrf(self, node: ast.Call) -> bool:
         """Return True if an HTTP-client sink is called with a non-literal URL.
 
         Sanitisers: dict-lookup whitelists (`allowed[name]`,
         `allowed.get(name)`) and set-membership guards (`if name not in
-        allowed: return ...`) suppress the finding. Both surfaced as
-        FP sources in the Track 4 heavy-eval; both shapes are real
-        production sanitiser idioms.
+        allowed: return ...`) suppress the finding.
 
-        Recognised sinks:
-          - requests.get / post / put / delete / head / patch / options / request
-          - urllib.request.urlopen / urlretrieve
+        Recognised sinks (audit sink-breadth + #8):
+          - requests / httpx.get / post / put / delete / head / patch / options / request
+          - aiohttp ClientSession.get / post / ... (via the verb method name)
+          - urllib3 PoolManager.request (url is arg index 1)
+          - urllib.request.urlopen / urlretrieve  (qualified or from-imported)
           - six.moves.urllib.request.urlopen / urlretrieve  (Python 2 compat shim)
 
         A constant string first arg is correctly suppressed (mirrors
         the cmdi / path-traversal / open-redirect / XSS sink posture).
         """
-        if not isinstance(node.func, ast.Attribute):
-            return False
         if not self._ssrf_sink_name(node):
             return False
         if not node.args:
             return False
-        first = node.args[0]
+        url_idx = self._ssrf_url_arg_index(node)
+        if url_idx >= len(node.args):
+            return False
+        first = node.args[url_idx]
         # Constant string URL is fine — no user input involved.
         if isinstance(first, ast.Constant):
             return False
         # Name that resolves to a constant in the local scope is also fine.
         if isinstance(first, ast.Name):
             for scope in reversed(self._scopes):
-                if first.id in scope and isinstance(scope[first.id], ast.Constant):
-                    return False
+                if first.id in scope:
+                    if isinstance(scope[first.id], ast.Constant):
+                        return False
+                    break  # innermost binding wins (audit #17)
         if self._arg_is_sanitised(first):
             return False
+        # TwiScope FP-1/FP-2: constant scheme+host with taint only in path/query
+        # is not SSRF.
+        if self._url_authority_is_constant(first):
+            return False
         return True
+
+    def _url_authority_is_constant(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if the URL expression's scheme+authority is fixed — a literal
+        'http(s)://...' string, a settings.* / module-UPPER_CASE / self.*url
+        constant, or a `<base> + <path>` / f-string whose LEADING segment is one
+        of those. Taint in only the path/query of a constant-host URL is not SSRF."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return expr.value.startswith(("http://", "https://"))
+        if isinstance(expr, ast.Attribute):
+            if isinstance(expr.value, ast.Name) and expr.value.id == "settings":
+                return True
+            return self._attr_is_const_baseurl(expr)
+        if isinstance(expr, ast.Name):
+            if expr.id.isupper():
+                return True
+            assigned = self._resolve_binding(expr)
+            return assigned is not None and self._url_authority_is_constant(
+                assigned, _depth + 1
+            )
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            return self._url_authority_is_constant(expr.left, _depth + 1)
+        if isinstance(expr, ast.JoinedStr) and expr.values:
+            first = expr.values[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                return first.value.startswith(("http://", "https://"))
+            if isinstance(first, ast.FormattedValue):
+                return self._url_authority_is_constant(first.value, _depth + 1)
+        return False
+
+    @staticmethod
+    def _attr_is_const_baseurl(expr: ast.Attribute) -> bool:
+        """True for self.base_url / self.BaseURL / cfg.x_api_url style attributes
+        naming a configured base URL/endpoint (configured infra, not request input)."""
+        attr = expr.attr.lower()
+        return any(k in attr for k in ("url", "base", "endpoint", "host"))
+
+    # HTTP client modules whose verb methods are SSRF sinks (audit breadth).
+    _SSRF_CLIENT_MODULES = {"requests", "httpx"}
+
+    def _ssrf_url_arg_index(self, node: ast.Call) -> int:
+        """urllib3 PoolManager.request(method, url) puts the URL at index 1."""
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "request":
+            # requests.request(method, url) and urllib3 .request(method, url)
+            # both take the URL second; requests.<verb>() takes it first.
+            return 1
+        if isinstance(func, ast.Name) and node.func.id in self._from_imports:
+            _, sym = self._from_imports[node.func.id]
+            if sym == "request":
+                return 1
+        return 0
 
     def _ssrf_sink_name(self, node: ast.Call) -> str | None:
         """Return a display name for the SSRF sink (e.g. 'requests.get',
         'urllib.request.urlopen'), or None if `node` is not a recognised sink.
         """
         func = node.func
+        # Bare-name urlopen/urlretrieve via `from urllib.request import urlopen`.
+        if isinstance(func, ast.Name) and func.id in self._from_imports:
+            module, sym = self._from_imports[func.id]
+            if module.endswith("urllib.request") and sym in self._SSRF_URLLIB_METHODS:
+                return f"urllib.request.{sym}"
+            if (
+                module in self._SSRF_CLIENT_MODULES
+                and sym in self._SSRF_REQUESTS_METHODS
+            ):
+                return f"{module}.{sym}"
         if not isinstance(func, ast.Attribute):
             return None
-        # requests.<method>
+        # requests.<method> / httpx.<method> (incl. aliased module).
+        if isinstance(func.value, ast.Name):
+            base = self._module_aliases.get(func.value.id, func.value.id)
+            if (
+                base in self._SSRF_CLIENT_MODULES
+                and func.attr in self._SSRF_REQUESTS_METHODS
+            ):
+                return f"{base}.{func.attr}"
+        # aiohttp / urllib3 / httpx client-instance verb call: <session>.get(url),
+        # <pool>.request("GET", url). We key on the method name; instance type is
+        # unknown statically, so this is a heuristic (MEDIUM-confidence already).
         if (
             isinstance(func.value, ast.Name)
-            and func.value.id == "requests"
-            and func.attr in self._SSRF_REQUESTS_METHODS
+            and func.attr in (self._SSRF_REQUESTS_METHODS | {"request"})
+            and (
+                self._receiver_is_http_client(func.value)
+                # Unresolved receiver (e.g. a `session`/`http` param) still counts
+                # when the URL arg is request-tainted — a tainted URL into any
+                # .get/.post is worth flagging. The redis/cache FP has a NON-tainted
+                # key arg, so it stays suppressed.
+                or self._call_arg_references_request(node)
+            )
         ):
-            return f"requests.{func.attr}"
+            return f"{func.value.id}.{func.attr}"
         # urllib.request.<method>  — Attribute(Attribute(Name('urllib'), 'request'), 'X')
         if (
             func.attr in self._SSRF_URLLIB_METHODS
@@ -1389,8 +1944,10 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Name that resolves to a constant in scope is also safe.
         if isinstance(first, ast.Name):
             for scope in reversed(self._scopes):
-                if first.id in scope and isinstance(scope[first.id], ast.Constant):
-                    return False
+                if first.id in scope:
+                    if isinstance(scope[first.id], ast.Constant):
+                        return False
+                    break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
         if self._arg_is_sanitised(first):
             return False
@@ -1445,12 +2002,126 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Name that resolves to a constant in scope is also safe.
         if isinstance(target, ast.Name):
             for scope in reversed(self._scopes):
-                if target.id in scope and isinstance(scope[target.id], ast.Constant):
-                    return False
+                if target.id in scope:
+                    if isinstance(scope[target.id], ast.Constant):
+                        return False
+                    break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
         if self._arg_is_sanitised(target):
             return False
+        # TwiScope FP-4: a path that provably comes from a NON-request source —
+        # __file__-relative Path, os.getenv, tempfile.*.name, settings.*, a
+        # BASE_DIR-style constant — is not user-controlled traversal. Never
+        # suppress when the path references request input (recall guard).
+        if not _references_request_input(target) and self._path_is_trusted_source(target):
+            chain = self._collect_taint_chain(target, node.lineno, "") if node.args else None
+            if chain is None:  # no proven request flow either → trusted, suppress
+                return False
         return True
+
+    def _path_is_trusted_source(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if `expr` is built only from trusted (non-request) path sources:
+        __file__ / Path(__file__)... , os.getenv/os.environ.get, settings.*,
+        tempfile.NamedTemporaryFile().name / mkstemp, UPPER_CASE module
+        constants, or os.path.* over such. Conservative: an unknown variable is
+        NOT trusted (keeps the conservative emit the audit wanted)."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, ast.Name):
+            if expr.id in {"__file__"} or expr.id.isupper():
+                return True
+            assigned = self._resolve_binding(expr)
+            return assigned is not None and self._path_is_trusted_source(
+                assigned, _depth + 1
+            )
+        if isinstance(expr, ast.Attribute):
+            # settings.X, self.BASE_DIR, <tmp>.name, os.environ
+            if isinstance(expr.value, ast.Name) and expr.value.id == "settings":
+                return True
+            if expr.attr in {
+                "name"
+            }:  # NamedTemporaryFile().name / TemporaryFile().name
+                return self._is_tempfile_obj(expr.value)
+            if (
+                expr.attr.isupper()
+                or "dir" in expr.attr.lower()
+                or "root" in expr.attr.lower()
+            ):
+                return True
+            return False
+        if isinstance(expr, ast.Call):
+            f = expr.func
+            # os.getenv(...) / os.environ.get(...)
+            if isinstance(f, ast.Attribute):
+                if (
+                    f.attr in {"getenv"}
+                    and isinstance(f.value, ast.Name)
+                    and f.value.id == "os"
+                ):
+                    return True
+                if (
+                    f.attr == "get"
+                    and isinstance(f.value, ast.Attribute)
+                    and f.value.attr == "environ"
+                ):
+                    return True
+                # Path(__file__).resolve().parent... chain — trusted iff the
+                # base of the chain is Path(__file__) / a trusted arg.
+                if f.attr in {"resolve", "parent", "absolute", "joinpath"}:
+                    return self._path_is_trusted_source(f.value, _depth + 1)
+                # os.path.join(trusted, trusted)
+                if (
+                    f.attr in {"join", "abspath", "dirname", "normpath", "expanduser"}
+                    and isinstance(f.value, ast.Attribute)
+                    and f.value.attr == "path"
+                ):
+                    return all(
+                        self._path_is_trusted_source(a, _depth + 1) for a in expr.args
+                    )
+            # Path(__file__) / pathlib.Path(__file__)
+            name = (
+                f.attr
+                if isinstance(f, ast.Attribute)
+                else (f.id if isinstance(f, ast.Name) else "")
+            )
+            if name == "Path" and expr.args:
+                return self._path_is_trusted_source(expr.args[0], _depth + 1)
+            return False
+        if isinstance(expr, ast.BinOp):
+            return self._path_is_trusted_source(
+                expr.left, _depth + 1
+            ) and self._path_is_trusted_source(expr.right, _depth + 1)
+        if isinstance(expr, ast.JoinedStr):
+            return all(
+                self._path_is_trusted_source(v.value, _depth + 1)
+                for v in expr.values
+                if isinstance(v, ast.FormattedValue)
+            )
+        if isinstance(expr, ast.Subscript):
+            if _references_request_input(expr):
+                return False
+            return self._path_is_trusted_source(expr.value, _depth + 1)
+        return False
+
+    def _is_tempfile_obj(self, expr: ast.AST) -> bool:
+        """True if `expr` (or what it resolves to) is a tempfile.* object."""
+        target = self._resolve_binding(expr) if isinstance(expr, ast.Name) else expr
+        if isinstance(target, ast.Call):
+            f = target.func
+            name = (
+                f.attr
+                if isinstance(f, ast.Attribute)
+                else (f.id if isinstance(f, ast.Name) else "")
+            )
+            return name in {
+                "NamedTemporaryFile",
+                "TemporaryFile",
+                "SpooledTemporaryFile",
+                "mkstemp",
+            }
+        return False
 
     def _path_traversal_sink_name(self, node: ast.Call) -> str:
         """Return the canonical path-traversal sink-function name, or ''.
@@ -1465,14 +2136,29 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 return node.func.id
         elif isinstance(node.func, ast.Attribute):
             # Double-attribute form: os.path.join / os.path.abspath etc.
-            if (node.func.attr in _OS_PATH_SINK_ATTRS
-                    and isinstance(node.func.value, ast.Attribute)
-                    and node.func.value.attr == "path"
-                    and isinstance(node.func.value.value, ast.Name)
-                    and node.func.value.value.id == "os"):
+            if (
+                node.func.attr in _OS_PATH_SINK_ATTRS
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "path"
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id == "os"
+            ):
                 return f"os.path.{node.func.attr}"
-            if node.func.attr in _PATH_TRAVERSAL_SINK_NAMES:
-                return node.func.attr
+            # Attribute-form sink — audit #14: scope `open`/`Path` to a
+            # filesystem-receiver allow-list so `webbrowser.open`, `driver.open`,
+            # selenium/zipfile/socket `.open` etc. don't masquerade as CWE-22.
+            # `send_file`/`send_from_directory` keep matching on any receiver
+            # (they are framework-specific names with negligible collision).
+            attr = node.func.attr
+            if attr in {"send_file", "send_from_directory"}:
+                return attr
+            if attr in {"open", "Path"} and isinstance(node.func.value, ast.Name):
+                base = self._module_aliases.get(node.func.value.id, node.func.value.id)
+                _FS_OPEN_RECEIVERS = {"io", "os", "codecs", "gzip", "bz2", "lzma"}
+                if attr == "open" and base in _FS_OPEN_RECEIVERS:
+                    return "open"
+                if attr == "Path" and base in {"pathlib"}:
+                    return "Path"
         return ""
 
     def _path_traversal_arg_index(self, node: ast.Call) -> int:
@@ -1493,37 +2179,98 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
 
 # Loader names that yaml.load accepts as safe (i.e. don't construct arbitrary
 # Python objects). Compared by attribute or name, not value.
-_SAFE_LOADER_NAMES: frozenset[str] = frozenset({
-    "SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader",
-})
+_SAFE_LOADER_NAMES: frozenset[str] = frozenset(
+    {
+        "SafeLoader",
+        "CSafeLoader",
+        "BaseLoader",
+        "CBaseLoader",
+    }
+)
 
 
 # HTML-render sinks recognised by `_is_xss_html_sink` (TASK-120). Compared
 # by attribute or bare name so both `Markup(x)` and `flask.Markup(x)` /
 # `markupsafe.Markup(x)` match. Same applies to `mark_safe` (Django) and
 # `render_template_string` (Flask/Jinja2 SSTI + reflective XSS).
-_XSS_HTML_SINK_NAMES: frozenset[str] = frozenset({
-    "Markup", "mark_safe", "render_template_string",
-})
+_XSS_HTML_SINK_NAMES: frozenset[str] = frozenset(
+    {
+        "Markup",
+        "mark_safe",
+        "render_template_string",
+    }
+)
 
 
 # Path-traversal sinks recognised by `_is_path_traversal_sink` (TASK-134).
 # Bare-name `open(x)` is the stdlib builtin; attribute form `pathlib.Path(x)`
 # or `flask.send_file(x)` are also matched. send_from_directory's path arg
 # is the SECOND positional — see `_path_traversal_arg_index`.
-_PATH_TRAVERSAL_SINK_NAMES: frozenset[str] = frozenset({
-    "open",
-    "Path",
-    "send_file",
-    "send_from_directory",
-})
+_PATH_TRAVERSAL_SINK_NAMES: frozenset[str] = frozenset(
+    {
+        "open",
+        "Path",
+        "send_file",
+        "send_from_directory",
+    }
+)
 
 # `os.path.X` function names treated as path-traversal sinks when the
 # path argument is non-constant user input. `join` uses arg index 1
 # (base is trusted, joined component is user-controlled); the rest use 0.
-_OS_PATH_SINK_ATTRS: frozenset[str] = frozenset({
-    "join", "abspath", "expanduser", "expandvars",
-})
+_OS_PATH_SINK_ATTRS: frozenset[str] = frozenset(
+    {
+        "join",
+        "abspath",
+        "expanduser",
+        "expandvars",
+    }
+)
+
+
+# Path fragments that mark a file as test/fixture code (confidence demotion).
+_TEST_PATH_RE = re.compile(
+    r"(^|/)(tests?|testing|conftest)([_/.]|$)|(^|/)test_[^/]*\.py$|_test\.py$|/fixtures?/",
+)
+
+
+def _is_test_path(rel_path: str) -> bool:
+    """True if `rel_path` looks like test / fixture code, per common layout
+    conventions (tests/ dir, test_*.py, *_test.py, conftest.py, fixtures/)."""
+    return bool(_TEST_PATH_RE.search(rel_path.replace("\\", "/")))
+
+
+def _binding_key(target: ast.AST) -> str | None:
+    """Return a stable scope key for an attribute/subscript assignment target,
+    so `self.q = ...` and `d['k'] = ...` can be recorded and later resolved
+    (audit #26/#27). Returns None for shapes we don't track (computed keys, etc.).
+
+      self.q          -> "self.q"
+      d['k']          -> "d['k']"
+      obj.a.b         -> "obj.a.b"
+    """
+    if isinstance(target, ast.Attribute):
+        base = (
+            _binding_key(target.value)
+            if not isinstance(target.value, ast.Name)
+            else target.value.id
+        )
+        return f"{base}.{target.attr}" if base else None
+    if isinstance(target, ast.Subscript):
+        base = (
+            target.value.id
+            if isinstance(target.value, ast.Name)
+            else _binding_key(target.value)
+        )
+        if base is None:
+            return None
+        sl = target.slice
+        if isinstance(sl, ast.Constant):
+            return f"{base}[{sl.value!r}]"
+        return None
+    if isinstance(target, ast.Name):
+        return target.id
+    return None
 
 
 def _is_safe_loader_expr(expr: ast.expr) -> bool:
@@ -1541,7 +2288,10 @@ def _is_safe_loader_expr(expr: ast.expr) -> bool:
 
 # Long, distinctive password-related substrings — substring match is safe.
 _PASSWORD_SUBSTR_TOKENS: tuple[str, ...] = (
-    "password", "passwd", "passphrase", "secret",
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
 )
 
 # Short password abbreviations — substring match would false-positive
@@ -1553,12 +2303,16 @@ _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _looks_like_password_id(name: str) -> bool:
-    """Return True if an identifier name suggests a password/secret value."""
-    lower = name.lower()
-    if any(tok in lower for tok in _PASSWORD_SUBSTR_TOKENS):
+    """Return True if an identifier name suggests a password/secret value.
+
+    Audit #23: match password-ish tokens as whole snake/camel/dotted parts
+    rather than raw substrings, so `secretary`/`password_field_label` don't
+    false-positive while `user_password`/`db_passwd`/`pw` still match.
+    """
+    parts = set(_TOKEN_SPLIT_RE.split(name.lower()))
+    if parts & _PASSWORD_WORD_TOKENS:
         return True
-    # Whole-token check for short abbreviations like `pw`, `pwd`, `user_pw`.
-    return any(part in _PASSWORD_WORD_TOKENS for part in _TOKEN_SPLIT_RE.split(lower))
+    return any(tok in parts for tok in _PASSWORD_SUBSTR_TOKENS)
 
 
 def _arg_subtree_looks_like_password(node: ast.AST) -> bool:
@@ -1574,10 +2328,30 @@ def _arg_subtree_looks_like_password(node: ast.AST) -> bool:
 # Attributes on the `request` object that carry user-controlled data across
 # Flask, Django, FastAPI/Starlette. `headers` deliberately excluded — we have
 # a dedicated header-trust check (`_is_request_header_trust`).
-_REQUEST_INPUT_ATTRS: frozenset[str] = frozenset({
-    "GET", "POST", "args", "values", "form", "data", "json",
-    "query_params", "path_params", "params", "body", "files",
-})
+_REQUEST_INPUT_ATTRS: frozenset[str] = frozenset(
+    {
+        "GET",
+        "POST",
+        "args",
+        "values",
+        "form",
+        "data",
+        "json",
+        "query_params",
+        "path_params",
+        "params",
+        "body",
+        "files",
+        # audit #3/#4/#6: cookies (Flask + Django COOKIES), header values
+        # (Django META too — the auth-trust `if` check is orthogonal), and
+        # Django's uppercase FILES.
+        "cookies",
+        "COOKIES",
+        "headers",
+        "META",
+        "FILES",
+    }
+)
 
 
 def _ast_expr_text(node: ast.AST) -> str:
@@ -1598,13 +2372,26 @@ def _ast_expr_text(node: ast.AST) -> str:
     return text
 
 
+# Method-call body accessors on the request object (Flask) — audit #5.
+_REQUEST_INPUT_METHODS: frozenset[str] = frozenset({"get_json", "get_data"})
+
+
 def _references_request_input(arg: ast.AST) -> bool:
     """Return True if the subtree references request.GET/POST/args/etc.
 
-    Recognizes both the global `request` and the handler-arg name `req`
-    (see _REQUEST_NAMES).
+    Recognizes the global `request`, the handler-arg name `req`, and the
+    method-call accessors request.get_json()/get_data() (audit #5).
     """
     for n in ast.walk(arg):
+        # request.get_json() / request.get_data() — Flask body accessors.
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in _REQUEST_INPUT_METHODS
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id in _REQUEST_NAMES
+        ):
+            return True
         if isinstance(n, ast.Attribute):
             if (
                 isinstance(n.value, ast.Name)
