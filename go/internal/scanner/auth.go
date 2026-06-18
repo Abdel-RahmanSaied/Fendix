@@ -17,10 +17,30 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
+// authCheck implements the Check interface for the authentication
+// scanner. Structural adapter — Run holds the unchanged body of the
+// historical CheckAuth free function.
+type authCheck struct{}
+
+func (authCheck) Name() string     { return "auth" }
+func (authCheck) Category() string { return "auth_bypass" }
+func (authCheck) Tier() Tier       { return TierAuth }
+func (authCheck) Enabled(cfg *models.ScanConfig) bool {
+	return cfg != nil && cfg.Auth != nil
+}
+
 // CheckAuth runs authentication checks on an endpoint.
 // When auth is configured, it tests: unauthenticated access, malformed JWT,
 // expired JWT, and alg:none JWT confusion.
 func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return authCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged auth detection body. Client construction
+// (including CheckRedirect: ErrUseLastResponse) is identical to the
+// historical free function.
+func (authCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	if cfg.Auth == nil {
 		return nil
 	}
