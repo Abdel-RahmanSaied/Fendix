@@ -348,53 +348,39 @@ func TestBuildProbeURL(t *testing.T) {
 	}
 }
 
-func TestAddAuth(t *testing.T) {
-	tests := []struct {
-		name       string
-		auth       *models.AuthContext
-		wantHeader string
-		wantValue  string
-	}{
-		{
-			name:       "bearer",
-			auth:       &models.AuthContext{Type: "bearer", Value: "token123"},
-			wantHeader: "Authorization",
-			wantValue:  "Bearer token123",
-		},
-		{
-			name:       "apikey",
-			auth:       &models.AuthContext{Type: "apikey", Value: "key123", Header: "X-API-Key"},
-			wantHeader: "X-API-Key",
-			wantValue:  "key123",
-		},
-		{
-			name:       "cookie",
-			auth:       &models.AuthContext{Type: "cookie", Value: "session=abc"},
-			wantHeader: "Cookie",
-			wantValue:  "session=abc",
+// TestInjection_AuthHeaderSinglePrefix proves the C1 fix: injection probes
+// apply auth via the single source of truth (AuthContext.ApplyToRequest), so a
+// normalized bearer auth (the production shape, where Value already carries the
+// "Bearer " scheme) yields ONE prefix on the wire — not the historical
+// "Bearer Bearer <token>" double-prefix that servers reject, which silently
+// made every authenticated injection probe run unauthenticated.
+func TestInjection_AuthHeaderSinglePrefix(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Production-shaped auth: NormalizeAuth would set Header="Authorization"
+	// and keep the scheme-prefixed Value, exactly as DetectAuthType classifies
+	// a "Bearer ..." string. We set it directly to mirror that resolved state.
+	cfg := &models.ScanConfig{
+		Timeout:      5,
+		AllowPrivate: true,
+		EnableActive: true,
+		Auth: &models.AuthContext{
+			Header: "Authorization",
+			Value:  "Bearer realtoken",
+			Type:   models.AuthTypeBearer,
 		},
 	}
+	ep := Endpoint{Method: "GET", Path: "/q", FullURL: srv.URL + "/q", Params: []string{"id"}}
+	ResetGlobalAuditLog()
+	_ = injectionCheck{}.Run(context.Background(), NewCheckContext(cfg), ep)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", "http://example.com", nil)
-			cfg := &models.ScanConfig{Auth: tt.auth}
-			addAuth(req, cfg)
-
-			got := req.Header.Get(tt.wantHeader)
-			if got != tt.wantValue {
-				t.Errorf("got header %s=%q, want %q", tt.wantHeader, got, tt.wantValue)
-			}
-		})
-	}
-}
-
-func TestAddAuth_NilAuth(t *testing.T) {
-	req, _ := http.NewRequest("GET", "http://example.com", nil)
-	cfg := &models.ScanConfig{Auth: nil}
-	addAuth(req, cfg)
-	if got := req.Header.Get("Authorization"); got != "" {
-		t.Errorf("expected no Authorization header, got %q", got)
+	if gotAuth != "Bearer realtoken" {
+		t.Errorf("injection probe sent Authorization=%q; want single-prefix %q (double-prefix is the C1 FN bug)", gotAuth, "Bearer realtoken")
 	}
 }
 
@@ -697,7 +683,13 @@ func TestIntegration_WithAuth(t *testing.T) {
 	cfg := &models.ScanConfig{
 		EnableActive: true,
 		Timeout:      5,
-		Auth:         &models.AuthContext{Type: "bearer", Value: "test-token"},
+		// Production-shaped bearer auth: a resolved AuthContext carries the
+		// scheme in Value (that is how DetectAuthType classifies it as bearer)
+		// and a defaulted Header. ApplyToRequest sets this verbatim, yielding a
+		// single "Bearer test-token" on the wire. (The old addAuth re-prepended
+		// the scheme — the C1 double-prefix bug — so this test previously passed
+		// a bare token; that input shape never occurs after NormalizeAuth.)
+		Auth:         &models.AuthContext{Type: models.AuthTypeBearer, Header: "Authorization", Value: "Bearer test-token"},
 		AllowPrivate: true,
 	}
 	ep := Endpoint{

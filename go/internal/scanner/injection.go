@@ -135,12 +135,18 @@ func PrintDisclaimer() {
 }
 
 // measureBaseline sends 3 requests and returns the median response time.
-func measureBaseline(ctx context.Context, client *http.Client, method, url string) (time.Duration, error) {
+func measureBaseline(ctx context.Context, client *http.Client, cfg *models.ScanConfig, method, url string) (time.Duration, error) {
 	var durations []time.Duration
 	for i := 0; i < 3; i++ {
 		req, err := http.NewRequestWithContext(ctx, method, url, nil)
 		if err != nil {
 			return 0, fmt.Errorf("creating baseline request: %w", err)
+		}
+		// F-I (C1 baseline-auth): the baseline must traverse the SAME auth
+		// state as the probes, or the timing delta compares two different code
+		// paths (a fast 401 stub vs the authenticated handler).
+		if cfg != nil {
+			cfg.Auth.ApplyToRequest(req)
 		}
 		start := time.Now()
 		resp, err := client.Do(req)
@@ -416,7 +422,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	var findings []models.Finding
 	maxProbes := effectiveMaxProbes(cfg)
 
-	baseline, err := measureBaseline(ctx, client, endpoint.Method, endpoint.FullURL)
+	baseline, err := measureBaseline(ctx, client, cfg, endpoint.Method, endpoint.FullURL)
 	if err != nil {
 		logagg.Warn("injection", "failed to measure baseline for sqli", "endpoint", endpoint.FullURL, "error", err)
 		return nil
@@ -441,7 +447,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			logagg.Warn("injection", "failed to create sqli probe request", "error", err)
 			continue
 		}
-		addAuth(req, cfg)
+		cfg.Auth.ApplyToRequest(req)
 
 		resp, err := client.Do(req)
 		elapsed := time.Since(start)
@@ -486,7 +492,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 				start2 := time.Now()
 				req2, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
 				if err == nil {
-					addAuth(req2, cfg)
+					cfg.Auth.ApplyToRequest(req2)
 					resp2, err := client.Do(req2)
 					elapsed2 := time.Since(start2)
 					if err == nil {
@@ -557,7 +563,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 		logagg.Warn("injection", "failed to create error-based sqli probe request", "error", err)
 		return nil
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -670,7 +676,7 @@ func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanCon
 		logagg.Warn("injection", "failed to create boolean sqli probe request", "error", err)
 		return 0, 0, false
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -712,7 +718,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		logagg.Warn("injection", "failed to create cmdi probe request", "error", err)
 		return nil
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -790,7 +796,7 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		logagg.Warn("injection", "failed to create crlf probe request", "error", err)
 		return nil
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -848,37 +854,6 @@ func buildProbeURL(baseURL, param, payload string) string {
 		sep = "&"
 	}
 	return fmt.Sprintf("%s%s%s=%s", baseURL, sep, url.QueryEscape(param), url.QueryEscape(payload))
-}
-
-// addAuth adds authentication headers to a request if configured.
-func addAuth(req *http.Request, cfg *models.ScanConfig) {
-	if cfg.Auth == nil {
-		return
-	}
-	header := cfg.Auth.Header
-	if header == "" {
-		header = "Authorization"
-	}
-
-	switch cfg.Auth.Type {
-	case "bearer":
-		req.Header.Set(header, "Bearer "+cfg.Auth.Value)
-	case "apikey":
-		req.Header.Set(header, cfg.Auth.Value)
-	case "apikey-query":
-		// Mutate the URL query rather than a header — same logic as
-		// AuthContext.ApplyToRequest, repeated here because injection
-		// builds its own auth-bearing requests outside ApplyToRequest.
-		q := req.URL.Query()
-		q.Set(header, cfg.Auth.Value)
-		req.URL.RawQuery = q.Encode()
-	case "basic":
-		req.Header.Set(header, "Basic "+cfg.Auth.Value)
-	case "cookie":
-		req.Header.Set("Cookie", cfg.Auth.Value)
-	default:
-		req.Header.Set(header, cfg.Auth.Value)
-	}
 }
 
 // medianDuration returns the median of a slice of durations.
