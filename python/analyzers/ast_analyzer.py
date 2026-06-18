@@ -1013,15 +1013,22 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # signal is that the URL itself is dynamic.
         elif self._is_ssrf(node):
             chain = None
+            ctor_arg = self._ssrf_ctor_base_url_arg(node)
             sink_name = (
                 self._ssrf_sink_name(node)
                 or f"requests.{getattr(node.func, 'attr', '?')}"
             )
-            if node.args:
+            url_arg = (
+                ctor_arg
+                if ctor_arg is not None
+                else (node.args[0] if node.args else None)
+            )
+            if url_arg is not None:
+                label = sink_name if ctor_arg is None else "http_client(base_url=…)"
                 chain = self._collect_taint_chain(
-                    node.args[0],
+                    url_arg,
                     node.lineno,
-                    f"{sink_name}({_ast_expr_text(node.args[0])})",
+                    f"{label}({_ast_expr_text(url_arg)})",
                 )
             self._emit_finding(
                 "PY_SSRF",
@@ -1737,6 +1744,46 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     return True
         return False
 
+    def _ssrf_ctor_base_url_arg(self, node: ast.Call) -> ast.AST | None:
+        """If `node` is an HTTP-client CONSTRUCTOR with a non-constant `base_url=`
+        kwarg, return that arg node; else None. Catches the
+        `httpx.AsyncClient(base_url=config.get(...))` SSRF shape that the
+        call-verb sink set misses (Sanad A3). Constant base_url → None (safe)."""
+        if not self._is_http_client_ctor(node):
+            return None
+        for kw in node.keywords:
+            if kw.arg != "base_url":
+                continue
+            val = kw.value
+            if isinstance(val, ast.Constant):
+                return None  # hardcoded base_url is safe
+            # Resolve a Name/Attribute base_url to its assigned value. The
+            # name-heuristic in _attr_is_const_baseurl trusts `self.base_url`
+            # blindly, but here it may have been assigned config.get()/os.getenv
+            # (tainted) — so resolve first and only trust a CONSTANT binding.
+            if isinstance(val, (ast.Name, ast.Attribute)):
+                bound = self._resolve_binding(val)
+                if bound is not None:
+                    if isinstance(
+                        bound, ast.Constant
+                    ) or self._url_authority_is_constant(bound):
+                        return None
+                    return bound  # resolved to a tainted expr → sink
+                # Unresolved attribute: fall back to the name-heuristic only for
+                # bare module/settings constants, NOT self.* (which we can't prove
+                # constant). A self.base_url we couldn't resolve is treated as a
+                # potential sink (conservative — this is the Sanad A3 case).
+                if (
+                    isinstance(val, ast.Attribute)
+                    and isinstance(val.value, ast.Name)
+                    and val.value.id == "self"
+                ):
+                    return val
+            if self._url_authority_is_constant(val):
+                return None  # settings/literal authority → safe
+            return val
+        return None
+
     def _is_http_client_ctor(self, node: ast.AST) -> bool:
         if not isinstance(node, ast.Call):
             return False
@@ -1775,6 +1822,9 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         A constant string first arg is correctly suppressed (mirrors
         the cmdi / path-traversal / open-redirect / XSS sink posture).
         """
+        # Constructor form: httpx.AsyncClient(base_url=<non-const>) etc. (Sanad A3).
+        if self._ssrf_ctor_base_url_arg(node) is not None:
+            return True
         if not self._ssrf_sink_name(node):
             return False
         if not node.args:
@@ -2013,8 +2063,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # __file__-relative Path, os.getenv, tempfile.*.name, settings.*, a
         # BASE_DIR-style constant — is not user-controlled traversal. Never
         # suppress when the path references request input (recall guard).
-        if not _references_request_input(target) and self._path_is_trusted_source(target):
-            chain = self._collect_taint_chain(target, node.lineno, "") if node.args else None
+        if not _references_request_input(target) and self._path_is_trusted_source(
+            target
+        ):
+            chain = (
+                self._collect_taint_chain(target, node.lineno, "")
+                if node.args
+                else None
+            )
             if chain is None:  # no proven request flow either → trusted, suppress
                 return False
         return True

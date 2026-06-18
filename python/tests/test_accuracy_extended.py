@@ -622,3 +622,107 @@ class TestPathTraversalNeedsSource:
             "    return open(request.args['file'])\n"
         )
         assert _has(code, "SEC-PY_PATH_TRAVERSAL")
+
+
+# ======================================================================
+# Sanad real-app recall fixes (docs/SANAD_SCAN_TRIAGE.md)
+# ======================================================================
+
+
+class TestSSRFConstructorSink:
+    def test_httpx_asyncclient_base_url_tainted(self) -> None:
+        # base_url from config/env into the client constructor → SSRF (A3).
+        code = (
+            "import httpx\n"
+            "def make(config):\n"
+            "    base = config.get('base_url')\n"
+            "    return httpx.AsyncClient(base_url=base)\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_httpx_client_base_url_from_getenv(self) -> None:
+        code = (
+            "import os\nimport httpx\n"
+            "def make():\n"
+            "    return httpx.AsyncClient(base_url=os.getenv('OLLAMA_BASE_URL'))\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_aiohttp_session_base_url_tainted(self) -> None:
+        code = (
+            "import aiohttp\n"
+            "def make(config):\n"
+            "    return aiohttp.ClientSession(base_url=config.get('url'))\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_constant_base_url_constructor_not_flagged(self) -> None:
+        # A hardcoded base_url is safe — must not flag (precision guard).
+        code = (
+            "import httpx\n"
+            "def make():\n"
+            "    return httpx.AsyncClient(base_url='https://api.openai.com/v1')\n"
+        )
+        assert not _has(code, "SEC-PY_SSRF")
+
+
+class TestConfigEnvSSRFSource:
+    def test_config_get_url_into_requests_get(self) -> None:
+        # config.get(...) URL into requests.get → SSRF source recognized.
+        code = (
+            "import requests\n"
+            "def fetch(config):\n"
+            "    url = config.get('endpoint')\n"
+            "    return requests.get(url)\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_getenv_url_into_requests_get(self) -> None:
+        code = (
+            "import os, requests\n"
+            "def fetch():\n"
+            "    return requests.get(os.getenv('WEBHOOK_URL'))\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_getenv_path_still_not_traversal(self) -> None:
+        # CRITICAL precision guard: os.getenv must remain a TRUSTED path root
+        # for path-traversal (only an SSRF source, not a path source).
+        code = "import os\ndef h():\n    p = os.getenv('JWT_PRIVATE_KEY')\n    return open(p, 'rb')\n"
+        assert not _has(code, "SEC-PY_PATH_TRAVERSAL")
+
+
+class TestSanadA3RealShape:
+    def test_self_base_url_from_config_into_ctor(self) -> None:
+        # The exact Sanad A3 shape: self.base_url = config.get(...) → ctor.
+        code = (
+            "import httpx\n"
+            "class LLM:\n"
+            "    def __init__(self, config):\n"
+            "        self.base_url = config.get('base_url', 'https://x')\n"
+            "        self.client = httpx.AsyncClient(base_url=self.base_url)\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_self_base_url_constant_ctor_not_flagged(self) -> None:
+        # self.base_url assigned a CONSTANT → not SSRF (precision guard).
+        code = (
+            "import httpx\n"
+            "class LLM:\n"
+            "    def __init__(self):\n"
+            "        self.base_url = 'https://api.openai.com/v1'\n"
+            "        self.client = httpx.AsyncClient(base_url=self.base_url)\n"
+        )
+        assert not _has(code, "SEC-PY_SSRF")
+
+    def test_twiscope_fp1_constant_base_url_call_still_suppressed(self) -> None:
+        # Recall/precision guard: TwiScope FP-1 (requests.get(self.base_url + path)
+        # with a CONSTANT base_url) must STILL be suppressed.
+        code = (
+            "import requests\n"
+            "class API:\n"
+            "    base_url = 'https://api.twitter.com/2/'\n"
+            "    def f(self, endpoint):\n"
+            "        return requests.get(self.base_url + endpoint)\n"
+        )
+        assert not _has(code, "SEC-PY_SSRF")
