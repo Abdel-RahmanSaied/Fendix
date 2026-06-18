@@ -354,8 +354,12 @@ func TestIntegration_AuthFindingsHaveCorrectFields(t *testing.T) {
 		if f.Severity != models.SeverityCritical {
 			t.Errorf("finding %q: severity = %s, want CRITICAL", f.Title, f.Severity)
 		}
-		if f.Confidence != models.ConfidenceHigh {
-			t.Errorf("finding %q: confidence = %s, want HIGH", f.Title, f.Confidence)
+		// Fix 3.3 (confidence corroboration): this server writes a 2xx with
+		// NO body, so every finding is corroborated by the status code only
+		// -> MEDIUM. (Pre-3.3 this asserted HIGH unconditionally; the empty
+		// body is exactly the weak signal the corroboration rule downgrades.)
+		if f.Confidence != models.ConfidenceMedium {
+			t.Errorf("finding %q: confidence = %s, want MEDIUM (status-only, empty body)", f.Title, f.Confidence)
 		}
 		if f.Endpoint != "GET /api/validate" {
 			t.Errorf("finding %q: endpoint = %s, want GET /api/validate", f.Title, f.Endpoint)
