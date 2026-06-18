@@ -162,3 +162,38 @@ Relevant files:
 - Engine SCA: `/Users/asaied/WorkDir/Fendix/fendix-engine/python/analyzers/deps.py`
 - Engine secrets (fix #5 overlap): `/Users/asaied/WorkDir/Fendix/fendix-engine/go/internal/scanner/secrets/scanner.go`
 - Sanad confirmed-vuln anchors: `chat_prompts.py:149,160,276-316`; `openrouter.py:57-112`; `ollama.py:39-42`; `core/security.py:54-91`; `reports.py:80-107`; `analysis.py:39-63`; `models/access_key.py:15`; `main.py:205`; `queries_builders/X/X_K.py:75`
+
+---
+
+## 7. LLM Prompt-Injection Detection — Feature Added (follow-up)
+
+A new `SEC-PY_LLM_PROMPT_INJECTION` detector (CWE-77 / LLM01) was implemented in
+`ast_analyzer.py` per the approved plan, with 10 regression tests:
+
+- **Sink (`_is_llm_prompt_sink`)**: provider chat-completion calls
+  (`*.chat.completions.create`, `*.messages.create`, `*.chat/.generate/.invoke`)
+  with a non-constant `messages=`/`prompt=`/`content` arg. A fully-constant
+  prompt template is suppressed (reuses the `_sql_expr_is_constant` fold).
+- **Direct source (A1)**: HTTP-request input → prompt = **HIGH, reachable**
+  (reuses `_references_request_input` + the existing taint walker, incl. f-string/
+  concat/`.format()`/intra-function variable assembly).
+- **Indirect source (A2)**: a new `_references_datastore_read` (ES `.search/.get`,
+  SQLAlchemy result accessors, and subscripts into their results) → prompt =
+  **MEDIUM**. Threaded through the taint walker via an `extra_source` parameter
+  that is **sink-gated** — recognized only for the LLM sink, never for
+  SQL/XSS/SSRF/path, so it introduces **zero** new false positives elsewhere.
+
+**Result on Sanad:** the engine went from **0** LLM findings to detecting the
+prompt-injection sink at `llm/anthropic.py:202` (`messages.create`, reachable).
+
+**Honest limit:** the audit's A1 assembly in `chat_prompts.py:160`
+(`prompt_parts.append(f"...{query}")` → `"\n".join(...)` in a helper, with the
+`.create()` call in a *different module*) is **not** caught — it requires
+**interprocedural** taint across a list-accumulator + join, which is beyond the
+current intra-procedural walker. This is a documented engine limitation
+(roadmap: 1-hop interprocedural taint), not a regression. In-function prompt
+assembly (the common single-module case, and all 10 tests) is caught.
+
+**Verification:** 369 tests pass (was 359; +10), ruff clean. Recall/precision
+guard: TwiScope unchanged (35, real SSRF reachable, 0 LLM FPs); vulpy/dvpwa
+unchanged (0 LLM FPs) — confirming the datastore source does not leak.

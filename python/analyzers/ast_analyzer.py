@@ -388,7 +388,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     # ------------------------------------------------------------------
 
     def _collect_taint_chain(
-        self, sink_arg: ast.AST, sink_lineno: int, sink_expr: str
+        self, sink_arg: ast.AST, sink_lineno: int, sink_expr: str, extra_source=None
     ) -> list[dict] | None:
         """Walk back from ``sink_arg`` through scope assignments to a request source.
 
@@ -404,13 +404,15 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Inline case: the sink's argument is itself a request-input
         # reference (no intermediate variables). The chain is two links:
         # source @ sink-lineno → sink @ sink-lineno.
-        if _references_request_input(sink_arg):
+        if _references_request_input(sink_arg) or (
+            extra_source is not None and extra_source(sink_arg)
+        ):
             return [
                 self._link(sink_lineno, _ast_expr_text(sink_arg)),
                 self._link(sink_lineno, sink_expr),
             ]
 
-        prefix = self._trace_to_source(sink_arg, frozenset(), 0)
+        prefix = self._trace_to_source(sink_arg, frozenset(), 0, extra_source)
         if prefix is None:
             return None
         # Cap the emitted chain length too (F-H5b). The `visited` set already
@@ -425,7 +427,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         return chain
 
     def _trace_to_source(
-        self, expr: ast.AST, visited: frozenset[str], depth: int
+        self, expr: ast.AST, visited: frozenset[str], depth: int, extra_source=None
     ) -> list[dict] | None:
         """Recursively trace Names in ``expr`` through scope assignments.
 
@@ -456,9 +458,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 assigned = scope[key]
                 lineno = getattr(assigned, "lineno", 0)
                 link = self._link(lineno, _ast_expr_text(assigned))
-                if _references_request_input(assigned):
+                if _references_request_input(assigned) or (
+                    extra_source is not None and extra_source(assigned)
+                ):
                     return [link]
-                deeper = self._trace_to_source(assigned, visited | {key}, depth + 1)
+                deeper = self._trace_to_source(
+                    assigned, visited | {key}, depth + 1, extra_source
+                )
                 if deeper is not None:
                     return deeper + [link]
                 # Binding resolved but didn't lead to a source; don't keep
@@ -1109,6 +1115,59 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     taint_chain=chain,
                 )
 
+        # LLM prompt-injection sink (Sanad A1/A2). An untrusted value reaching
+        # an LLM chat-completion call / prompt arg is prompt injection. Request
+        # input → HIGH (direct, A1); datastore/RAG-retrieved content → MEDIUM
+        # (indirect/second-order, A2). The datastore source is recognized ONLY
+        # here (sink-gated via extra_source) so it can't leak into SQL/XSS/SSRF.
+        elif self._is_llm_prompt_sink(node):
+            arg = self._llm_prompt_tainted_arg(node)
+            if arg is not None:
+                sink_name = self._llm_sink_name(node)
+                req_chain = self._collect_taint_chain(
+                    arg, node.lineno, f"{sink_name}({_ast_expr_text(arg)})"
+                )
+                if req_chain is not None:
+                    self._emit_finding(
+                        "PY_LLM_PROMPT_INJECTION",
+                        "Prompt injection — untrusted input flows into an LLM prompt",
+                        "HIGH",
+                        "HIGH",
+                        "CWE-77",
+                        (
+                            "Never concatenate untrusted input into an LLM prompt. "
+                            "Isolate user/query content in a separate message role, "
+                            "delimit and escape it, and instruct the model to treat "
+                            "fenced content as data, not instructions."
+                        ),
+                        node.lineno,
+                        taint_chain=req_chain,
+                    )
+                else:
+                    ds_chain = self._collect_taint_chain(
+                        arg,
+                        node.lineno,
+                        f"{sink_name}({_ast_expr_text(arg)})",
+                        extra_source=_references_datastore_read,
+                    )
+                    if ds_chain is not None:
+                        self._emit_finding(
+                            "PY_LLM_PROMPT_INJECTION",
+                            "Indirect prompt injection — retrieved/stored content "
+                            "flows into an LLM prompt",
+                            "HIGH",
+                            "MEDIUM",
+                            "CWE-77",
+                            (
+                                "Treat retrieved (RAG/datastore) content as untrusted. "
+                                "Delimit and escape each snippet, inspect for injection "
+                                "markers, and keep it in a data-only message segment."
+                            ),
+                            node.lineno,
+                            category="injection",
+                            taint_chain=ds_chain,
+                        )
+
         self.generic_visit(node)
 
     # ------------------------------------------------------------------
@@ -1263,6 +1322,99 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             module, symbol = self._from_imports[func.id]
             return (module, symbol)
         return None
+
+    # ─── LLM prompt-injection sink (Sanad A1/A2) ──────────────────────
+    #
+    # Two shapes count as "reaching the model":
+    #   1. provider chat-completion CALLS — *.chat.completions.create(...),
+    #      *.completions.create, *.messages.create (Anthropic),
+    #      *.chat(...)/*.generate(...)/*.invoke(...) (Ollama/LangChain).
+    #   2. prompt-assembly via a *prompt*/messages/system variable assigned a
+    #      tainted f-string/concat (handled in visit_Assign → recorded so the
+    #      var resolves to its tainted value when it reaches a call here).
+    _LLM_CALL_ATTRS = frozenset(
+        {"create", "chat", "generate", "invoke", "complete", "completion"}
+    )
+    _LLM_PROMPT_KWARGS = frozenset(
+        {"messages", "prompt", "input", "text", "content", "system"}
+    )
+
+    def _is_llm_prompt_sink(self, node: ast.Call) -> bool:
+        """True if `node` is an LLM chat/completion call (and a tainted prompt
+        arg is present). Recognises the *.chat.completions.create /
+        *.messages.create / *.chat / *.generate / *.invoke shapes."""
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return False
+        attr = func.attr
+        # *.chat.completions.create(...)  / *.completions.create(...)
+        if attr == "create":
+            v = func.value
+            if isinstance(v, ast.Attribute) and v.attr in {"completions", "messages"}:
+                return self._llm_prompt_tainted_arg(node) is not None
+            return False
+        # *.chat(...) / *.generate(...) / *.invoke(...) / *.complete(...)
+        if attr in {"chat", "generate", "invoke", "complete", "completion"}:
+            return self._llm_prompt_tainted_arg(node) is not None
+        return False
+
+    def _llm_sink_name(self, node: ast.Call) -> str:
+        f = node.func
+        if isinstance(f, ast.Attribute):
+            if isinstance(f.value, ast.Attribute):
+                return f"{f.value.attr}.{f.attr}"
+            return f.attr
+        return "llm"
+
+    def _llm_prompt_tainted_arg(self, node: ast.Call) -> ast.AST | None:
+        """Return the non-constant prompt/messages arg of an LLM call, or None
+        if every candidate is a constant (safe static template)."""
+        candidates: list[ast.AST] = []
+        # messages=[{"content": <x>}, ...] — pull each element's content value.
+        for kw in node.keywords:
+            if kw.arg in self._LLM_PROMPT_KWARGS:
+                candidates.extend(self._extract_message_contents(kw.value))
+        # First positional for *.chat/.generate/.invoke(prompt).
+        if node.args:
+            candidates.append(node.args[0])
+        for c in candidates:
+            if self._llm_value_is_dynamic(c):
+                return c
+        return None
+
+    def _extract_message_contents(self, value: ast.AST) -> list[ast.AST]:
+        """From a messages=[...] list literal, return each dict's content value;
+        for a bare prompt string return [value]."""
+        out: list[ast.AST] = []
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Dict):
+                    for k, v in zip(elt.keys, elt.values):
+                        if isinstance(k, ast.Constant) and k.value in {
+                            "content",
+                            "text",
+                        }:
+                            out.append(v)
+                else:
+                    out.append(elt)
+        else:
+            out.append(value)
+        return out
+
+    def _llm_value_is_dynamic(self, expr: ast.AST) -> bool:
+        """True if `expr` is a non-constant prompt value (a constant template is
+        safe). Reuses the const-fold so a fully-static f-string is not flagged."""
+        if isinstance(expr, ast.Constant):
+            return False
+        if isinstance(expr, (ast.JoinedStr, ast.BinOp)):
+            return not self._sql_expr_is_constant(expr)
+        if isinstance(expr, ast.Name):
+            bound = self._resolve_binding(expr)
+            if bound is None:
+                return False  # unresolved bare name → not provably dynamic
+            return self._llm_value_is_dynamic(bound)
+        # Call (.format / retrieval), Subscript (rows[0]['text']), Attribute → dynamic.
+        return isinstance(expr, (ast.Call, ast.Subscript, ast.Attribute))
 
     def _cmdi_arg_is_dangerous(self, node: ast.Call) -> bool:
         """Return True if the first positional arg to a cmdi sink is non-literal.
@@ -2465,6 +2617,63 @@ def _references_request_input(arg: ast.AST) -> bool:
                 and value.value.id in _REQUEST_NAMES
                 and value.attr in _REQUEST_INPUT_ATTRS
             ):
+                return True
+    return False
+
+
+# Datastore/retrieval read methods whose RESULTS are second-order (stored)
+# untrusted input — RAG context, DB rows. Recognised ONLY as a source for the
+# LLM_PROMPT sink (sink-gated), never for SQL/XSS/SSRF/path detectors.
+_DATASTORE_READ_METHODS: frozenset[str] = frozenset(
+    {
+        # Elasticsearch
+        "search",
+        "get",
+        "mget",
+        "msearch",
+        # SQLAlchemy / DB-API result accessors
+        "fetchall",
+        "fetchone",
+        "fetchmany",
+        "scalar",
+        "scalars",
+        "all",
+        "first",
+        "mappings",
+        "one",
+        "one_or_none",
+    }
+)
+# Result-shaped keys that indicate retrieved content being indexed into.
+_DATASTORE_RESULT_KEYS: frozenset[str] = frozenset(
+    {
+        "hits",
+        "_source",
+        "text",
+        "summary",
+        "content",
+        "body",
+        "documents",
+        "rows",
+    }
+)
+
+
+def _references_datastore_read(arg: ast.AST) -> bool:
+    """True if the subtree reads from a datastore/retrieval call — an ES
+    .search()/.get() or a SQLAlchemy result accessor (.fetchall/.mappings/...),
+    or a subscript into such a result (rows[0]['text'], hits['hits']...). This
+    models second-order / RAG-retrieved untrusted input (Sanad A2). Used ONLY by
+    the LLM_PROMPT sink via extra_source — kept out of every other detector."""
+    for n in ast.walk(arg):
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in _DATASTORE_READ_METHODS
+        ):
+            return True
+        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+            if n.slice.value in _DATASTORE_RESULT_KEYS:
                 return True
     return False
 

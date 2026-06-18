@@ -726,3 +726,117 @@ class TestSanadA3RealShape:
             "        return requests.get(self.base_url + endpoint)\n"
         )
         assert not _has(code, "SEC-PY_SSRF")
+
+
+# ======================================================================
+# LLM prompt-injection detection (docs/witty-sparking-acorn plan; Sanad A1/A2)
+# ======================================================================
+
+
+def _findings(code: str) -> list[dict]:
+    return _scan(code)
+
+
+def _conf(code: str, fid: str) -> str | None:
+    for f in _scan(code):
+        if f["id"] == fid:
+            return f.get("confidence")
+    return None
+
+
+class TestLLMPromptInjectionDirect:
+    def test_request_into_messages_content_fstring(self) -> None:  # A1
+        code = (
+            "from flask import request\n"
+            "def h(client):\n"
+            "    q = request.args.get('q')\n"
+            "    return client.chat.completions.create("
+            "messages=[{'role': 'user', 'content': f'Q: {q}'}])\n"
+        )
+        f = [x for x in _scan(code) if x["id"] == "SEC-PY_LLM_PROMPT_INJECTION"]
+        assert f and f[0].get("reachable") is True
+
+    def test_prompt_var_assembly_then_generate(self) -> None:  # A1 cross-call assembly
+        code = (
+            "from flask import request\n"
+            "def h(llm):\n"
+            "    prompt = f\"User question: {request.args['q']}\"\n"
+            "    return llm.generate(prompt)\n"
+        )
+        assert _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+    def test_anthropic_messages_create(self) -> None:
+        code = (
+            "from flask import request\n"
+            "def h(client):\n"
+            "    text = request.get_json()['msg']\n"
+            "    return client.messages.create(messages=[{'role': 'user', 'content': text}])\n"
+        )
+        assert _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+    def test_openai_aliased_module(self) -> None:
+        code = (
+            "import openai as oa\nfrom flask import request\n"
+            "def h():\n"
+            "    p = request.args['p']\n"
+            "    return oa.chat.completions.create(messages=[{'content': p}])\n"
+        )
+        assert _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+    def test_prompt_var_kwarg(self) -> None:
+        code = (
+            "from flask import request\n"
+            "def h(llm):\n"
+            "    return llm.invoke(prompt=f\"Answer: {request.args['x']}\")\n"
+        )
+        assert _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+
+class TestLLMPromptInjectionIndirect:
+    def test_db_read_into_prompt(self) -> None:  # A2 second-order
+        code = (
+            "def h(db, llm):\n"
+            "    rows = db.execute(sql).mappings().all()\n"
+            "    prompt = f\"Context: {rows[0]['text']}\"\n"
+            "    return llm.chat(prompt)\n"
+        )
+        f = [x for x in _scan(code) if x["id"] == "SEC-PY_LLM_PROMPT_INJECTION"]
+        assert f, "indirect/RAG prompt injection not detected"
+        assert f[0].get("confidence") == "MEDIUM"
+
+    def test_es_search_result_into_messages(self) -> None:  # A2
+        code = (
+            "def h(es, client):\n"
+            "    hits = es.search(index='i', body={})\n"
+            "    ctx = hits['hits']['hits'][0]['_source']['text']\n"
+            "    return client.chat.completions.create(messages=[{'content': ctx}])\n"
+        )
+        assert _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+
+class TestLLMPromptInjectionPrecision:
+    def test_constant_prompt_not_flagged(self) -> None:
+        code = (
+            "def h(client):\n"
+            "    return client.chat.completions.create("
+            "messages=[{'role': 'system', 'content': 'You are a helpful bot'}])\n"
+        )
+        assert not _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+    def test_db_read_to_non_llm_sink_not_flagged(self) -> None:
+        # A datastore read that does NOT reach an LLM prompt must not flag
+        # (sink-gated — no cross-contamination into other detectors).
+        code = (
+            "def h(db):\n"
+            "    rows = db.execute(sql).mappings().all()\n"
+            "    return {'data': rows[0]['text']}\n"
+        )
+        assert not _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+    def test_constant_prompt_var_not_flagged(self) -> None:
+        code = (
+            "def h(llm):\n"
+            "    prompt = 'Summarize the news today'\n"
+            "    return llm.generate(prompt)\n"
+        )
+        assert not _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
