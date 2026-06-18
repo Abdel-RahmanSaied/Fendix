@@ -13,6 +13,16 @@ import (
 
 const evilOrigin = "https://evil.example.com"
 
+// corsCheck implements the Check interface for the CORS misconfiguration
+// scanner. Structural adapter — Run holds the unchanged body of the
+// historical CheckCORS free function.
+type corsCheck struct{}
+
+func (corsCheck) Name() string                        { return "cors" }
+func (corsCheck) Category() string                    { return "cors" }
+func (corsCheck) Tier() Tier                          { return TierPassive }
+func (corsCheck) Enabled(cfg *models.ScanConfig) bool { return true }
+
 // CheckCORS sends a request with an evil Origin header and checks for
 // CORS misconfigurations. Covers 4 scenarios:
 //  1. Wildcard ACAO + credentials → CRITICAL
@@ -20,6 +30,13 @@ const evilOrigin = "https://evil.example.com"
 //  3. Reflected arbitrary origin → HIGH
 //  4. Non-standard methods allowed → LOW
 func CheckCORS(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return corsCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged CORS detection body. Client construction is
+// identical to the historical free function (guardedClient).
+func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	client := guardedClient(cfg)
 
 	req, err := http.NewRequestWithContext(ctx, "OPTIONS", endpoint.FullURL, nil)
