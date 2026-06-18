@@ -14,12 +14,32 @@ import (
 
 const idorMaxBodySize = 64 * 1024 // 64KB for response comparison
 
+// idorCheck implements the Check interface for the cross-user IDOR
+// scanner. Structural adapter — Run holds the unchanged body of the
+// historical CheckIDOR free function.
+type idorCheck struct{}
+
+func (idorCheck) Name() string     { return "idor" }
+func (idorCheck) Category() string { return "idor" }
+func (idorCheck) Tier() Tier       { return TierMultiuser }
+func (idorCheck) Enabled(cfg *models.ScanConfig) bool {
+	return cfg != nil && cfg.Auth != nil && cfg.AuthUser2 != nil
+}
+
 // CheckIDOR performs Insecure Direct Object Reference detection using two
 // authenticated accounts. It sends the same request with user1 and user2
 // credentials and flags endpoints where both users get identical 200 responses,
 // which suggests missing object-level authorization.
 // Requires cfg.AuthUser2 to be set (--auth-user2 flag).
 func CheckIDOR(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return idorCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged IDOR detection body. Client construction
+// (including CheckRedirect: ErrUseLastResponse) is identical to the
+// historical free function.
+func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	if cfg.Auth == nil || cfg.AuthUser2 == nil {
 		return nil
 	}
