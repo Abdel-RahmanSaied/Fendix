@@ -184,7 +184,10 @@ func (methodTamperCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint)
 	}
 
 	// ---- DANGEROUS METHODS (always, regardless of auth) ----
-	if f, ok := methodTamperDangerousFindings(ctx, cc, ep); ok {
+	// Pass the canonical baseline so a catch-all server (SPA host / proxy
+	// try_files / API-gateway default route) that returns the SAME 2xx shell
+	// for every verb is not mistaken for one that actually accepts writes.
+	if f, ok := methodTamperDangerousFindings(ctx, cc, ep, canonAuthed); ok {
 		findings = append(findings, f)
 	}
 
@@ -258,7 +261,7 @@ probeLoop:
 // MEDIUM finding listing every enabled dangerous method, or ok=false. These run
 // regardless of auth — a public endpoint accepting writes/TRACE is still a
 // finding.
-func methodTamperDangerousFindings(ctx context.Context, cc *CheckContext, ep Endpoint) (models.Finding, bool) {
+func methodTamperDangerousFindings(ctx context.Context, cc *CheckContext, ep Endpoint, canon methodTamperResult) (models.Finding, bool) {
 	var enabled []string
 	traceXST := false
 
@@ -271,6 +274,15 @@ func methodTamperDangerousFindings(ctx context.Context, cc *CheckContext, ep End
 	}
 
 	// PUT / DELETE: 2xx (accepted) is the signal; 405/501/403/404 mean rejected.
+	//
+	// CATCH-ALL SUPPRESSION (FP control): a server that returns the SAME 2xx
+	// shell for EVERY verb (SPA host with try_files, reverse-proxy default
+	// route, API-gateway catch-all) is not accepting writes — it is echoing its
+	// default page. When the canonical baseline was itself 2xx and a dangerous
+	// verb returns the SAME status AND the same body, treat it as a catch-all
+	// and do NOT flag it. (If the canonical was non-2xx — e.g. a gated 401 — a
+	// dangerous-verb 2xx is a genuine signal and is kept.)
+	canonCatchAll := is2xx(canon.status)
 dangerLoop:
 	for _, verb := range []string{http.MethodPut, http.MethodDelete} {
 		select {
@@ -279,9 +291,15 @@ dangerLoop:
 		default:
 		}
 		if res := methodTamperProbe(ctx, cc, ep, verb, false); res.transportOK {
-			if is2xx(res.status) {
-				enabled = append(enabled, verb)
+			if !is2xx(res.status) {
+				continue
 			}
+			if canonCatchAll && res.status == canon.status && res.body == canon.body {
+				// Same status + identical body as the canonical verb → catch-all
+				// echo, not a real write acceptance.
+				continue
+			}
+			enabled = append(enabled, verb)
 		}
 	}
 

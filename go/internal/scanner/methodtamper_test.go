@@ -330,3 +330,31 @@ func TestMethodTamper_AllMethodsProperlyGated(t *testing.T) {
 		t.Fatalf("expected 0 bypass findings when every verb is gated, got %+v", findings)
 	}
 }
+
+// TestMethodTamper_SPACatchAllNoFinding is the regression for the final-review
+// blocker: a catch-all server (SPA host / reverse proxy try_files / API-gateway
+// default route) returns 200 + the same shell for EVERY verb. PUT/DELETE
+// returning 2xx there is NOT a real write-acceptance — it's the default page.
+// The dangerous-method probe must compare against the canonical baseline and
+// suppress when status+body match (catch-all), mirroring the bypass path's
+// discipline. Was a false MEDIUM "dangerous method enabled".
+func TestMethodTamper_SPACatchAllNoFinding(t *testing.T) {
+	const shell = "<!doctype html><html><body>app shell</body></html>"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Catch-all: 200 + identical shell for every method (incl. PUT/DELETE/TRACE).
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(shell))
+	}))
+	defer server.Close()
+
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true, EnableActive: true}
+	ep := Endpoint{Method: "GET", Path: "/", FullURL: server.URL + "/"}
+	ResetGlobalAuditLog()
+	findings := methodTamperCheck{}.Run(context.Background(), NewCheckContext(cfg), ep)
+
+	for _, f := range findings {
+		if strings.Contains(strings.ToLower(f.Title), "dangerous") {
+			t.Errorf("SPA catch-all (200 for every verb, same body) wrongly flagged dangerous method: %q / %q", f.Title, f.Evidence)
+		}
+	}
+}
