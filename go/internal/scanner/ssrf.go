@@ -83,6 +83,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -408,7 +409,20 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 
 	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
 		location := resp.Header.Get("Location")
-		if location != "" && strings.Contains(location, canaryHost) {
+		// Parse the Location and compare its HOST (exact, lowercased,
+		// trailing-dot-stripped) to the canary — never a raw substring. An
+		// own-host redirect that merely reflects the injected URL into a query
+		// param (e.g. Location: /login?next=http://<canary>/) has host == the
+		// app's own host, NOT the canary, and must not fire. Mirrors
+		// openredirect.go (redirectHostConfirmed) and hostheader.go
+		// (hostHeaderLocationHost).
+		locHost := ""
+		if location != "" {
+			if u, perr := url.Parse(location); perr == nil {
+				locHost = strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+			}
+		}
+		if locHost == strings.ToLower(canaryHost) {
 			record.Finding = true
 			cc.Audit.Record(record)
 			return models.Finding{
