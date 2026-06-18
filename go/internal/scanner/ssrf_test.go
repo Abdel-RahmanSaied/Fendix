@@ -22,6 +22,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -90,31 +91,27 @@ func TestSSRF_ErrorLeak(t *testing.T) {
 	}
 }
 
-// TestSSRF_ReflectedFetch: handler, when it sees the SSRF param, "fetches" the
-// URL and inlines the URL's unique marker into the body. The marker is absent
-// from the benign baseline response → server-side fetch+inline → HIGH (signal
-// b, content-fetch).
-func TestSSRF_ReflectedFetch(t *testing.T) {
+// TestSSRF_ReflectedContentFetchIsOOBOnlyFN (HONEST KNOWN GAP): a server that
+// actually FETCHES the canary URL and inlines the upstream content into the body
+// — but emits no fetch-stack error and no 3xx redirect — is NOT detected in-band.
+// The old code claimed a "marker reflected in body" HIGH for this shape, but that
+// signal could not distinguish a real fetch from plain reflection of an injected
+// URL component (see TestSSRF_QueryValueReflectionNotSSRF / SubdomainLabel...),
+// so it was the dominant FP and was removed. Honest reflected-content fetch-back
+// is confirmable only OUT-OF-BAND. This test asserts the gap so it stays honest.
+func TestSSRF_ReflectedContentFetchIsOOBOnlyFN(t *testing.T) {
 	ResetGlobalAuditLog()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target := r.URL.Query().Get("url")
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		// The canary URL is http://<canary>.oob.fendix.invalid/?marker=<marker>.
-		// A server that actually FETCHES it would inline the fetched content,
-		// which here we model as echoing the marker query value back. Crucially
-		// we DO NOT reflect the param value verbatim — we extract the marker the
-		// way a fetched upstream body would surface it.
+		// Model a real server-side fetch that inlines the (would-be) upstream body.
+		// We have no OOB host to serve secret content, so the only string we could
+		// look for is one we injected — indistinguishable from reflection in-band.
 		if strings.Contains(target, "fendix.invalid") {
-			if u, err := http.NewRequest("GET", target, nil); err == nil {
-				marker := u.URL.Query().Get("marker")
-				if marker != "" {
-					_, _ = w.Write([]byte("<html><body>fetched upstream content: " + marker + "</body></html>"))
-					return
-				}
-			}
+			_, _ = w.Write([]byte("<html><body>fetched upstream content for " + target + "</body></html>"))
+			return
 		}
-		// Benign baseline (no SSRF param / control value): marker never appears.
 		_, _ = w.Write([]byte("<html><body>nothing fetched</body></html>"))
 	}))
 	defer server.Close()
@@ -122,18 +119,93 @@ func TestSSRF_ReflectedFetch(t *testing.T) {
 	cfg := activeSSRFCfg()
 	findings := SSRFCheck{}.Run(context.Background(), NewCheckContext(cfg), ssrfEP(server))
 
-	if len(findings) != 1 {
-		t.Fatalf("expected exactly 1 SSRF finding (reflected-fetch), got %d: %+v", len(findings), findings)
+	if len(findings) != 0 {
+		t.Fatalf("DOCUMENTED OOB LIMIT: reflected-content fetch-back without an error/redirect signal is an OOB-only FN and must produce 0 in-band findings, got %d: %+v", len(findings), findings)
 	}
-	f := findings[0]
-	if f.Severity != models.SeverityHigh {
-		t.Errorf("expected HIGH severity for reflected-fetch, got %s", f.Severity)
+}
+
+// TestSSRF_QueryValueReflectionNotSSRF (LOAD-BEARING, FP regression): the
+// handler reflects the injected URL's ?marker= query VALUE verbatim into the
+// body ("you searched for: <value>") — classic query-value reflection. The
+// reflected value IS the unique marker token (under the old design the marker
+// was a substring of the canary host), so a content-marker signal that only
+// guards against WHOLE-host echo fires HIGH here. It must NOT: reflecting an
+// injected component is not a server-side fetch. Expect 0 findings.
+func TestSSRF_QueryValueReflectionNotSSRF(t *testing.T) {
+	ResetGlobalAuditLog()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("url")
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		// Reflect the ?marker= value carried INSIDE the injected URL back into the
+		// body, WITHOUT echoing the literal canary host. This models a search-style
+		// endpoint: "you searched for: <the marker we injected>". No fetch happened.
+		if u, err := url.Parse(target); err == nil {
+			if m := u.Query().Get("marker"); m != "" {
+				_, _ = w.Write([]byte("<html><body>you searched for: " + m + "</body></html>"))
+				return
+			}
+		}
+		_, _ = w.Write([]byte("<html><body>nothing</body></html>"))
+	}))
+	defer server.Close()
+
+	cfg := activeSSRFCfg()
+	findings := SSRFCheck{}.Run(context.Background(), NewCheckContext(cfg), ssrfEP(server))
+
+	if len(findings) != 0 {
+		t.Fatalf("LOAD-BEARING FP: query-value reflection of an injected component must produce 0 SSRF findings (reflection != fetch), got %d: %+v", len(findings), findings)
 	}
-	if f.Confidence != models.ConfidenceHigh {
-		t.Errorf("expected HIGH confidence for reflected-fetch, got %s", f.Confidence)
+}
+
+// TestSSRF_SubdomainLabelReflectionNotSSRF (LOAD-BEARING, FP regression): the
+// handler echoes the FIRST LABEL of the injected URL's host into the body. Under
+// the old design that label equalled the canary which equalled the marker, so a
+// content-marker signal fired HIGH on a mere subdomain-label echo. It must NOT.
+// Expect 0 findings.
+func TestSSRF_SubdomainLabelReflectionNotSSRF(t *testing.T) {
+	ResetGlobalAuditLog()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("url")
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		// Echo just the host's first label (e.g. "fendix-ssrf-deadbeef") — NOT the
+		// full canary host. Models a tenant/subdomain greeting: "Welcome, <label>".
+		if u, err := url.Parse(target); err == nil && u.Host != "" {
+			label := strings.SplitN(u.Host, ".", 2)[0]
+			if label != "" {
+				_, _ = w.Write([]byte("<html><body>Welcome, " + label + "</body></html>"))
+				return
+			}
+		}
+		_, _ = w.Write([]byte("<html><body>Welcome</body></html>"))
+	}))
+	defer server.Close()
+
+	cfg := activeSSRFCfg()
+	findings := SSRFCheck{}.Run(context.Background(), NewCheckContext(cfg), ssrfEP(server))
+
+	if len(findings) != 0 {
+		t.Fatalf("LOAD-BEARING FP: subdomain-label reflection must produce 0 SSRF findings (echoing a host label != fetch), got %d: %+v", len(findings), findings)
 	}
-	if !hasRef(f, "CWE-918") {
-		t.Errorf("expected CWE-918 reference, got %v", f.References)
+}
+
+// TestSSRF_CamelCaseURLParam (FN regression): camelCase URL-shaped params
+// (imageUrl, redirectUri, callbackURL) MUST be recognised as URL-shaped (and so
+// probed), while non-URL camelCase/words that merely CONTAIN a keyword substring
+// (occurl, comment) must NOT match. Asserts isURLShapedParam directly.
+func TestSSRF_CamelCaseURLParam(t *testing.T) {
+	probed := []string{"imageUrl", "redirectUri", "callbackURL", "image_url", "url"}
+	for _, name := range probed {
+		if !isURLShapedParam(name) {
+			t.Errorf("expected %q to be recognised as a URL-shaped param (should be probed), but it was not", name)
+		}
+	}
+	skipped := []string{"occurl", "comment", "description", "tourl", "quantity"}
+	for _, name := range skipped {
+		if isURLShapedParam(name) {
+			t.Errorf("expected %q NOT to be recognised as a URL-shaped param (should be skipped), but it matched", name)
+		}
 	}
 }
 

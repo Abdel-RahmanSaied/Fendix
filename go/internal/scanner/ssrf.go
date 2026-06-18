@@ -10,18 +10,45 @@ package scanner
 // target's response for evidence that the SERVER fetched it.
 //
 // ============================================================================
+// IN-BAND SIGNALS (what this check actually relies on):
+//
+//   (a) ERROR-LEAK — a curated fetch-stack error signature AND our unique canary
+//       host both in the body. An error MESSAGE about our host is server-side
+//       fetch evidence (the server tried to dial it and failed), not mere echo.
+//   (b) REDIRECT-ECHO — a raw 3xx Location header (via cc.NoFollow) carrying our
+//       canary host. A Location is SERVER-controlled, not input-reflected, so it
+//       cannot be produced by reflecting the injected parameter value.
+//   (c) TIMING — confirmation-only differential, MEDIUM, never fires if (a)/(b)
+//       did, budget-bounded.
+//
+// NOTE — why there is NO body-content "reflected-fetch" signal. A generic "the
+// injected marker appears in the body" signal CANNOT distinguish a server-side
+// fetch from plain input reflection IN-BAND: fendix cannot host the content the
+// sentinel URL would serve, so any string we can look for is one we put into the
+// request, and a server that echoes ANY component of the injected URL (a query
+// value, a host label) reproduces it without ever fetching. That is the dominant
+// SSRF false-positive class, so the body-content path is intentionally absent.
+// Honest reflected-content fetch-back requires an OOB/OAST callback server
+// (documented FN below); the in-band signals are error-leak + redirect-echo +
+// timing only.
+//
+// ============================================================================
 // KNOWN LIMITS (honest, documented false negatives — deliberate scope):
 //
 //   - NO TRUE OAST/BLIND DETECTION. fendix ships no out-of-band callback
 //     (collaborator/interactsh) server, so a "blind" SSRF that fetches our
 //     sentinel host with NO observable in-band side effect (no error leak, no
-//     inlined content, no redirect echo, no timing differential) is
-//     UNDETECTABLE here. A --oob-host hook is future work. This gap is asserted
-//     by TestSSRF_DocumentedBlindLimitFN so it stays honest, not hidden.
+//     redirect echo, no timing differential) is UNDETECTABLE here. A --oob-host
+//     hook is future work. This gap is asserted by TestSSRF_DocumentedBlindLimitFN
+//     so it stays honest, not hidden.
+//   - REFLECTED-CONTENT FETCH-BACK IS AN OOB-ONLY SIGNAL. A server that fetches
+//     the sentinel URL and inlines the upstream body cannot be honestly confirmed
+//     in-band (any in-band marker is reflection-indistinguishable; see NOTE
+//     above). Confirming it requires an OOB host that serves a secret only the
+//     server-side fetcher could retrieve. Documented FN.
 //   - CLOUD-METADATA (IMDS) IS CONFIRMED ONLY INDIRECTLY. We never fetch real
-//     169.254.169.254 data — that would require the target to proxy it back to
-//     us in-band (the reflected-fetch path). We do not special-case IMDS or
-//     assert AWS/GCP/Azure credentials were exfiltrated.
+//     169.254.169.254 data. We do not special-case IMDS or assert AWS/GCP/Azure
+//     credentials were exfiltrated.
 //   - ERROR-SUPPRESSING / IDENTICAL-RESPONSE servers evade detection. A target
 //     that fetches server-side but returns a constant body regardless of the
 //     fetch outcome leaks nothing in-band (the documented-blind case).
@@ -38,13 +65,13 @@ package scanner
 //   (a) ERROR-LEAK requires BOTH a curated fetch-stack error signature AND our
 //       unique canary host in the body. A generic "connection refused" page
 //       that does not echo our canary host is NOT flagged (it proves only that
-//       *something* failed, not that the server fetched OUR url).
-//   (b) REFLECTED-FETCH requires the unique marker to be ABSENT from a benign
-//       baseline AND the canary host to be ABSENT from the body. The latter
-//       distinguishes a server-side FETCH (which inlines upstream content but
-//       not our literal URL) from mere VERBATIM REFLECTION of the param (which
-//       echoes the whole injected URL, canary host included). Reflection is the
-//       dominant SSRF false positive; this guard kills it.
+//       *something* failed, not that the server fetched OUR url). Reflection of
+//       the injected URL alone never carries a fetch-stack error signature, so
+//       this signal is reflection-proof.
+//   (b) REDIRECT-ECHO reads the canary host out of the SERVER-controlled 3xx
+//       Location header — a position input reflection cannot occupy — so it too
+//       is reflection-proof. There is deliberately no body-content signal (it is
+//       the FP source and cannot be made honest in-band; see NOTE above).
 //
 // Sentinel host: the ".invalid" TLD is reserved by RFC 2606 and is guaranteed
 // to never resolve, be registered, or be owned by anyone — so the canary is a
@@ -77,19 +104,55 @@ const ssrfTestNetLiteral = "192.0.2.1"
 // ssrfBodyLimit caps how much of each response body we read into memory.
 const ssrfBodyLimit = 1 << 20 // 1 MiB
 
-// urlParamRe matches parameter names that conventionally carry a URL/host/path
-// destination — the surface where SSRF actually lives. Probing only these
-// (rather than every declared param) keeps the per-endpoint probe budget
-// meaningful and avoids spraying URL payloads at obviously-non-URL fields like
-// "comment" or "quantity". Matched as whole words / case-insensitively against
-// segments of the param name (so "imageUrl", "callback_url", "redirectUri" all
-// hit). An all-params opt-in is intentionally deferred (future work).
-var urlParamRe = regexp.MustCompile(`(?i)(^|[^a-z])(url|uri|link|src|dest|redirect|callback|webhook|host|domain|feed|target|fetch|proxy|next|return|continue|image|img|file|path|resource|api|endpoint|site|page|out|to|u)([^a-z]|$)`)
+// urlParamKeywords is the set of WHOLE-TOKEN names that conventionally carry a
+// URL/host/path destination — the surface where SSRF actually lives. Probing
+// only params whose name contains one of these tokens (rather than every
+// declared param) keeps the per-endpoint probe budget meaningful and avoids
+// spraying URL payloads at obviously-non-URL fields like "comment" or
+// "quantity". An all-params opt-in is intentionally deferred (future work).
+var urlParamKeywords = map[string]struct{}{
+	"url": {}, "uri": {}, "link": {}, "src": {}, "dest": {},
+	"redirect": {}, "callback": {}, "webhook": {}, "host": {}, "domain": {},
+	"feed": {}, "target": {}, "fetch": {}, "proxy": {}, "next": {},
+	"return": {}, "continue": {}, "image": {}, "img": {}, "file": {},
+	"path": {}, "resource": {}, "api": {}, "endpoint": {}, "site": {},
+	"page": {}, "out": {}, "to": {}, "u": {},
+}
+
+// Go's regexp is RE2 (no lookahead), so camelCase boundaries are introduced by
+// two explicit replaces before splitting:
+//   - caseBoundaryLowerUpperRe inserts a break between a lowercase/digit and an
+//     uppercase letter:  "imageUrl"→"image Url", "redirect2Uri"→"redirect2 Uri".
+//   - caseBoundaryAcronymRe inserts a break inside an UPPERCASE run that is
+//     immediately followed by a capitalized word, splitting the trailing capital
+//     off the acronym: "URLValue"→"URL Value", "callbackURL" stays "callback URL".
+//
+// After both, the name is lowercased and split on any run of non-letters/digits,
+// yielding clean word tokens.
+var (
+	caseBoundaryLowerUpperRe = regexp.MustCompile(`([a-z0-9])([A-Z])`)
+	caseBoundaryAcronymRe    = regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`)
+	paramSplitRe             = regexp.MustCompile(`[^a-z0-9]+`)
+)
 
 // isURLShapedParam reports whether a parameter name looks like it carries a URL
-// or host destination, per urlParamRe.
+// or host destination. The name is split into word tokens on case transitions
+// and separators, and a WHOLE token must equal one of urlParamKeywords. Matching
+// whole tokens (not substrings) means "imageUrl"/"redirectUri"/"callbackURL" hit
+// (token "url"/"uri"/"image"/etc.) while "occurl"/"tourl"/"comment"/"description"
+// — which merely CONTAIN a keyword as a substring — do NOT.
 func isURLShapedParam(name string) bool {
-	return urlParamRe.MatchString(name)
+	spaced := caseBoundaryAcronymRe.ReplaceAllString(name, "$1 $2")
+	spaced = caseBoundaryLowerUpperRe.ReplaceAllString(spaced, "$1 $2")
+	for _, tok := range paramSplitRe.Split(strings.ToLower(spaced), -1) {
+		if tok == "" {
+			continue
+		}
+		if _, ok := urlParamKeywords[tok]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ssrfErrorPatterns matches outbound fetch-stack error leakage in a response
@@ -223,25 +286,19 @@ func ssrfBaselineServiceable(ctx context.Context, cc *CheckContext, ep Endpoint)
 // > c timing). Returns (finding, true) on a hit, (zero, false) otherwise.
 func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (models.Finding, bool) {
 	// Unique per-target canary so a hit cannot collide with static page text and
-	// the marker cannot be guessed/special-cased by the target.
+	// the host cannot be guessed/special-cased by the target.
 	canary := "fendix-ssrf-" + randHex(8)
 	canaryHost := canary + "." + ssrfSentinelHost
-	marker := canary // the marker reused as the reflected-fetch token
 
-	// (b) baseline body for the reflected-fetch ABSENT-from-baseline guard: a
-	// benign control fetch whose body must NOT already contain the marker. We
-	// capture it once and reuse it for the content-fetch decision below.
-	baselineBody := ssrfControlBody(ctx, cc, ep, param, loc)
-
-	// ---- Signal (a): ERROR-LEAK + (b): REFLECTED-FETCH (content) ----
-	// One probe carries the canary host AND the marker, so a single response can
-	// satisfy either the error-leak or the content-fetch path. Precedence (a)>(b)
-	// is enforced by checking the error signature first.
-	//
-	// The canary URL embeds the marker in the query so a server that FETCHES it
-	// surfaces upstream content (the marker) without echoing our literal host.
-	canaryURL := "http://" + canaryHost + "/?marker=" + marker
-	if f, ok := ssrfFetchProbe(ctx, cc, ep, param, loc, canaryURL, canaryHost, marker, baselineBody); ok {
+	// ---- Signal (a): ERROR-LEAK ----
+	// A probe carrying the canary host: signal (a) fires only if the body holds
+	// BOTH a fetch-stack error signature AND our canary host (an ERROR ABOUT our
+	// host = server-side fetch evidence, not mere reflection). There is no body-
+	// content path: any in-band marker is reflection-indistinguishable, so a
+	// "marker echoed in body" signal cannot honestly tell fetch from echo (see the
+	// file-level NOTE). Reflected-content fetch-back is an OOB-only signal (FN).
+	canaryURL := "http://" + canaryHost + "/"
+	if f, ok := ssrfFetchProbe(ctx, cc, ep, param, loc, canaryURL, canaryHost); ok {
 		return f, true
 	}
 
@@ -250,7 +307,7 @@ func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string,
 	// syntactically-valid IP, leaking a connect-time error that still echoes the
 	// literal we supplied.
 	testnetURL := "http://" + ssrfTestNetLiteral + "/"
-	if f, ok := ssrfFetchProbe(ctx, cc, ep, param, loc, testnetURL, ssrfTestNetLiteral, "", baselineBody); ok {
+	if f, ok := ssrfFetchProbe(ctx, cc, ep, param, loc, testnetURL, ssrfTestNetLiteral); ok {
 		return f, true
 	}
 
@@ -267,35 +324,19 @@ func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string,
 	return models.Finding{}, false
 }
 
-// ssrfControlBody sends one benign control request (the param set to a harmless
-// value, NOT our canary) and returns the response body. Used as the
-// ABSENT-from-baseline reference for the reflected-fetch guard (b). Returns ""
-// on any error — an empty baseline simply means "marker certainly absent".
-func ssrfControlBody(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) string {
-	req, err := buildProbeRequest(ctx, ep, param, "https://example.com/", loc)
-	if err != nil {
-		return ""
-	}
-	cc.Cfg.Auth.ApplyToRequest(req)
-	resp, err := cc.Client.Do(req)
-	if err != nil {
-		return ""
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, ssrfBodyLimit))
-	resp.Body.Close()
-	return string(body)
-}
-
 // ssrfFetchProbe sends one canary URL probe via the body-following client and
-// classifies the response for signal (a) error-leak then (b) reflected-fetch.
+// classifies the response for signal (a) ERROR-LEAK.
 //
 //   - (a) fires when the body contains BOTH a fetch-stack error signature AND
-//     the canary host (proving the server fetched OUR url, not a generic error).
-//   - (b) fires when the body contains the marker, the marker was ABSENT from
-//     the baseline, AND the canary host is NOT echoed verbatim (distinguishing a
-//     server-side fetch from mere reflection of the injected URL). marker may be
-//     "" to skip the content-fetch path (e.g. the TEST-NET literal probe).
-func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation, injectURL, canaryHost, marker, baselineBody string) (models.Finding, bool) {
+//     the canary host (an ERROR MESSAGE about our host = the server tried to dial
+//     it server-side and failed — that is fetch evidence, not mere reflection of
+//     the injected URL, which never carries a fetch-stack error signature).
+//
+// There is intentionally no body-content "reflected-fetch" signal here: any
+// in-band marker would be indistinguishable from input reflection of an injected
+// URL component (see the file-level NOTE), making it the dominant FP source.
+// Reflected-content fetch-back is confirmable only out-of-band (documented FN).
+func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation, injectURL, canaryHost string) (models.Finding, bool) {
 	body, status, ok := ssrfSendBody(ctx, cc, ep, param, loc, injectURL)
 	if !ok {
 		return models.Finding{}, false
@@ -316,30 +357,6 @@ func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param st
 			Evidence: evidence,
 			Fix: "Do not fetch user-supplied URLs. Enforce an allow-list of destination hosts/schemes, " +
 				"resolve+pin the IP and reject private/link-local/metadata ranges, and disable redirects on the server-side fetcher.",
-			References: []string{"CWE-918", "OWASP-A10"},
-			Confidence: models.ConfidenceHigh,
-		}, true
-	}
-
-	// (b) REFLECTED-FETCH (content): marker inlined, absent from baseline, and
-	// the canary host NOT echoed verbatim (would indicate plain reflection).
-	if marker != "" &&
-		strings.Contains(body, marker) &&
-		!strings.Contains(baselineBody, marker) &&
-		!strings.Contains(body, canaryHost) {
-		evidence := fmt.Sprintf(
-			"Reflected fetch: unique marker %q appears in the response (status=%d) but was absent from the benign baseline, and our literal canary host was NOT echoed — the server fetched the canary URL %q and inlined its content. %s",
-			marker, status, injectURL, paramLabel(param, loc),
-		)
-		return models.Finding{
-			Title:    "SSRF — server-side fetch of attacker-controlled URL",
-			Severity: models.SeverityHigh,
-			Source:   models.SourceBlackbox,
-			Category: "ssrf",
-			Endpoint: fmt.Sprintf("%s %s", ep.Method, ep.Path),
-			Evidence: evidence,
-			Fix: "Do not fetch user-supplied URLs. Enforce an allow-list of destination hosts/schemes, " +
-				"resolve+pin the IP and reject private/link-local/metadata ranges, and never inline fetched content back into the response.",
 			References: []string{"CWE-918", "OWASP-A10"},
 			Confidence: models.ConfidenceHigh,
 		}, true
