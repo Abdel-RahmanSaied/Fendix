@@ -26,6 +26,8 @@ version: 2
 secret:
   # The scanner's unit/integration tests embed fake secret-shaped fixtures to
   # exercise the secret/exposure/config-leak detectors. None are live.
+  # (Incidents on these paths were reviewed and resolved as test fixtures;
+  # this config keeps future scans from re-flagging them.)
   ignored-paths:
     - "go/internal/scanner/auth_test.go"
     - "go/internal/scanner/auth_integration_test.go"
