@@ -80,6 +80,7 @@ func DefaultChecks() []Check {
 		corsCheck{},
 		exposureCheck{},
 		rateLimitCheck{},
+		cookieFlagsCheck{},
 		authCheck{},
 		idorCheck{},
 		injectionCheck{},

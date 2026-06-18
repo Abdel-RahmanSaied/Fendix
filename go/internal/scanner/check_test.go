@@ -19,10 +19,10 @@ func TestChecks_EnabledMatrix(t *testing.T) {
 		cfg     *models.ScanConfig
 		enabled []string // expected enabled check names
 	}{
-		{"bare", &models.ScanConfig{}, []string{"configleak", "headers", "cors", "exposure", "ratelimit"}},
-		{"active", &models.ScanConfig{EnableActive: true}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "injection"}},
-		{"auth", &models.ScanConfig{Auth: &models.AuthContext{Value: "x"}}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "auth"}},
-		{"auth2", &models.ScanConfig{Auth: &models.AuthContext{Value: "x"}, AuthUser2: &models.AuthContext{Value: "y"}}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "auth", "idor"}},
+		{"bare", &models.ScanConfig{}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags"}},
+		{"active", &models.ScanConfig{EnableActive: true}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "injection"}},
+		{"auth", &models.ScanConfig{Auth: &models.AuthContext{Value: "x"}}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "auth"}},
+		{"auth2", &models.ScanConfig{Auth: &models.AuthContext{Value: "x"}, AuthUser2: &models.AuthContext{Value: "y"}}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "auth", "idor"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
