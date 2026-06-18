@@ -77,8 +77,25 @@ var exposurePatterns = []exposurePattern{
 	},
 }
 
+// exposureCheck implements the Check interface for the response-body
+// sensitive-data scanner. Structural adapter — Run holds the unchanged
+// body of the historical CheckExposure free function.
+type exposureCheck struct{}
+
+func (exposureCheck) Name() string                        { return "exposure" }
+func (exposureCheck) Category() string                    { return "data_exposure" }
+func (exposureCheck) Tier() Tier                          { return TierPassive }
+func (exposureCheck) Enabled(cfg *models.ScanConfig) bool { return true }
+
 // CheckExposure scans response bodies for sensitive data patterns.
 func CheckExposure(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return exposureCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged data-exposure detection body. Client
+// construction is identical to the historical free function.
+func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	client := &http.Client{
 		Timeout:   time.Duration(cfg.Timeout) * time.Second,
 		Transport: budget.Transport(),
