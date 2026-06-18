@@ -88,6 +88,7 @@ func DefaultChecks() []Check {
 		reflectedXSSCheck{},
 		SSRFCheck{},
 		hostHeaderCheck{},
+		graphQLCheck{},
 		// proof checks (Phase 1) and new types (Phases 6-9) appended here.
 	}
 }
