@@ -68,3 +68,21 @@ func (c fnCheck) Enabled(cfg *models.ScanConfig) bool { return c.enabled == nil 
 func (c fnCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
 	return c.fn(ctx, cc.Cfg, ep)
 }
+
+// DefaultChecks returns the full ordered check registry. configleak is first
+// so its CRITICAL "exposed config file" finding lands before noisier
+// per-endpoint checks on the same path (dedup ordering). The orchestrator
+// filters this slice by Enabled(cfg) at scan time.
+func DefaultChecks() []Check {
+	return []Check{
+		configLeakCheck{},
+		headersCheck{},
+		corsCheck{},
+		exposureCheck{},
+		rateLimitCheck{},
+		authCheck{},
+		idorCheck{},
+		injectionCheck{},
+		// proof checks (Phase 1) and new types (Phases 6-9) appended here.
+	}
+}
