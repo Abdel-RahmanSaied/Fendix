@@ -330,19 +330,37 @@ func buildJSONBody(fields []string, target, payload string) []byte {
 	return out
 }
 
+// injectionCheck implements the Check interface for the active injection
+// scanner. Structural adapter — Run delegates to the unchanged
+// CheckInjectionWithAudit, threading the scan-wide audit log through the
+// CheckContext (cc.Audit aliases currentAuditLog(), so behaviour is
+// identical to the historical CheckInjection free function).
+type injectionCheck struct{}
+
+func (injectionCheck) Name() string     { return "injection" }
+func (injectionCheck) Category() string { return "injection" }
+func (injectionCheck) Tier() Tier       { return TierActive }
+func (injectionCheck) Enabled(cfg *models.ScanConfig) bool {
+	return cfg != nil && cfg.EnableActive
+}
+
 // CheckInjection runs active injection probes on an endpoint.
 // This function MUST only be called when cfg.EnableActive is true.
 // It runs SQLi (time/error/boolean), CMDi, and CRLF probes across each
 // declared query/header/body parameter.
 func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	if !cfg.EnableActive {
+	return injectionCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run delegates to the unchanged CheckInjectionWithAudit. The audit log
+// comes from the CheckContext (cc.Audit == currentAuditLog()), so probe
+// records still accumulate in the one package-level log the orchestrator
+// reads post-scan via scanner.GlobalAuditRecords (e.g. --debug-bundle).
+func (injectionCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	if !cc.Cfg.EnableActive {
 		return nil
 	}
-
-	// Use the package-level audit log so probe records from every endpoint
-	// in this scan accumulate in one place. The orchestrator reads them
-	// post-scan via scanner.GlobalAuditRecords (e.g. --debug-bundle).
-	return CheckInjectionWithAudit(ctx, cfg, endpoint, currentAuditLog())
+	return CheckInjectionWithAudit(ctx, cc.Cfg, endpoint, cc.Audit)
 }
 
 // CheckInjectionWithAudit runs active injection probes with a provided audit log.
