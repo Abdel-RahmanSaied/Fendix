@@ -830,18 +830,38 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         """Detect dangerous function calls."""
-        # eval() and exec()
-        if isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec"}:
+        # eval() / exec(), and library code-eval sinks (PIL.ImageMath.eval,
+        # asteval.Interpreter().eval, simpleeval). Attribute form matched via a
+        # small sink set so e.g. ImageMath.eval(user_input) (PyGoat RCE) fires.
+        _is_eval = (
+            isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec"}
+        ) or (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"eval"}
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in _CODE_EVAL_RECEIVERS
+        )
+        if _is_eval:
             # Only flag if argument is not a plain string literal
             if not (node.args and isinstance(node.args[0], ast.Constant)):
+                _eval_name = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else f"{node.func.value.id}.{node.func.attr}"
+                    if isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    else node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else "eval"
+                )
                 self._emit_finding(
                     "PY_EVAL",
-                    f"Unsafe {node.func.id}() with dynamic argument",
+                    f"Unsafe {_eval_name}() with dynamic argument",
                     "HIGH",
                     "MEDIUM",
                     "CWE-95",
                     (
-                        f"Replace {node.func.id}() with a safer alternative. "
+                        f"Replace {_eval_name}() with a safer alternative. "
                         "Never pass user-controlled data to eval/exec."
                     ),
                     node.lineno,
@@ -1275,7 +1295,154 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                             taint_chain=ds_chain,
                         )
 
+        # JWT crypto-misuse (Sanad C2): jwt.decode(..., verify=False) or
+        # algorithms driven by a non-literal/None (algorithm-confusion surface).
+        elif self._is_jwt_misuse(node):
+            self._emit_finding(
+                "PY_JWT_WEAK",
+                "Weak JWT verification — decode with verify=False or unpinned algorithm",
+                "HIGH",
+                "MEDIUM",
+                "CWE-347",
+                (
+                    "Always verify signatures: never pass verify=False. Pin the "
+                    "expected algorithm(s) explicitly (e.g. algorithms=['RS256']) "
+                    "and reject a config that permits a symmetric fallback."
+                ),
+                node.lineno,
+                category="auth_bypass",
+            )
+
+        # Secret-in-log (Sanad A4): a secret-looking value (os.getenv("*_KEY"/
+        # "_SECRET"/"_TOKEN") or a password-y identifier) passed to a logging
+        # sink or interpolated into a log message.
+        elif self._is_secret_in_log(node):
+            self._emit_finding(
+                "PY_SECRET_IN_LOG",
+                "Secret written to logs — credential exposure",
+                "MEDIUM",
+                "MEDIUM",
+                "CWE-532",
+                (
+                    "Never log secrets/API keys/tokens. Mask the value (show only "
+                    "a prefix) or omit it; scrub secrets from exception bodies "
+                    "before logging."
+                ),
+                node.lineno,
+                category="secrets",
+            )
+
         self.generic_visit(node)
+
+    def _is_jwt_misuse(self, node: ast.Call) -> bool:
+        """True for jwt.decode(...) with verify=False, or with no explicit
+        algorithms= pinning (unpinned algorithm — confusion surface)."""
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "decode"):
+            return False
+        # receiver resolves to the jwt module (direct, aliased, or from-import).
+        resolved = self._call_module_attr(node)
+        if resolved is None or resolved[0] != "jwt":
+            # also accept a bare `decode` from `from jwt import decode`
+            if not (
+                isinstance(f, ast.Attribute)
+                and isinstance(f.value, ast.Name)
+                and f.value.id == "jwt"
+            ):
+                return False
+        for kw in node.keywords:
+            if (
+                kw.arg == "verify"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is False
+            ):
+                return True
+            # options={"verify_signature": False}
+            if kw.arg == "options" and isinstance(kw.value, ast.Dict):
+                for k, v in zip(kw.value.keys, kw.value.values):
+                    if (
+                        isinstance(k, ast.Constant)
+                        and k.value == "verify_signature"
+                        and isinstance(v, ast.Constant)
+                        and v.value is False
+                    ):
+                        return True
+        return False
+
+    # Logging sinks + secret-source identifiers for the secret-in-log rule.
+    _LOG_METHODS = frozenset(
+        {"debug", "info", "warning", "warn", "error", "critical", "exception", "log"}
+    )
+
+    def _is_secret_in_log(self, node: ast.Call) -> bool:
+        """True if a logging call carries an actual secret value. Tight by
+        design (real-corpus FP control): only the INTERPOLATED expressions of a
+        log message are inspected — never the literal text — and a secret means
+        an os.getenv/os.environ.get of a secret-named key, or a password-y
+        identifier (whole-token), or a variable bound to one."""
+        f = node.func
+        is_log = (isinstance(f, ast.Attribute) and f.attr in self._LOG_METHODS) or (
+            isinstance(f, ast.Name) and f.id in self._LOG_METHODS
+        )
+        if not is_log or not node.args:
+            return False
+        return any(self._arg_references_secret(arg) for arg in node.args)
+
+    def _arg_references_secret(self, arg: ast.AST) -> bool:
+        """Inspect a single log argument. For an f-string, only the dynamic
+        FormattedValue expressions count (the constant text is never a secret)."""
+        if isinstance(arg, ast.JoinedStr):
+            return any(
+                isinstance(v, ast.FormattedValue)
+                and self._arg_references_secret(v.value)
+                for v in arg.values
+            )
+        return self._expr_references_secret(arg)
+
+    def _expr_references_secret(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if `expr` resolves to a secret: os.getenv/os.environ.get of a
+        secret-named key, a password-y identifier, or a Name bound to one."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        for n in ast.walk(expr):
+            if self._is_env_secret_read(n):
+                return True
+            if isinstance(n, ast.Name) and _looks_like_password_id(n.id):
+                return True
+            if isinstance(n, ast.Name):
+                bound = self._resolve_binding(n)
+                if bound is not None and bound is not n:
+                    if self._expr_references_secret(bound, _depth + 1):
+                        return True
+        return False
+
+    @staticmethod
+    def _is_env_secret_read(n: ast.AST) -> bool:
+        """True ONLY for os.getenv("<secret>") / os.environ.get("<secret>") /
+        os.environ["<secret>"] with a secret-named key (whole-token). A bare
+        obj.get("messages") on an arbitrary object is NOT an env read."""
+        # os.environ["KEY"] subscript form.
+        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+            v = n.value
+            if isinstance(v, ast.Attribute) and v.attr == "environ":
+                return _key_is_secret(n.slice.value)
+            return False
+        if not (
+            isinstance(n, ast.Call) and n.args and isinstance(n.args[0], ast.Constant)
+        ):
+            return False
+        f = n.func
+        if not isinstance(f, ast.Attribute):
+            return False
+        is_getenv = (
+            f.attr == "getenv" and isinstance(f.value, ast.Name) and f.value.id == "os"
+        )
+        is_environ_get = (
+            f.attr == "get"
+            and isinstance(f.value, ast.Attribute)
+            and f.value.attr == "environ"
+        )
+        return (is_getenv or is_environ_get) and _key_is_secret(n.args[0].value)
 
     # ------------------------------------------------------------------
     # Statement-level visitors (for scope tracking and If-based patterns)
@@ -2516,6 +2683,13 @@ _SAFE_LOADER_NAMES: frozenset[str] = frozenset(
 # by attribute or bare name so both `Markup(x)` and `flask.Markup(x)` /
 # `markupsafe.Markup(x)` match. Same applies to `mark_safe` (Django) and
 # `render_template_string` (Flask/Jinja2 SSTI + reflective XSS).
+# Library receivers whose .eval() executes code (RCE) — PIL.ImageMath.eval,
+# asteval, simpleeval. Matched in attribute form alongside builtin eval/exec.
+_CODE_EVAL_RECEIVERS: frozenset[str] = frozenset(
+    {"ImageMath", "aeval", "asteval", "simple_eval", "evaluator", "interpreter"}
+)
+
+
 _XSS_HTML_SINK_NAMES: frozenset[str] = frozenset(
     {
         "Markup",
@@ -2623,6 +2797,34 @@ _PASSWORD_WORD_TOKENS: frozenset[str] = frozenset({"pw", "pwd"})
 
 # Token splitter: snake_case, kebab-case, dotted, camelCase boundary.
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+# Whole-token secret markers for env-var names (matched against the snake/camel
+# parts of the key — NOT bare substrings, which matched log text on real code).
+_SECRET_ENV_TOKENS: frozenset[str] = frozenset(
+    {
+        "key",
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "passphrase",
+        "credential",
+        "credentials",
+        "apikey",
+        "auth",
+    }
+)
+
+
+def _key_is_secret(key) -> bool:
+    """True if an env-var key name contains a secret token as a whole part
+    (api_key, DB_PASSWORD, jwt-secret) — not a bare substring (avoids matching
+    'apiversion'/'keyboard')."""
+    if not isinstance(key, str):
+        return False
+    parts = set(_TOKEN_SPLIT_RE.split(key.lower()))
+    return bool(parts & _SECRET_ENV_TOKENS)
 
 
 def _looks_like_password_id(name: str) -> bool:

@@ -259,7 +259,7 @@
     "id": "cmdi-interprocedural",
     "category": "cmdi",
     "label": "vulnerable",
-    "known_gap": true,
+    "known_gap": false,
     "expect": "SEC-PY_OS_SYSTEM",
     "code": "import os\nfrom flask import request\ndef run(c):\n    os.system(c)\ndef h():\n    run(request.args['c'])\n",
     "require_reachable": true
@@ -277,7 +277,7 @@
     "id": "rce-imagemath-eval",
     "category": "rce",
     "label": "vulnerable",
-    "known_gap": true,
+    "known_gap": false,
     "expect": "SEC-PY_EVAL",
     "code": "from PIL import ImageMath\nfrom flask import request\ndef h():\n    return ImageMath.eval(request.args['f'])\n"
   },
@@ -285,7 +285,7 @@
     "id": "jwt-verify-false",
     "category": "crypto",
     "label": "vulnerable",
-    "known_gap": true,
+    "known_gap": false,
     "expect": "SEC-PY_JWT_WEAK",
     "code": "import jwt\ndef h(token):\n    return jwt.decode(token, verify=False)\n"
   },
@@ -293,8 +293,32 @@
     "id": "secret-in-log",
     "category": "secrets",
     "label": "vulnerable",
-    "known_gap": true,
+    "known_gap": false,
     "expect": "SEC-PY_SECRET_IN_LOG",
     "code": "import os,logging\ndef h():\n    k=os.getenv('API_KEY')\n    logging.info(f'key={k}')\n"
+  },
+  {
+    "id": "rce-imagemath-const-safe",
+    "category": "rce",
+    "label": "safe",
+    "known_gap": false,
+    "expect": "SEC-PY_EVAL",
+    "code": "from PIL import ImageMath\ndef h():\n    return ImageMath.eval('1+1')\n"
+  },
+  {
+    "id": "jwt-verify-true-safe",
+    "category": "crypto",
+    "label": "safe",
+    "known_gap": false,
+    "expect": "SEC-PY_JWT_WEAK",
+    "code": "import jwt\ndef h(t):\n    return jwt.decode(t, algorithms=['RS256'])\n"
+  },
+  {
+    "id": "log-nonsecret-safe",
+    "category": "secrets",
+    "label": "safe",
+    "known_gap": false,
+    "expect": "SEC-PY_SECRET_IN_LOG",
+    "code": "import logging\ndef h(user):\n    logging.info(f'user={user}')\n"
   }
 ]

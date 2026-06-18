@@ -901,3 +901,46 @@ class TestInterproceduralTaint:
         )
         # No assertion on reachability (1-hop limit); just must not crash.
         _scan(code)
+
+
+# ======================================================================
+# New detector families: library-RCE, JWT crypto-misuse, secret-in-log
+# ======================================================================
+
+
+class TestLibraryRCE:
+    def test_imagemath_eval_dynamic(self) -> None:
+        code = "from PIL import ImageMath\nfrom flask import request\ndef h():\n    return ImageMath.eval(request.args['f'])\n"
+        assert _has(code, "SEC-PY_EVAL")
+
+    def test_imagemath_eval_constant_safe(self) -> None:
+        code = "from PIL import ImageMath\ndef h():\n    return ImageMath.eval('1+1')\n"
+        assert not _has(code, "SEC-PY_EVAL")
+
+
+class TestJWTMisuse:
+    def test_verify_false(self) -> None:
+        code = "import jwt\ndef h(t):\n    return jwt.decode(t, verify=False)\n"
+        assert _has(code, "SEC-PY_JWT_WEAK")
+
+    def test_options_verify_signature_false(self) -> None:
+        code = "import jwt\ndef h(t):\n    return jwt.decode(t, options={'verify_signature': False})\n"
+        assert _has(code, "SEC-PY_JWT_WEAK")
+
+    def test_verified_decode_safe(self) -> None:
+        code = "import jwt\ndef h(t):\n    return jwt.decode(t, algorithms=['RS256'])\n"
+        assert not _has(code, "SEC-PY_JWT_WEAK")
+
+
+class TestSecretInLog:
+    def test_getenv_secret_in_log(self) -> None:
+        code = "import os, logging\ndef h():\n    k=os.getenv('API_KEY')\n    logging.info(f'key={k}')\n"
+        assert _has(code, "SEC-PY_SECRET_IN_LOG")
+
+    def test_password_identifier_in_log(self) -> None:
+        code = "import logging\ndef h(password):\n    logging.debug(f'pw={password}')\n"
+        assert _has(code, "SEC-PY_SECRET_IN_LOG")
+
+    def test_nonsecret_log_safe(self) -> None:
+        code = "import logging\ndef h(user):\n    logging.info(f'user={user}')\n"
+        assert not _has(code, "SEC-PY_SECRET_IN_LOG")

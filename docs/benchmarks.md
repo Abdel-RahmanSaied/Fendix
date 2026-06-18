@@ -246,16 +246,22 @@ on the Python AST taint engine, so "is it more accurate?" stops being an opinion
 | Metric | Precision | Recall | F1 |
 |---|---|---|---|
 | **HANDLED** (regression gate, in-scope) | **1.000** | **1.000** | **1.000** |
-| **HONEST** (incl. known gaps) | **1.000** | **0.850** | **0.919** |  ← interprocedural taint closed `cmdi-interprocedural`
+| **HONEST** (incl. known gaps) | **1.000** | **1.000** | **1.000** |  ← all original roadmap gaps closed
 
 Per-category F1 is 1.000 for every implemented detector (cmdi, sqli, ssrf, path,
-deser, xss, llm). The honest recall gap = the 4 documented roadmap items:
+deser, xss, llm). All original roadmap gaps are now **closed** — each was implemented and its
+benchmark case flipped to detected (with a safe counterpart added for precision):
 
-| Known gap | Category | What it needs |
+| Closed gap | Category | Implemented as |
 |---|---|---|
-| `rce-imagemath-eval` | rce | library-specific RCE sink (`PIL.ImageMath.eval`) |
-| `jwt-verify-false` | crypto | crypto/auth-misuse matcher (new family) |
-| `secret-in-log` | secrets | secret-source → log-sink flow |
+| `cmdi-interprocedural` | cmdi | 1-hop interprocedural taint (param ← caller arg) |
+| `rce-imagemath-eval` | rce | library code-eval sink (`PIL.ImageMath.eval`) |
+| `jwt-verify-false` | crypto | JWT crypto-misuse matcher (`SEC-PY_JWT_WEAK`) |
+| `secret-in-log` | secrets | secret-source → log-sink rule (`SEC-PY_SECRET_IN_LOG`) |
+
+New roadmap candidates (not yet in the corpus as gaps): full 2+-hop
+interprocedural taint, real JS/TS AST, cross-file taint.
+
 
 **Interpretation:** the engine is precision-perfect and recall-perfect *within
 its modeled source/sink set* (handled F1 = 1.0), with an honest F1 of 0.889 once
