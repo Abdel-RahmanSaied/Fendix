@@ -59,9 +59,16 @@ You are solely responsible for ensuring you have permission.
 type ProbeType string
 
 const (
-	ProbeSQLi ProbeType = "sqli"
-	ProbeCMDi ProbeType = "cmdi"
-	ProbeCRLF ProbeType = "crlf"
+	ProbeSQLi     ProbeType = "sqli"
+	ProbeCMDi     ProbeType = "cmdi"
+	ProbeCRLF     ProbeType = "crlf"
+	ProbeRedirect ProbeType = "redirect"
+	ProbeXSS      ProbeType = "xss"
+	ProbeSSRF     ProbeType = "ssrf"
+
+	ProbeHostHeader   ProbeType = "host_header"
+	ProbeGraphQL      ProbeType = "graphql"
+	ProbeMethodTamper ProbeType = "method_tamper"
 )
 
 // ProbeRecord captures a single probe sent during active scanning.
@@ -135,12 +142,18 @@ func PrintDisclaimer() {
 }
 
 // measureBaseline sends 3 requests and returns the median response time.
-func measureBaseline(ctx context.Context, client *http.Client, method, url string) (time.Duration, error) {
+func measureBaseline(ctx context.Context, client *http.Client, cfg *models.ScanConfig, method, url string) (time.Duration, error) {
 	var durations []time.Duration
 	for i := 0; i < 3; i++ {
 		req, err := http.NewRequestWithContext(ctx, method, url, nil)
 		if err != nil {
 			return 0, fmt.Errorf("creating baseline request: %w", err)
+		}
+		// F-I (C1 baseline-auth): the baseline must traverse the SAME auth
+		// state as the probes, or the timing delta compares two different code
+		// paths (a fast 401 stub vs the authenticated handler).
+		if cfg != nil {
+			cfg.Auth.ApplyToRequest(req)
 		}
 		start := time.Now()
 		resp, err := client.Do(req)
@@ -223,9 +236,31 @@ var sqliBooleanPayloads = struct {
 // large enough to ignore byte-level noise (timestamps, request IDs, etc.).
 const sqliBooleanLengthThreshold = 0.05
 
-// cmdiPayload is the safe echo-based command injection canary.
-const cmdiCanaryPrefix = "fendix_canary_"
-const cmdiPayload = "; echo fendix_canary_PROBE"
+// sqliBooleanControl is the neutral control value sent before the true/false
+// pair (fix 2.2). Sending it twice measures the endpoint's natural per-request
+// length jitter: if two identical control responses already differ by more than
+// the threshold, the target is too dynamic to draw a boolean-blind conclusion
+// and the probe bails. When the endpoint is stable, the control also gives us a
+// baseline shape so we can require the true/false flip to be injection-driven
+// (one side tracks the control, the other diverges) rather than mere noise.
+const sqliBooleanControl = "fendix"
+
+// cmdiPayload is the safe COMPUTED-canary command injection probe (fix 2.4).
+// The payload embeds a shell arithmetic expansion `$((13*99))`. A vulnerable
+// target that passes the input to a shell EVALUATES the arithmetic and emits
+// "fendix1287end" (13*99 = 1287). A non-vulnerable endpoint that merely reflects
+// the input echoes the SOURCE text "13*99" — which never contains the computed
+// marker "1287end" — so simple reflection no longer trips a false positive.
+//
+// The wrapping delimiters (fendix…end) keep the marker from colliding with
+// unrelated "1287" runs that might appear in a large response body.
+const cmdiPayload = "; echo fendix$((13*99))end"
+
+// cmdiComputedCanary is the shell-evaluated result of cmdiPayload. Its presence
+// in the response body is unambiguous evidence the payload reached a shell:
+// 13*99 = 1287, so an executing shell prints "fendix1287end" while a literal
+// reflection of the payload prints "fendix$((13*99))end" (no match).
+const cmdiComputedCanary = "fendix1287end"
 
 // crlfPayload injects a Set-Cookie header via CRLF (URL-encoded spaces for valid HTTP).
 const crlfPayload = "%0d%0aSet-Cookie:%20fendix=injected"
@@ -330,19 +365,37 @@ func buildJSONBody(fields []string, target, payload string) []byte {
 	return out
 }
 
+// injectionCheck implements the Check interface for the active injection
+// scanner. Structural adapter — Run delegates to the unchanged
+// CheckInjectionWithAudit, threading the scan-wide audit log through the
+// CheckContext (cc.Audit aliases currentAuditLog(), so behaviour is
+// identical to the historical CheckInjection free function).
+type injectionCheck struct{}
+
+func (injectionCheck) Name() string     { return "injection" }
+func (injectionCheck) Category() string { return "injection" }
+func (injectionCheck) Tier() Tier       { return TierActive }
+func (injectionCheck) Enabled(cfg *models.ScanConfig) bool {
+	return cfg != nil && cfg.EnableActive
+}
+
 // CheckInjection runs active injection probes on an endpoint.
 // This function MUST only be called when cfg.EnableActive is true.
 // It runs SQLi (time/error/boolean), CMDi, and CRLF probes across each
 // declared query/header/body parameter.
 func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
-	if !cfg.EnableActive {
+	return injectionCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run delegates to the unchanged CheckInjectionWithAudit. The audit log
+// comes from the CheckContext (cc.Audit == currentAuditLog()), so probe
+// records still accumulate in the one package-level log the orchestrator
+// reads post-scan via scanner.GlobalAuditRecords (e.g. --debug-bundle).
+func (injectionCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	if !cc.Cfg.EnableActive {
 		return nil
 	}
-
-	// Use the package-level audit log so probe records from every endpoint
-	// in this scan accumulate in one place. The orchestrator reads them
-	// post-scan via scanner.GlobalAuditRecords (e.g. --debug-bundle).
-	return CheckInjectionWithAudit(ctx, cfg, endpoint, currentAuditLog())
+	return CheckInjectionWithAudit(ctx, cc.Cfg, endpoint, cc.Audit)
 }
 
 // CheckInjectionWithAudit runs active injection probes with a provided audit log.
@@ -398,7 +451,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 	var findings []models.Finding
 	maxProbes := effectiveMaxProbes(cfg)
 
-	baseline, err := measureBaseline(ctx, client, endpoint.Method, endpoint.FullURL)
+	baseline, err := measureBaseline(ctx, client, cfg, endpoint.Method, endpoint.FullURL)
 	if err != nil {
 		logagg.Warn("injection", "failed to measure baseline for sqli", "endpoint", endpoint.FullURL, "error", err)
 		return nil
@@ -423,7 +476,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			logagg.Warn("injection", "failed to create sqli probe request", "error", err)
 			continue
 		}
-		addAuth(req, cfg)
+		cfg.Auth.ApplyToRequest(req)
 
 		resp, err := client.Do(req)
 		elapsed := time.Since(start)
@@ -468,7 +521,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 				start2 := time.Now()
 				req2, err := buildProbeRequest(ctx, endpoint, param, p.Payload, loc)
 				if err == nil {
-					addAuth(req2, cfg)
+					cfg.Auth.ApplyToRequest(req2)
 					resp2, err := client.Do(req2)
 					elapsed2 := time.Since(start2)
 					if err == nil {
@@ -529,6 +582,14 @@ func paramLabel(param string, loc ProbeLocation) string {
 // your SQL syntax", which is unambiguous evidence the input reached an
 // unparameterized query.
 func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
+	// scan context is already cancelled (--max-requests / --max-duration / Ctrl-C).
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
 	if auditLog.Count(endpoint.FullURL) >= effectiveMaxProbes(cfg) {
 		return nil
 	}
@@ -539,7 +600,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 		logagg.Warn("injection", "failed to create error-based sqli probe request", "error", err)
 		return nil
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -603,11 +664,41 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 // > sqliBooleanLengthThreshold (5%). Either signal indicates the payload was
 // concatenated into the WHERE clause and the engine evaluated the condition.
 func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
+	// scan context is already cancelled.
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
 	maxProbes := effectiveMaxProbes(cfg)
-	if auditLog.Count(endpoint.FullURL)+2 > maxProbes {
-		// We need two probes; if even one of them busts the budget, skip.
+	// Fix 2.2: we now send up to FOUR probes — two neutral controls (to measure
+	// per-request noise) plus the true/false pair. Skip if any of them would
+	// bust the per-endpoint budget.
+	if auditLog.Count(endpoint.FullURL)+4 > maxProbes {
 		return nil
 	}
+
+	// Noise floor: send the SAME neutral control twice. If two identical
+	// requests already differ by more than the threshold, the endpoint is too
+	// dynamic (random tokens / timestamps in the body) for a boolean-blind
+	// length comparison to mean anything — bail rather than emit a false
+	// positive on per-request jitter.
+	_, control1Len, ok := sendBoolProbe(ctx, client, cfg, endpoint, param, sqliBooleanControl, loc, auditLog)
+	if !ok {
+		return nil
+	}
+	_, control2Len, ok := sendBoolProbe(ctx, client, cfg, endpoint, param, sqliBooleanControl, loc, auditLog)
+	if !ok {
+		return nil
+	}
+	controlJitter := lengthDelta(control1Len, control2Len)
+	if controlJitter > sqliBooleanLengthThreshold {
+		// Dynamic content — too noisy to conclude anything.
+		return nil
+	}
+	controlLen := control1Len
 
 	trueStatus, trueLen, ok := sendBoolProbe(ctx, client, cfg, endpoint, param, sqliBooleanPayloads.True, loc, auditLog)
 	if !ok {
@@ -619,8 +710,23 @@ func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.Scan
 	}
 
 	statusFlip := trueStatus != falseStatus
-	lenDelta := math.Abs(float64(trueLen-falseLen)) / math.Max(float64(trueLen), 1)
+	lenDelta := lengthDelta(trueLen, falseLen)
 	lengthFlip := lenDelta > sqliBooleanLengthThreshold
+
+	// Fix 2.2: a length flip only counts as injection-driven when it clearly
+	// exceeds the endpoint's natural noise AND one side of the pair tracks the
+	// neutral control while the other diverges. A boolean SQLi flips exactly one
+	// branch (the false condition prunes the result set); random per-request
+	// noise instead makes BOTH true and false differ from the control by similar
+	// amounts. Requiring (control≈true XOR control≈false) rejects that case.
+	if lengthFlip {
+		trueTracksControl := lengthDelta(controlLen, trueLen) <= sqliBooleanLengthThreshold
+		falseTracksControl := lengthDelta(controlLen, falseLen) <= sqliBooleanLengthThreshold
+		exceedsNoise := lenDelta > controlJitter
+		if !exceedsNoise || !(trueTracksControl || falseTracksControl) {
+			lengthFlip = false
+		}
+	}
 
 	if !statusFlip && !lengthFlip {
 		return nil
@@ -642,6 +748,17 @@ func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.Scan
 	}}
 }
 
+// lengthDelta returns the symmetric, order-independent relative difference
+// between two response-body lengths: |a-b| / max(a,b). Normalizing against the
+// larger side (fix 2.3) makes lengthDelta(a,b) == lengthDelta(b,a) — the old
+// calc divided by the first argument only, so swapping true/false lengths
+// produced a different delta and could cross the threshold in one direction but
+// not the other. Returns 0 when both are zero.
+func lengthDelta(a, b int) float64 {
+	denom := math.Max(math.Max(float64(a), float64(b)), 1)
+	return math.Abs(float64(a-b)) / denom
+}
+
 // sendBoolProbe sends one boolean probe and records the audit entry. Returns
 // (status, response-body-length, ok) — ok=false means the request failed and
 // the caller should abandon the boolean test.
@@ -652,7 +769,7 @@ func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanCon
 		logagg.Warn("injection", "failed to create boolean sqli probe request", "error", err)
 		return 0, 0, false
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -679,11 +796,21 @@ func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanCon
 	return resp.StatusCode, len(body), true
 }
 
-// probeCMDi sends a safe echo canary payload and checks for reflection in the response.
-// Location-aware: works on query, header, and body params. The canary is the
-// echoed substring "fendix_canary_" — if it appears in the response body, the
-// payload was passed to a shell.
+// probeCMDi sends a safe COMPUTED-canary payload and checks the response for
+// the shell-EVALUATED result, not the literal payload text (fix 2.4).
+// Location-aware: works on query, header, and body params. The marker
+// "fendix1287end" only appears if a shell evaluated the embedded `$((13*99))`
+// arithmetic — a server that merely reflects the input echoes "13*99" and is
+// not flagged.
 func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
+	// scan context is already cancelled.
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
 	if auditLog.Count(endpoint.FullURL) >= effectiveMaxProbes(cfg) {
 		return nil
 	}
@@ -694,7 +821,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		logagg.Warn("injection", "failed to create cmdi probe request", "error", err)
 		return nil
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -722,11 +849,11 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 
 	record.Status = resp.StatusCode
 
-	if strings.Contains(string(body), cmdiCanaryPrefix) {
+	if strings.Contains(string(body), cmdiComputedCanary) {
 		record.Finding = true
 		auditLog.Record(record)
 
-		evidence := fmt.Sprintf("Command injection confirmed: canary %q in response body, %s", cmdiCanaryPrefix, paramLabel(param, loc))
+		evidence := fmt.Sprintf("Command injection confirmed: computed canary %q (shell-evaluated 13*99) in response body, %s", cmdiComputedCanary, paramLabel(param, loc))
 		if len(body) > 200 {
 			body = body[:200]
 		}
@@ -755,6 +882,14 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 // header values can't smuggle CR/LF past the http client, and body values
 // don't reach response-header construction in any reasonable framework.
 func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, auditLog *ProbeAuditLog) []models.Finding {
+	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
+	// scan context is already cancelled.
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
 	if auditLog.Count(endpoint.FullURL) >= effectiveMaxProbes(cfg) {
 		return nil
 	}
@@ -772,7 +907,7 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		logagg.Warn("injection", "failed to create crlf probe request", "error", err)
 		return nil
 	}
-	addAuth(req, cfg)
+	cfg.Auth.ApplyToRequest(req)
 
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)
@@ -830,37 +965,6 @@ func buildProbeURL(baseURL, param, payload string) string {
 		sep = "&"
 	}
 	return fmt.Sprintf("%s%s%s=%s", baseURL, sep, url.QueryEscape(param), url.QueryEscape(payload))
-}
-
-// addAuth adds authentication headers to a request if configured.
-func addAuth(req *http.Request, cfg *models.ScanConfig) {
-	if cfg.Auth == nil {
-		return
-	}
-	header := cfg.Auth.Header
-	if header == "" {
-		header = "Authorization"
-	}
-
-	switch cfg.Auth.Type {
-	case "bearer":
-		req.Header.Set(header, "Bearer "+cfg.Auth.Value)
-	case "apikey":
-		req.Header.Set(header, cfg.Auth.Value)
-	case "apikey-query":
-		// Mutate the URL query rather than a header — same logic as
-		// AuthContext.ApplyToRequest, repeated here because injection
-		// builds its own auth-bearing requests outside ApplyToRequest.
-		q := req.URL.Query()
-		q.Set(header, cfg.Auth.Value)
-		req.URL.RawQuery = q.Encode()
-	case "basic":
-		req.Header.Set(header, "Basic "+cfg.Auth.Value)
-	case "cookie":
-		req.Header.Set("Cookie", cfg.Auth.Value)
-	default:
-		req.Header.Set(header, cfg.Auth.Value)
-	}
 }
 
 // medianDuration returns the median of a slice of durations.

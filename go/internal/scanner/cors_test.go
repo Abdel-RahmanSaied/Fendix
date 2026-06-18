@@ -10,6 +10,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -169,5 +170,305 @@ func TestCheckCORS_MultipleIssues(t *testing.T) {
 	findings := CheckCORS(context.Background(), cfg, ep)
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings (wildcard + non-standard method), got %d", len(findings))
+	}
+}
+
+// Phase 4a / 4.1 — suffix bypass: the server reflects an origin derived from
+// the target host as a subdomain of the attacker domain
+// (https://<targetHost>.evil.example.com). Exact-match reflection of the bare
+// evilOrigin would miss this whole class. ACAO equals the probe origin exactly.
+func TestCORS_SuffixBypassReflected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		// Reflect ONLY the suffix-bypass probe origin, not the bare evil origin.
+		if strings.HasSuffix(origin, ".evil.example.com") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for suffix-bypass reflection, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityHigh {
+		t.Errorf("expected HIGH severity, got %s", findings[0].Severity)
+	}
+	if findings[0].Title != "CORS reflects arbitrary origin" {
+		t.Errorf("unexpected title: %s", findings[0].Title)
+	}
+}
+
+// Phase 4a / 4.2 — a reflected arbitrary origin WITH credentials is
+// account-takeover grade → CRITICAL, not HIGH.
+func TestCORS_ReflectedOriginWithCredentialsIsCritical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for credentialed reflection, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityCritical {
+		t.Errorf("expected CRITICAL severity, got %s", findings[0].Severity)
+	}
+	if findings[0].Title != "CORS reflects arbitrary origin with credentials" {
+		t.Errorf("unexpected title: %s", findings[0].Title)
+	}
+}
+
+// Phase 4a / 4.3 — some servers reflect Origin only on the actual
+// (simple) request, not the preflight. The simple-request probe must catch it.
+func TestCORS_SimpleRequestReflection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Reflect ONLY on the real method (GET); emit nothing on OPTIONS.
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(200)
+			return
+		}
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for simple-request reflection, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityHigh {
+		t.Errorf("expected HIGH severity, got %s", findings[0].Severity)
+	}
+}
+
+// Phase 4a / 4.3 dedup — the SAME reflecting misconfig present on BOTH
+// preflight and simple request must produce ONE finding, not two.
+func TestCORS_ReflectionNotDoubleReported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 deduped reflection finding, got %d: %+v", len(findings), findings)
+	}
+}
+
+// Phase 4a / 4.4 — sandboxed iframes / data-URIs send Origin: null. A server
+// that reflects "null" is exploitable. HIGH without creds, CRITICAL with creds.
+func TestCORS_NullOriginAccepted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") == "null" {
+			w.Header().Set("Access-Control-Allow-Origin", "null")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for null-origin acceptance, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityHigh {
+		t.Errorf("expected HIGH severity, got %s", findings[0].Severity)
+	}
+	if findings[0].Title != "CORS accepts null origin" {
+		t.Errorf("unexpected title: %s", findings[0].Title)
+	}
+}
+
+func TestCORS_NullOriginWithCredentialsIsCritical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") == "null" {
+			w.Header().Set("Access-Control-Allow-Origin", "null")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for credentialed null-origin, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityCritical {
+		t.Errorf("expected CRITICAL severity, got %s", findings[0].Severity)
+	}
+}
+
+// Phase 4a / 4.5 — status-gate narrowing. A 401 that still reflects the evil
+// origin is a real misconfig: the CORS headers are independent of the probe's
+// auth outcome. Only 404 (and 5xx) should gate evaluation out.
+func TestCORS_EvaluatedOn401(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.WriteHeader(401)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/private", FullURL: server.URL + "/api/private"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 reflection finding on 401, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityHigh {
+		t.Errorf("expected HIGH severity, got %s", findings[0].Severity)
+	}
+}
+
+// Phase 4a / 4.5 — 404 must still gate CORS evaluation out (regression guard
+// for the existing TestCheckCORS_SkipsOn404 narrowing).
+func TestCORS_StillSkipsOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/missing", FullURL: server.URL + "/missing"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings on 404, got %d: %+v", len(findings), findings)
+	}
+}
+
+// Phase 4a precedence regression — wildcard-no-creds and reflected-origin are
+// DISTINCT misconfigs that can co-occur across different probes/methods. A
+// server may return ACAO: * on the OPTIONS preflight while reflecting the
+// arbitrary probe origin on the GET (simple) request. wildcard-no-creds (MEDIUM)
+// must NOT subsume the reflected-origin finding (HIGH) — that hides the
+// higher-severity issue. The single emitted origin finding must be the HIGH
+// reflection, not the MEDIUM wildcard.
+func TestCORS_WildcardOnPreflightReflectedOnGet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			// Preflight: wildcard, no credentials → MEDIUM signal.
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(200)
+			return
+		}
+		// Simple request: reflect the attacker probe origin → HIGH signal.
+		origin := r.Header.Get("Origin")
+		if origin != "" && origin != "null" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 origin finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityHigh {
+		t.Errorf("expected HIGH severity (reflected origin must not be suppressed by wildcard MEDIUM), got %s", findings[0].Severity)
+	}
+	if findings[0].Title != "CORS reflects arbitrary origin" {
+		t.Errorf("unexpected title (wildcard MEDIUM hid the HIGH reflection): %s", findings[0].Title)
+	}
+}
+
+// Phase 4a precedence regression — same co-occurrence as above, but the GET
+// reflection carries Access-Control-Allow-Credentials: true. This is an
+// account-takeover-grade CRITICAL finding that must never be hidden behind the
+// MEDIUM wildcard-no-creds finding.
+func TestCORS_WildcardPreflightReflectedCredsOnGet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			// Preflight: wildcard, no credentials → MEDIUM signal.
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(200)
+			return
+		}
+		// Simple request: reflect with credentials → CRITICAL signal.
+		origin := r.Header.Get("Origin")
+		if origin != "" && origin != "null" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 origin finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityCritical {
+		t.Errorf("expected CRITICAL severity (credentialed reflection must not be suppressed by wildcard MEDIUM), got %s", findings[0].Severity)
+	}
+	if findings[0].Title != "CORS reflects arbitrary origin with credentials" {
+		t.Errorf("unexpected title (wildcard MEDIUM hid the CRITICAL reflection): %s", findings[0].Title)
+	}
+}
+
+// Phase 4a / 4.6 — Access-Control-Allow-Methods: * is a wildcard methods
+// misconfig the non-standard-method loop ignores today.
+func TestCORS_WildcardMethods(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://trusted.example.com")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for wildcard methods, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Title != "CORS allows all methods (wildcard)" {
+		t.Errorf("unexpected title: %s", findings[0].Title)
 	}
 }

@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
-	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -74,6 +72,16 @@ var configLeakPrefixes = map[string]string{
 // path doesn't matter; the fix is always the same.
 const configLeakFix = "Remove this file from the public web root, OR configure the server (nginx/Apache/etc) to deny requests for hidden / config files. Rotate any credentials this file may have exposed."
 
+// configLeakCheck implements the Check interface for the config-file
+// leak detector. Structural adapter — Run holds the unchanged body of
+// the historical CheckConfigLeak free function.
+type configLeakCheck struct{}
+
+func (configLeakCheck) Name() string                        { return "configleak" }
+func (configLeakCheck) Category() string                    { return "data_exposure" }
+func (configLeakCheck) Tier() Tier                          { return TierPassive }
+func (configLeakCheck) Enabled(cfg *models.ScanConfig) bool { return true }
+
 // CheckConfigLeak hits the endpoint and emits a CRITICAL "exposed
 // config file" finding when (a) the endpoint's path matches a known
 // config-file leak pattern AND (b) the response is 200-series (the
@@ -85,6 +93,14 @@ const configLeakFix = "Remove this file from the public web root, OR configure t
 // ratelimit) can be deduped naturally by the existing pipeline when
 // they fire on the same path.
 func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return configLeakCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged config-leak detection body. Outbound requests
+// go through the shared SSRF-guarded follow-redirect client (cc.Client);
+// the per-job deadline comes from ctx (runCheck).
+func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	if endpoint.FullURL == "" {
 		return nil
 	}
@@ -102,10 +118,7 @@ func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpo
 		cfg.Auth.ApplyToRequest(req)
 	}
 
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-	}
+	client := cc.Client
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -123,12 +136,14 @@ func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpo
 		return nil
 	}
 
-	// Read a short body sample for evidence. Capped to keep memory
-	// bounded and to avoid pulling a multi-MB file when the server
-	// is misconfigured to serve giant tar.gz / .pem files.
-	const sampleLimit = 512
-	bodySample, _ := io.ReadAll(io.LimitReader(resp.Body, sampleLimit))
-	evidence := sanitizeConfigLeakEvidence(bodySample, sampleLimit)
+	// 4.15: DO NOT capture the served-file body in evidence. The 200
+	// status + path is sufficient proof of the leak, and persisting a
+	// leaked secret-file body into a finding is itself a leak (and the
+	// hand-rolled redactor was broken for JSON / compound .env keys).
+	// We measure the body length (bounded read) for a size descriptor
+	// only — the bytes are discarded, never stored.
+	const bodyLenCap = 1 << 20 // 1 MiB ceiling for the size probe
+	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, bodyLenCap))
 
 	line := endpoint.Path
 	return []models.Finding{{
@@ -137,7 +152,7 @@ func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpo
 		Source:     models.SourceBlackbox,
 		Category:   "data_exposure",
 		Endpoint:   endpoint.Path,
-		Evidence:   fmt.Sprintf("HTTP %d on %s. Body sample: %s", resp.StatusCode, leakPath, evidence),
+		Evidence:   fmt.Sprintf("HTTP %d on %s (config file served; body %d bytes, not captured)", resp.StatusCode, leakPath, n),
 		Fix:        configLeakFix,
 		References: []string{"CWE-538"}, // Insertion of Sensitive Information into Externally-Accessible File
 		Confidence: models.ConfidenceHigh,
@@ -193,81 +208,4 @@ func normalizeForConfigLeak(p string) string {
 		p = p[:i]
 	}
 	return p
-}
-
-// sanitizeConfigLeakEvidence renders a short body sample for the
-// evidence field. Strips obviously-sensitive substrings (we don't
-// want the FP corpus complaining that the engine LEAKED a leaked
-// credential into the report). Replaces likely-secrets-shape tokens
-// with [REDACTED] and truncates aggressively.
-func sanitizeConfigLeakEvidence(body []byte, limit int) string {
-	if len(body) == 0 {
-		return "(empty body)"
-	}
-	s := string(body)
-	if len(s) > limit {
-		s = s[:limit]
-	}
-	// Sloppy redaction — covers the common .env and .npmrc shapes
-	// without dragging in the full secret-detector regex set.
-	for _, keyword := range []string{"PASSWORD", "SECRET", "TOKEN", "API_KEY", "APIKEY", "PRIVATE_KEY"} {
-		// Case-insensitive replace would need regexp; we do upper +
-		// lower variants. That covers .env-style (UPPER) and most
-		// hand-written cases.
-		s = redactKVAfter(s, keyword)
-		s = redactKVAfter(s, strings.ToLower(keyword))
-	}
-	// Collapse whitespace + control chars for a one-line preview.
-	s = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
-			return ' '
-		}
-		if r < 32 {
-			return -1
-		}
-		return r
-	}, s)
-	s = strings.TrimSpace(s)
-	if len(s) > maxEvidenceLen {
-		s = s[:maxEvidenceLen] + "..."
-	}
-	return s
-}
-
-// redactKVAfter replaces the value of `KEY=value` or `KEY: value`
-// after a known sensitive key with `[REDACTED]`. Operates on the
-// short body sample, not full responses.
-//
-// Walks left-to-right with a single cursor so we can't loop on the
-// post-replacement substring (an earlier draft did `strings.Index`
-// in a loop and infinite-looped because `KEY=[REDACTED]` still
-// matches `KEY=` at the same offset).
-func redactKVAfter(s, keyword string) string {
-	for _, sep := range []string{"=", ": ", ":"} {
-		needle := keyword + sep
-		var b strings.Builder
-		b.Grow(len(s))
-		cursor := 0
-		for {
-			rel := strings.Index(s[cursor:], needle)
-			if rel < 0 {
-				b.WriteString(s[cursor:])
-				break
-			}
-			matchStart := cursor + rel
-			valueStart := matchStart + len(needle)
-			// Find end of value: newline, space, comma.
-			valueEnd := valueStart
-			for valueEnd < len(s) && s[valueEnd] != '\n' && s[valueEnd] != ' ' && s[valueEnd] != ',' {
-				valueEnd++
-			}
-			b.WriteString(s[cursor:valueStart])
-			if valueEnd > valueStart {
-				b.WriteString("[REDACTED]")
-			}
-			cursor = valueEnd
-		}
-		s = b.String()
-	}
-	return s
 }

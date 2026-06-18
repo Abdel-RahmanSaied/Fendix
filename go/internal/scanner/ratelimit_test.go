@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -19,7 +20,7 @@ func TestCheckRateLimit_NoLimiting(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -28,7 +29,11 @@ func TestCheckRateLimit_NoLimiting(t *testing.T) {
 	if findings[0].Severity != models.SeverityMedium {
 		t.Errorf("expected MEDIUM severity, got %s", findings[0].Severity)
 	}
-	if findings[0].Title != "No rate limiting detected" {
+	// Phase 5.4 deliberate change: the title is now scoped to the bounded
+	// burst ("...within N requests") instead of the absolute "No rate
+	// limiting detected", which over-claimed (the burst can't disprove a
+	// per-minute/hour limiter).
+	if !strings.HasPrefix(findings[0].Title, "No rate limiting observed within ") {
 		t.Errorf("unexpected title: %s", findings[0].Title)
 	}
 	if int(reqCount.Load()) != rateLimitProbeCount {
@@ -60,7 +65,7 @@ func TestCheckRateLimit_SkipsStaticFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 	for _, path := range cases {
 		reqCount.Store(0)
 		ep := Endpoint{Method: "GET", Path: path, FullURL: server.URL + path}
@@ -85,7 +90,7 @@ func TestCheckRateLimit_ApiPathStillScanned(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 1 {
 		t.Fatalf("api path should still emit finding, got %d", len(findings))
@@ -108,7 +113,7 @@ func TestCheckRateLimit_Returns429(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -125,7 +130,7 @@ func TestCheckRateLimit_HasRateLimitHeaders(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -141,11 +146,92 @@ func TestCheckRateLimit_RetryAfterHeader(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings when Retry-After present, got %d", len(findings))
+	}
+}
+
+// 5.4 / 5.7 — the finding must be honest about scope: it can only
+// observe absence of limiting WITHIN N requests, not prove absence of
+// slower per-minute/hour limiters. Title + evidence reflect "within N
+// requests" and Confidence stays Medium.
+func TestRateLimit_FindingIsScopedAndMedium(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckRateLimit(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if !strings.Contains(f.Title, "within") {
+		t.Errorf("title should be scoped to N requests, got %q", f.Title)
+	}
+	if !strings.Contains(strings.ToLower(f.Evidence), "slower") &&
+		!strings.Contains(strings.ToLower(f.Evidence), "per-minute") &&
+		!strings.Contains(strings.ToLower(f.Evidence), "cannot") {
+		t.Errorf("evidence should note the scope limitation, got %q", f.Evidence)
+	}
+	if f.Confidence != models.ConfidenceMedium {
+		t.Errorf("confidence = %s, want MEDIUM", f.Confidence)
+	}
+}
+
+// 5.5 — dedicated category. The finding and the Check.Category() method
+// must both report "rate_limiting", not the old "headers".
+func TestRateLimit_CategoryIsRateLimiting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckRateLimit(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Category != "rate_limiting" {
+		t.Errorf("finding category = %q, want rate_limiting", findings[0].Category)
+	}
+	if got := (rateLimitCheck{}).Category(); got != "rate_limiting" {
+		t.Errorf("rateLimitCheck{}.Category() = %q, want rate_limiting", got)
+	}
+}
+
+// 5.6 — budget/error interaction. When most probe requests fail (server
+// closes the connection without responding), too few complete to draw a
+// conclusion → no finding (inconclusive), NOT a false "unprotected".
+func TestRateLimit_InconclusiveWhenProbesFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hijack and drop the connection so client.Do returns an error.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.WriteHeader(500)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/flaky", FullURL: server.URL + "/api/flaky"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckRateLimit(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Fatalf("too few completed probes → inconclusive, expected 0 findings, got %d", len(findings))
 	}
 }
 
@@ -159,7 +245,7 @@ func TestCheckRateLimit_ContextCancelled(t *testing.T) {
 	cancel()
 
 	ep := Endpoint{Method: "GET", Path: "/api/test", FullURL: server.URL + "/api/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(ctx, cfg, ep)
 	if findings != nil {

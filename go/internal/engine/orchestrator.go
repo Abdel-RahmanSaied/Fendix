@@ -215,33 +215,35 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		slog.Info("scanning endpoints", "count", len(endpoints))
 	}
 
-	// 2. Build check list. configleak runs first so its CRITICAL
-	// "exposed config file" finding lands before the noisier
-	// per-endpoint checks (headers / cors / ratelimit) fire on the
-	// same path — TASK-133 / Phase 17d corpus signal D2.
-	checks := []scanner.CheckFn{
-		scanner.CheckConfigLeak,
-		scanner.CheckHeaders,
-		scanner.CheckCORS,
-		scanner.CheckExposure,
-		scanner.CheckRateLimit,
+	// 2. Build check list from the registry. DefaultChecks() is the single
+	// source of truth for ordering (configleak first so its CRITICAL
+	// "exposed config file" finding lands before noisier per-endpoint checks
+	// on the same path — TASK-133 / Phase 17d corpus signal D2) and for the
+	// per-check Enabled(cfg) gate (auth needs cfg.Auth, idor needs AuthUser2,
+	// injection needs cfg.EnableActive). The disclaimer fires iff any enabled
+	// check is TierActive (i.e. sends attack payloads).
+	all := scanner.DefaultChecks()
+	var checks []scanner.Check
+	active := false
+	for _, c := range all {
+		if !c.Enabled(o.cfg) {
+			continue
+		}
+		checks = append(checks, c)
+		if c.Tier() == scanner.TierActive {
+			active = true
+		}
 	}
-
-	if o.cfg.Auth != nil {
-		checks = append(checks, scanner.CheckAuth)
-	}
-
-	if o.cfg.Auth != nil && o.cfg.AuthUser2 != nil {
-		checks = append(checks, scanner.CheckIDOR)
-	}
-
-	if o.cfg.EnableActive {
+	if active {
 		scanner.PrintDisclaimer()
-		checks = append(checks, scanner.CheckInjection)
 	}
+
+	// Build the shared per-scan CheckContext AFTER ResetGlobalAuditLog (above)
+	// so CheckContext.Audit aliases this run's fresh currentAuditLog().
+	cc := scanner.NewCheckContext(o.cfg)
 
 	// 3. Run checks via worker pool
-	pool := NewWorkerPool(o.cfg.Workers, o.cfg.DelayMs, checks)
+	pool := NewWorkerPoolChecks(o.cfg.Workers, o.cfg.DelayMs, checks, cc)
 	findings := pool.Run(ctx, o.cfg, endpoints)
 
 	// scanStatus accumulates the per-scanner outcome (F-L7/F-L13/F-L14).
@@ -573,16 +575,13 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		scanMode = "whitebox"
 	}
 
-	// Build list of check names that were run
-	checksRun := []string{"headers", "cors", "exposure", "ratelimit"}
-	if o.cfg.Auth != nil {
-		checksRun = append(checksRun, "auth")
-	}
-	if o.cfg.Auth != nil && o.cfg.AuthUser2 != nil {
-		checksRun = append(checksRun, "idor")
-	}
-	if o.cfg.EnableActive {
-		checksRun = append(checksRun, "injection")
+	// Build list of check names that were run, derived from the same filtered
+	// registry slice the worker pool executed — so metadata can't drift from
+	// what actually ran. (The old hand-built list OMITTED "configleak" even
+	// though it always ran; the derived list now correctly includes it.)
+	checksRun := make([]string, 0, len(checks)+3)
+	for _, c := range checks {
+		checksRun = append(checksRun, c.Name())
 	}
 	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
 		checksRun = append(checksRun, "secrets", "semgrep", "deps")

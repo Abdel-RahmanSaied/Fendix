@@ -822,3 +822,92 @@ func TestRenderSARIF_SchemaValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderSARIF_DASTUpgradeCategoriesRoundTrip verifies that findings from
+// the new DAST checks (Phase 1 + Phases 6-9) — each carrying its CWE
+// reference(s) — round-trip through RenderSARIF into a valid rule with a
+// non-empty ruleId, a CWE taxon tag, and a cwe.mitre.org helpUri. The SARIF
+// emitter is category-agnostic and ref-driven, so this proves the new
+// categories/CWEs serialize correctly with no per-category emitter changes.
+func TestRenderSARIF_DASTUpgradeCategoriesRoundTrip(t *testing.T) {
+	cases := []struct {
+		category string
+		title    string
+		cwe      string
+		severity models.Severity
+	}{
+		{"cookie", "Session cookie missing HttpOnly flag", "CWE-1004", models.SeverityMedium},
+		{"redirect", "Open redirect", "CWE-601", models.SeverityMedium},
+		{"injection", "Reflected XSS", "CWE-79", models.SeverityHigh},
+		{"ssrf", "SSRF — outbound fetch error leakage", "CWE-918", models.SeverityHigh},
+		{"host_header", "Host-header injection", "CWE-644", models.SeverityHigh},
+		{"graphql", "GraphQL introspection enabled", "CWE-200", models.SeverityHigh},
+		{"method_tamper", "Verb-based access-control bypass", "CWE-650", models.SeverityHigh},
+		{"rate_limiting", "No rate limiting observed within N requests", "CWE-770", models.SeverityMedium},
+	}
+
+	findings := make([]models.Finding, 0, len(cases))
+	for _, c := range cases {
+		findings = append(findings, models.Finding{
+			Title:      c.title,
+			Severity:   c.severity,
+			Source:     models.SourceBlackbox,
+			Category:   c.category,
+			Endpoint:   "GET /probe",
+			Evidence:   "evidence for " + c.title,
+			Fix:        "remediation for " + c.title,
+			References: []string{c.cwe},
+			Confidence: models.ConfidenceHigh,
+		})
+	}
+
+	var buf bytes.Buffer
+	meta := ScanMetadata{Target: "https://api.example.com", Version: "1.0.0", Mode: "dast"}
+	if err := RenderSARIF(&buf, findings, meta); err != nil {
+		t.Fatalf("RenderSARIF failed: %v", err)
+	}
+
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(log.Runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(log.Runs))
+	}
+	rules := log.Runs[0].Tool.Driver.Rules
+	if len(rules) != len(cases) {
+		t.Fatalf("expected %d deduped rules, got %d", len(cases), len(rules))
+	}
+
+	// Each rule must have a non-empty ruleId and surface its CWE taxon.
+	byName := map[string]SARIFRule{}
+	for _, r := range rules {
+		if r.ID == "" {
+			t.Errorf("rule %q has empty ruleId", r.Name)
+		}
+		byName[r.Name] = r
+	}
+	for _, c := range cases {
+		r, ok := byName[c.title]
+		if !ok {
+			t.Errorf("no SARIF rule emitted for %q (%s)", c.title, c.category)
+			continue
+		}
+		// CWE tag survives into properties.tags.
+		hasCWE := false
+		for _, tag := range r.Properties.Tags {
+			if strings.Contains(tag, c.cwe) {
+				hasCWE = true
+				break
+			}
+		}
+		if !hasCWE {
+			t.Errorf("rule %q missing CWE taxon %s in tags %v", c.title, c.cwe, r.Properties.Tags)
+		}
+		// helpUri points at the CWE MITRE page.
+		num := strings.TrimPrefix(c.cwe, "CWE-")
+		if !strings.Contains(r.HelpURI, "cwe.mitre.org/data/definitions/"+num) {
+			t.Errorf("rule %q helpUri %q does not reference CWE %s", c.title, r.HelpURI, c.cwe)
+		}
+	}
+}

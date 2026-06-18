@@ -6,10 +6,17 @@ var ImpactBase = map[string]float64{
 	"auth_bypass":     10.0,
 	"injection":       9.5,
 	"secrets":         9.0,
+	"ssrf":            8.5, // CWE-918 server-side request forgery
 	"idor":            8.5,
+	"method_tamper":   7.0, // CWE-650/285 verb-based access-control bypass
 	"data_exposure":   7.0,
 	"cors":            6.5,
+	"host_header":     6.5, // CWE-644/601 host-header injection / poisoning
+	"redirect":        5.0, // CWE-601 open redirect
+	"graphql":         4.0, // CWE-200 introspection exposure
 	"headers":         4.0,
+	"cookie":          4.0, // CWE-1004/614/1275 insecure cookie flags
+	"rate_limiting":   4.0, // CWE-770 no rate limiting (was mis-homed under "headers")
 	"info_disclosure": 2.0,
 }
 

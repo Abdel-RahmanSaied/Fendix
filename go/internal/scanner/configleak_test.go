@@ -99,7 +99,7 @@ func TestCheckConfigLeak_FiresOn200(t *testing.T) {
 		"/.env": "DB_PASSWORD=hunter2\nAPI_KEY=sk-live-xyz\n",
 	}, http.StatusOK)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -113,12 +113,17 @@ func TestCheckConfigLeak_FiresOn200(t *testing.T) {
 	if f.Category != "data_exposure" {
 		t.Errorf("category = %q; want data_exposure", f.Category)
 	}
-	if !strings.Contains(f.Evidence, "[REDACTED]") {
-		t.Errorf("evidence not redacted — contains raw secrets: %q", f.Evidence)
+	// 4.15: the served-file body is no longer captured into evidence —
+	// the 200 + path is the proof. Evidence must NOT contain any
+	// secret-shaped substring from the served body, and must say the
+	// body was not captured.
+	for _, secret := range []string{"hunter2", "sk-live-xyz", "DB_PASSWORD", "API_KEY"} {
+		if strings.Contains(f.Evidence, secret) {
+			t.Errorf("evidence leaks served-file content %q: %q", secret, f.Evidence)
+		}
 	}
-	// Should never include the actual password value.
-	if strings.Contains(f.Evidence, "hunter2") || strings.Contains(f.Evidence, "sk-live-xyz") {
-		t.Errorf("evidence leaks raw secret: %q", f.Evidence)
+	if !strings.Contains(f.Evidence, "not captured") {
+		t.Errorf("evidence should note body was not captured: %q", f.Evidence)
 	}
 }
 
@@ -127,7 +132,7 @@ func TestCheckConfigLeak_SkipsOn404(t *testing.T) {
 		"/.env": "DB_PASSWORD=hunter2",
 	}, http.StatusNotFound)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -141,7 +146,7 @@ func TestCheckConfigLeak_SkipsOn500(t *testing.T) {
 		"/.env": "internal error",
 	}, http.StatusInternalServerError)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -155,7 +160,7 @@ func TestCheckConfigLeak_SkipsUnmatchedPaths(t *testing.T) {
 		"/api/users": `[{"id":1,"name":"Alice"}]`,
 	}, http.StatusOK)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: srv.URL + "/api/users"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -169,7 +174,7 @@ func TestCheckConfigLeak_FiresOnGitInternals(t *testing.T) {
 		"/.git/HEAD": "ref: refs/heads/main\n",
 	}, http.StatusOK)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.git/HEAD", FullURL: srv.URL + "/.git/HEAD"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -182,7 +187,7 @@ func TestCheckConfigLeak_FiresOnGitInternals(t *testing.T) {
 }
 
 func TestCheckConfigLeak_HandlesEmptyURL(t *testing.T) {
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: ""}
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -196,54 +201,9 @@ func TestCheckConfigLeak_HandlesEmptyURL(t *testing.T) {
 // already covered by Go's stdlib http tests; we trust it here.
 
 // ---------------------------------------------------------------------------
-// sanitizeConfigLeakEvidence — redact-before-emit
+// 4.15: body-sample redaction was removed — the body is no longer
+// captured into evidence at all (see TestCheckConfigLeak_FiresOn200,
+// which asserts no served-file substring leaks into the finding).
+// The former TestSanitizeConfigLeakEvidence_* tests are gone with the
+// function they covered.
 // ---------------------------------------------------------------------------
-
-func TestSanitizeConfigLeakEvidence_RedactsSecrets(t *testing.T) {
-	cases := []struct {
-		in         string
-		mustRedact []string // these substrings must NOT appear in output
-		mustHave   []string // these substrings MUST appear
-	}{
-		{
-			in:         "DB_PASSWORD=hunter2\nAPI_KEY=sk-live-abc",
-			mustRedact: []string{"hunter2", "sk-live-abc"},
-			mustHave:   []string{"[REDACTED]"},
-		},
-		{
-			in:         "TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-			mustRedact: []string{"ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
-			mustHave:   []string{"[REDACTED]"},
-		},
-		// Empty body
-		{
-			in:         "",
-			mustRedact: nil,
-			mustHave:   []string{"empty body"},
-		},
-	}
-	for _, c := range cases {
-		got := sanitizeConfigLeakEvidence([]byte(c.in), 512)
-		for _, leak := range c.mustRedact {
-			if strings.Contains(got, leak) {
-				t.Errorf("sanitize leaked %q in output %q", leak, got)
-			}
-		}
-		for _, want := range c.mustHave {
-			if !strings.Contains(got, want) {
-				t.Errorf("sanitize output missing %q in %q", want, got)
-			}
-		}
-	}
-}
-
-func TestSanitizeConfigLeakEvidence_Truncates(t *testing.T) {
-	huge := strings.Repeat("a", 10000)
-	got := sanitizeConfigLeakEvidence([]byte(huge), 512)
-	if len(got) > 250 { // capped at maxEvidenceLen (200) + "..."
-		t.Errorf("evidence not truncated: len=%d", len(got))
-	}
-	if !strings.HasSuffix(got, "...") {
-		t.Errorf("expected trailing '...' on truncated evidence: %q", got[len(got)-10:])
-	}
-}

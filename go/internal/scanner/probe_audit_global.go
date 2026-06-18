@@ -15,10 +15,18 @@ var (
 // ResetGlobalAuditLog clears the per-scan audit log. Call this at the top
 // of every scan run; otherwise records leak across runs in long-running
 // processes (tests, future server mode).
+//
+// It also clears any per-origin once-per-scan guards (e.g. the GraphQL
+// origin sweep) so that origin-scoped checks start fresh each scan and do
+// not leak "already swept" state across runs/tests.
 func ResetGlobalAuditLog() {
 	globalAuditMu.Lock()
-	defer globalAuditMu.Unlock()
 	globalAuditLog = NewProbeAuditLog()
+	globalAuditMu.Unlock()
+
+	// Reset origin-scoped sweep guards owned by individual checks. Done after
+	// releasing globalAuditMu so we never hold two check-owned locks at once.
+	resetGraphQLSweep()
 }
 
 // GlobalAuditRecords returns a snapshot of every probe recorded by the
