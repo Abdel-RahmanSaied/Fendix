@@ -241,6 +241,31 @@ func TestSSRF_RedirectEcho(t *testing.T) {
 	}
 }
 
+// TestSSRF_RedirectCanaryInQueryNotSSRF (LOAD-BEARING regression for the M-1
+// FP): a server that does an OWN-HOST redirect (e.g. to its own /login) and
+// merely reflects the injected URL into a query parameter of the Location must
+// NOT be flagged. The redirect target host is the app's own host, not the
+// canary — only a substring match (the bug) would fire. Mirrors the open-redirect
+// and host-header checks, which both use exact url.Parse + Hostname() equality.
+func TestSSRF_RedirectCanaryInQueryNotSSRF(t *testing.T) {
+	ResetGlobalAuditLog()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("url")
+		// Own-host redirect to /login that reflects the injected URL into a
+		// `next=` query param. The Location's HOST is this server (127.0.0.1),
+		// NOT the canary — the canary appears only inside the query string.
+		w.Header().Set("Location", "/login?next="+target)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	cfg := activeSSRFCfg()
+	findings := SSRFCheck{}.Run(context.Background(), NewCheckContext(cfg), ssrfEP(server))
+	if len(findings) != 0 {
+		t.Fatalf("own-host redirect with canary only in the query string is NOT SSRF; want 0 findings, got %d: %+v", len(findings), findings)
+	}
+}
+
 // TestSSRF_ReflectionNotSSRF (LOAD-BEARING): handler reflects the param value
 // VERBATIM into an HTML body — no fetch-stack error signature, no out-of-baseline
 // marker, no redirect. Mere reflection of the input is NOT SSRF → 0 findings.
