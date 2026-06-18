@@ -74,6 +74,16 @@ var configLeakPrefixes = map[string]string{
 // path doesn't matter; the fix is always the same.
 const configLeakFix = "Remove this file from the public web root, OR configure the server (nginx/Apache/etc) to deny requests for hidden / config files. Rotate any credentials this file may have exposed."
 
+// configLeakCheck implements the Check interface for the config-file
+// leak detector. Structural adapter — Run holds the unchanged body of
+// the historical CheckConfigLeak free function.
+type configLeakCheck struct{}
+
+func (configLeakCheck) Name() string                        { return "configleak" }
+func (configLeakCheck) Category() string                    { return "data_exposure" }
+func (configLeakCheck) Tier() Tier                          { return TierPassive }
+func (configLeakCheck) Enabled(cfg *models.ScanConfig) bool { return true }
+
 // CheckConfigLeak hits the endpoint and emits a CRITICAL "exposed
 // config file" finding when (a) the endpoint's path matches a known
 // config-file leak pattern AND (b) the response is 200-series (the
@@ -85,6 +95,13 @@ const configLeakFix = "Remove this file from the public web root, OR configure t
 // ratelimit) can be deduped naturally by the existing pipeline when
 // they fire on the same path.
 func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return configLeakCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged config-leak detection body. Client construction
+// is identical to the historical free function (budget.Transport()).
+func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	if endpoint.FullURL == "" {
 		return nil
 	}
