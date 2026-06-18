@@ -103,6 +103,12 @@ func TestCheckHeaders_AllPresent(t *testing.T) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		// 4.10: modern headers must be present too, or they'd flag.
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.WriteHeader(200)
 	}))
 	defer server.Close()
@@ -150,6 +156,12 @@ func TestCheckHeaders_SeverityMapping(t *testing.T) {
 				w.Header().Set("X-Content-Type-Options", "nosniff")
 				w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 				w.Header().Set("Content-Security-Policy", "default-src 'self'")
+				// 4.10: modern headers present so only X-Frame-Options is under test.
+				w.Header().Set("Referrer-Policy", "no-referrer")
+				w.Header().Set("Permissions-Policy", "geolocation=()")
+				w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+				w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+				w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 			},
 			expectedSeverity: "",
 			expectedTitle:    "",
@@ -197,6 +209,12 @@ func TestCheckHeaders_ServerVersionDisclosure(t *testing.T) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		// 4.10: modern headers present so only the Server-version finding fires.
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("Server", "nginx/1.21.3")
 		w.WriteHeader(200)
 	}))
@@ -209,6 +227,9 @@ func TestCheckHeaders_ServerVersionDisclosure(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for server version, got %d", len(findings))
 	}
+	if findings[0].Title != "Server version disclosed in header" {
+		t.Fatalf("expected server-version finding, got %q", findings[0].Title)
+	}
 	if findings[0].Severity != models.SeverityInfo {
 		t.Errorf("server version disclosure should be INFO, got %s", findings[0].Severity)
 	}
@@ -220,6 +241,12 @@ func TestCheckHeaders_XPoweredBy(t *testing.T) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		// 4.10: modern headers present so only the X-Powered-By finding fires.
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Powered-By", "Express")
 		w.WriteHeader(200)
 	}))
@@ -234,6 +261,218 @@ func TestCheckHeaders_XPoweredBy(t *testing.T) {
 	}
 	if findings[0].Title != "X-Powered-By header discloses technology" {
 		t.Errorf("unexpected finding title: %s", findings[0].Title)
+	}
+}
+
+// 4.8: CSP directive depth. A PRESENT-but-weak CSP now emits a distinct
+// "Weak Content-Security-Policy" finding; a strong CSP emits nothing; an
+// absent header keeps the existing "Missing Content-Security-Policy"
+// finding (covered by TestCheckHeaders_AllMissing).
+func TestCheckHeaders_WeakCSP(t *testing.T) {
+	// Helper: build a fully-headered response so only the CSP under test varies.
+	strong := func(w http.ResponseWriter, csp string) {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", csp)
+	}
+
+	tests := []struct {
+		name          string
+		csp           string
+		wantWeak      bool
+		wantSeverity  models.Severity
+		wantNoFinding bool
+	}{
+		{name: "unsafe-inline in script-src", csp: "script-src 'unsafe-inline'", wantWeak: true, wantSeverity: models.SeverityMedium},
+		{name: "wildcard default-src", csp: "default-src *", wantWeak: true, wantSeverity: models.SeverityMedium},
+		{name: "strong policy", csp: "default-src 'self'", wantNoFinding: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				strong(w, tt.csp)
+				w.WriteHeader(200)
+			}))
+			defer server.Close()
+
+			ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckHeaders(context.Background(), cfg, ep)
+
+			var weak *models.Finding
+			for i := range findings {
+				if findings[i].Title == "Weak Content-Security-Policy" {
+					weak = &findings[i]
+				}
+				if findings[i].Title == "Missing Content-Security-Policy header" {
+					t.Errorf("CSP present but emitted missing-CSP finding")
+				}
+			}
+			if tt.wantNoFinding {
+				if weak != nil {
+					t.Errorf("expected no weak-CSP finding for %q, got %q", tt.csp, weak.Evidence)
+				}
+				return
+			}
+			if weak == nil {
+				t.Fatalf("expected Weak-CSP finding for %q", tt.csp)
+			}
+			if weak.Severity != tt.wantSeverity {
+				t.Errorf("weak CSP severity = %s, want %s", weak.Severity, tt.wantSeverity)
+			}
+		})
+	}
+}
+
+// 4.9: HSTS depth. Absent → existing missing finding; max-age=0 or no
+// max-age directive → "HSTS disabled" MEDIUM; max-age < 180d →
+// "HSTS max-age too short" LOW; max-age >= 180d → no finding.
+func TestCheckHeaders_HSTSDepth(t *testing.T) {
+	other := func(w http.ResponseWriter) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	}
+
+	tests := []struct {
+		name      string
+		hsts      string // "" means do not set
+		setHSTS   bool
+		wantTitle string // "" means expect no HSTS finding
+		wantSev   models.Severity
+	}{
+		{name: "absent", setHSTS: false, wantTitle: "Missing Strict-Transport-Security header", wantSev: models.SeverityMedium},
+		{name: "max-age=0", setHSTS: true, hsts: "max-age=0", wantTitle: "HSTS disabled", wantSev: models.SeverityMedium},
+		{name: "too short", setHSTS: true, hsts: "max-age=100", wantTitle: "HSTS max-age too short", wantSev: models.SeverityLow},
+		{name: "strong", setHSTS: true, hsts: "max-age=31536000", wantTitle: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				other(w)
+				if tt.setHSTS {
+					w.Header().Set("Strict-Transport-Security", tt.hsts)
+				}
+				w.WriteHeader(200)
+			}))
+			defer server.Close()
+
+			ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckHeaders(context.Background(), cfg, ep)
+
+			var hstsFinding *models.Finding
+			for i := range findings {
+				switch findings[i].Title {
+				case "Missing Strict-Transport-Security header", "HSTS disabled", "HSTS max-age too short":
+					hstsFinding = &findings[i]
+				}
+			}
+			if tt.wantTitle == "" {
+				if hstsFinding != nil {
+					t.Errorf("expected no HSTS finding for %q, got %q", tt.hsts, hstsFinding.Title)
+				}
+				return
+			}
+			if hstsFinding == nil {
+				t.Fatalf("expected HSTS finding %q for %q", tt.wantTitle, tt.hsts)
+			}
+			if hstsFinding.Title != tt.wantTitle {
+				t.Errorf("HSTS title = %q, want %q", hstsFinding.Title, tt.wantTitle)
+			}
+			if hstsFinding.Severity != tt.wantSev {
+				t.Errorf("HSTS severity = %s, want %s", hstsFinding.Severity, tt.wantSev)
+			}
+		})
+	}
+}
+
+// 4.10: modern security headers. A response missing Referrer-Policy
+// produces a Referrer-Policy finding; present-good values produce none.
+func TestCheckHeaders_ModernHeaders(t *testing.T) {
+	// Missing Referrer-Policy (everything else present).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		// Referrer-Policy intentionally omitted.
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+	findings := CheckHeaders(context.Background(), cfg, ep)
+
+	found := false
+	for _, f := range findings {
+		if f.Title == "Missing Referrer-Policy header" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Referrer-Policy finding when header absent")
+	}
+
+	// All modern headers present → none of the modern-header findings.
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.WriteHeader(200)
+	}))
+	defer server2.Close()
+	ep2 := Endpoint{Method: "GET", Path: "/test", FullURL: server2.URL + "/test"}
+	findings2 := CheckHeaders(context.Background(), cfg, ep2)
+	if len(findings2) != 0 {
+		t.Errorf("expected 0 findings when all headers present, got %d: %+v", len(findings2), findings2)
+	}
+}
+
+// 4.11: HSTS/CSP are app-wide regardless of auth, so a 401 response
+// missing HSTS must still produce the HSTS finding (previously the
+// >=400 gate suppressed it). 404 stays skipped (TASK-123).
+func TestCheckHeaders_RunsOn401(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+	}))
+	defer server.Close()
+	ep := Endpoint{Method: "GET", Path: "/secure", FullURL: server.URL + "/secure"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckHeaders(context.Background(), cfg, ep)
+	found := false
+	for _, f := range findings {
+		if f.Title == "Missing Strict-Transport-Security header" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected HSTS finding on 401 (transport headers are app-wide), got %d findings", len(findings))
 	}
 }
 
@@ -278,6 +517,14 @@ func TestContainsVersion(t *testing.T) {
 		{"gunicorn/20.1.0", true},
 		{"", false},
 		{"1.0", true},
+		// 4.7: real version tokens only, full-string scan (final byte reachable).
+		{"nginx/1.21.0", true},
+		{"Apache/2.4", true},
+		{"MyServer 2.0", true}, // version is the final token — must be reachable
+		// 4.7: benign Server values that previously false-positived on the
+		// old byte-scan ("N." or "/N" substrings) must NOT flag.
+		{"Microsoft-IIS", false}, // contains no version token
+		{"Caddy", false},
 	}
 
 	for _, tt := range tests {

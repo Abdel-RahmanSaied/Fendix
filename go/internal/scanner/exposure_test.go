@@ -185,6 +185,177 @@ func TestCheckExposure_VersionString(t *testing.T) {
 	}
 }
 
+// 4.12: masked/placeholder password values must not flag CRITICAL —
+// real values still must.
+func TestCheckExposure_MaskedPasswordGuard(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool // expect a password finding
+	}{
+		{name: "all asterisks", body: `{"password":"********"}`, want: false},
+		{name: "REDACTED", body: `{"password":"REDACTED"}`, want: false},
+		{name: "bullets", body: `{"password":"••••••"}`, want: false},
+		{name: "x mask", body: `{"password":"xxxxxxxx"}`, want: false},
+		{name: "literal stars", body: `{"password":"***"}`, want: false},
+		{name: "real value", body: `{"password":"hunter2realvalue"}`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.body)
+			}))
+			defer server.Close()
+
+			ep := Endpoint{Method: "GET", Path: "/api/u", FullURL: server.URL + "/api/u"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckExposure(context.Background(), cfg, ep)
+
+			found := false
+			for _, f := range findings {
+				if f.Title == "Password exposed in API response" {
+					found = true
+				}
+			}
+			if found != tt.want {
+				t.Errorf("password finding=%v, want %v (body=%s)", found, tt.want, tt.body)
+			}
+		})
+	}
+}
+
+// 4.13: value-shape secret patterns independent of key name.
+func TestCheckExposure_ValueShapeSecrets(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantTitle string
+		wantSev   models.Severity
+	}{
+		{
+			name:      "JWT in body",
+			body:      `{"data":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"}`,
+			wantTitle: "JWT exposed in API response",
+			wantSev:   models.SeverityHigh,
+		},
+		{
+			name:      "AWS access key",
+			body:      `{"key":"AKIAIOSFODNN7EXAMPLE"}`,
+			wantTitle: "AWS access key exposed in API response",
+			wantSev:   models.SeverityCritical,
+		},
+		{
+			name:      "PEM private key",
+			body:      "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----",
+			wantTitle: "Private key exposed in API response",
+			wantSev:   models.SeverityCritical,
+		},
+		{
+			name:      "client_secret key",
+			body:      `{"client_secret":"abcdef0123456789ZZ"}`,
+			wantTitle: "Secret or API key exposed in API response",
+			wantSev:   models.SeverityCritical,
+		},
+		{
+			name:      "private_key field",
+			body:      `{"private_key":"abcdef0123456789ZZ"}`,
+			wantTitle: "Secret or API key exposed in API response",
+			wantSev:   models.SeverityCritical,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.body)
+			}))
+			defer server.Close()
+
+			ep := Endpoint{Method: "GET", Path: "/api/x", FullURL: server.URL + "/api/x"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckExposure(context.Background(), cfg, ep)
+
+			var got *models.Finding
+			for i := range findings {
+				if findings[i].Title == tt.wantTitle {
+					got = &findings[i]
+				}
+			}
+			if got == nil {
+				t.Fatalf("missing finding %q for body %s", tt.wantTitle, tt.body)
+			}
+			if got.Severity != tt.wantSev {
+				t.Errorf("severity = %s, want %s", got.Severity, tt.wantSev)
+			}
+		})
+	}
+}
+
+// 4.14: stack_trace + internal_ip precision. Prose must not FP; real
+// stack frames / IPs must still fire.
+func TestCheckExposure_StackTracePrecision(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "prose at home", body: `{"msg":"Meet me at home (tomorrow)"}`, want: false},
+		{name: "real java frame", body: `at com.foo.Bar.baz(Bar.java:42)`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(500)
+				fmt.Fprint(w, tt.body)
+			}))
+			defer server.Close()
+			ep := Endpoint{Method: "GET", Path: "/e", FullURL: server.URL + "/e"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckExposure(context.Background(), cfg, ep)
+			found := false
+			for _, f := range findings {
+				if f.Title == "Stack trace in error response" {
+					found = true
+				}
+			}
+			if found != tt.want {
+				t.Errorf("stack_trace found=%v, want %v (body=%s)", found, tt.want, tt.body)
+			}
+		})
+	}
+}
+
+func TestCheckExposure_InternalIPPrecision(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "version string", body: `{"v":"version 10.20.30"}`, want: false},
+		{name: "price", body: `{"p":"$192.168"}`, want: false},
+		{name: "real ip", body: `{"host":"10.0.0.5"}`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.body)
+			}))
+			defer server.Close()
+			ep := Endpoint{Method: "GET", Path: "/s", FullURL: server.URL + "/s"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckExposure(context.Background(), cfg, ep)
+			found := false
+			for _, f := range findings {
+				if f.Title == "Internal IP address disclosed in response" {
+					found = true
+				}
+			}
+			if found != tt.want {
+				t.Errorf("internal_ip found=%v, want %v (body=%s)", found, tt.want, tt.body)
+			}
+		})
+	}
+}
+
 func TestCheckExposure_CleanResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"id": 1, "name": "John", "email": "john@example.com"}`)
