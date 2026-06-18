@@ -64,6 +64,7 @@ const (
 	ProbeCRLF     ProbeType = "crlf"
 	ProbeRedirect ProbeType = "redirect"
 	ProbeXSS      ProbeType = "xss"
+	ProbeSSRF     ProbeType = "ssrf"
 )
 
 // ProbeRecord captures a single probe sent during active scanning.
