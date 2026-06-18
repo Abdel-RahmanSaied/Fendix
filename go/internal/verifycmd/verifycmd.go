@@ -368,10 +368,13 @@ func checkURLFindingPresence(f *models.Finding, resp *http.Response, body []byte
 		}
 		return false, fmt.Sprintf("Server header no longer discloses version: %q", serverHeader)
 
-	case strings.Contains(title, "No rate limiting detected"):
+	case strings.Contains(title, "No rate limiting detected"),
+		strings.Contains(title, "No rate limiting observed"):
 		// Best-effort: a single re-test request can't conclusively
 		// determine rate-limiting. Report unknown so the user re-runs
-		// a focused load test.
+		// a focused load test. (Phase 5.4 renamed the title to the
+		// scoped "No rate limiting observed within N requests"; the old
+		// literal is kept for findings persisted before that change.)
 		return false, "rate-limit verification needs a full re-scan with multiple rapid requests; single-request verify can't disprove rate limiting"
 
 	case strings.Contains(title, "Missing authentication on endpoint"):
