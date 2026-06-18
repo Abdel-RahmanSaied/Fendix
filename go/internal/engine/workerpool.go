@@ -15,11 +15,16 @@ import (
 type WorkerPool struct {
 	workers int
 	delayMs int
-	checks  []scanner.CheckFn
+	checks  []scanner.Check
+	// cc is the shared per-scan execution context handed to every Check.Run.
+	// nil on the legacy []CheckFn path (NewWorkerPool) — runCheck builds an
+	// ephemeral CheckContext per job in that case so the old engine tests,
+	// which never construct a context, keep working.
+	cc *scanner.CheckContext
 }
 
-// NewWorkerPool creates a pool with the given concurrency limit, inter-request delay, and checks to run.
-func NewWorkerPool(workers int, delayMs int, checks []scanner.CheckFn) *WorkerPool {
+// newPool is the shared constructor. workers is clamped to a minimum of 1.
+func newPool(workers, delayMs int, checks []scanner.Check, cc *scanner.CheckContext) *WorkerPool {
 	if workers < 1 {
 		workers = 1
 	}
@@ -27,12 +32,32 @@ func NewWorkerPool(workers int, delayMs int, checks []scanner.CheckFn) *WorkerPo
 		workers: workers,
 		delayMs: delayMs,
 		checks:  checks,
+		cc:      cc,
 	}
+}
+
+// NewWorkerPool creates a pool from a legacy []scanner.CheckFn slice. Each fn is
+// wrapped via scanner.AsCheck so the pool runs the new Check interface internally
+// while the engine worker-pool tests (which pass []scanner.CheckFn) keep compiling.
+// cc is left nil; runCheck builds an ephemeral CheckContext per job.
+func NewWorkerPool(workers int, delayMs int, checks []scanner.CheckFn) *WorkerPool {
+	wrapped := make([]scanner.Check, 0, len(checks))
+	for _, fn := range checks {
+		wrapped = append(wrapped, scanner.AsCheck("legacy", "engine", scanner.TierPassive, nil, fn))
+	}
+	return newPool(workers, delayMs, wrapped, nil)
+}
+
+// NewWorkerPoolChecks creates a pool from the new Check registry plus a shared
+// per-scan CheckContext. The orchestrator uses this after filtering
+// scanner.DefaultChecks() by Enabled(cfg).
+func NewWorkerPoolChecks(workers int, delayMs int, checks []scanner.Check, cc *scanner.CheckContext) *WorkerPool {
+	return newPool(workers, delayMs, checks, cc)
 }
 
 // scanJob represents a single endpoint+check combination to execute.
 type scanJob struct {
-	check    scanner.CheckFn
+	check    scanner.Check
 	endpoint scanner.Endpoint
 }
 
@@ -71,7 +96,7 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 				default:
 				}
 
-				findings := runCheck(ctx, cfg, job, workerID)
+				findings := runCheck(ctx, wp.cc, cfg, job, workerID)
 				if len(findings) > 0 {
 					select {
 					case results <- findings:
@@ -126,22 +151,40 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 // Returning the panic as a finding (rather than swallowing it) keeps the
 // failure visible in the report — operators see *which* check died on
 // *which* endpoint, which is the support signal a silent skip would lose.
-func runCheck(ctx context.Context, cfg *models.ScanConfig, job scanJob, workerID int) (findings []models.Finding) {
+func runCheck(ctx context.Context, cc *scanner.CheckContext, cfg *models.ScanConfig, job scanJob, workerID int) (findings []models.Finding) {
 	defer func() {
 		if r := recover(); r != nil {
 			epLabel := fmt.Sprintf("%s %s", job.endpoint.Method, job.endpoint.Path)
 			slog.Error("scanner check panicked — job contained, scan continues",
-				"worker", workerID, "endpoint", epLabel, "panic", r)
+				"worker", workerID, "endpoint", epLabel, "check", job.check.Name(), "panic", r)
 			findings = []models.Finding{{
 				Title:      "Scanner check panicked",
 				Severity:   models.SeverityInfo,
 				Source:     models.SourceBlackbox,
-				Category:   "engine",
+				Category:   job.check.Category(),
 				Endpoint:   epLabel,
 				Evidence:   fmt.Sprintf("A scanner check panicked while scanning %s and was skipped: %v", epLabel, r),
 				Confidence: models.ConfidenceLow,
 			}}
 		}
 	}()
-	return job.check(ctx, cfg, job.endpoint)
+
+	// Legacy []CheckFn path (NewWorkerPool) leaves cc nil — build an ephemeral
+	// context per job so the old engine tests, which never construct one, work.
+	if cc == nil {
+		cc = scanner.NewCheckContext(cfg)
+	}
+
+	// Per-(endpoint,check) deadline. The shared CheckContext clients set
+	// Timeout:0, so the only place a scan-wide cfg.Timeout becomes a real
+	// deadline is here — applied per job so connection reuse can't cap the
+	// whole scan.
+	jobCtx := ctx
+	if cfg != nil && cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		jobCtx, cancel = context.WithTimeout(ctx, time.Duration(cfg.Timeout)*time.Second)
+		defer cancel()
+	}
+
+	return job.check.Run(jobCtx, cc, job.endpoint)
 }

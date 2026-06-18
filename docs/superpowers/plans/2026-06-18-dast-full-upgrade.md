@@ -250,7 +250,9 @@ func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint
 }
 ```
 
-> **0a vs 0b boundary:** in **0a**, to stay behavior-identical, the migrated body still uses whatever client the original built. For checks that used `budget.Transport()` (headers/exposure/configleak/ratelimit/idor/auth), keep `cc.Client` but note the SSRF guard is now applied — **this is the only behavior change**, and it is the intended one. If strict behavior-identity is required for a clean bisect, wire those six to a `cc`-provided *unguarded* client in 0a and flip to guarded in 0b. **Recommended:** apply the guarded client immediately in 0a.3 and treat the SSRF-guard regression test (Task 0b.1) as the proof — simpler, and the guard only changes behavior for malicious redirects, which no existing test exercises. The plan proceeds with this recommendation.
+> **0a vs 0b boundary (CORRECTED during execution):** 0a.3 is a **pure structural move — behavior-identical, no client change.** Each check's `Run` builds the **exact same client it builds today**: the 6 previously-unguarded checks (headers/exposure/configleak/ratelimit/auth/idor) keep their own `&http.Client{Transport: budget.Transport()}` (auth/idor keep `CheckRedirect: http.ErrUseLastResponse`); cors/injection keep `guardedClient`. They do **not** read `cc.Client`/`cc.NoFollow` yet — `CheckContext` is threaded through but its clients are unused by the 6 in 0a. Rationale (verified empirically): the 6 checks' existing tests hit `httptest` `127.0.0.1` servers with **no `AllowPrivate`**, so routing them through the guarded client in 0a makes netguard refuse the loopback dial and breaks ~40 tests. Only cors/injection tests set `AllowPrivate: true` (because only those two were already guarded). Folding the SSRF routing into 0a would therefore violate both "behavior-identical" and "tests unedited."
+>
+> The SSRF routing is **0b's** job: Task 0b.0 (new) flips the 6 checks to `cc.Client`/`cc.NoFollow` **and** adds `AllowPrivate: true` to those 6 test files as the deliberate, reviewed behavior change, with the SSRF regression test (0b.1) proving the guard blocks a malicious redirect. This keeps 0a a clean, bisectable, behavior-identical refactor.
 
 Per-check tier/category/client mapping:
 
@@ -499,7 +501,18 @@ git commit -m "refactor(dast): migrate worker pool + orchestrator to Check regis
 
 # PHASE 0b — SSRF guard + addAuth (behavior changes + regression tests)
 
-**Goal:** Land the C1 (`addAuth`) fix and prove C2/C3 (SSRF guard on all checks) with regression tests. Most of the guard change already happened in 0a.3 (all checks use `cc.Client`/`cc.NoFollow`); 0b adds the proof tests + the auth fix.
+**Goal:** Route the 6 previously-unguarded checks through the shared guarded client (the C2/C3 SSRF fix — deferred from 0a per the corrected boundary), land the C1 (`addAuth`) fix, and prove the guard with regression tests.
+
+### Task 0b.0: Flip the 6 unguarded checks to the shared guarded client
+
+**Files:** Modify `scanner/{headers,exposure,configleak,ratelimit}.go` → use `cc.Client`; `scanner/{auth,idor}.go` → use `cc.NoFollow`; add `AllowPrivate: true` to the `ScanConfig` literals in `scanner/{headers,exposure,configleak,ratelimit,auth,idor}_test.go`.
+
+- [ ] **Step 1:** In each of the 6 checks' `Run`, delete the locally-built `&http.Client{...}` and use `cc.Client` (headers/exposure/configleak/ratelimit) or `cc.NoFollow` (auth/idor — they need `ErrUseLastResponse`, which `cc.NoFollow` provides). The cors/injection checks already use the guarded client — no change.
+- [ ] **Step 2:** Add `AllowPrivate: true` to every `&models.ScanConfig{...}` literal in the 6 affected `_test.go` files (mirroring `cors_test.go`/`injection_test.go`, which already do this — a real scan auto-applies it when the target is private/loopback). This is the deliberate, reviewed behavior change: those tests now run against the guarded client, with the guard relaxed for the loopback `httptest` target exactly as a real localhost scan would.
+- [ ] **Step 3:** Gate: `cd go && go build ./... && go test ./internal/scanner/... -count=1` green.
+- [ ] **Step 4:** Commit: `fix(dast): C2/C3 route all checks through shared SSRF-guarded client`
+
+> The SSRF-guard *proof* (a malicious 302→private-IP is refused when `AllowPrivate=false`) is Task 0b.1; this task does the routing + the test-config update that keeps the existing loopback tests green.
 
 ### Task 0b.1: SSRF-guard regression test
 
