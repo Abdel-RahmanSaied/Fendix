@@ -17,7 +17,7 @@ func TestCheckHeaders_AllMissing(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 
@@ -59,7 +59,7 @@ func TestCheckHeaders_SkipsOn404(t *testing.T) {
 	}))
 	defer server.Close()
 	ep := Endpoint{Method: "GET", Path: "/missing", FullURL: server.URL + "/missing"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -73,7 +73,7 @@ func TestCheckHeaders_SkipsOn500(t *testing.T) {
 	}))
 	defer server.Close()
 	ep := Endpoint{Method: "GET", Path: "/broken", FullURL: server.URL + "/broken"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -89,7 +89,7 @@ func TestCheckHeaders_RunsOn3xxRedirect(t *testing.T) {
 	}))
 	defer server.Close()
 	ep := Endpoint{Method: "GET", Path: "/redirect", FullURL: server.URL + "/redirect"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 	if len(findings) == 0 {
@@ -108,7 +108,7 @@ func TestCheckHeaders_AllPresent(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -165,7 +165,7 @@ func TestCheckHeaders_SeverityMapping(t *testing.T) {
 			defer server.Close()
 
 			ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
-			cfg := &models.ScanConfig{Timeout: 10}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 			findings := CheckHeaders(context.Background(), cfg, ep)
 
 			if tt.expectedTitle == "" {
@@ -203,7 +203,7 @@ func TestCheckHeaders_ServerVersionDisclosure(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -226,7 +226,7 @@ func TestCheckHeaders_XPoweredBy(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckHeaders(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -251,7 +251,8 @@ func TestCheckHeaders_WithAuth(t *testing.T) {
 
 	ep := Endpoint{Method: "GET", Path: "/test", FullURL: server.URL + "/test"}
 	cfg := &models.ScanConfig{
-		Timeout: 10,
+		Timeout:      10,
+		AllowPrivate: true,
 		Auth: &models.AuthContext{
 			Type:   "bearer",
 			Value:  "Bearer testtoken",
@@ -306,7 +307,7 @@ func TestCheckHeaders_LogaggCapsTransientErrors(t *testing.T) {
 	server.Start()
 	server.Close() // close immediately so subsequent dials fail
 
-	cfg := &models.ScanConfig{Timeout: 1}
+	cfg := &models.ScanConfig{Timeout: 1, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/", FullURL: server.URL + "/"}
 
 	const calls = 10

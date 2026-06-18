@@ -89,7 +89,8 @@ func TestCheckAuth_UnauthenticatedAccess_Vulnerable(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer valid-token",
@@ -130,7 +131,8 @@ func TestCheckAuth_UnauthenticatedAccess_Secure(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer valid-token",
@@ -155,8 +157,9 @@ func TestCheckAuth_UnauthenticatedAccess_Secure(t *testing.T) {
 
 func TestCheckAuth_NoAuthConfig_Skips(t *testing.T) {
 	cfg := &models.ScanConfig{
-		Timeout: 5,
-		Auth:    nil,
+		AllowPrivate: true,
+		Timeout:      5,
+		Auth:         nil,
 	}
 
 	endpoint := Endpoint{
@@ -200,7 +203,8 @@ func TestCheckAuth_MalformedJWT_Vulnerable(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
@@ -236,7 +240,8 @@ func TestCheckAuth_MalformedJWT_Secure(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  validToken,
@@ -265,7 +270,8 @@ func TestCheckAuth_ExpiredJWT_Vulnerable(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
@@ -301,7 +307,8 @@ func TestCheckAuth_ExpiredJWT_Secure(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  validToken,
@@ -330,7 +337,8 @@ func TestCheckAuth_AlgNone_Vulnerable(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
@@ -366,7 +374,8 @@ func TestCheckAuth_AlgNone_Secure(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  validToken,
@@ -394,7 +403,8 @@ func TestCheckAuth_NonJWTAuth_SkipsJWTChecks(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "X-API-Key",
 			Value:  "sk-live-abcdef123456",
@@ -487,7 +497,8 @@ func TestCheckAuth_PublicEndpointEmitsOnlyMissingAuth(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
@@ -538,7 +549,8 @@ func TestCheckAuth_JWTBypassEndpointEmitsAllJWTFindings(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",

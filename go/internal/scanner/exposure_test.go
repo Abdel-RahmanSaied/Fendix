@@ -17,7 +17,7 @@ func TestCheckExposure_PasswordField(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users/1", FullURL: server.URL + "/api/users/1"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	if len(findings) == 0 {
@@ -45,7 +45,7 @@ func TestCheckExposure_SecretField(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/config", FullURL: server.URL + "/api/config"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	found := false
@@ -69,7 +69,7 @@ func TestCheckExposure_TokenField(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "POST", Path: "/api/login", FullURL: server.URL + "/api/login"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	found := false
@@ -118,7 +118,7 @@ func TestCheckExposure_StackTrace(t *testing.T) {
 			defer server.Close()
 
 			ep := Endpoint{Method: "GET", Path: "/api/error", FullURL: server.URL + "/api/error"}
-			cfg := &models.ScanConfig{Timeout: 10}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 			findings := CheckExposure(context.Background(), cfg, ep)
 			found := false
@@ -144,7 +144,7 @@ func TestCheckExposure_InternalIP(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/status", FullURL: server.URL + "/api/status"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	found := false
@@ -168,7 +168,7 @@ func TestCheckExposure_VersionString(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/info", FullURL: server.URL + "/api/info"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	found := false
@@ -192,7 +192,7 @@ func TestCheckExposure_CleanResponse(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users/1", FullURL: server.URL + "/api/users/1"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -207,7 +207,7 @@ func TestCheckExposure_MultiplePatterns(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/dump", FullURL: server.URL + "/api/dump"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	if len(findings) < 3 {
@@ -223,7 +223,7 @@ func TestCheckExposure_EvidenceTruncation(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/test", FullURL: server.URL + "/api/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckExposure(context.Background(), cfg, ep)
 	for _, f := range findings {

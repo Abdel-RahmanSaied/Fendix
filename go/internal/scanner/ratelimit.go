@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -61,8 +59,9 @@ func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoi
 	return rateLimitCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
-// Run holds the unchanged rate-limit detection body. Client construction
-// is identical to the historical free function.
+// Run holds the unchanged rate-limit detection body. Outbound requests
+// go through the shared SSRF-guarded follow-redirect client (cc.Client);
+// the per-job deadline comes from ctx (runCheck).
 func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
 	cfg := cc.Cfg
 	// TASK-123: skip rate-limit check on static-file endpoints. The
@@ -75,10 +74,7 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 		return nil
 	}
 
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-	}
+	client := cc.Client
 
 	throttledCount := 0
 	rateLimitHeaderSeen := false

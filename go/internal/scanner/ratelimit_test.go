@@ -19,7 +19,7 @@ func TestCheckRateLimit_NoLimiting(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 1 {
@@ -60,7 +60,7 @@ func TestCheckRateLimit_SkipsStaticFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 	for _, path := range cases {
 		reqCount.Store(0)
 		ep := Endpoint{Method: "GET", Path: path, FullURL: server.URL + path}
@@ -85,7 +85,7 @@ func TestCheckRateLimit_ApiPathStillScanned(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 1 {
 		t.Fatalf("api path should still emit finding, got %d", len(findings))
@@ -108,7 +108,7 @@ func TestCheckRateLimit_Returns429(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -125,7 +125,7 @@ func TestCheckRateLimit_HasRateLimitHeaders(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -141,7 +141,7 @@ func TestCheckRateLimit_RetryAfterHeader(t *testing.T) {
 	defer server.Close()
 
 	ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(context.Background(), cfg, ep)
 	if len(findings) != 0 {
@@ -159,7 +159,7 @@ func TestCheckRateLimit_ContextCancelled(t *testing.T) {
 	cancel()
 
 	ep := Endpoint{Method: "GET", Path: "/api/test", FullURL: server.URL + "/api/test"}
-	cfg := &models.ScanConfig{Timeout: 10}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 
 	findings := CheckRateLimit(ctx, cfg, ep)
 	if findings != nil {

@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
-	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -98,8 +96,9 @@ func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpo
 	return configLeakCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
-// Run holds the unchanged config-leak detection body. Client construction
-// is identical to the historical free function (budget.Transport()).
+// Run holds the unchanged config-leak detection body. Outbound requests
+// go through the shared SSRF-guarded follow-redirect client (cc.Client);
+// the per-job deadline comes from ctx (runCheck).
 func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
 	cfg := cc.Cfg
 	if endpoint.FullURL == "" {
@@ -119,10 +118,7 @@ func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpo
 		cfg.Auth.ApplyToRequest(req)
 	}
 
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-	}
+	client := cc.Client
 
 	resp, err := client.Do(req)
 	if err != nil {

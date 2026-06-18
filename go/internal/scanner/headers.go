@@ -6,9 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -185,14 +183,12 @@ func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint
 	return headersCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
-// Run holds the unchanged security-header detection body. Client
-// construction is identical to the historical free function.
+// Run holds the unchanged security-header detection body. Outbound
+// requests go through the shared SSRF-guarded follow-redirect client
+// (cc.Client); the per-job deadline comes from ctx (runCheck).
 func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
 	cfg := cc.Cfg
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-	}
+	client := cc.Client
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.FullURL, nil)
 	if err != nil {

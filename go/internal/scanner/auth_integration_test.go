@@ -137,7 +137,8 @@ func TestIntegration_SecureJWTServer_NoFindings(t *testing.T) {
 	validToken := buildValidJWT(secret)
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer " + validToken,
@@ -175,7 +176,8 @@ func TestIntegration_VulnerableServer_AcceptsEverything(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
@@ -283,7 +285,8 @@ func TestIntegration_ServerRejectsExpiredButAcceptsAlgNone(t *testing.T) {
 	validToken := buildValidJWT(secret)
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer " + validToken,
@@ -324,7 +327,8 @@ func TestIntegration_AuthFindingsHaveCorrectFields(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer eyJhbGciOiJIUzI1NiJ9.p.s",
@@ -382,7 +386,8 @@ func TestIntegration_IDOR_WithJWTServer(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer user1-jwt.token.here",

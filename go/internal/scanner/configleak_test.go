@@ -99,7 +99,7 @@ func TestCheckConfigLeak_FiresOn200(t *testing.T) {
 		"/.env": "DB_PASSWORD=hunter2\nAPI_KEY=sk-live-xyz\n",
 	}, http.StatusOK)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -127,7 +127,7 @@ func TestCheckConfigLeak_SkipsOn404(t *testing.T) {
 		"/.env": "DB_PASSWORD=hunter2",
 	}, http.StatusNotFound)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -141,7 +141,7 @@ func TestCheckConfigLeak_SkipsOn500(t *testing.T) {
 		"/.env": "internal error",
 	}, http.StatusInternalServerError)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -155,7 +155,7 @@ func TestCheckConfigLeak_SkipsUnmatchedPaths(t *testing.T) {
 		"/api/users": `[{"id":1,"name":"Alice"}]`,
 	}, http.StatusOK)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: srv.URL + "/api/users"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -169,7 +169,7 @@ func TestCheckConfigLeak_FiresOnGitInternals(t *testing.T) {
 		"/.git/HEAD": "ref: refs/heads/main\n",
 	}, http.StatusOK)
 
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.git/HEAD", FullURL: srv.URL + "/.git/HEAD"}
 
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
@@ -182,7 +182,7 @@ func TestCheckConfigLeak_FiresOnGitInternals(t *testing.T) {
 }
 
 func TestCheckConfigLeak_HandlesEmptyURL(t *testing.T) {
-	cfg := &models.ScanConfig{Timeout: 5}
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: ""}
 	findings := CheckConfigLeak(context.Background(), cfg, ep)
 	if len(findings) != 0 {

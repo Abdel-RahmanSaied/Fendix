@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -36,22 +35,18 @@ func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 	return authCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
-// Run holds the unchanged auth detection body. Client construction
-// (including CheckRedirect: ErrUseLastResponse) is identical to the
-// historical free function.
+// Run holds the unchanged auth detection body. Outbound requests go
+// through the shared SSRF-guarded no-follow client (cc.NoFollow), which
+// returns the raw 3xx (CheckRedirect: ErrUseLastResponse) so a redirect
+// to a login page reads as "auth enforced". The per-job deadline comes
+// from ctx (runCheck).
 func (authCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
 	cfg := cc.Cfg
 	if cfg.Auth == nil {
 		return nil
 	}
 
-	client := &http.Client{
-		Timeout:   time.Duration(cfg.Timeout) * time.Second,
-		Transport: budget.Transport(),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := cc.NoFollow
 
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
 	var findings []models.Finding

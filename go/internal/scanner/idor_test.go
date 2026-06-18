@@ -44,7 +44,8 @@ func TestCheckIDOR_Vulnerable(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer user1-token",
@@ -86,7 +87,8 @@ func TestCheckIDOR_Secure(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer user1-token",
@@ -114,7 +116,8 @@ func TestCheckIDOR_Secure(t *testing.T) {
 
 func TestCheckIDOR_NoUser2_Skips(t *testing.T) {
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer user1-token",
@@ -136,8 +139,9 @@ func TestCheckIDOR_NoUser2_Skips(t *testing.T) {
 
 func TestCheckIDOR_NoAuth_Skips(t *testing.T) {
 	cfg := &models.ScanConfig{
-		Timeout: 5,
-		Auth:    nil,
+		AllowPrivate: true,
+		Timeout:      5,
+		Auth:         nil,
 	}
 
 	endpoint := Endpoint{
@@ -159,7 +163,8 @@ func TestCheckIDOR_EmptyResponse_NoFinding(t *testing.T) {
 	defer server.Close()
 
 	cfg := &models.ScanConfig{
-		Timeout: 5,
+		AllowPrivate: true,
+		Timeout:      5,
 		Auth: &models.AuthContext{
 			Header: "Authorization",
 			Value:  "Bearer user1",
