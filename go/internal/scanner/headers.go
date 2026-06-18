@@ -169,8 +169,26 @@ func containsVersion(value string) bool {
 	return false
 }
 
+// headersCheck implements the Check interface for the security-header
+// scanner. Structural adapter — Run holds the unchanged body of the
+// historical CheckHeaders free function. (Distinct from the singular
+// headerCheck struct above, which describes a single header rule.)
+type headersCheck struct{}
+
+func (headersCheck) Name() string                        { return "headers" }
+func (headersCheck) Category() string                    { return "headers" }
+func (headersCheck) Tier() Tier                          { return TierPassive }
+func (headersCheck) Enabled(cfg *models.ScanConfig) bool { return true }
+
 // CheckHeaders sends a GET request and checks for missing/misconfigured security headers.
 func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return headersCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged security-header detection body. Client
+// construction is identical to the historical free function.
+func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	client := &http.Client{
 		Timeout:   time.Duration(cfg.Timeout) * time.Second,
 		Transport: budget.Transport(),
