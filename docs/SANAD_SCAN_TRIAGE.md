@@ -197,3 +197,24 @@ assembly (the common single-module case, and all 10 tests) is caught.
 **Verification:** 369 tests pass (was 359; +10), ruff clean. Recall/precision
 guard: TwiScope unchanged (35, real SSRF reachable, 0 LLM FPs); vulpy/dvpwa
 unchanged (0 LLM FPs) — confirming the datastore source does not leak.
+
+---
+
+## 8. 1-Hop Interprocedural Taint — Feature Added (follow-up)
+
+The taint walker was intra-procedural, so a sink using a function PARAMETER whose
+taint comes from a caller (`def run(c): os.system(c)` called as
+`run(request.args['c'])`) was missed — the #1 recall ceiling.
+
+Added a per-file call-site index (`func_name → calls`) and a **single-hop**
+parameter-taint resolution: when a source-candidate Name has no local binding but
+is a parameter of the enclosing function, the walker checks whether any call site
+passes a tainted (or, for shape-based SQLi, a non-constant string-building)
+argument at that position/keyword. Bounded to 1 hop (`_interproc_depth`), so no
+recursion into callers' callers and no RecursionError surface.
+
+**Measured impact (labeled benchmark):** `cmdi-interprocedural` flips to
+**NOW DETECTED ✓**; HONEST F1 **0.889 → 0.919** (recall 0.80 → 0.85), precision
+stays 1.000. **Zero new false positives** on the real corpora (TwiScope 35, Sanad
+40, vulpy 8, dvpwa 5 — all unchanged), confirming the single-hop bound + the
+non-constant-caller-arg gate preserve precision. 379 tests pass (+6).

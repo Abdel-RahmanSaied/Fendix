@@ -840,3 +840,64 @@ class TestLLMPromptInjectionPrecision:
             "    return llm.generate(prompt)\n"
         )
         assert not _has(code, "SEC-PY_LLM_PROMPT_INJECTION")
+
+
+# ======================================================================
+# 1-hop interprocedural taint (recommendation #2; benchmark cmdi-interprocedural)
+# ======================================================================
+
+
+class TestInterproceduralTaint:
+    def test_cmdi_param_from_caller(self) -> None:
+        code = (
+            "import os\nfrom flask import request\n"
+            "def run(c):\n    os.system(c)\n"
+            "def h():\n    run(request.args['c'])\n"
+        )
+        f = [x for x in _scan(code) if x["id"] == "SEC-PY_OS_SYSTEM"]
+        assert f and f[0].get("reachable") is True
+
+    def test_sqli_param_from_caller(self) -> None:
+        code = (
+            "from flask import request\n"
+            "def q(cur, sql):\n    cur.execute(sql)\n"
+            "def h(cur):\n    q(cur, 'SELECT * FROM t WHERE x=' + request.args['x'])\n"
+        )
+        assert _has(code, "SEC-PY_SQL_INJECTION")
+
+    def test_ssrf_param_from_caller_kwarg(self) -> None:
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def fetch(url):\n    return requests.get(url)\n"
+            "def h():\n    return fetch(url=request.args['u'])\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_param_with_constant_caller_not_reachable(self) -> None:
+        # Precision guard: a param whose only caller passes a CONSTANT must not
+        # become a reachable taint flow.
+        code = (
+            "import os\ndef run(c):\n    os.system(c)\ndef h():\n    run('echo hi')\n"
+        )
+        f = [x for x in _scan(code) if x["id"] == "SEC-PY_OS_SYSTEM"]
+        # os.system(c) may still emit (conservative non-constant arg) but must
+        # NOT be marked reachable — there is no tainted caller.
+        assert not (f and f[0].get("reachable"))
+
+    def test_no_caller_not_reachable(self) -> None:
+        # A param with no call site in the file must not be tainted.
+        code = "import os\ndef run(c):\n    os.system(c)\n"
+        f = [x for x in _scan(code) if x["id"] == "SEC-PY_OS_SYSTEM"]
+        assert not (f and f[0].get("reachable"))
+
+    def test_single_hop_only(self) -> None:
+        # Two-hop chain (a→b→sink across 3 funcs) is intentionally NOT followed
+        # (bounded to 1 hop) — documents the boundary, no crash.
+        code = (
+            "import os\nfrom flask import request\n"
+            "def inner(c):\n    os.system(c)\n"
+            "def middle(c):\n    inner(c)\n"
+            "def h():\n    middle(request.args['c'])\n"
+        )
+        # No assertion on reachability (1-hop limit); just must not crash.
+        _scan(code)

@@ -198,6 +198,7 @@ class ASTAnalyzer:
             emit_fn,
             route_table=getattr(self, "_routes_by_func", None),
         )
+        visitor._module_root = tree  # enable 1-hop interprocedural call-site index
         try:
             visitor.visit(tree)
         except RecursionError:
@@ -307,6 +308,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # Maps local alias → canonical module name, populated by visit_Import.
         # Lets `import pickle as p; p.loads(data)` be detected despite the alias.
         self._module_aliases: dict[str, str] = {}
+        # 1-hop interprocedural taint: func-name → call sites in this file
+        # (built lazily on first need). When a sink uses a function PARAMETER
+        # whose taint must come from a caller, we check whether any call site
+        # passes a tainted argument at that parameter's position/keyword. Bounded
+        # to a SINGLE hop (we don't recurse into the caller's callers).
+        self._callsite_index: dict | None = None
+        self._interproc_depth: int = 0
+        self._module_root = None  # set in _analyze_python before the walk
         # Maps a bare local name → (module, symbol), populated by
         # visit_ImportFrom. Lets `from os import system; system(cmd)` and
         # `from pickle import loads as pl; pl(x)` resolve back to os.system /
@@ -452,9 +461,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 key = _binding_key(n)
             if key is None or key in visited:
                 continue
+            resolved_locally = False
             for scope in reversed(self._scopes):
                 if key not in scope:
                     continue
+                resolved_locally = True
                 assigned = scope[key]
                 lineno = getattr(assigned, "lineno", 0)
                 link = self._link(lineno, _ast_expr_text(assigned))
@@ -470,6 +481,102 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 # Binding resolved but didn't lead to a source; don't keep
                 # searching siblings — we found the assignment for this key.
                 break
+            # 1-hop interprocedural: a Name with no local binding may be a
+            # function PARAMETER whose taint comes from a caller (audit recall
+            # gap; benchmark cmdi-interprocedural). Try a single hop.
+            if not resolved_locally and isinstance(n, ast.Name):
+                inter = self._param_is_tainted_via_caller(
+                    n.id, extra_source, visited | {key}, depth
+                )
+                if inter is not None:
+                    return inter
+        return None
+
+    def _build_callsite_index(self) -> dict:
+        """Index every `name(...)` call in the file by callee name (1-hop
+        interprocedural taint). Built once from the module root captured by the
+        visitor; bare-name callees only (the common helper-call shape)."""
+        index: dict[str, list[ast.Call]] = {}
+        root = self._module_root
+        if root is None:
+            return index
+        for n in ast.walk(root):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                index.setdefault(n.func.id, []).append(n)
+        return index
+
+    def _param_is_tainted_via_caller(
+        self, param_name: str, extra_source, visited, depth
+    ) -> list[dict] | None:
+        """1-hop interprocedural: if `param_name` is a parameter of the enclosing
+        function, return a taint-chain prefix when ANY call site of that function
+        passes a tainted argument at the matching position/keyword. Single hop —
+        we do NOT recurse into the caller's own callers."""
+        if self._interproc_depth >= 1 or not self._func_stack:
+            return None
+        func = self._func_stack[-1]
+        params = [a.arg for a in func.args.posonlyargs + func.args.args]
+        if param_name not in params:
+            return None
+        idx = params.index(param_name)
+        if self._callsite_index is None:
+            self._callsite_index = self._build_callsite_index()
+        for call in self._callsite_index.get(func.name, []):
+            # positional arg at the param's index, or a matching keyword.
+            arg = None
+            if idx < len(call.args):
+                arg = call.args[idx]
+            else:
+                for kw in call.keywords:
+                    if kw.arg == param_name:
+                        arg = kw.value
+                        break
+            if arg is None:
+                continue
+            # Is the passed argument tainted? Check directly, then 1 hop back
+            # through the CALLER's scope is out of reach (we're a single-file,
+            # single-hop model) — so we test the arg expression itself.
+            if _references_request_input(arg) or (
+                extra_source is not None and extra_source(arg)
+            ):
+                return [self._link(getattr(call, "lineno", 0), _ast_expr_text(arg))]
+            # one bounded hop: the arg may itself be a Name the caller assigned;
+            # guard recursion with _interproc_depth.
+            self._interproc_depth += 1
+            try:
+                prefix = self._trace_to_source(arg, visited, depth + 1, extra_source)
+            finally:
+                self._interproc_depth -= 1
+            if prefix is not None:
+                return prefix
+        return None
+
+    def _resolve_param_to_caller_arg(self, param_name: str) -> ast.AST | None:
+        """1-hop: if `param_name` is a parameter of the enclosing function and a
+        call site passes a NON-CONSTANT argument at that position/keyword, return
+        that argument expression (so shape-based sink predicates can inspect what
+        the caller actually passes). Returns None if no caller, or all callers
+        pass constants. Single hop; no recursion into callers' callers."""
+        if self._interproc_depth >= 1 or not self._func_stack:
+            return None
+        func = self._func_stack[-1]
+        params = [a.arg for a in func.args.posonlyargs + func.args.args]
+        if param_name not in params:
+            return None
+        idx = params.index(param_name)
+        if self._callsite_index is None:
+            self._callsite_index = self._build_callsite_index()
+        for call in self._callsite_index.get(func.name, []):
+            arg = None
+            if idx < len(call.args):
+                arg = call.args[idx]
+            else:
+                for kw in call.keywords:
+                    if kw.arg == param_name:
+                        arg = kw.value
+                        break
+            if arg is not None and not isinstance(arg, ast.Constant):
+                return arg
         return None
 
     def _link(self, lineno: int, expr: str) -> dict:
@@ -1519,6 +1626,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 assigned, (ast.BinOp, ast.JoinedStr, ast.Call)
             ):
                 return not self._sql_expr_is_constant(assigned)
+            # 1-hop interprocedural: a bare PARAMETER may receive a built SQL
+            # string from a caller. Resolve to the caller's arg and re-test.
+            if assigned is None and isinstance(first_arg, ast.Name):
+                caller_arg = self._resolve_param_to_caller_arg(first_arg.id)
+                if caller_arg is not None and isinstance(
+                    caller_arg, (ast.BinOp, ast.JoinedStr, ast.Call)
+                ):
+                    return not self._sql_expr_is_constant(caller_arg)
         return False
 
     def _sql_expr_is_constant(self, expr: ast.AST, _depth: int = 0) -> bool:

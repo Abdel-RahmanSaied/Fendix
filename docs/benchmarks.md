@@ -246,14 +246,13 @@ on the Python AST taint engine, so "is it more accurate?" stops being an opinion
 | Metric | Precision | Recall | F1 |
 |---|---|---|---|
 | **HANDLED** (regression gate, in-scope) | **1.000** | **1.000** | **1.000** |
-| **HONEST** (incl. known gaps) | **1.000** | **0.800** | **0.889** |
+| **HONEST** (incl. known gaps) | **1.000** | **0.850** | **0.919** |  ← interprocedural taint closed `cmdi-interprocedural`
 
 Per-category F1 is 1.000 for every implemented detector (cmdi, sqli, ssrf, path,
 deser, xss, llm). The honest recall gap = the 4 documented roadmap items:
 
 | Known gap | Category | What it needs |
 |---|---|---|
-| `cmdi-interprocedural` | cmdi | 1-hop interprocedural taint |
 | `rce-imagemath-eval` | rce | library-specific RCE sink (`PIL.ImageMath.eval`) |
 | `jwt-verify-false` | crypto | crypto/auth-misuse matcher (new family) |
 | `secret-in-log` | secrets | secret-source → log-sink flow |
