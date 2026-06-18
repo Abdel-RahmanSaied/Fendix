@@ -66,8 +66,9 @@ const (
 	ProbeXSS      ProbeType = "xss"
 	ProbeSSRF     ProbeType = "ssrf"
 
-	ProbeHostHeader ProbeType = "host_header"
-	ProbeGraphQL    ProbeType = "graphql"
+	ProbeHostHeader   ProbeType = "host_header"
+	ProbeGraphQL      ProbeType = "graphql"
+	ProbeMethodTamper ProbeType = "method_tamper"
 )
 
 // ProbeRecord captures a single probe sent during active scanning.
