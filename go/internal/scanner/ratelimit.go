@@ -45,9 +45,26 @@ var rateLimitHeaders = []string{
 	"RateLimit-Reset",
 }
 
+// rateLimitCheck implements the Check interface for the rate-limit
+// detector. Structural adapter — Run holds the unchanged body of the
+// historical CheckRateLimit free function.
+type rateLimitCheck struct{}
+
+func (rateLimitCheck) Name() string                        { return "ratelimit" }
+func (rateLimitCheck) Category() string                    { return "headers" }
+func (rateLimitCheck) Tier() Tier                          { return TierPassive }
+func (rateLimitCheck) Enabled(cfg *models.ScanConfig) bool { return true }
+
 // CheckRateLimit sends multiple rapid requests to detect rate limiting.
 // If all requests succeed with no 429 or rate-limit headers, it reports a finding.
 func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+	return rateLimitCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
+}
+
+// Run holds the unchanged rate-limit detection body. Client construction
+// is identical to the historical free function.
+func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+	cfg := cc.Cfg
 	// TASK-123: skip rate-limit check on static-file endpoints. The
 	// check costs N requests per endpoint and the finding it produces
 	// ("no rate limiting on /favicon.ico") is noise that doesn't
