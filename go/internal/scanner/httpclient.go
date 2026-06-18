@@ -44,3 +44,18 @@ func guardedClient(cfg *models.ScanConfig) *http.Client {
 		CheckRedirect: netguard.Config{AllowPrivate: ap}.CheckRedirect(),
 	}
 }
+
+// guardedClientNoFollow builds a client with the SAME guarded transport as
+// guardedClient (budget over netguard SSRF policy) but does NOT follow
+// redirects — it returns http.ErrUseLastResponse so the caller observes the
+// raw 3xx. Used by checks where a redirect IS the signal (auth, idor,
+// open-redirect, host-header). Timeout is 0 because the shared client relies
+// on a per-job context deadline (see runCheck).
+func guardedClientNoFollow(cfg *models.ScanConfig) *http.Client {
+	ap := allowPrivate(cfg)
+	return &http.Client{
+		Timeout:       0,
+		Transport:     budget.TransportGuarded(ap),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
