@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -180,13 +181,53 @@ func TestProbeSQLi_DetectsDelayedResponse(t *testing.T) {
 	}
 }
 
+// TestProbeSQLi_UnconfirmedSlowStaysMedium (fix 2.1): a one-off slow response
+// must NOT yield ConfidenceHigh. The server delays ONLY the first injection
+// probe (counter-based) past the threshold; the confirmation re-probe (same
+// payload) returns fast. The finding should still surface (we saw one slow
+// response) but at ConfidenceMedium, because the timing wasn't reproduced.
+func TestProbeSQLi_UnconfirmedSlowStaysMedium(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skips a >4s real-time delay in -short mode")
+	}
+	var injCount int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.RawQuery
+		isInjection := strings.Contains(query, "SLEEP") || strings.Contains(query, "pg_sleep") ||
+			strings.Contains(query, "WAITFOR") || strings.Contains(query, "randomblob") ||
+			strings.Contains(query, "DBMS_PIPE")
+		if isInjection {
+			// Only the very first injection probe is slow; the confirmation
+			// re-probe (and every later one) returns fast.
+			if atomic.AddInt32(&injCount, 1) == 1 {
+				time.Sleep(4500 * time.Millisecond)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 15}
+	ep := Endpoint{Method: "GET", Path: "/api/test", FullURL: ts.URL + "/api/test", Params: []string{"id"}}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeSQLi(context.Background(), &http.Client{Timeout: 15 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly 1 time-based finding for the one slow probe, got %d", len(findings))
+	}
+	if findings[0].Confidence != models.ConfidenceMedium {
+		t.Errorf("unconfirmed one-off slow response must stay ConfidenceMedium, got %s", findings[0].Confidence)
+	}
+}
+
 func TestProbeCMDi_DetectsCanary(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate a vulnerable server: check decoded query values for echo payload
+		// Simulate a vulnerable server that shell-EVALUATES the canary (fix 2.4):
+		// the injected "$((13*99))" arithmetic resolves to 1287 → fendix1287end.
 		for _, vals := range r.URL.Query() {
 			for _, v := range vals {
-				if strings.Contains(v, "echo") || strings.Contains(v, "fendix_canary") {
-					fmt.Fprintf(w, "Result: fendix_canary_1234567890\n")
+				if strings.Contains(v, "echo") {
+					fmt.Fprintf(w, "Result: %s\n", cmdiComputedCanary)
 					return
 				}
 			}
@@ -261,6 +302,68 @@ func TestProbeCMDi_NoCanary(t *testing.T) {
 	}
 }
 
+// TestCMDi_ReflectionNoFinding (fix 2.4): a server that echoes the raw payload
+// verbatim is NOT vulnerable — it just reflects input. The computed canary
+// payload contains the SOURCE arithmetic (e.g. "13*99"), not its evaluated
+// result ("1287"), so a literal reflection never contains the computed marker
+// and must NOT raise a finding. This kills the old false positive where any
+// input-reflecting endpoint tripped the CMDi probe.
+func TestCMDi_ReflectionNoFinding(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Echo every query value back verbatim (pure reflection, no shell).
+		for _, vals := range r.URL.Query() {
+			for _, v := range vals {
+				fmt.Fprintf(w, "you said: %s\n", v)
+			}
+		}
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/echo", FullURL: ts.URL + "/api/echo"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeCMDi(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "cmd", LocQuery, auditLog)
+	if len(findings) != 0 {
+		t.Errorf("pure reflection must not yield a CMDi finding, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestCMDi_Executed (fix 2.4): a server that actually evaluates the injected
+// shell expression returns the COMPUTED result of the arithmetic embedded in
+// the canary. That computed marker is unambiguous proof the payload reached a
+// shell, so it must raise a HIGH-confidence CRITICAL finding.
+func TestCMDi_Executed(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate a shell evaluating "; echo fendix$((13*99))end" → 13*99=1287.
+		for _, vals := range r.URL.Query() {
+			for _, v := range vals {
+				if strings.Contains(v, "echo fendix") {
+					fmt.Fprintf(w, "output: %s\n", cmdiComputedCanary)
+					return
+				}
+			}
+		}
+		fmt.Fprintf(w, "OK")
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/exec", FullURL: ts.URL + "/api/exec"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeCMDi(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "cmd", LocQuery, auditLog)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 CMDi finding when canary is shell-evaluated, got %d", len(findings))
+	}
+	if findings[0].Severity != models.SeverityCritical {
+		t.Errorf("expected CRITICAL severity, got %s", findings[0].Severity)
+	}
+	if findings[0].Confidence != models.ConfidenceHigh {
+		t.Errorf("expected HIGH confidence, got %s", findings[0].Confidence)
+	}
+}
+
 func TestProbeCRLF_DetectsHeaderInjection(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate a vulnerable server: if CRLF payload is in query, reflect cookie
@@ -311,6 +414,35 @@ func TestProbeCRLF_NoCookie(t *testing.T) {
 	findings := probeCRLF(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "q", auditLog)
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %d", len(findings))
+	}
+}
+
+// TestLengthDelta_Symmetric (fix 2.3): the boolean-SQLi length-delta
+// normalization must be order-independent — swapping the two lengths must
+// yield the same delta. The old calc divided by the FIRST argument only, so
+// lengthDelta(a,b) != lengthDelta(b,a). Normalize against max(a,b).
+func TestLengthDelta_Symmetric(t *testing.T) {
+	cases := []struct{ a, b int }{
+		{100, 50},
+		{50, 100},
+		{1000, 1010},
+		{0, 0},
+		{0, 100},
+	}
+	for _, c := range cases {
+		fwd := lengthDelta(c.a, c.b)
+		rev := lengthDelta(c.b, c.a)
+		if math.Abs(fwd-rev) > 1e-9 {
+			t.Errorf("lengthDelta(%d,%d)=%f != lengthDelta(%d,%d)=%f (must be symmetric)", c.a, c.b, fwd, c.b, c.a, rev)
+		}
+	}
+	// 100 vs 50: |50|/max(100,50)=0.5
+	if got := lengthDelta(100, 50); math.Abs(got-0.5) > 1e-9 {
+		t.Errorf("lengthDelta(100,50)=%f, want 0.5", got)
+	}
+	// identical → 0
+	if got := lengthDelta(0, 0); got != 0 {
+		t.Errorf("lengthDelta(0,0)=%f, want 0", got)
 	}
 }
 
@@ -505,11 +637,12 @@ func newVulnerableMockServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rawQuery := r.URL.RawQuery
 
-		// Vulnerable to CMDi: reflects canary in response
+		// Vulnerable to CMDi: shell-EVALUATES the computed canary (fix 2.4) —
+		// "$((13*99))" → 1287, so the body carries fendix1287end.
 		for _, vals := range r.URL.Query() {
 			for _, v := range vals {
 				if strings.Contains(v, "echo") {
-					fmt.Fprintf(w, "output: fendix_canary_12345\n")
+					fmt.Fprintf(w, "output: %s\n", cmdiComputedCanary)
 					return
 				}
 			}
@@ -632,7 +765,7 @@ func TestIntegration_MultipleParams(t *testing.T) {
 			for _, v := range vals {
 				if strings.Contains(v, "echo") {
 					cmdiHits++
-					fmt.Fprintf(w, "fendix_canary_test\n")
+					fmt.Fprintf(w, "%s\n", cmdiComputedCanary)
 					return
 				}
 			}
@@ -770,6 +903,66 @@ func TestCheckInjection_SoftStopOnCancelledContext(t *testing.T) {
 	}
 }
 
+// TestProbes_SoftStopOnCancel (fix 2.5): every injection probe function must
+// honour a pre-cancelled context with a select-on-ctx.Done() guard at entry —
+// returning nil before sending any HTTP request. Pre-fix only probeSQLi had
+// this; probeSQLiErrorBased, probeSQLiBoolean, probeCMDi and probeCRLF ran
+// their request unconditionally and only failed at client.Do.
+func TestProbes_SoftStopOnCancel(t *testing.T) {
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5, AllowPrivate: true}
+	ep := Endpoint{Method: "GET", Path: "/api/x", FullURL: ts.URL + "/api/x"}
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	type probeFn struct {
+		name string
+		fn   func(ctx context.Context, a *ProbeAuditLog) []models.Finding
+	}
+	probes := []probeFn{
+		{"probeSQLi", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+			return probeSQLi(ctx, client, cfg, ep, "id", LocQuery, a)
+		}},
+		{"probeSQLiErrorBased", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+			return probeSQLiErrorBased(ctx, client, cfg, ep, "id", LocQuery, a)
+		}},
+		{"probeSQLiBoolean", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+			return probeSQLiBoolean(ctx, client, cfg, ep, "id", LocQuery, a)
+		}},
+		{"probeCMDi", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+			return probeCMDi(ctx, client, cfg, ep, "id", LocQuery, a)
+		}},
+		{"probeCRLF", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+			return probeCRLF(ctx, client, cfg, ep, "id", a)
+		}},
+	}
+
+	for _, p := range probes {
+		t.Run(p.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // cancelled before the probe runs
+			atomic.StoreInt32(&hits, 0)
+			auditLog := NewProbeAuditLog()
+
+			findings := p.fn(ctx, auditLog)
+			if len(findings) != 0 {
+				t.Errorf("%s: expected no findings on cancelled ctx, got %d", p.name, len(findings))
+			}
+			if got := atomic.LoadInt32(&hits); got != 0 {
+				t.Errorf("%s: expected 0 requests after pre-cancel soft-stop, got %d", p.name, got)
+			}
+			if got := len(auditLog.Records()); got != 0 {
+				t.Errorf("%s: expected 0 probe records after pre-cancel soft-stop, got %d", p.name, got)
+			}
+		})
+	}
+}
+
 // --- TASK-086 tests: body/header probing, error/boolean SQLi, --max-probes-per-endpoint ---
 
 // TestProbeSQLi_ErrorBased_DetectsMySQLError: when the server reflects a MySQL
@@ -850,6 +1043,12 @@ func TestProbeSQLi_Boolean_DetectsLengthFlip(t *testing.T) {
 	if !strings.Contains(findings[0].Title, "boolean-based") {
 		t.Errorf("expected 'boolean-based' in title, got %q", findings[0].Title)
 	}
+	// Fix 2.6: boolean-blind SQLi is inferential (length/status delta), so it is
+	// MEDIUM confidence — not the HIGH reserved for unambiguous evidence
+	// (DB error signature, computed CMDi canary, reflected Set-Cookie).
+	if findings[0].Confidence != models.ConfidenceMedium {
+		t.Errorf("expected MEDIUM confidence for boolean-based SQLi, got %s", findings[0].Confidence)
+	}
 }
 
 // TestProbeSQLi_Boolean_NoFlipNoFinding: if the response is identical for both
@@ -868,6 +1067,32 @@ func TestProbeSQLi_Boolean_NoFlipNoFinding(t *testing.T) {
 	findings := probeSQLiBoolean(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for static response, got %d", len(findings))
+	}
+}
+
+// TestBooleanSQLi_DynamicContentNoFinding (fix 2.2): a target whose body length
+// jitters on EVERY request (random token / timestamp per response) is too noisy
+// to draw a boolean-blind conclusion. The control probe is sent twice; if the
+// two identical control responses differ by more than the threshold, the probe
+// must bail with NO finding rather than mistaking per-request noise for an
+// injection-driven true/false flip.
+func TestBooleanSQLi_DynamicContentNoFinding(t *testing.T) {
+	var n int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Each request returns a wildly different body length (varies by request
+		// count) so even two identical control probes diverge well past 5%.
+		i := atomic.AddInt32(&n, 1)
+		fmt.Fprintln(w, strings.Repeat("x", int(i)*200))
+	}))
+	defer ts.Close()
+
+	cfg := &models.ScanConfig{EnableActive: true, Timeout: 5}
+	ep := Endpoint{Method: "GET", Path: "/api/items", FullURL: ts.URL + "/api/items"}
+	auditLog := NewProbeAuditLog()
+
+	findings := probeSQLiBoolean(context.Background(), &http.Client{Timeout: 5 * time.Second}, cfg, ep, "id", LocQuery, auditLog)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings on noisy dynamic-content endpoint, got %d", len(findings))
 	}
 }
 
