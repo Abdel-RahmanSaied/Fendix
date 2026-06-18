@@ -102,11 +102,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		reflectedEvid    string
 		sawNull          bool // ACAO: null (only when we sent Origin: null)
 		sawNullCred      bool
-		acamSeen         string // first non-empty Access-Control-Allow-Methods
+		acamSeen         string // first non-empty Access-Control-Allow-Methods (for non-standard-token detection)
+		sawWildcardMeth  bool   // ACAM: * (or '*' among tokens) on ANY probe
 	)
 
+	// The probe set is method-independent (derived from the URL only), so build
+	// it once instead of re-parsing the URL on every method.
+	origins := probeOrigins(endpoint.FullURL)
+
 	for _, probeMethod := range methods {
-		for _, origin := range probeOrigins(endpoint.FullURL) {
+		for _, origin := range origins {
 			req, err := http.NewRequestWithContext(ctx, probeMethod, endpoint.FullURL, nil)
 			if err != nil {
 				logagg.Warn("cors", "CORS check: failed to create request", "url", endpoint.FullURL, "error", err)
@@ -143,8 +148,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 			}
 
 			credentialed := strings.EqualFold(acac, "true")
-			if acam != "" && acamSeen == "" {
-				acamSeen = acam
+			if acam != "" {
+				if acamSeen == "" {
+					acamSeen = acam
+				}
+				// A wildcard ACAM on ANY probe is a wildcard-methods misconfig.
+				// Capturing only the first non-empty ACAM (acamSeen) would let
+				// probe ordering hide a wildcard behind an earlier explicit list.
+				if acamHasWildcard(acam) {
+					sawWildcardMeth = true
+				}
 			}
 
 			switch {
@@ -170,57 +183,82 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		}
 	}
 
-	// Phase 2 — emit findings from the collected signals, narrower classes
-	// suppressed by broader ones.
+	// Phase 2 — emit the SINGLE highest-severity ORIGIN finding.
+	//
+	// wildcard-no-creds, reflected-origin, and null-origin are DISTINCT
+	// misconfigs that can co-occur across different probes/methods (e.g. ACAO: *
+	// on the OPTIONS preflight but a reflected arbitrary origin on the GET simple
+	// request). They are NOT a subsumption hierarchy by breadth — a plain
+	// wildcard is LOWER severity than a reflected/null origin, so it must never
+	// hide the higher-severity findings. We avoid the noise of N origin findings
+	// by emitting only the single highest-severity candidate, never by letting a
+	// lower-severity signal win. The one genuine subsumption is null ⊂ reflected:
+	// a server that reflects ANY arbitrary origin trivially reflects "null" too,
+	// same root cause, so a reflected signal absorbs the null signal.
+	//
+	// Severity ranking (highest first), credentialed > non-credentialed on ties:
+	//   wildcard+creds (CRIT) ≈ reflected+creds (CRIT) > reflected (HIGH) ≈ null (HIGH) > wildcard (MEDIUM)
 	var findings []models.Finding
 
-	switch {
-	case sawWildcardCreds:
-		findings = append(findings, models.Finding{
-			Title:      "CORS wildcard origin with credentials allowed",
-			Severity:   models.SeverityCritical,
-			Source:     models.SourceBlackbox,
-			Category:   "cors",
-			Endpoint:   epLabel,
-			Evidence:   "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true",
-			Fix:        "Never combine wildcard origin with credentials. Specify explicit allowed origins.",
-			References: []string{"CWE-942"},
-			Confidence: models.ConfidenceHigh,
+	type originCandidate struct {
+		rank    int // higher = emitted first
+		finding models.Finding
+	}
+	var candidates []originCandidate
+
+	if sawWildcardCreds {
+		candidates = append(candidates, originCandidate{
+			rank: 100,
+			finding: models.Finding{
+				Title:      "CORS wildcard origin with credentials allowed",
+				Severity:   models.SeverityCritical,
+				Source:     models.SourceBlackbox,
+				Category:   "cors",
+				Endpoint:   epLabel,
+				Evidence:   "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true",
+				Fix:        "Never combine wildcard origin with credentials. Specify explicit allowed origins.",
+				References: []string{"CWE-942"},
+				Confidence: models.ConfidenceHigh,
+			},
 		})
-	case sawWildcard:
-		findings = append(findings, models.Finding{
-			Title:      "CORS allows any origin",
-			Severity:   models.SeverityMedium,
-			Source:     models.SourceBlackbox,
-			Category:   "cors",
-			Endpoint:   epLabel,
-			Evidence:   "Access-Control-Allow-Origin: *",
-			Fix:        "Restrict Access-Control-Allow-Origin to specific trusted origins.",
-			References: []string{"CWE-942"},
-			Confidence: models.ConfidenceHigh,
+	}
+	if sawReflected && sawReflectedCred {
+		// Reflected arbitrary origin WITH credentials is account-takeover grade
+		// (Phase 4a / 4.2) → CRITICAL.
+		candidates = append(candidates, originCandidate{
+			rank: 90,
+			finding: models.Finding{
+				Title:      "CORS reflects arbitrary origin with credentials",
+				Severity:   models.SeverityCritical,
+				Source:     models.SourceBlackbox,
+				Category:   "cors",
+				Endpoint:   epLabel,
+				Evidence:   fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s with Access-Control-Allow-Credentials: true", reflectedEvid),
+				Fix:        "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
+				References: []string{"CWE-942"},
+				Confidence: models.ConfidenceHigh,
+			},
 		})
-	case sawReflected:
-		// Reflecting an arbitrary attacker origin subsumes the null-origin case.
-		f := models.Finding{
-			Title:      "CORS reflects arbitrary origin",
-			Severity:   models.SeverityHigh,
-			Source:     models.SourceBlackbox,
-			Category:   "cors",
-			Endpoint:   epLabel,
-			Evidence:   fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s", reflectedEvid),
-			Fix:        "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
-			References: []string{"CWE-942"},
-			Confidence: models.ConfidenceHigh,
-		}
-		if sawReflectedCred {
-			// Reflected arbitrary origin WITH credentials is account-takeover
-			// grade (Phase 4a / 4.2) → CRITICAL.
-			f.Title = "CORS reflects arbitrary origin with credentials"
-			f.Severity = models.SeverityCritical
-			f.Evidence = fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s with Access-Control-Allow-Credentials: true", reflectedEvid)
-		}
-		findings = append(findings, f)
-	case sawNull:
+	}
+	if sawReflected && !sawReflectedCred {
+		candidates = append(candidates, originCandidate{
+			rank: 70,
+			finding: models.Finding{
+				Title:      "CORS reflects arbitrary origin",
+				Severity:   models.SeverityHigh,
+				Source:     models.SourceBlackbox,
+				Category:   "cors",
+				Endpoint:   epLabel,
+				Evidence:   fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s", reflectedEvid),
+				Fix:        "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
+				References: []string{"CWE-942"},
+				Confidence: models.ConfidenceHigh,
+			},
+		})
+	}
+	// null ⊂ reflected: only consider the null signal when reflection did NOT
+	// fire — same arbitrary-origin root cause, don't double-report.
+	if sawNull && !sawReflected {
 		f := models.Finding{
 			Title:      "CORS accepts null origin",
 			Severity:   models.SeverityHigh,
@@ -232,27 +270,89 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 			References: []string{"CWE-942"},
 			Confidence: models.ConfidenceHigh,
 		}
+		rank := 60 // HIGH, slightly below reflected-HIGH on ties
 		if sawNullCred {
 			f.Severity = models.SeverityCritical
 			f.Evidence = "Access-Control-Allow-Origin: null with Access-Control-Allow-Credentials: true"
+			rank = 85 // CRITICAL, just below the credentialed-reflected CRITICAL
 		}
-		findings = append(findings, f)
+		candidates = append(candidates, originCandidate{rank: rank, finding: f})
+	}
+	if sawWildcard {
+		candidates = append(candidates, originCandidate{
+			rank: 30, // MEDIUM — lowest; must never suppress a higher finding
+			finding: models.Finding{
+				Title:      "CORS allows any origin",
+				Severity:   models.SeverityMedium,
+				Source:     models.SourceBlackbox,
+				Category:   "cors",
+				Endpoint:   epLabel,
+				Evidence:   "Access-Control-Allow-Origin: *",
+				Fix:        "Restrict Access-Control-Allow-Origin to specific trusted origins.",
+				References: []string{"CWE-942"},
+				Confidence: models.ConfidenceHigh,
+			},
+		})
+	}
+
+	if len(candidates) > 0 {
+		best := candidates[0]
+		for _, c := range candidates[1:] {
+			if c.rank > best.rank {
+				best = c
+			}
+		}
+		findings = append(findings, best.finding)
 	}
 
 	// Method-policy findings are independent of the origin verdict: wildcard
 	// methods (Phase 4a / 4.6) and genuinely non-standard tokens.
-	findings = appendMethodFindings(findings, acamSeen, epLabel)
+	findings = appendMethodFindings(findings, acamSeen, sawWildcardMeth, epLabel)
 
 	slog.Debug("CORS check complete", "endpoint", epLabel, "findings", len(findings))
 	return findings
 }
 
+// acamHasWildcard reports whether an Access-Control-Allow-Methods value is a
+// wildcard — either the bare "*" or "*" among the comma-separated tokens.
+func acamHasWildcard(acam string) bool {
+	if strings.TrimSpace(acam) == "*" {
+		return true
+	}
+	for _, method := range strings.Split(acam, ",") {
+		if strings.TrimSpace(method) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 // appendMethodFindings evaluates the Access-Control-Allow-Methods header and
 // appends at most one method-policy finding. A wildcard ("*", or "*" among the
-// listed tokens) is its own finding class (Phase 4a / 4.6); the historical
-// non-standard-token detection is preserved for genuinely odd methods. Called
-// once per endpoint, so no cross-probe dedup is needed.
-func appendMethodFindings(findings []models.Finding, acam, epLabel string) []models.Finding {
+// listed tokens) is its own finding class (Phase 4a / 4.6) and is detected
+// across ALL probes (sawWildcardMeth), so probe ordering can't hide it behind an
+// earlier explicit method list; the historical non-standard-token detection is
+// preserved for genuinely odd methods. Called once per endpoint, so no
+// cross-probe dedup is needed.
+func appendMethodFindings(findings []models.Finding, acam string, sawWildcardMeth bool, epLabel string) []models.Finding {
+	if sawWildcardMeth {
+		evidence := "Access-Control-Allow-Methods: *"
+		if acam != "" && strings.TrimSpace(acam) != "*" {
+			evidence = fmt.Sprintf("Access-Control-Allow-Methods includes wildcard method: %s", acam)
+		}
+		return append(findings, models.Finding{
+			Title:      "CORS allows all methods (wildcard)",
+			Severity:   models.SeverityMedium,
+			Source:     models.SourceBlackbox,
+			Category:   "cors",
+			Endpoint:   epLabel,
+			Evidence:   evidence,
+			Fix:        "List only the HTTP methods the endpoint requires instead of a wildcard.",
+			References: []string{"CWE-942"},
+			Confidence: models.ConfidenceMedium,
+		})
+	}
+
 	if acam == "" {
 		return findings
 	}
@@ -262,35 +362,8 @@ func appendMethodFindings(findings []models.Finding, acam, epLabel string) []mod
 		"DELETE": true, "HEAD": true, "OPTIONS": true,
 	}
 
-	if strings.TrimSpace(acam) == "*" {
-		return append(findings, models.Finding{
-			Title:      "CORS allows all methods (wildcard)",
-			Severity:   models.SeverityMedium,
-			Source:     models.SourceBlackbox,
-			Category:   "cors",
-			Endpoint:   epLabel,
-			Evidence:   "Access-Control-Allow-Methods: *",
-			Fix:        "List only the HTTP methods the endpoint requires instead of a wildcard.",
-			References: []string{"CWE-942"},
-			Confidence: models.ConfidenceMedium,
-		})
-	}
-
 	for _, method := range strings.Split(acam, ",") {
 		method = strings.TrimSpace(strings.ToUpper(method))
-		if method == "*" {
-			return append(findings, models.Finding{
-				Title:      "CORS allows all methods (wildcard)",
-				Severity:   models.SeverityMedium,
-				Source:     models.SourceBlackbox,
-				Category:   "cors",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Access-Control-Allow-Methods includes wildcard method: %s", acam),
-				Fix:        "List only the HTTP methods the endpoint requires instead of a wildcard.",
-				References: []string{"CWE-942"},
-				Confidence: models.ConfidenceMedium,
-			})
-		}
 		if method != "" && !standardMethods[method] {
 			return append(findings, models.Finding{
 				Title:      "CORS allows non-standard HTTP method",
