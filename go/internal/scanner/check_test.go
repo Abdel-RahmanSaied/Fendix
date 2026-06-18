@@ -20,7 +20,7 @@ func TestChecks_EnabledMatrix(t *testing.T) {
 		enabled []string // expected enabled check names
 	}{
 		{"bare", &models.ScanConfig{}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags"}},
-		{"active", &models.ScanConfig{EnableActive: true}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "injection"}},
+		{"active", &models.ScanConfig{EnableActive: true}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "injection", "open-redirect"}},
 		{"auth", &models.ScanConfig{Auth: &models.AuthContext{Value: "x"}}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "auth"}},
 		{"auth2", &models.ScanConfig{Auth: &models.AuthContext{Value: "x"}, AuthUser2: &models.AuthContext{Value: "y"}}, []string{"configleak", "headers", "cors", "exposure", "ratelimit", "cookie-flags", "auth", "idor"}},
 	}

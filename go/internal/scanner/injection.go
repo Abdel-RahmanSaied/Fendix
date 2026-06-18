@@ -59,9 +59,10 @@ You are solely responsible for ensuring you have permission.
 type ProbeType string
 
 const (
-	ProbeSQLi ProbeType = "sqli"
-	ProbeCMDi ProbeType = "cmdi"
-	ProbeCRLF ProbeType = "crlf"
+	ProbeSQLi     ProbeType = "sqli"
+	ProbeCMDi     ProbeType = "cmdi"
+	ProbeCRLF     ProbeType = "crlf"
+	ProbeRedirect ProbeType = "redirect"
 )
 
 // ProbeRecord captures a single probe sent during active scanning.
