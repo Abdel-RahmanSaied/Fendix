@@ -1,0 +1,300 @@
+[
+  {
+    "id": "cmdi-direct",
+    "category": "cmdi",
+    "label": "vulnerable",
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "import os\nfrom flask import request\ndef h():\n    os.system(request.args['c'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "cmdi-augassign",
+    "category": "cmdi",
+    "label": "vulnerable",
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "import os\nfrom flask import request\ndef h():\n    c='ping '\n    c+=request.args['h']\n    os.system(c)\n",
+    "known_gap": false
+  },
+  {
+    "id": "cmdi-alias",
+    "category": "cmdi",
+    "label": "vulnerable",
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "import os as _o\nfrom flask import request\ndef h():\n    _o.system(request.args['c'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "cmdi-fromimport",
+    "category": "cmdi",
+    "label": "vulnerable",
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "from os import system\nfrom flask import request\ndef h():\n    system(request.args['c'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "cmdi-const-safe",
+    "category": "cmdi",
+    "label": "safe",
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "import os\ndef h():\n    os.system('echo hi')\n",
+    "known_gap": false
+  },
+  {
+    "id": "cmdi-const-accumulator-safe",
+    "category": "cmdi",
+    "label": "safe",
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "import os\ndef h():\n    c='echo '\n    c+='hi'\n    os.system(c)\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-fstring",
+    "category": "sqli",
+    "label": "vulnerable",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "from flask import request\ndef h(cur):\n    cur.execute(f\"SELECT * FROM t WHERE x={request.args['x']}\")\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-executescript",
+    "category": "sqli",
+    "label": "vulnerable",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "from flask import request\ndef h(cur):\n    cur.executescript('DROP TABLE t;'+request.args['x'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-literal-fstring-safe",
+    "category": "sqli",
+    "label": "safe",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "def h(cur):\n    t='users'\n    cur.execute(f'SELECT * FROM {t} WHERE active=1')\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-parameterized-safe",
+    "category": "sqli",
+    "label": "safe",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "def h(cur,uid):\n    cur.execute('SELECT * FROM t WHERE id=%s',(uid,))\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-psycopg-composable-safe",
+    "category": "sqli",
+    "label": "safe",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "from psycopg2 import sql\ndef h(cur,t):\n    cur.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(t)))\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-direct",
+    "category": "ssrf",
+    "label": "vulnerable",
+    "expect": "SEC-PY_SSRF",
+    "code": "import requests\nfrom flask import request\ndef h():\n    requests.get(request.args['u'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-httpx",
+    "category": "ssrf",
+    "label": "vulnerable",
+    "expect": "SEC-PY_SSRF",
+    "code": "import httpx\nfrom flask import request\ndef h():\n    httpx.get(request.args['u'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-ctor-baseurl",
+    "category": "ssrf",
+    "label": "vulnerable",
+    "expect": "SEC-PY_SSRF",
+    "code": "import httpx\nclass L:\n    def __init__(self,cfg):\n        self.b=cfg.get('base_url','https://x')\n        self.c=httpx.AsyncClient(base_url=self.b)\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-const-host-safe",
+    "category": "ssrf",
+    "label": "safe",
+    "expect": "SEC-PY_SSRF",
+    "code": "import requests\nclass A:\n    base_url='https://api.twitter.com/2/'\n    def f(self,ep):\n        return requests.get(self.base_url+ep)\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-redis-receiver-safe",
+    "category": "ssrf",
+    "label": "safe",
+    "expect": "SEC-PY_SSRF",
+    "code": "import redis\ndef h(keys):\n    c=redis.Redis()\n    return c.delete(*keys)\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-const-ctor-safe",
+    "category": "ssrf",
+    "label": "safe",
+    "expect": "SEC-PY_SSRF",
+    "code": "import httpx\ndef h():\n    return httpx.AsyncClient(base_url='https://api.openai.com/v1')\n",
+    "known_gap": false
+  },
+  {
+    "id": "path-direct",
+    "category": "path",
+    "label": "vulnerable",
+    "expect": "SEC-PY_PATH_TRAVERSAL",
+    "code": "from flask import request\ndef h():\n    return open(request.args['f'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "path-webbrowser-safe",
+    "category": "path",
+    "label": "safe",
+    "expect": "SEC-PY_PATH_TRAVERSAL",
+    "code": "import webbrowser\ndef h(u):\n    webbrowser.open(u)\n",
+    "known_gap": false
+  },
+  {
+    "id": "path-dunderfile-safe",
+    "category": "path",
+    "label": "safe",
+    "expect": "SEC-PY_PATH_TRAVERSAL",
+    "code": "from pathlib import Path\nB=Path(__file__).resolve().parent\ndef h():\n    open(B)\n",
+    "known_gap": false
+  },
+  {
+    "id": "path-getenv-safe",
+    "category": "path",
+    "label": "safe",
+    "expect": "SEC-PY_PATH_TRAVERSAL",
+    "code": "import os\ndef h():\n    p=os.getenv('KEY')\n    return open(p,'rb')\n",
+    "known_gap": false
+  },
+  {
+    "id": "path-tempfile-safe",
+    "category": "path",
+    "label": "safe",
+    "expect": "SEC-PY_PATH_TRAVERSAL",
+    "code": "import tempfile\ndef h():\n    tf=tempfile.NamedTemporaryFile()\n    return open(tf.name,'wb')\n",
+    "known_gap": false
+  },
+  {
+    "id": "deser-pickle-fromimport",
+    "category": "deser",
+    "label": "vulnerable",
+    "expect": "SEC-PY_PICKLE_LOAD",
+    "code": "from pickle import loads\ndef h(d):\n    return loads(d)\n",
+    "known_gap": false
+  },
+  {
+    "id": "deser-yaml-load",
+    "category": "deser",
+    "label": "vulnerable",
+    "expect": "SEC-PY_YAML_UNSAFE_LOAD",
+    "code": "import yaml\ndef h(d):\n    return yaml.load(d)\n",
+    "known_gap": false
+  },
+  {
+    "id": "deser-pickle-roundtrip-safe",
+    "category": "deser",
+    "label": "safe",
+    "expect": "SEC-PY_PICKLE_LOAD",
+    "code": "import pickle\ndef h(o):\n    return pickle.loads(pickle.dumps(o))\n",
+    "known_gap": false
+  },
+  {
+    "id": "deser-json-safe",
+    "category": "deser",
+    "label": "safe",
+    "expect": "SEC-PY_PICKLE_LOAD",
+    "code": "import json\ndef h(d):\n    return json.loads(d)\n",
+    "known_gap": false
+  },
+  {
+    "id": "xss-markup",
+    "category": "xss",
+    "label": "vulnerable",
+    "expect": "SEC-PY_XSS_HTML_SINK",
+    "code": "from markupsafe import Markup\nfrom flask import request\ndef h():\n    return Markup(request.args['n'])\n",
+    "known_gap": false
+  },
+  {
+    "id": "xss-escaped-safe",
+    "category": "xss",
+    "label": "safe",
+    "expect": "SEC-PY_XSS_HTML_SINK",
+    "code": "import html\nfrom markupsafe import Markup\nfrom flask import request\ndef h():\n    return Markup(html.escape(request.args['n']))\n",
+    "known_gap": false
+  },
+  {
+    "id": "llm-direct",
+    "category": "llm",
+    "label": "vulnerable",
+    "expect": "SEC-PY_LLM_PROMPT_INJECTION",
+    "code": "from flask import request\ndef h(client):\n    q=request.args.get('q')\n    return client.chat.completions.create(messages=[{'role':'user','content':f'Q: {q}'}])\n",
+    "known_gap": false
+  },
+  {
+    "id": "llm-indirect-rag",
+    "category": "llm",
+    "label": "vulnerable",
+    "expect": "SEC-PY_LLM_PROMPT_INJECTION",
+    "code": "def h(db,llm):\n    rows=db.execute(sql).mappings().all()\n    p=f\"ctx: {rows[0]['text']}\"\n    return llm.chat(p)\n",
+    "known_gap": false
+  },
+  {
+    "id": "llm-const-safe",
+    "category": "llm",
+    "label": "safe",
+    "expect": "SEC-PY_LLM_PROMPT_INJECTION",
+    "code": "def h(client):\n    return client.chat.completions.create(messages=[{'role':'system','content':'You are a bot'}])\n",
+    "known_gap": false
+  },
+  {
+    "id": "llm-dbread-nonllm-safe",
+    "category": "llm",
+    "label": "safe",
+    "expect": "SEC-PY_LLM_PROMPT_INJECTION",
+    "code": "def h(db):\n    rows=db.execute(sql).mappings().all()\n    return {'data':rows[0]['text']}\n",
+    "known_gap": false
+  },
+  {
+    "id": "cmdi-interprocedural",
+    "category": "cmdi",
+    "label": "vulnerable",
+    "known_gap": true,
+    "expect": "SEC-PY_OS_SYSTEM",
+    "code": "import os\nfrom flask import request\ndef run(c):\n    os.system(c)\ndef h():\n    run(request.args['c'])\n",
+    "require_reachable": true
+  },
+  {
+    "id": "llm-arg-passes-request",
+    "category": "llm",
+    "label": "vulnerable",
+    "known_gap": false,
+    "expect": "SEC-PY_LLM_PROMPT_INJECTION",
+    "code": "from flask import request\ndef build(q):\n    parts=[]\n    parts.append(f'User question: {q}')\n    return '\\n'.join(parts)\ndef h(llm):\n    p=build(request.args['q'])\n    return llm.chat(p)\n",
+    "require_reachable": true
+  },
+  {
+    "id": "rce-imagemath-eval",
+    "category": "rce",
+    "label": "vulnerable",
+    "known_gap": true,
+    "expect": "SEC-PY_EVAL",
+    "code": "from PIL import ImageMath\nfrom flask import request\ndef h():\n    return ImageMath.eval(request.args['f'])\n"
+  },
+  {
+    "id": "jwt-verify-false",
+    "category": "crypto",
+    "label": "vulnerable",
+    "known_gap": true,
+    "expect": "SEC-PY_JWT_WEAK",
+    "code": "import jwt\ndef h(token):\n    return jwt.decode(token, verify=False)\n"
+  },
+  {
+    "id": "secret-in-log",
+    "category": "secrets",
+    "label": "vulnerable",
+    "known_gap": true,
+    "expect": "SEC-PY_SECRET_IN_LOG",
+    "code": "import os,logging\ndef h():\n    k=os.getenv('API_KEY')\n    logging.info(f'key={k}')\n"
+  }
+]

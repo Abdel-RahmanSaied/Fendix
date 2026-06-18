@@ -218,3 +218,48 @@ is the one that demonstrates the wedge.**
    the new script.
 6. Add a step to `.github/workflows/benchmark.yml` (or a sibling
    workflow if the runtime gets long).
+
+---
+
+## Python taint-engine accuracy benchmark
+
+A labeled corpus + runner that puts a tracked **precision / recall / F1** number
+on the Python AST taint engine, so "is it more accurate?" stops being an opinion.
+
+- **Corpus:** `python/benchmark/corpus.json` — 37 minimal, labeled cases across
+  cmdi / sqli / ssrf / path / deser / xss / llm (+ roadmap categories rce /
+  crypto / secrets). Each case is `{id, category, label, expect, code}`;
+  `label=vulnerable` → the engine *should* emit `expect`; `label=safe` → it must
+  not (precision). Cases tagged `require_reachable` only count when the finding
+  carries a proven taint chain (`reachable:true`), so a conservative
+  "non-constant arg → emit" can't falsely credit dataflow recall. Cases tagged
+  `known_gap` are documented engine limitations.
+- **Runner:** `python -m benchmark.run_benchmark` (add `--json` for machine
+  output). Reports two overall numbers:
+  - **HANDLED** — excludes known gaps; the **regression gate** (must stay 1.0).
+  - **HONEST** — includes known gaps; the **true accuracy** today.
+- **Gate:** `tests/test_benchmark_gate.py` fails CI on any in-scope FP/FN and on
+  an honest-recall drop below the recorded floor.
+
+### Baseline (this measures the engine after the accuracy overhaul + Sanad work)
+
+| Metric | Precision | Recall | F1 |
+|---|---|---|---|
+| **HANDLED** (regression gate, in-scope) | **1.000** | **1.000** | **1.000** |
+| **HONEST** (incl. known gaps) | **1.000** | **0.800** | **0.889** |
+
+Per-category F1 is 1.000 for every implemented detector (cmdi, sqli, ssrf, path,
+deser, xss, llm). The honest recall gap = the 4 documented roadmap items:
+
+| Known gap | Category | What it needs |
+|---|---|---|
+| `cmdi-interprocedural` | cmdi | 1-hop interprocedural taint |
+| `rce-imagemath-eval` | rce | library-specific RCE sink (`PIL.ImageMath.eval`) |
+| `jwt-verify-false` | crypto | crypto/auth-misuse matcher (new family) |
+| `secret-in-log` | secrets | secret-source → log-sink flow |
+
+**Interpretation:** the engine is precision-perfect and recall-perfect *within
+its modeled source/sink set* (handled F1 = 1.0), with an honest F1 of 0.889 once
+the known out-of-scope categories are counted. Each roadmap item, when built,
+flips its case to "NOW DETECTED ✓" and raises the honest F1 — the gap between the
+two numbers IS the roadmap, made measurable.
