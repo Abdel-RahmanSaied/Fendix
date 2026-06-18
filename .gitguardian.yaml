@@ -1,0 +1,36 @@
+# GitGuardian / ggshield configuration.
+#
+# Fendix is a security SCANNER whose job is to DETECT secrets and other
+# sensitive data in HTTP responses, config files, and code. Its test suite
+# therefore MUST contain secret-SHAPED fixtures so the detectors can be
+# exercised — these are deliberately fake, non-functional placeholders, not
+# real credentials. We ignore them by path so GitGuardian does not flag the
+# scanner's own test data.
+#
+# Every literal below is a well-known dummy:
+#   - AKIAIOSFODNN7EXAMPLE        AWS's own documentation example key
+#   - DB_PASSWORD=hunter2         the canonical joke password
+#   - sk-live-1234567890abcdef    sequential placeholder (NOT a real Stripe
+#     / sk-live-abcdef123456      key: those are sk_live_ + 24 random chars)
+#   - eyJhbGciOiJIUzI1NiJ9.payload.signature   JWT with the literal words
+#     "payload"/"signature" as body/sig — header decodes to {"alg":"HS256"}
+#   - MIIEpAIBAAKCAQEA...         truncated (…) fake PEM body
+#
+# NOTE: .gitguardian.yaml `paths-ignore` is honored by the ggshield CLI. The
+# GitGuardian GitHub App additionally honors dashboard-side "false positive /
+# test credential" resolutions and secret-hash ignores — clear any residual
+# PR incidents there once.
+
+version: 2
+
+secret:
+  # The scanner's unit/integration tests embed fake secret-shaped fixtures to
+  # exercise the secret/exposure/config-leak detectors. None are live.
+  ignored-paths:
+    - "go/internal/scanner/auth_test.go"
+    - "go/internal/scanner/auth_integration_test.go"
+    - "go/internal/scanner/exposure_test.go"
+    - "go/internal/scanner/configleak_test.go"
+    # Python analyzer + rule-pack tests carry the same kind of fixtures.
+    - "python/tests/**"
+    - "python/rules/**"
