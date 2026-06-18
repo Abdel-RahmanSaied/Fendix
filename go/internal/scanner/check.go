@@ -87,6 +87,7 @@ func DefaultChecks() []Check {
 		openRedirectCheck{},
 		reflectedXSSCheck{},
 		SSRFCheck{},
+		hostHeaderCheck{},
 		// proof checks (Phase 1) and new types (Phases 6-9) appended here.
 	}
 }
