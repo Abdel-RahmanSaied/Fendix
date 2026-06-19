@@ -2,6 +2,8 @@ package netguard
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
@@ -248,6 +250,51 @@ func TestClient_TransportPreservesTemplateFields(t *testing.T) {
 	}
 	if got.DialContext == nil {
 		t.Error("Transport must install a DialContext")
+	}
+}
+
+// TestClient_HTTP2Server is the regression test for the Kong h2 spec-fetch bug.
+// Installing a custom DialContext (the SSRF guard) disables the stdlib's
+// automatic HTTP/2 upgrade, so before the Transport.Protocols fix a guarded
+// client could only speak HTTP/1.x and a request to an h2-preferring server
+// failed with "malformed HTTP response \x00\x00\x12\x04..." (an h2 SETTINGS
+// frame read as h1). This serves an HTTP/2-enabled TLS server and asserts the
+// guarded client both reaches it AND negotiates h2.
+func TestClient_HTTP2Server(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Echo the negotiated protocol so the test can assert h2 was used,
+		// not just that the request succeeded.
+		w.Header().Set("X-Proto", r.Proto)
+		w.WriteHeader(200)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	// Build a MINIMAL template transport that only trusts the test cert — no
+	// HTTP/2 pre-wiring. (Cloning srv.Client()'s transport would carry httptest's
+	// own h2 config and mask the bug.) This mirrors the crawler, which composes
+	// the guard onto a bare http.Transport. h2 must therefore come solely from
+	// the Transport.Protocols fix inside cfg.Transport — otherwise the custom
+	// DialContext leaves the client h1-only and the request fails on h2.
+	certs := x509.NewCertPool()
+	certs.AddCert(srv.Certificate())
+	tmpl := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certs}}
+
+	// AllowPrivate=true so the loopback test server is reachable through the guard.
+	cfg := Config{AllowPrivate: true}
+	client := &http.Client{Transport: cfg.Transport(tmpl), CheckRedirect: cfg.CheckRedirect()}
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("guarded client failed against h2 server (the Kong spec-fetch bug): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if resp.ProtoMajor != 2 {
+		t.Errorf("negotiated %s, want HTTP/2 — guard suppressed h2", resp.Proto)
 	}
 }
 
