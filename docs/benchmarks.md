@@ -25,13 +25,35 @@ files, 30 secrets findings. Both binaries built
 
 | Configuration | p50 | p95 | mean | Δ vs v0.9.0 | exit gate |
 |---|---:|---:|---:|---:|---|
-| **v0.11.0 default — no Python, no opt-ins** | **6.1 ms** | **7.0 ms** | **6.1 ms** | +0.5 ms (+9 %) | ✅ 82× under 500 ms |
+| **v0.18.0 default — full native check suite** | **45 ms** | **51 ms** | **46 ms** | +39 ms | ✅ 11× under 500 ms |
+| v0.18.0 + `--python-engine` (opt-in) | 43 ms | 52 ms | 45 ms | — | ✅ 11× under 500 ms |
+| v0.11.0 default — no Python, no opt-ins | 6.1 ms | 7.0 ms | 6.1 ms | +0.5 ms (+9 %) | ✅ 82× under 500 ms |
 | v0.11.0 + `--python-engine` (opt-in) | 40.7 ms | 45.1 ms | 41.3 ms | +16.3 ms (+67 %) | ✅ 12× under 500 ms |
 | v0.9.0 default (TASK-118 baseline) | 5.6 ms | 6.3 ms | 5.6 ms | — | ✅ 89× under 500 ms |
 | v0.9.0 + `--python-engine` | 24.4 ms | 26.3 ms | 24.4 ms | — | ✅ 20× under 500 ms |
 | v0.8.0 (embedded Python, pre-TASK-118) | 7.3 ms | 8.1 ms | 7.2 ms | — | ✅ 68× under 500 ms |
 
 Reading the table:
+
+- **v0.18.0 cold-start: 45 ms p50 (min 41 ms), measured on an Apple
+  M-series with `~/.fendix/engine` wiped per run.** Verified apples-to-apples
+  against a v0.11 binary on the *same* machine at the same time: v0.11
+  default = 5.3 ms p50, v0.18 default = 42 ms p50 — so the ~8× rise is real
+  and reproducible, not measurement noise (v0.11 still measures ~5 ms today).
+  - **Root cause: the default `--code` path added a whitebox + dependency-scan
+    phase.** The stderr trace makes it precise: v0.11 default ran secrets only
+    and hit `scan complete` in **2 ms**; v0.18 runs secrets, then a whitebox
+    phase, and ~40 ms elapses between `native secrets scan complete` and
+    `whitebox scan complete`. That phase (govulncheck / dep-CVE orchestration
+    + whitebox setup) is the entire delta. It is **not** semgrep (skipped when
+    absent) and **not** the network dep lookup (`--offline --no-native-deps`
+    doesn't move it) — it is a roughly **fixed ~40 ms cost**, independent of
+    repo size.
+  - Because the default already pays the whitebox-phase cost, `--python-engine`
+    is now **on par** with default (43 vs 45 ms), where in v0.11 it added +34 ms.
+  - **`--fast` skips this phase** for pre-commit use. Both default and opt-in
+    stay an order of magnitude under the 500 ms CI gate regardless.
+
 
 - **Default v0.11 cold-start: 6.1 ms p50.** The new TASK-133
   config-leak scanner adds one extra check to the worker pool, but on
