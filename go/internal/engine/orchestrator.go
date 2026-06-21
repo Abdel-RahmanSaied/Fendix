@@ -538,9 +538,14 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		return findings[i].Title < findings[j].Title
 	})
 
-	// 7. Assign sequential IDs
+	// 7. Assign sequential IDs + stamp the run-stable fingerprint. The
+	// fingerprint (content hash of Category|Endpoint|Title) is computed here,
+	// BEFORE the ignore/baseline steps, so a `fingerprint:` ignore rule can
+	// match it. Unlike the positional SEC-NNN ID it does not drift between
+	// runs, so it is the durable key for suppressions.
 	for i := range findings {
 		findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)
+		findings[i].Fingerprint = models.Fingerprint(findings[i])
 	}
 
 	// 8. Apply ignore rules from .fendix-ignore.
@@ -560,9 +565,21 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
 	}
 
-	// 9. Apply baseline diff if --baseline provided
+	// 9. Apply baseline diff if --baseline provided.
+	//
+	// Fail-closed on a CORRUPT baseline (exit 2), consistent with the --ignore
+	// handling above: an explicit-but-unparseable baseline is a
+	// misconfiguration, and silently scanning without the diff would let every
+	// already-known finding re-block the gate (or, with --fail-on, flip a
+	// green run red for the wrong reason). A MISSING baseline is NOT an error —
+	// it's the legitimate first run before --save-baseline has written one.
 	if o.cfg.BaselinePath != "" {
-		findings = ApplyBaselineDiff(findings, o.cfg.BaselinePath)
+		diffed, err := ApplyBaselineDiffStrict(findings, o.cfg.BaselinePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fendix: cannot parse --baseline file %s: %v\n", o.cfg.BaselinePath, err)
+			return 2
+		}
+		findings = diffed
 	}
 
 	duration := time.Since(startTime)
@@ -588,15 +605,17 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	}
 
 	meta := reporters.ScanMetadata{
-		Target:         o.cfg.URL,
-		StartedAt:      startTime,
-		Duration:       duration.Round(time.Millisecond).String(),
-		Version:        reportVersion(o.version),
-		Mode:           scanMode,
-		EndpointsCount: len(endpoints),
-		ActiveProbes:   o.cfg.EnableActive,
-		ChecksRun:      checksRun,
-		ScannerStatus:  []reporters.ScannerStatus(scanStatus),
+		Target:              o.cfg.URL,
+		StartedAt:           startTime,
+		Duration:            duration.Round(time.Millisecond).String(),
+		Version:             reportVersion(o.version),
+		Mode:                scanMode,
+		EndpointsCount:      len(endpoints),
+		EndpointsDiscovered: crawler.Discovered,
+		EndpointsTruncated:  crawler.Discovered > len(endpoints),
+		ActiveProbes:        o.cfg.EnableActive,
+		ChecksRun:           checksRun,
+		ScannerStatus:       []reporters.ScannerStatus(scanStatus),
 	}
 
 	// 10. Save baseline if requested (before sanitization, so credentials

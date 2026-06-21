@@ -645,3 +645,63 @@ func TestScan_MultiFileEmitsPerEndpoint(t *testing.T) {
 		t.Errorf("expected endpoints a.py:N and b.py:N, got %v", awsHits)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// B1/B2: references-not-credentials (ARN / Secrets-Manager lookup key) and
+// unambiguous placeholders are filtered out via isReferenceOrPlaceholder.
+// ---------------------------------------------------------------------------
+
+func TestScan_SuppressesSecretsManagerReferences(t *testing.T) {
+	dir := t.TempDir()
+	// These are the lookup-key / ARN cases that previously had to be
+	// hand-suppressed per file:line in .fendix-ignore (B1). The literal in
+	// source is the *address* of the secret, not its value.
+	writeFile(t, dir, "config.py", strings.Join([]string{
+		`secret_name = "rds!db-403f5acc-6752-4edd-a4a9-339a8395f134"`,
+		`secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:prod/db-AbCdEf"`,
+		`gcp_secret = "projects/my-proj/secrets/db-password/versions/latest"`,
+	}, "\n")+"\n")
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Fatalf("expected 0 findings (all are secret references, not values), got %d: %+v", len(fs), fs)
+	}
+}
+
+func TestScan_SuppressesUnambiguousPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "config.py", strings.Join([]string{
+		`api_key = "YOUR_API_KEY_HERE"`,
+		`password = "changeme"`,
+		`token = "<your-token>"`,
+		`secret_key = "${VAULT_SECRET}"`,
+	}, "\n")+"\n")
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Fatalf("expected 0 findings (all unambiguous placeholders), got %d: %+v", len(fs), fs)
+	}
+}
+
+func TestScan_DoesNotOverSuppressRealSecrets(t *testing.T) {
+	dir := t.TempDir()
+	// Guard against B2 over-reach: AWS's documented example keys and values
+	// that merely CONTAIN "example" must still be detected — "EXAMPLE" shows
+	// up inside real leaked keys, so suppressing on the substring would be a
+	// false negative.
+	writeFile(t, dir, "config.py", `AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"`+"\n")
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if _, ok := idsFound(fs)["SEC-AWS_ACCESS_KEY"]; !ok {
+		t.Fatalf("AWS example key must still be detected (not over-suppressed); got %+v", fs)
+	}
+}

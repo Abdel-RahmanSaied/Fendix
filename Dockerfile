@@ -59,6 +59,14 @@ COPY --from=go-builder /fendix /usr/local/bin/fendix
 
 # Copy the Python engine (for direct use, not just embedded)
 COPY python/ /opt/fendix/python/
+# EnsureEngine (go/internal/engine/extract.go) resolves the taint engine via
+# the FENDIX_ENGINE env var — this MUST match that name. A prior typo set
+# FENDIX_PYTHON_ENGINE, which the Go side never reads, so resolution fell
+# through to the embedded placeholder and then the CWD-relative ./python
+# fallback (WORKDIR /workspace → /workspace/python, absent), silently
+# disabling whitebox taint analysis in every container. FENDIX_PYTHON_ENGINE
+# is kept as a human-facing alias only.
+ENV FENDIX_ENGINE=/opt/fendix/python/
 ENV FENDIX_PYTHON_ENGINE=/opt/fendix/python/
 
 # Non-root user for security

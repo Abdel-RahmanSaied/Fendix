@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,13 +12,32 @@ import (
 )
 
 // ApplyBaselineDiff filters out findings that were already present in a previous scan.
-// It compares by title+endpoint+category (not ID, since IDs are reassigned each run).
-// Returns only new findings not present in the baseline.
+// It compares by the stable fingerprint (not ID, since IDs are reassigned each run).
+// Returns only new findings not present in the baseline. On any load error it
+// logs and returns all findings (fail-open) — callers that need fail-closed
+// semantics for a CORRUPT baseline should use ApplyBaselineDiffStrict.
 func ApplyBaselineDiff(current []models.Finding, baselinePath string) []models.Finding {
+	out, _ := ApplyBaselineDiffStrict(current, baselinePath)
+	return out
+}
+
+// ApplyBaselineDiffStrict is ApplyBaselineDiff that distinguishes a MISSING
+// baseline (legitimate first run — fail-open, returns all findings, nil error)
+// from a CORRUPT/unparseable one (a real misconfiguration — returns the
+// original findings and a non-nil error so the caller can fail closed, exit 2).
+// This mirrors the fail-closed posture --ignore now has: a broken security
+// control input must not silently disable the gate.
+func ApplyBaselineDiffStrict(current []models.Finding, baselinePath string) ([]models.Finding, error) {
 	baseline, err := loadBaseline(baselinePath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// First-run / not-yet-saved baseline: not an error, no diff.
+			slog.Info("baseline file not found — scanning without a diff", "path", baselinePath)
+			return current, nil
+		}
+		// Corrupt/unreadable baseline: surface it so the caller fails closed.
 		slog.Error("failed to load baseline", "path", baselinePath, "error", err)
-		return current
+		return current, fmt.Errorf("loading baseline %s: %w", baselinePath, err)
 	}
 
 	baselineKeys := make(map[string]bool)
@@ -42,7 +62,7 @@ func ApplyBaselineDiff(current []models.Finding, baselinePath string) []models.F
 		)
 	}
 
-	return newFindings
+	return newFindings, nil
 }
 
 // SaveBaseline writes the current findings to a JSON file for use as a future baseline.
@@ -84,8 +104,12 @@ func loadBaseline(path string) ([]models.Finding, error) {
 	return findings, nil
 }
 
-// findingKey produces a stable key for deduplication.
-// Uses title+endpoint+category since IDs change between runs.
+// findingKey produces a stable key for baseline matching. It delegates to
+// models.Fingerprint (sha1 of Category|Endpoint|Title) so baseline identity,
+// the emitted finding.Fingerprint, and `fingerprint:` ignore rules all share
+// one definition of "the same finding across runs". Both sides of the diff
+// recompute it from the finding's fields, so baselines saved before the
+// fingerprint field existed continue to match.
 func findingKey(f models.Finding) string {
-	return f.Title + "|" + f.Endpoint + "|" + f.Category
+	return models.Fingerprint(f)
 }

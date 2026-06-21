@@ -153,6 +153,40 @@ func TestApplyBaselineDiff_DifferentIDs(t *testing.T) {
 	}
 }
 
+func TestApplyBaselineDiffStrict_MissingIsFailOpen(t *testing.T) {
+	current := []models.Finding{
+		{Title: "Finding", Endpoint: "/a", Category: "headers"},
+	}
+	// A missing baseline is the legitimate first run: no error, all findings.
+	result, err := ApplyBaselineDiffStrict(current, "/nonexistent/baseline.json")
+	if err != nil {
+		t.Fatalf("missing baseline must NOT error (fail-open first run), got %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 finding (missing baseline = no diff), got %d", len(result))
+	}
+}
+
+func TestApplyBaselineDiffStrict_CorruptIsFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := filepath.Join(dir, "baseline.json")
+	os.WriteFile(baselinePath, []byte("not json"), 0644)
+
+	current := []models.Finding{
+		{Title: "Finding", Endpoint: "/a", Category: "headers"},
+	}
+	// A corrupt baseline is a misconfiguration: the strict variant must
+	// surface an error so the orchestrator can exit 2 instead of silently
+	// scanning without the diff.
+	result, err := ApplyBaselineDiffStrict(current, baselinePath)
+	if err == nil {
+		t.Fatal("corrupt baseline must error (fail-closed), got nil")
+	}
+	if len(result) != 1 {
+		t.Fatalf("on error, strict variant returns the original findings unchanged; got %d", len(result))
+	}
+}
+
 func TestSaveBaseline(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.json")

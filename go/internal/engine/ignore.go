@@ -16,13 +16,18 @@ type IgnoreFile struct {
 	Ignore []IgnoreRule `yaml:"ignore"`
 }
 
-// IgnoreRule defines a single suppression rule.
+// IgnoreRule defines a single suppression rule. Exactly one of Fingerprint /
+// ID / Endpoint / Category selects findings (checked in that precedence).
+// Prefer Fingerprint: it is the run-stable content hash and, unlike ID
+// (positional, drifts) or Endpoint+line (drifts when code above moves), keeps
+// matching the same finding across scans.
 type IgnoreRule struct {
-	ID       string `yaml:"id,omitempty"`
-	Endpoint string `yaml:"endpoint,omitempty"`
-	Category string `yaml:"category,omitempty"`
-	Reason   string `yaml:"reason,omitempty"`
-	Until    string `yaml:"until,omitempty"` // optional expiry date YYYY-MM-DD
+	Fingerprint string `yaml:"fingerprint,omitempty"`
+	ID          string `yaml:"id,omitempty"`
+	Endpoint    string `yaml:"endpoint,omitempty"`
+	Category    string `yaml:"category,omitempty"`
+	Reason      string `yaml:"reason,omitempty"`
+	Until       string `yaml:"until,omitempty"` // optional expiry date YYYY-MM-DD
 }
 
 // ParseIgnoreFile reads and parses a .fendix-ignore YAML file.
@@ -93,6 +98,19 @@ func matchesIgnoreRule(f models.Finding, rules []IgnoreRule) bool {
 
 // matchesSingleRule checks if a finding matches a specific ignore rule.
 func matchesSingleRule(f models.Finding, r IgnoreRule) bool {
+	// Rule by fingerprint: exact match on the run-stable content hash.
+	// Highest precedence — it's the most specific and the only key that
+	// doesn't drift between scans. Compare against the finding's stamped
+	// Fingerprint, falling back to recomputing it so a rule still matches
+	// when fed findings that predate the stamping step.
+	if r.Fingerprint != "" {
+		fp := f.Fingerprint
+		if fp == "" {
+			fp = models.Fingerprint(f)
+		}
+		return strings.EqualFold(f.Fingerprint, r.Fingerprint) || strings.EqualFold(fp, r.Fingerprint)
+	}
+
 	// Rule by ID: exact match
 	if r.ID != "" {
 		return f.ID == r.ID
