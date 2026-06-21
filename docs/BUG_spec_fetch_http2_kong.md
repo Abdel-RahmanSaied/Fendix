@@ -2,7 +2,7 @@
 
 **Severity:** High (silently defeats spec-seeded scanning behind a modern API gateway)
 **Component:** `go/internal/scanner/crawler.go` → `Crawler.fetchSpec` (`c.client.Do`)
-**Found:** 2026-06-20, via the Fendix SaaS API against a real TwiScope/Kong gateway
+**Found:** 2026-06-20, via the Fendix SaaS API against a real Kong gateway
 **Engine version observed:** v0.18.0 (GHCR image `sha256:d18ee20f`)
 
 ## Summary
@@ -12,8 +12,8 @@ ALPN** (Kong, and most modern reverse proxies), the engine's spec fetch fails wi
 
 ```
 spec parsing failed, continuing with other strategies
-  error="fetching spec from https://<gw>/specs/deepin.json:
-  Get \"https://<gw>/specs/deepin.json\":
+  error="fetching spec from https://<gw>/specs/api.json:
+  Get \"https://<gw>/specs/api.json\":
   net/http: HTTP/1.x transport connection broken:
   malformed HTTP response \"\x00\x00\x12\x04\x00\x00\x00\x00\x00...\""
 ```
@@ -42,17 +42,17 @@ The spec URL is fine — the engine's client is the problem:
 ```bash
 # Works (curl negotiates h2 via ALPN):
 curl -s -o /dev/null -w "%{http_code} HTTP/%{http_version}\n" \
-  https://gateway.twiscope.net/specs/deepin.json
+  https://gateway.example.com/specs/api.json
 # -> 200 HTTP/2
 
 # Also works when h1.1 is forced:
 curl -s --http1.1 -o /dev/null -w "%{http_code} HTTP/%{http_version}\n" \
-  https://gateway.twiscope.net/specs/deepin.json
+  https://gateway.example.com/specs/api.json
 # -> 200 HTTP/1.1
 
 # Fails inside the engine:
-fendix scan --url https://gateway.twiscope.net/deepin \
-  --spec https://gateway.twiscope.net/specs/deepin.json
+fendix scan --url https://gateway.example.com/api \
+  --spec https://gateway.example.com/specs/api.json
 # -> "malformed HTTP response \x00\x00\x12\x04..." then 0 endpoints
 ```
 
@@ -111,7 +111,7 @@ A table test in `crawler_test.go` that serves the spec from an
 
 - Host the spec where the client negotiates HTTP/1.1 (plain origin, S3 static
   URL, raw GitHub), and pass that URL to `--spec`.
-- Or download the spec and pass a **local path** (`--spec ./deepin.json`) —
+- Or download the spec and pass a **local path** (`--spec ./api.json`) —
   `loadSpec` reads local files with `os.ReadFile`, bypassing the HTTP client
   entirely. (Not available in SaaS mode, where `--spec` is forwarded as a URL.)
 - SaaS note: `scanning/services.py` forwards the `spec` value verbatim as
