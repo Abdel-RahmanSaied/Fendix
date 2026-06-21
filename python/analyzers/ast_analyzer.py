@@ -579,6 +579,39 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 return arg
         return None
 
+    def _name_is_enclosing_param(self, name: str) -> bool:
+        """True if `name` is a parameter of the innermost enclosing function."""
+        if not self._func_stack:
+            return False
+        func = self._func_stack[-1]
+        a = func.args
+        params = (
+            a.posonlyargs
+            + a.args
+            + a.kwonlyargs
+            + ([a.vararg] if a.vararg else [])
+            + ([a.kwarg] if a.kwarg else [])
+        )
+        return any(p.arg == name for p in params)
+
+    def _name_is_safe_object_param(self, name_node: ast.Name) -> bool:
+        """True if `name_node` is an enclosing-function parameter that does NOT
+        reference request input (directly or via a caller arg at this 1 hop).
+
+        Used to trust attribute reads like `<param>.name` on objects the caller
+        constructed (file handles, tempfile objects). It deliberately does not
+        trust the parameter as a raw path *string* — only object-attribute
+        access through it — so a `def f(path): open(path)` traversal still
+        fires (that path is checked directly, not via this helper)."""
+        if not self._name_is_enclosing_param(name_node.id):
+            return False
+        # If a visible call site passes request input into this parameter, the
+        # object is attacker-influenced — do not trust it.
+        caller_arg = self._resolve_param_to_caller_arg(name_node.id)
+        if caller_arg is not None and _references_request_input(caller_arg):
+            return False
+        return True
+
     def _link(self, lineno: int, expr: str) -> dict:
         return {"file": self._rel, "line": int(lineno), "expr": expr}
 
@@ -759,15 +792,47 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             return True
         if self._is_escaped_call(arg):  # audit #24
             return True
+        # Server-controlled internal URL builders (reverse/url_for) produce a
+        # route string, not attacker input — safe to interpolate into an href.
+        if self._is_safe_url_builder(arg):
+            return True
         if isinstance(arg, ast.Name):
             if self._name_is_membership_guarded(arg.id):
                 return True
             # Resolve through scope and check the assigned expr is sanitised.
+            # Recurse through the full sanitiser set (not just whitelist) so an
+            # escaped/%-formatted/builder value assigned to a local is honoured —
+            # guard against a self-referential binding (`x = f(x)`) to avoid a
+            # loop.
             for scope in reversed(self._scopes):
                 if arg.id in scope:
-                    return self._arg_is_whitelisted_lookup(scope[arg.id])
+                    bound = scope[arg.id]
+                    if isinstance(bound, ast.Name) and bound.id == arg.id:
+                        return False
+                    return self._arg_is_sanitised(bound)
             return False
         if isinstance(arg, ast.BinOp):
+            # printf-style `"<template>" % (a, b)`: safe iff the template is a
+            # constant string AND every substituted value is constant or itself
+            # sanitised (escape()/reverse()/whitelist). The Django admin idiom
+            # `'<a href="%s">%s</a>' % (reverse(...), escape(repr))` is the
+            # canonical safe case (TwiScope SEC-170).
+            if isinstance(arg.op, ast.Mod):
+                template = arg.left
+                if isinstance(template, ast.Constant) and isinstance(
+                    template.value, str
+                ):
+                    rhs = arg.right
+                    values = (
+                        list(rhs.elts)
+                        if isinstance(rhs, (ast.Tuple, ast.List))
+                        else [rhs]
+                    )
+                    return all(
+                        isinstance(v, ast.Constant) or self._arg_is_sanitised(v)
+                        for v in values
+                    )
+                return False
             # Every non-Constant subexpression must itself be sanitised.
             return all(
                 isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub)
@@ -1405,13 +1470,32 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if _depth >= _MAX_TAINT_HOPS:
             return False
         for n in ast.walk(expr):
-            if self._is_env_secret_read(n):
+            # A path/file-location identifier holds a *location*, not the secret
+            # value (TwiScope SEC-263): `GOOGLE_APPLICATION_CREDENTIALS` is a path
+            # to a creds file, and logging that path leaks nothing. Skip both the
+            # direct env read and any binding it resolves to.
+            if isinstance(n, ast.Name) and _name_is_location_ref(n.id):
+                continue
+            if self._is_env_secret_read(n) and not _env_read_is_location(n):
                 return True
             if isinstance(n, ast.Name) and _looks_like_password_id(n.id):
                 return True
             if isinstance(n, ast.Name):
                 bound = self._resolve_binding(n)
                 if bound is not None and bound is not n:
+                    # A Name bound to a (possibly awaited) Call holds that call's
+                    # RETURN value, not its arguments (TwiScope SEC-263,
+                    # email_sender): logging `result = await send_mail(password=pw)`
+                    # logs the bool result, not `pw`. Only treat the binding as
+                    # secret if the call is itself a direct secret read (env
+                    # getter) — do NOT walk its argument list.
+                    unwrapped = bound.value if isinstance(bound, ast.Await) else bound
+                    if isinstance(unwrapped, ast.Call):
+                        if self._is_env_secret_read(
+                            unwrapped
+                        ) and not _env_read_is_location(unwrapped):
+                            return True
+                        continue
                     if self._expr_references_secret(bound, _depth + 1):
                         return True
         return False
@@ -2116,10 +2200,18 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             return False
         return True
 
-    def _is_safe_url_builder(self, expr: ast.AST) -> bool:
+    def _is_safe_url_builder(self, expr: ast.AST, _depth: int = 0) -> bool:
         """True if `expr` is (or resolves to) a call to a known safe internal
         URL builder — Flask url_for / Django reverse / reverse_lazy — whose
-        result is a server-controlled route, not attacker input."""
+        result is a server-controlled route, not attacker input.
+
+        Also true when the LEADING segment of an f-string / `+` concatenation is
+        such a builder (TwiScope SEC-141): `f"{reverse('x')}?q={user}"`. The
+        builder fixes scheme+host+path; only the query string is appended, which
+        cannot redirect to a different origin, so it stays a safe internal URL.
+        """
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
         _SAFE_URL_BUILDERS = {"url_for", "reverse", "reverse_lazy"}
         if isinstance(expr, ast.Call):
             f = expr.func
@@ -2132,7 +2224,52 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if isinstance(expr, ast.Name):
             for scope in reversed(self._scopes):
                 if expr.id in scope:
-                    return self._is_safe_url_builder(scope[expr.id])
+                    bound = scope[expr.id]
+                    # Self-referential query append: `url = f"{url}?q={x}"`. The
+                    # binding overwrote the original reverse()/url_for() value, so
+                    # resolving the name finds only the f-string. It is still safe
+                    # iff the extension is query/fragment-only (origin-preserving).
+                    if self._is_query_append_of(bound, expr.id):
+                        return True
+                    return self._is_safe_url_builder(bound, _depth + 1)
+        # `<builder> + "?..."` — leading operand decides the origin.
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            return self._is_safe_url_builder(expr.left, _depth + 1)
+        # f-string whose first segment is the builder result.
+        if isinstance(expr, ast.JoinedStr) and expr.values:
+            first = expr.values[0]
+            if isinstance(first, ast.FormattedValue):
+                return self._is_safe_url_builder(first.value, _depth + 1)
+        return False
+
+    def _is_query_append_of(self, expr: ast.AST, name: str) -> bool:
+        """True if `expr` extends the variable `name` with ONLY a query/fragment
+        suffix — `f"{name}?a={x}"` or `name + "?a=" + x`. Appending a `?`/`#`/`&`
+        segment to a URL cannot change its scheme/host/path, so if `name` was a
+        safe internal target the extended value is too. We require the leading
+        segment to be `name` itself and the first appended literal to start with
+        a query/fragment delimiter."""
+        if isinstance(expr, ast.JoinedStr) and len(expr.values) >= 2:
+            first, second = expr.values[0], expr.values[1]
+            if (
+                isinstance(first, ast.FormattedValue)
+                and isinstance(first.value, ast.Name)
+                and first.value.id == name
+                and isinstance(second, ast.Constant)
+                and isinstance(second.value, str)
+                and second.value[:1] in {"?", "#", "&"}
+            ):
+                return True
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            left, right = expr.left, expr.right
+            if (
+                isinstance(left, ast.Name)
+                and left.id == name
+                and isinstance(right, ast.Constant)
+                and isinstance(right.value, str)
+                and right.value[:1] in {"?", "#", "&"}
+            ):
+                return True
         return False
 
     # SSRF sinks the engine recognises. Each entry is the
@@ -2313,6 +2450,30 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 return first.value.startswith(("http://", "https://"))
             if isinstance(first, ast.FormattedValue):
                 return self._url_authority_is_constant(first.value, _depth + 1)
+        if isinstance(expr, ast.Call):
+            f = expr.func
+            # getattr(settings, "X_URL", default) — the attribute form
+            # `settings.X_URL` is already trusted above; getattr is the same
+            # Django-settings read, so treat it identically. (os.getenv is
+            # deliberately NOT trusted here — env URLs are an SSRF source by
+            # engine policy; see TestConfigEnvSSRFSource.)
+            if (
+                isinstance(f, ast.Name)
+                and f.id == "getattr"
+                and expr.args
+                and isinstance(expr.args[0], ast.Name)
+                and expr.args[0].id == "settings"
+            ):
+                return True
+            # str-method chains that preserve the authority: a constant/config
+            # base passed through .rstrip("/") / .strip() / .format(...) / .lower()
+            # keeps its scheme+host. Trust iff the receiver's authority is const.
+            if (
+                isinstance(f, ast.Attribute)
+                and f.attr
+                in {"rstrip", "lstrip", "strip", "format", "lower", "upper", "removesuffix"}
+            ):
+                return self._url_authority_is_constant(f.value, _depth + 1)
         return False
 
     @staticmethod
@@ -2533,7 +2694,20 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             if expr.attr in {
                 "name"
             }:  # NamedTemporaryFile().name / TemporaryFile().name
-                return self._is_tempfile_obj(expr.value)
+                if self._is_tempfile_obj(expr.value):
+                    return True
+                # TwiScope FP (SEC-073): `<param>.name` where `<param>` is an
+                # enclosing-function parameter NOT bound to request input. A
+                # helper like `def send(temp_file): open(temp_file.name)` takes
+                # an already-constructed file/tempfile object from its caller;
+                # the `.name` is that object's path, not attacker-controlled
+                # text. Traversal needs the *string* to come from the request,
+                # which `_references_request_input` would have caught upstream.
+                if isinstance(
+                    expr.value, ast.Name
+                ) and self._name_is_safe_object_param(expr.value):
+                    return True
+                return False
             if (
                 expr.attr.isupper()
                 or "dir" in expr.attr.lower()
@@ -2825,6 +2999,44 @@ def _key_is_secret(key) -> bool:
         return False
     parts = set(_TOKEN_SPLIT_RE.split(key.lower()))
     return bool(parts & _SECRET_ENV_TOKENS)
+
+
+# Tokens that mark an identifier/key as naming a *location* (a path/URI to a
+# resource) rather than the secret value itself. Logging a path is not a leak.
+_LOCATION_TOKENS: frozenset[str] = frozenset(
+    {"path", "file", "filepath", "dir", "directory", "location", "uri", "url"}
+)
+
+
+def _name_is_location_ref(name: str) -> bool:
+    """True if `name`'s whole snake/camel/dotted parts include a location token
+    (cred_path, key_file, secret_dir). Such a variable holds a path, not the
+    secret, so it is safe to log."""
+    parts = set(_TOKEN_SPLIT_RE.split(name.lower()))
+    return bool(parts & _LOCATION_TOKENS)
+
+
+def _env_read_is_location(n: ast.AST) -> bool:
+    """True if an os.getenv/os.environ read names a path-valued key — one whose
+    parts include a location token (GOOGLE_APPLICATION_CREDENTIALS contains
+    'credentials' AND is a documented *path* var; we key on co-occurring path
+    semantics). Conservative: only the well-known `*_CREDENTIALS` path family and
+    explicit path/file/dir keys qualify, so DB_PASSWORD etc. stay flagged."""
+    key = None
+    if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+        key = n.slice.value
+    elif (
+        isinstance(n, ast.Call) and n.args and isinstance(n.args[0], ast.Constant)
+    ):
+        key = n.args[0].value
+    if not isinstance(key, str):
+        return False
+    parts = set(_TOKEN_SPLIT_RE.split(key.lower()))
+    if parts & _LOCATION_TOKENS:
+        return True
+    # GOOGLE_APPLICATION_CREDENTIALS / *_CREDENTIALS: the standard env var for a
+    # *path* to a service-account JSON file, not the credential value.
+    return "credentials" in parts
 
 
 def _looks_like_password_id(name: str) -> bool:

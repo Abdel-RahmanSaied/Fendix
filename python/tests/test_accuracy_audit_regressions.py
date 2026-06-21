@@ -528,3 +528,166 @@ class TestRemainingItems:
         ng = [f for f in findings if f["id"] == "SEC-SPEC-NO-GLOBAL-AUTH"]
         assert ng, "explicit security:[] should still flag NO-GLOBAL-AUTH"
         assert "anonymous access" in ng[0]["evidence"]
+
+
+# ============ TwiScope live-scan false positives (2026-06-21) ============
+#
+# Each pair encodes one MEDIUM-confidence false positive confirmed against the
+# TwiScope-backend code, plus a true-positive guard so the suppression cannot
+# silently swallow the real vulnerability it resembles.
+
+
+class TestTwiScopePathTraversalParamName:
+    def test_tempfile_param_dot_name_not_flagged(self) -> None:  # SEC-073
+        # `def f(temp_file): open(temp_file.name)` — the param is a file object
+        # constructed by the caller; `.name` is its path, not request input.
+        code = (
+            "def send_pdf(temp_file, report_id):\n"
+            "    with open(temp_file.name, 'rb') as fh:\n"
+            "        return fh.read()\n"
+        )
+        assert "SEC-PY_PATH_TRAVERSAL" not in _ids(_scan(code))
+
+    def test_request_path_param_still_flagged(self) -> None:
+        # A raw string path coming from the request must still flag.
+        code = (
+            "from flask import request\n"
+            "def dl():\n"
+            "    name = request.args.get('f')\n"
+            "    return open(name, 'rb').read()\n"
+        )
+        assert "SEC-PY_PATH_TRAVERSAL" in _ids(_scan(code))
+
+
+class TestTwiScopeSSRFConfigAuthority:
+    def test_getattr_settings_base_url_not_flagged(self) -> None:  # SEC-171
+        code = (
+            "import requests\n"
+            "from django.conf import settings\n"
+            "def send():\n"
+            "    base = getattr(settings, 'SERVICE_URL', '')\n"
+            "    url = f\"{base.rstrip('/')}/notify\"\n"
+            "    return requests.post(url, json={})\n"
+        )
+        assert "SEC-PY_SSRF" not in _ids(_scan(code))
+
+    def test_settings_base_url_via_strip_method_not_flagged(self) -> None:  # SEC-171
+        # settings.* base passed through .rstrip("/") keeps its fixed authority.
+        code = (
+            "import requests\n"
+            "from django.conf import settings\n"
+            "def ping():\n"
+            "    return requests.get(settings.KIBANA_URL.rstrip('/') + '/api/status')\n"
+        )
+        assert "SEC-PY_SSRF" not in _ids(_scan(code))
+
+    def test_os_getenv_base_url_still_flagged(self) -> None:
+        # Engine policy (TestConfigEnvSSRFSource): an env-derived URL into an
+        # HTTP client IS an SSRF source. The kibana build script's
+        # os.getenv('KIBANA_URL') → urlopen is therefore NOT suppressed — only
+        # the settings.*-derived notification URL is.
+        code = (
+            "import os, requests\n"
+            "def ping():\n"
+            "    base = os.getenv('KIBANA_URL', 'http://kibana:5601')\n"
+            "    return requests.get(base + '/api/status')\n"
+        )
+        assert "SEC-PY_SSRF" in _ids(_scan(code))
+
+    def test_request_url_still_flagged(self) -> None:
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def proxy():\n"
+            "    return requests.get(request.args['url'])\n"
+        )
+        assert "SEC-PY_SSRF" in _ids(_scan(code))
+
+
+class TestTwiScopeOpenRedirectReverseQuery:
+    def test_reverse_base_with_query_not_flagged(self) -> None:  # SEC-141
+        code = (
+            "from django.urls import reverse\n"
+            "from django.http import HttpResponseRedirect\n"
+            "def go(pattern):\n"
+            "    url = reverse('admin:changelist')\n"
+            "    if pattern:\n"
+            "        url = f'{url}?pattern={pattern}'\n"
+            "    return HttpResponseRedirect(url)\n"
+        )
+        assert "SEC-PY_OPEN_REDIRECT" not in _ids(_scan(code))
+
+    def test_request_redirect_target_still_flagged(self) -> None:
+        code = (
+            "from flask import request, redirect\n"
+            "def go():\n"
+            "    return redirect(request.args.get('next'))\n"
+        )
+        assert "SEC-PY_OPEN_REDIRECT" in _ids(_scan(code))
+
+
+class TestTwiScopeXssPercentFormat:
+    def test_percent_format_escaped_values_not_flagged(self) -> None:  # SEC-170
+        # Django admin idiom: constant template, reverse() href + escape()d text.
+        code = (
+            "from django.utils.html import escape\n"
+            "from django.utils.safestring import mark_safe\n"
+            "from django.urls import reverse\n"
+            "def link(obj):\n"
+            "    out = '<a href=\"%s\">%s</a>' % (reverse('x'), escape(obj.repr))\n"
+            "    return mark_safe(out)\n"
+        )
+        assert "SEC-PY_XSS_HTML_SINK" not in _ids(_scan(code))
+
+    def test_percent_format_unescaped_value_still_flagged(self) -> None:
+        code = (
+            "from django.utils.safestring import mark_safe\n"
+            "from flask import request\n"
+            "def link():\n"
+            "    out = '<b>%s</b>' % request.args.get('q')\n"
+            "    return mark_safe(out)\n"
+        )
+        assert "SEC-PY_XSS_HTML_SINK" in _ids(_scan(code))
+
+
+class TestTwiScopeSecretInLogLocation:
+    def test_credentials_path_var_not_flagged(self) -> None:  # SEC-263
+        code = (
+            "import os\nfrom logging import getLogger\n"
+            "logger = getLogger(__name__)\n"
+            "def init():\n"
+            "    cred_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '/app/c.json')\n"
+            "    logger.error(f'Firebase credentials file not found: {cred_path}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" not in _ids(_scan(code))
+
+    def test_real_secret_in_log_still_flagged(self) -> None:
+        code = (
+            "import os\nfrom logging import getLogger\n"
+            "logger = getLogger(__name__)\n"
+            "def init():\n"
+            "    db_password = os.getenv('DB_PASSWORD')\n"
+            "    logger.error(f'auth failed with {db_password}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" in _ids(_scan(code))
+
+    def test_call_return_value_with_password_arg_not_flagged(self) -> None:  # SEC-263
+        # Logging the RETURN value of a call that *receives* a password is not a
+        # secret leak — `result` is a bool, not the password (email_sender).
+        code = (
+            "from logging import getLogger\n"
+            "logger = getLogger(__name__)\n"
+            "async def send(password):\n"
+            "    result = await do_send(host='h', password=password)\n"
+            "    logger.info(f'Email send result: {result}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" not in _ids(_scan(code))
+
+    def test_password_directly_in_log_call_still_flagged(self) -> None:
+        # The password appearing DIRECTLY in the logged expression still flags.
+        code = (
+            "from logging import getLogger\n"
+            "logger = getLogger(__name__)\n"
+            "def show(password):\n"
+            "    logger.info(f'pw is {mask(password)}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" in _ids(_scan(code))
