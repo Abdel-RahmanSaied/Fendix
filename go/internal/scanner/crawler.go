@@ -91,6 +91,12 @@ type Crawler struct {
 	// avoid even a single fetch against disallowed paths when
 	// cfg.RespectRobots is true. Empty by default.
 	disallows []string
+	// Discovered is the number of unique endpoints found BEFORE the
+	// --max-endpoints cap truncated the returned slice. Equal to len(result)
+	// when no cap fired. Read by the orchestrator after CrawlEndpoints to
+	// surface coverage (endpoints_discovered / endpoints_truncated in the
+	// report) instead of leaving the truncation a silent slog.Warn.
+	Discovered int
 }
 
 // NewCrawler creates a Crawler with an HTTP client configured from scan config.
@@ -236,6 +242,11 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 		return deduped[i].Method < deduped[j].Method
 	})
 
+	// Record the pre-truncation discovery count so the orchestrator can
+	// surface coverage (endpoints_discovered / endpoints_truncated) in the
+	// report — a CI gate otherwise can't tell a capped scan from a complete
+	// one.
+	c.Discovered = len(deduped)
 	if cap := c.cfg.MaxEndpoints; cap > 0 && len(deduped) > cap {
 		slog.Warn("endpoint discovery hit --max-endpoints cap; truncating",
 			"discovered", len(deduped), "cap", cap)

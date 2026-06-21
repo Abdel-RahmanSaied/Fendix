@@ -3,14 +3,23 @@
 // (TASK-115). Walks codePath recursively and emits one Finding per
 // (pattern, file, line) match.
 //
-// Behavioural parity with python/analyzers/secrets.py:
+// This is now the SOLE secrets path — python/analyzers/secrets.py was
+// removed once secrets/semgrep moved to native Go (TASK-115/116, see
+// python/engine.py). The structure that follows still mirrors the original
+// Python analyzer:
 //   - Same 15 patterns + ENV_SECRET (.env-only).
 //   - Same SEC-<PATTERN_ID> finding IDs so dedup collapses any overlap
-//     during the transition window before TASK-118 deletes secrets.py.
+//     when --checks secrets is passed explicitly.
 //   - Same skip-dirs / file-extension gate / .env name match.
 //   - Same 1MB file-size cap and >500-char minified-JS-line skip.
 //   - Same evidence truncation (first 20 chars of the secret + "...",
 //     embedded in a 120-char window around the match).
+//
+// Beyond parity, matches are filtered through isReferenceOrPlaceholder so a
+// Secrets-Manager ARN / lookup key (a reference, not a credential) or a
+// well-known placeholder (YOUR_TOKEN_HERE, example keys) is not reported —
+// the two false-positive classes that used to need per-file:line .fendix-ignore
+// suppressions.
 //
 // Regex notes: Go's RE2 doesn't support lookbehinds/lookaheads, so
 // patterns that anchor token prefixes (ghp_, sk_live_, AKIA, etc.) in
@@ -429,6 +438,14 @@ func scanFile(path, root string, d fs.DirEntry) ([]models.Finding, error) {
 					continue
 				}
 				secret := line[loc[0]:loc[1]]
+				// B1/B2: drop matches that are references-not-credentials
+				// (an ARN / Secrets-Manager lookup key) or well-known
+				// placeholders (YOUR_TOKEN_HERE, example keys, changeme…).
+				// These are the two false-positive classes that previously
+				// had to be hand-suppressed per file:line in .fendix-ignore.
+				if isReferenceOrPlaceholder(line, secret) {
+					continue
+				}
 				safeEvidence := truncateEvidence(strings.ReplaceAll(line, secret, truncateSecret(secret)), loc[0])
 				lineRef := fmt.Sprintf("%s:%d", rel, lineno)
 				lineCopy := lineRef
@@ -487,6 +504,67 @@ func boundaryOK(line string, start, end int, leftRE, rightRE *regexp.Regexp) boo
 		}
 	}
 	return true
+}
+
+// referencePrefixes are case-insensitive substrings whose presence in the
+// matched value means it is a REFERENCE to a secret (a lookup key / ARN /
+// resource id), not the secret value itself. The canonical case is an AWS
+// Secrets Manager identifier — e.g.
+//
+//	secret_name = "rds!db-403f5acc-6752-4edd-a4a9-339a8395f134"
+//	secret_arn  = "arn:aws:secretsmanager:eu-central-1:123:secret:prod/db-AbCdEf"
+//
+// The real credential is fetched at runtime from the secrets manager; the
+// literal in source is the address, not the password. These were previously
+// hand-suppressed per file:line in .fendix-ignore (B1).
+var referencePrefixes = []string{
+	"arn:aws:secretsmanager:",
+	"arn:aws:ssm:",
+	"arn:aws:kms:",
+	"rds!db-",      // RDS-managed master-secret name
+	"rds!cluster-", // Aurora-managed master-secret name
+	"projects/",    // GCP Secret Manager resource name: projects/*/secrets/*
+}
+
+// placeholderRE matches a VALUE that is UNAMBIGUOUSLY a templating marker, not
+// a credential: YOUR_*_HERE, a single <...> or ${...} token, the bare words
+// changeme / placeholder / redacted (case-insensitive), or a run of x's. It is
+// anchored, so it's applied to the extracted assignment value, not the whole
+// match line.
+//
+// Deliberately NARROW. It does NOT match the substring "example" / "sample" /
+// "dummy": the engine intentionally still flags AWS's documented example keys
+// (AKIAIOSFODNN7EXAMPLE, wJalrX…EXAMPLEKEY) and values like
+// "ExampleFakeKeyForTesting" via the secrets module — "EXAMPLE" appears inside
+// real leaked keys too, and over-suppressing on it produces false negatives.
+// The two AWS example keys are handled separately by the textscan NegPattern.
+var placeholderRE = regexp.MustCompile(`(?i)^(?:your[_-][a-z0-9_-]*here|<[^>]+>|\$\{[^}]+\}|changeme|placeholder|redacted|x{6,})$`)
+
+// quotedValueRE extracts the first single- or double-quoted string from a
+// matched assignment (e.g. `password = "changeme"` → `changeme`). Many secret
+// patterns match the whole `KEY = "value"` shape, so to classify the VALUE we
+// have to pull it back out of the match.
+var quotedValueRE = regexp.MustCompile(`["']([^"']*)["']`)
+
+// isReferenceOrPlaceholder reports whether a regex-matched secret should NOT be
+// reported because it is a reference-not-credential (an ARN / Secrets-Manager
+// lookup key — referencePrefixes) or an unambiguous placeholder
+// (placeholderRE). `match` is the full regex match (often `KEY = "value"`);
+// the quoted value is extracted for the placeholder test, with a fallback to
+// the whole match when there is no quoted segment.
+func isReferenceOrPlaceholder(line, match string) bool {
+	lowerMatch := strings.ToLower(match)
+	lowerLine := strings.ToLower(line)
+	for _, p := range referencePrefixes {
+		if strings.Contains(lowerMatch, p) || strings.Contains(lowerLine, p) {
+			return true
+		}
+	}
+	value := match
+	if m := quotedValueRE.FindStringSubmatch(match); m != nil {
+		value = m[1]
+	}
+	return placeholderRE.MatchString(strings.TrimSpace(value))
 }
 
 // truncateSecret returns a redacted form of match for inclusion in

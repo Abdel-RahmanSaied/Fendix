@@ -177,6 +177,8 @@ func classifyRule(r engine.IgnoreRule, now time.Time) ignoreRow {
 // present, falls back through endpoint → category → "(empty rule)".
 func targetSummary(r engine.IgnoreRule) string {
 	switch {
+	case r.Fingerprint != "":
+		return "fingerprint=" + r.Fingerprint
 	case r.ID != "":
 		return "id=" + r.ID
 	case r.Endpoint != "" && r.Category != "":
@@ -247,8 +249,8 @@ func runValidate(out io.Writer, path string) (int, error) {
 
 	errCount := 0
 	for i, r := range ig.Ignore {
-		if r.ID == "" && r.Endpoint == "" && r.Category == "" {
-			fmt.Fprintf(out, "ERROR  rule #%d: empty rule (no id/endpoint/category — would suppress nothing)\n", i+1)
+		if r.Fingerprint == "" && r.ID == "" && r.Endpoint == "" && r.Category == "" {
+			fmt.Fprintf(out, "ERROR  rule #%d: empty rule (no fingerprint/id/endpoint/category — would suppress nothing)\n", i+1)
 			errCount++
 			continue
 		}

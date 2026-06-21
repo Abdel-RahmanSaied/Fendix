@@ -81,6 +81,32 @@ func TestApplyIgnoreRules_ByID(t *testing.T) {
 	}
 }
 
+func TestApplyIgnoreRules_ByFingerprint(t *testing.T) {
+	// The fingerprint is run-stable (content hash) — unlike the positional ID
+	// it survives reordering. A rule keyed on it must match the right finding
+	// even when its SEC-NNN differs from the rule author's last scan.
+	target := models.Finding{ID: "SEC-007", Title: "Hardcoded password", Endpoint: "app.py:8", Category: "secrets"}
+	fp := models.Fingerprint(target)
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "Other", Endpoint: "x.py:1", Category: "secrets"},
+		// Same finding, DIFFERENT positional ID than the rule author saw — the
+		// fingerprint rule must still catch it.
+		{ID: "SEC-099", Title: "Hardcoded password", Endpoint: "app.py:8", Category: "secrets"},
+	}
+	for i := range findings {
+		findings[i].Fingerprint = models.Fingerprint(findings[i])
+	}
+	rules := []IgnoreRule{{Fingerprint: fp, Reason: "verified false positive"}}
+
+	result := ApplyIgnoreRules(findings, rules)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 finding after fingerprint suppression, got %d", len(result))
+	}
+	if result[0].Title == "Hardcoded password" {
+		t.Error("the fingerprinted finding should have been suppressed regardless of its SEC-NNN id")
+	}
+}
+
 func TestApplyIgnoreRules_ByEndpoint(t *testing.T) {
 	findings := []models.Finding{
 		{ID: "SEC-001", Title: "Missing HSTS", Endpoint: "http://example.com/health", Category: "headers"},

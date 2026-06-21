@@ -97,7 +97,14 @@ type TaintLink struct {
 // the whitebox half carries a chain — that's the "DAST + SAST agree
 // AND we can show the path" case worth a build-failing exit code.
 type Finding struct {
-	ID                string      `json:"id"`
+	ID string `json:"id"`
+	// Fingerprint is a content-derived, run-stable identity for the finding:
+	// sha1(Category|Endpoint|Title), hex. Unlike ID (a positional SEC-NNN
+	// reassigned every run as the finding set changes order) it does not
+	// drift, so .fendix-ignore rules and baselines can pin a finding by
+	// `fingerprint:` and keep matching across scans. Stamped centrally in the
+	// orchestrator before ID assignment.
+	Fingerprint       string      `json:"fingerprint,omitempty"`
 	Title             string      `json:"title"`
 	Severity          Severity    `json:"severity"`
 	Source            Source      `json:"source"`
