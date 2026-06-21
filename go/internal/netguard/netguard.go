@@ -166,7 +166,9 @@ func (cfg Config) DialContext(d *net.Dialer) func(ctx context.Context, network, 
 // http.DefaultTransport when tmpl is nil) and installs the guard's
 // DialContext. Other tmpl fields (MaxIdleConnsPerHost, timeouts, …) are
 // preserved so callers can compose the guard onto a customised transport —
-// e.g. the crawler's keep-alive transport.
+// e.g. the crawler's keep-alive transport. It also advertises HTTP/1.1+HTTP/2
+// via Protocols (the custom dialer otherwise suppresses the stdlib's auto-h2),
+// unless the template already pinned its own Protocols set.
 func (cfg Config) Transport(tmpl *http.Transport) *http.Transport {
 	if tmpl == nil {
 		tmpl = http.DefaultTransport.(*http.Transport)
@@ -179,6 +181,23 @@ func (cfg Config) Transport(tmpl *http.Transport) *http.Transport {
 		KeepAlive: 30 * time.Second,
 	}
 	t.DialContext = cfg.DialContext(d)
+	// Installing a custom DialContext disables the stdlib's automatic HTTP/2
+	// upgrade (Go only auto-wires h2 when DialContext and DialTLSContext are
+	// both nil). Without this, a guarded client speaks only HTTP/1.x, so an
+	// h2-preferring gateway (Kong, most modern reverse proxies) negotiates h2
+	// over ALPN and the h1 reader chokes on the first h2 frame:
+	//   "malformed HTTP response \x00\x00\x12\x04..." (an h2 SETTINGS frame).
+	// That broke --spec fetches from a Kong gateway entirely. Re-advertise both
+	// protocols so ALPN picks h2 when offered and falls back to h1 otherwise.
+	// Go 1.25's Transport.Protocols enables h2 over the custom dialer with no
+	// golang.org/x/net/http2 dependency. Only set it when the caller's template
+	// didn't already pin a protocol set, so an explicit tmpl choice is preserved.
+	if t.Protocols == nil {
+		protos := new(http.Protocols)
+		protos.SetHTTP1(true)
+		protos.SetHTTP2(true)
+		t.Protocols = protos
+	}
 	return t
 }
 

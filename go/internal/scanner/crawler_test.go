@@ -2,6 +2,8 @@ package scanner
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/netguard"
 )
 
 func TestFromSpec_OpenAPI3(t *testing.T) {
@@ -73,6 +76,59 @@ paths:
 		if !found[e] {
 			t.Errorf("missing endpoint: %s", e)
 		}
+	}
+}
+
+// TestFromSpec_FetchOverHTTP2 is the crawler-level regression test for the Kong
+// h2 spec-fetch bug: a --spec given as an https:// URL served by an
+// HTTP/2-enabled gateway must be fetched and parsed, not dropped. Before the
+// netguard Transport.Protocols fix the guarded client spoke only HTTP/1.x, so
+// the h2 handshake produced "malformed HTTP response \x00\x00\x12\x04..." and
+// fromSpec returned zero endpoints. This serves the spec from an h2 TLS server,
+// points SpecPath at its URL, and asserts the endpoints come back.
+func TestFromSpec_FetchOverHTTP2(t *testing.T) {
+	spec := `{
+  "openapi": "3.0.0",
+  "info": {"title": "H2 Spec API", "version": "1.0"},
+  "servers": [{"url": "https://api.example.com/v1"}],
+  "paths": {
+    "/users": {"get": {"summary": "list"}, "post": {"summary": "create"}},
+    "/health": {"get": {"summary": "health"}}
+  }
+}`
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Errorf("spec fetch arrived over %s, expected HTTP/2 — guard suppressed h2", r.Proto)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, spec)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	crawler := NewCrawler(&models.ScanConfig{
+		SpecPath:     srv.URL + "/spec.json",
+		Timeout:      10,
+		AllowPrivate: true, // httptest binds loopback
+	})
+
+	// Build the crawler's HTTP client through the REAL guarded transport
+	// (netguard.Config.Transport — the code the fix lives in), adding only the
+	// test cert to its trust store. This exercises the production h2 path; it is
+	// not a stub. AllowPrivate=true so the guard reaches the loopback server.
+	certs := x509.NewCertPool()
+	certs.AddCert(srv.Certificate())
+	tmpl := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certs}}
+	cfg := netguard.Config{AllowPrivate: true}
+	crawler.client = &http.Client{Transport: cfg.Transport(tmpl), CheckRedirect: cfg.CheckRedirect()}
+
+	endpoints, err := crawler.fromSpec(context.Background())
+	if err != nil {
+		t.Fatalf("fromSpec over HTTP/2 failed (the Kong spec-fetch bug): %v", err)
+	}
+	if len(endpoints) != 3 {
+		t.Fatalf("expected 3 endpoints from the h2-served spec, got %d: %+v", len(endpoints), endpoints)
 	}
 }
 
