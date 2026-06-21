@@ -27,7 +27,7 @@ The endpoint does not execute anything. Verified directly:
 
 ```bash
 curl -s -w "[HTTP %{http_code}]\n" \
-  "https://gateway.twiscope.net/admin/api?id=fendix_canary_test"
+  "https://gateway.example.com/admin/api?id=fendix_canary_test"
 # -> [HTTP 302]  (redirect to the Django admin login page)
 ```
 
