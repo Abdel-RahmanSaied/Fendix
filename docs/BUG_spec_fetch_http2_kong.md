@@ -69,6 +69,20 @@ h2 — so against an h2-preferring server the ALPN handshake still lands on h2 b
 the client tries to read h1, producing exactly this "malformed HTTP response"
 on an h2 frame.
 
+## Resolution
+
+Fixed in `netguard.Config.Transport` by advertising both protocols via Go 1.25's
+`http.Transport.Protocols` (`SetHTTP1(true)` + `SetHTTP2(true)`), so ALPN
+negotiates h2 over the custom guarded dialer and falls back to h1 otherwise — with
+**no `golang.org/x/net/http2` dependency** (cleaner than the `http2.ConfigureTransport`
+route originally sketched in option 1 below). Placing it in `netguard.Config.Transport`
+covers every guarded client (the crawler's spec fetch *and* all black-box checks),
+not just the one call site. The fix only sets `Protocols` when the caller's template
+didn't already pin one, preserving explicit overrides. Regression tests:
+`netguard.TestClient_HTTP2Server` and `scanner.TestFromSpec_FetchOverHTTP2`.
+
+The original options considered are kept below for context.
+
 ## Suggested fixes (any one resolves it; first is cleanest)
 
 1. **Enable h2 on the crawler transport.** On the `http.Transport`, set
