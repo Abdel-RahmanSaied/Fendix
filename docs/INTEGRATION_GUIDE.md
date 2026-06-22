@@ -38,7 +38,7 @@ A white-box `--code` scan over a **working tree** reads gitignored files too. If
 curl -fsSL https://get.fendix.dev/install.sh | sh
 
 # Pin a specific version
-curl -fsSL https://get.fendix.dev/install.sh | sh -s -- --version v0.18.0
+curl -fsSL https://get.fendix.dev/install.sh | sh -s -- --version v0.19.0
 
 # Verify
 fendix version          # → fendix version <Version> (<GOOS>/<GOARCH>)
@@ -362,7 +362,7 @@ jobs:
           format: "sarif"     # sarif (Security tab) | json | html
           output: "fendix-results.sarif"
           upload-sarif: "true"
-          version: "latest"   # or v0.18.0
+          version: "latest"   # or v0.19.0
           extra-args: ""      # raw args appended to `fendix scan`
           engine_path: ""     # path to Python engine dir; empty = auto
 ```
@@ -409,7 +409,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       # Pin by digest for reproducibility / supply-chain integrity
-      image: ghcr.io/abdel-rahmansaied/fendix@sha256:d18ee20f3105b3695da69e450f4d8e0e17e027ea46cd49f1e17f1c5ce56f160f
+      image: ghcr.io/abdel-rahmansaied/fendix@sha256:163ca22b8d36b6649a45161efa1daa51677bcd6565158e97f393dd89ec8e703d
     steps:
       - uses: actions/checkout@v4
         with:
@@ -432,11 +432,11 @@ Or as a one-shot `docker run` step (e.g. from a non-container job):
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src \
-  ghcr.io/abdel-rahmansaied/fendix@sha256:d18ee20f3105b3695da69e450f4d8e0e17e027ea46cd49f1e17f1c5ce56f160f \
+  ghcr.io/abdel-rahmansaied/fendix@sha256:163ca22b8d36b6649a45161efa1daa51677bcd6565158e97f393dd89ec8e703d \
   scan --code . --format json --output findings.json --fail-on HIGH
 ```
 
-- **Version v0.18.0 image digest:** `sha256:d18ee20f3105b3695da69e450f4d8e0e17e027ea46cd49f1e17f1c5ce56f160f` (public, anonymously pullable; multi-arch linux/amd64 + linux/arm64).
+- **Version v0.19.0 image digest:** `sha256:163ca22b8d36b6649a45161efa1daa51677bcd6565158e97f393dd89ec8e703d` (public, anonymously pullable; multi-arch linux/amd64 + linux/arm64).
 - **Pin by digest** (not a floating tag) for reproducible, tamper-evident builds — this is the form the release workflow itself signs and references.
 
 ### 3.4 `--fail-on` gating and exit codes
@@ -931,7 +931,7 @@ Approval (admin-only) flips the org's plan to the requested plan, sets `status=A
 | `extra-args` | `""` | Raw args appended to `fendix scan` |
 | `engine_path` | `""` | Python engine dir (empty = auto) |
 
-**Pinned image (v0.18.0):** `ghcr.io/abdel-rahmansaied/fendix@sha256:d18ee20f3105b3695da69e450f4d8e0e17e027ea46cd49f1e17f1c5ce56f160f`
+**Pinned image (v0.19.0):** `ghcr.io/abdel-rahmansaied/fendix@sha256:163ca22b8d36b6649a45161efa1daa51677bcd6565158e97f393dd89ec8e703d`
 
 ---
 

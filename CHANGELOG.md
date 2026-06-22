@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-22
+
+**Headline:** scan from an uploaded OpenAPI/Swagger spec file, plus a
+false-positive precision pass on the FastAPI auth check and the password
+exposure guard.
+
+### Added
+- **Local-file OpenAPI/Swagger spec upload.** Start a scan from an uploaded
+  spec file (JSON or YAML) instead of only a hosted schema URL. The local-file
+  spec read is capped by the same `maxSpecBytes` ceiling as the URL path so a
+  malicious or runaway spec can't exhaust memory.
+
+### Fixed
+- **FastAPI "missing auth dependency" check scoped to real FastAPI routes.**
+  The rule matched any `@object.method(...)` decorator with no framework check,
+  flagging Django/DRF (`@action`, `@extend_schema_field`), Celery
+  (`@shared_task`) and Pydantic (`@field_validator`) as unauthenticated FastAPI
+  routes. It now gates on a FastAPI import + real HTTP verbs and recognises
+  `Depends`/`Security`/`Annotated[...]` auth. On a real Django monorepo this cut
+  256 findings to 10 (the 10 being genuine unauthenticated routes in embedded
+  FastAPI services).
+- **Password-field exposure guard hardened against i18n false positives.**
+  i18n/label dictionaries (where `"password"` is the translated UI label) are
+  no longer flagged, while genuine plaintext-credential leaks — verbose user
+  records, combined payloads, non-Latin credentials — are still caught. The
+  guard keys off the matched value's shape rather than a body-wide heuristic.
+- **Whitebox taint false positives suppressed.** Closed a batch of taint
+  false positives surfaced by real-world scans, each backed by a regression
+  case.
+
 ## [0.15.0] - 2026-05-24
 
 **Headline:** real-world accuracy pass. Closes five gaps surfaced by a
