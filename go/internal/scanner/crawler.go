@@ -345,6 +345,14 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 	return endpoints, nil
 }
 
+// maxSpecBytes caps how many bytes we read from a spec — whether fetched
+// from a URL or read from a local file — before parsing, so a malicious or
+// runaway spec can't exhaust memory. GitHub's spec is ~12 MB, so 50 MB
+// leaves ample headroom for legitimate specs while bounding the blast
+// radius. (yaml.v3 already guards billion-laughs alias expansion; this caps
+// the orthogonal "just a huge document" case.)
+const maxSpecBytes = 50 << 20 // 50 MB
+
 // loadSpec reads a spec from either a local file path or an HTTP/HTTPS URL.
 // Returns the raw bytes and whether the format is JSON (vs YAML).
 //
@@ -357,9 +365,23 @@ func (c *Crawler) loadSpec(ctx context.Context, src string) (data []byte, isJSON
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 		return c.fetchSpec(ctx, src)
 	}
-	data, err = os.ReadFile(src)
+	// Local file: cap the read with the same ceiling as the URL path so a
+	// huge (or malicious) on-disk spec can't exhaust memory. The URL branch
+	// was capped (TASK-082); the local branch was not — a gap that matters
+	// now that the product backend writes user-uploaded specs to disk and
+	// hands the path here. Callers accepting untrusted uploads should still
+	// enforce a tighter cap of their own before reaching this point.
+	f, err := os.Open(src)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading spec file %s: %w", src, err)
+	}
+	defer f.Close()
+	data, err = io.ReadAll(io.LimitReader(f, maxSpecBytes+1))
+	if err != nil {
+		return nil, false, fmt.Errorf("reading spec file %s: %w", src, err)
+	}
+	if int64(len(data)) > maxSpecBytes {
+		return nil, false, fmt.Errorf("spec file too large (>%d bytes): %s", maxSpecBytes, src)
 	}
 	return data, strings.HasSuffix(lower, ".json"), nil
 }
@@ -384,7 +406,6 @@ func (c *Crawler) fetchSpec(ctx context.Context, src string) (data []byte, isJSO
 		return nil, false, fmt.Errorf("fetching spec from %s: HTTP %d", src, resp.StatusCode)
 	}
 
-	const maxSpecBytes = 50 << 20 // 50 MB; GitHub's spec is ~12 MB so this leaves headroom
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSpecBytes+1))
 	if err != nil {
 		return nil, false, fmt.Errorf("reading spec body: %w", err)
