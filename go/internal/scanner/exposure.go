@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -17,8 +18,9 @@ const maxEvidenceLen = 200
 
 // exposurePattern defines a regex pattern to scan response bodies for
 // sensitive data. When Guard is non-nil it receives the matched bytes
-// and may veto the match (return false → not a finding); used to drop
-// masked/placeholder values that would otherwise FP.
+// plus the full response body and may veto the match (return false → not
+// a finding); used to drop masked/placeholder values and i18n label
+// tables that would otherwise FP.
 type exposurePattern struct {
 	Name     string
 	Pattern  *regexp.Regexp
@@ -26,7 +28,7 @@ type exposurePattern struct {
 	Title    string
 	Fix      string
 	CWE      string
-	Guard    func(match []byte) bool
+	Guard    func(match, body []byte) bool
 }
 
 // 4.14: a real stack frame requires a dotted package/identifier path
@@ -131,9 +133,10 @@ var placeholderValues = map[string]struct{}{
 }
 
 // passwordNotMasked vets a `"password":"..."` match: returns false (drop
-// the finding) when the captured value is empty, an all-mask string, or
-// a known placeholder. 4.12.
-func passwordNotMasked(match []byte) bool {
+// the finding) when the captured value is empty, an all-mask string, a
+// known placeholder, or an i18n / UI-label translation rather than a
+// stored credential. 4.12, 4.15.
+func passwordNotMasked(match, body []byte) bool {
 	sub := passwordValueRe.FindSubmatch(match)
 	if sub == nil || len(sub) < 2 {
 		return true // shouldn't happen; fail open (keep the match)
@@ -148,7 +151,75 @@ func passwordNotMasked(match []byte) bool {
 	if _, ok := placeholderValues[strings.ToLower(val)]; ok {
 		return false
 	}
+	// 4.15: i18n / UI-label dictionaries surface the *word* "password"
+	// (in many languages) as translation strings — e.g.
+	// `"password":"Password"` or `"password":"كلمة المرور"` — not a stored
+	// credential. Two complementary signals drop that FP class without
+	// suppressing real leaks:
+	//   • a body carrying labelDictKeyThreshold+ distinct "password"-family
+	//     keys (passwordHint, forgotPassword, newPassword, …) is a label
+	//     table, never a credential record;
+	//   • a label-shaped value sitting alongside ≥1 sibling password key is
+	//     a UI string, not a secret.
+	// A lone `{"password":"password"}` (no siblings) is left to flag — it
+	// reads as a genuine weak-credential leak, not a translation table.
+	distinct := distinctPasswordKeys(body)
+	if distinct >= labelDictKeyThreshold {
+		return false
+	}
+	if distinct >= 2 && labelLikeValue(val) {
+		return false
+	}
 	return true
+}
+
+// labelDictKeyThreshold is the distinct "password"-family key count at or
+// above which a response body is treated as an i18n/label table (and any
+// `password` value in it as a translation, not a credential). Set well
+// above any plausible credential record — a user object exposes at most a
+// handful of password-named fields (password, password_changed_at, …),
+// while a translation table carries one entry per UI string.
+const labelDictKeyThreshold = 5
+
+// passwordKeyRe matches a JSON key in the "password" family — plain
+// "password" plus relatives like "passwordHint", "newPassword",
+// "confirm_password". Used to spot i18n label tables, which carry many.
+var passwordKeyRe = regexp.MustCompile(`(?i)"([a-z0-9_]*password[a-z0-9_]*)"\s*:`)
+
+// distinctPasswordKeys counts the distinct (case-insensitive) password-
+// family JSON keys present in body.
+func distinctPasswordKeys(body []byte) int {
+	matches := passwordKeyRe.FindAllSubmatch(body, -1)
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		seen[strings.ToLower(string(m[1]))] = struct{}{}
+	}
+	return len(seen)
+}
+
+// labelLikeValue reports whether a password value reads as a UI label /
+// translation rather than a credential: the field's own English label
+// ("Password"), descriptive text with whitespace ("Forgot password?",
+// "كلمة المرور", "mot de passe"), or a pure non-Latin-script word with no
+// ASCII alphanumerics (a single foreign-language translation).
+func labelLikeValue(val string) bool {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return false
+	}
+	if strings.EqualFold(v, "password") {
+		return true
+	}
+	hasASCIIAlnum := false
+	for _, r := range v {
+		if unicode.IsSpace(r) {
+			return true
+		}
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			hasASCIIAlnum = true
+		}
+	}
+	return !hasASCIIAlnum
 }
 
 // passwordValueRe re-extracts the password value from an already-matched
@@ -204,8 +275,9 @@ func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoin
 	for _, pat := range exposurePatterns {
 		match := pat.Pattern.Find(body)
 		if match != nil {
-			// 4.12: optional guard can veto a match (e.g. masked password).
-			if pat.Guard != nil && !pat.Guard(match) {
+			// 4.12: optional guard can veto a match (e.g. masked password,
+			// i18n label table). It sees the full body for context.
+			if pat.Guard != nil && !pat.Guard(match, body) {
 				continue
 			}
 			evidence := string(match)

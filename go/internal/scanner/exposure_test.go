@@ -224,6 +224,74 @@ func TestCheckExposure_MaskedPasswordGuard(t *testing.T) {
 	}
 }
 
+// 4.15: i18n / UI-label dictionaries surface the word "password" as a
+// translation string, not a credential. They must not flag CRITICAL,
+// while genuine single-record password leaks still must.
+func TestCheckExposure_I18nLabelTable(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool // expect a password finding
+	}{
+		{
+			// mirrors the real /api/support/translations/flat/ FP: a big
+			// en/ar string table whose "password" value is the label itself.
+			name: "full translations table (en+ar)",
+			body: `{"en":{"password":"Password","passwordHint":"Please enter your password","forgotPassword":"Forgot password?","newPassword":"New password","confirmPassword":"Confirm password","changePassword":"Change password","currentPassword":"Current Password"},"ar":{"password":"كلمة المرور","forgotPassword":"نسيت كلمة المرور؟","newPassword":"كلمة المرور الجديدة"}}`,
+			want: false,
+		},
+		{
+			// small label table: a couple of password-family keys plus a
+			// label-shaped value → still i18n, not a leak.
+			name: "small label table, english label value",
+			body: `{"password":"Password","forgotPassword":"Forgot password?"}`,
+			want: false,
+		},
+		{
+			// non-Latin single-word label alongside a sibling key.
+			name: "arabic label value with sibling",
+			body: `{"password":"كلمة المرور","newPassword":"كلمة المرور الجديدة"}`,
+			want: false,
+		},
+		{
+			// genuine leak: a real credential value next to password
+			// metadata timestamps must still fire (value isn't label-like).
+			name: "real credential with password_changed_at sibling",
+			body: `{"username":"admin","password":"supersecret123","password_changed_at":"2024-01-01T00:00:00Z"}`,
+			want: true,
+		},
+		{
+			// lone weak-credential leak (the value happens to be the word
+			// "password") has no sibling keys → still flagged.
+			name: "lone weak password literal",
+			body: `{"password":"password"}`,
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.body)
+			}))
+			defer server.Close()
+
+			ep := Endpoint{Method: "GET", Path: "/api/i18n", FullURL: server.URL + "/api/i18n"}
+			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+			findings := CheckExposure(context.Background(), cfg, ep)
+
+			found := false
+			for _, f := range findings {
+				if f.Title == "Password exposed in API response" {
+					found = true
+				}
+			}
+			if found != tt.want {
+				t.Errorf("password finding=%v, want %v (body=%s)", found, tt.want, tt.body)
+			}
+		})
+	}
+}
+
 // 4.13: value-shape secret patterns independent of key name.
 func TestCheckExposure_ValueShapeSecrets(t *testing.T) {
 	tests := []struct {
