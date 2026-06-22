@@ -47,20 +47,94 @@ rules:
       confidence: LOW
       fendix_severity: MEDIUM
 
-  # Rule 3: FastAPI route missing Depends(get_current_user) or OAuth2 dependency
+  # Rule 3: FastAPI route missing a Depends()/Security() auth dependency.
+  #
+  # Fires ONLY inside files that actually use FastAPI (import gate) and ONLY on
+  # real HTTP-verb route decorators (verb gate). This keeps non-FastAPI code
+  # from being misread as FastAPI routes — the old rule matched any
+  # `@object.method(...)` decorator with no framework check, so on Django/DRF
+  # projects it flagged Celery tasks (@shared_task, @app.task), DRF actions
+  # (@action) and drf-spectacular getters (@extend_schema_field) as
+  # "unauthenticated FastAPI routes" (the TwiScope FP class, v0.18.x).
+  #
+  # A route counts as authenticated when a Depends()/Security() is wired either
+  # in the decorator (dependencies=[...]) or in a parameter — default,
+  # annotated default, or PEP-593 Annotated[...] (the modern idiom).
+  #
+  # Known confidence-LOW limitations (intentionally NOT handled; each needs
+  # type/semantic resolution beyond single-file AST matching):
+  #   * a Depends() injecting a non-auth value (DB session, pagination,
+  #     settings) is treated as auth, so a route whose ONLY dependency is
+  #     non-auth is not flagged (false negative);
+  #   * an auth dependency hidden behind a type alias
+  #     (CurrentUser = Annotated[User, Depends(...)]) cannot be followed, so
+  #     such a route may be flagged (false positive);
+  #   * a verb-named decorator on a non-FastAPI object (e.g. a homegrown
+  #     dispatcher @bus.post) in a file that also imports fastapi may be
+  #     flagged (false positive).
   - id: fastapi-route-missing-auth-dependency
     patterns:
-      - pattern: |
-          @$ROUTER.$METHOD(...)
-          def $FUNC(...):
+      - pattern-either:
+          - pattern: |
+              @$ROUTER.$METHOD(...)
+              def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.$METHOD(...)
+              async def $FUNC(...):
+                  ...
+      # verb gate: real FastAPI HTTP-verb decorators only
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: '^(get|post|put|patch|delete|options|head|trace|websocket|api_route)$'
+      # framework gate: the file must actually use FastAPI
+      - pattern-either:
+          - pattern-inside: |
+              from fastapi import $X
+              ...
+          - pattern-inside: |
+              from fastapi.$SUB import $X
+              ...
+          - pattern-inside: |
+              import fastapi
+              ...
+      # competing-framework denylist (polyglot files that also import fastapi)
+      - pattern-not-inside: |
+          from flask import $FX
+          ...
+      - pattern-not-inside: |
+          import flask
+          ...
+      - pattern-not-inside: |
+          from aws_lambda_powertools.event_handler import $PX
+          ...
+      # auth wired in the decorator: dependencies=[Depends(...)/Security(...)]
+      - pattern-not: |
+          @$R2.$M2(..., dependencies=$DEPS, ...)
+          def $F2(...):
+              ...
+      # auth wired as a parameter dependency (Depends or Security; plain
+      # default, annotated default, or PEP-593 Annotated[...]). The exclusions
+      # deliberately omit the decorator line and use independent metavars — a
+      # pattern-not that repeats `@$ROUTER.$METHOD(...)` with the matched rule's
+      # metavars mis-evaluates and suppresses every route.
+      - pattern-not: |
+          def $F2(..., $P = Depends(...), ...):
               ...
       - pattern-not: |
-          @$ROUTER.$METHOD(...)
-          def $FUNC(..., $X: $T = Depends(...), ...):
+          def $F2(..., $P: $T = Depends(...), ...):
               ...
       - pattern-not: |
-          @$ROUTER.$METHOD(...)
-          async def $FUNC(..., $X: $T = Depends(...), ...):
+          def $F2(..., $P: Annotated[$T, Depends(...)], ...):
+              ...
+      - pattern-not: |
+          def $F2(..., $P = Security(...), ...):
+              ...
+      - pattern-not: |
+          def $F2(..., $P: $T = Security(...), ...):
+              ...
+      - pattern-not: |
+          def $F2(..., $P: Annotated[$T, Security(...)], ...):
               ...
     message: >
       FastAPI route '$FUNC' has no authentication dependency (Depends(...)).
