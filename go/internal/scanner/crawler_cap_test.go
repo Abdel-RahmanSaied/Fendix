@@ -5,11 +5,61 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
+
+// TestLoadSpec_LocalFileSizeCap pins the contract that a local spec file is
+// read under the same byte ceiling as the URL path, so a huge (or
+// malicious) on-disk spec can't exhaust memory once the product backend
+// writes user-uploaded specs to disk and hands the path to the engine.
+func TestLoadSpec_LocalFileSizeCap(t *testing.T) {
+	crawler := NewCrawler(&models.ScanConfig{Timeout: 10})
+	dir := t.TempDir()
+
+	// Positive: a small local spec reads fine; JSON detected by suffix.
+	okPath := filepath.Join(dir, "spec.json")
+	if err := os.WriteFile(okPath, []byte(`{"openapi":"3.0.0","paths":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, isJSON, err := crawler.loadSpec(context.Background(), okPath)
+	if err != nil {
+		t.Fatalf("loadSpec(small file): %v", err)
+	}
+	if !isJSON {
+		t.Errorf("expected isJSON=true for .json suffix")
+	}
+	if len(data) == 0 {
+		t.Errorf("expected spec bytes, got empty")
+	}
+
+	// Negative: a file just over the cap is rejected with a clear error
+	// rather than slurped whole into memory.
+	bigPath := filepath.Join(dir, "huge.json")
+	f, err := os.Create(bigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1<<20) // 1 MB
+	for written := 0; written <= maxSpecBytes; written += len(chunk) {
+		if _, werr := f.Write(chunk); werr != nil {
+			f.Close()
+			t.Fatal(werr)
+		}
+	}
+	f.Close()
+
+	if _, _, err := crawler.loadSpec(context.Background(), bigPath); err == nil {
+		t.Errorf("expected error for oversized spec file, got nil")
+	} else if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("expected 'too large' error, got: %v", err)
+	}
+}
 
 // TestCrawlHTML_StopsFetchingAtCap pins the contract that the BFS
 // short-circuits once `--max-endpoints` is reached, so the crawler
