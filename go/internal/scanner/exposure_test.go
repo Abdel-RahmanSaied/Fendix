@@ -267,6 +267,40 @@ func TestCheckExposure_I18nLabelTable(t *testing.T) {
 			body: `{"password":"password"}`,
 			want: true,
 		},
+		{
+			// regression: a serialized user row that leaks its plaintext
+			// password alongside its own password-metadata columns. The value
+			// is plainly a credential, so the many password-named keys must
+			// NOT suppress it (the old >=5 key-count rule did).
+			name: "verbose user record with plaintext password",
+			body: `{"id":1,"username":"admin","password":"S3cr3tP@ss","password_hash":"abc","password_salt":"def","password_changed_at":"2024-01-01","password_expires_at":"2025-01-01","password_reset_token":"tok"}`,
+			want: true,
+		},
+		{
+			// regression: a combined SSR/bootstrap payload bundling an i18n
+			// label table with a live user object. The real credential lives
+			// in user.password, after the label table — the guard must scan
+			// every "password" value, not just the first one Find() returns.
+			name: "i18n label table plus real user record",
+			body: `{"i18n":{"password":"Password","passwordHint":"hint","forgotPassword":"f","newPassword":"n","confirmPassword":"c"},"user":{"username":"admin","password":"RealLeak123"}}`,
+			want: true,
+		},
+		{
+			// regression: a single-word non-Latin value is at least as likely
+			// to be a real password as a translation, so it must not be
+			// auto-classified as a label on script alone.
+			name: "non-latin single-word credential with sibling",
+			body: `{"password":"пароль123","newPassword":"x"}`,
+			want: true,
+		},
+		{
+			// regression: kebab-case i18n label tables (new-password, …) are
+			// the same FP class as snake/camel and must also be suppressed —
+			// the password-family key regex now matches hyphenated keys.
+			name: "kebab-case i18n label table",
+			body: `{"password":"Password","new-password":"New password","forgot-password":"Forgot password?","confirm-password":"Confirm password","change-password":"Change password"}`,
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

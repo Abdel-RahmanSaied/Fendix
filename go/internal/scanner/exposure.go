@@ -132,59 +132,64 @@ var placeholderValues = map[string]struct{}{
 	"notset": {}, "changeme": {}, "***": {}, "n/a": {}, "none": {},
 }
 
-// passwordNotMasked vets a `"password":"..."` match: returns false (drop
-// the finding) when the captured value is empty, an all-mask string, a
-// known placeholder, or an i18n / UI-label translation rather than a
-// stored credential. 4.12, 4.15.
-func passwordNotMasked(match, body []byte) bool {
-	sub := passwordValueRe.FindSubmatch(match)
-	if sub == nil || len(sub) < 2 {
-		return true // shouldn't happen; fail open (keep the match)
+// passwordNotMasked vets the password_field match: returns false (drop the
+// finding) only when EVERY `"password"` value in the body is a non-credential
+// — empty, an all-mask string, a known placeholder, or an i18n/UI label inside
+// a label dictionary. It returns true as soon as it finds one real credential,
+// so a genuine leak is never suppressed on key-count alone, nor hidden behind a
+// leading i18n label or a masked sibling (regexp.Find only ever hands the guard
+// the *first* match, so the guard re-scans the body itself). 4.12, 4.15.
+func passwordNotMasked(_, body []byte) bool {
+	// i18n / UI-label dictionaries surface the *word* "password" (in many
+	// languages) as translation strings — e.g. `"password":"Password"` or
+	// `"password":"كلمة المرور"` — not a stored credential. A body carrying
+	// several distinct "password"-family keys (passwordHint, forgotPassword,
+	// …) is such a label table; a *label-shaped* value in it is a translation.
+	// We require the value itself to look like a label before suppressing, so a
+	// real credential sitting next to password-metadata columns
+	// (password_changed_at, …) — or in a different object in the same body — is
+	// never dropped just because the body has many password-named keys.
+	inLabelDict := distinctPasswordKeys(body) >= labelDictMinKeys
+
+	subs := passwordValueRe.FindAllSubmatch(body, -1)
+	if len(subs) == 0 {
+		return true // shouldn't happen (pattern already matched); fail open
 	}
-	val := strings.TrimSpace(string(sub[1]))
-	if val == "" {
-		return false
+	for _, sub := range subs {
+		val := strings.TrimSpace(string(sub[1]))
+		if val == "" {
+			continue
+		}
+		if maskCharsRe.MatchString(val) {
+			continue
+		}
+		if _, ok := placeholderValues[strings.ToLower(val)]; ok {
+			continue
+		}
+		if inLabelDict && labelLikeValue(val) {
+			continue
+		}
+		return true // a real credential value — keep the finding
 	}
-	if maskCharsRe.MatchString(val) {
-		return false
-	}
-	if _, ok := placeholderValues[strings.ToLower(val)]; ok {
-		return false
-	}
-	// 4.15: i18n / UI-label dictionaries surface the *word* "password"
-	// (in many languages) as translation strings — e.g.
-	// `"password":"Password"` or `"password":"كلمة المرور"` — not a stored
-	// credential. Two complementary signals drop that FP class without
-	// suppressing real leaks:
-	//   • a body carrying labelDictKeyThreshold+ distinct "password"-family
-	//     keys (passwordHint, forgotPassword, newPassword, …) is a label
-	//     table, never a credential record;
-	//   • a label-shaped value sitting alongside ≥1 sibling password key is
-	//     a UI string, not a secret.
-	// A lone `{"password":"password"}` (no siblings) is left to flag — it
-	// reads as a genuine weak-credential leak, not a translation table.
-	distinct := distinctPasswordKeys(body)
-	if distinct >= labelDictKeyThreshold {
-		return false
-	}
-	if distinct >= 2 && labelLikeValue(val) {
-		return false
-	}
-	return true
+	return false // every "password" value was masked / placeholder / label
 }
 
-// labelDictKeyThreshold is the distinct "password"-family key count at or
-// above which a response body is treated as an i18n/label table (and any
-// `password` value in it as a translation, not a credential). Set well
-// above any plausible credential record — a user object exposes at most a
-// handful of password-named fields (password, password_changed_at, …),
-// while a translation table carries one entry per UI string.
-const labelDictKeyThreshold = 5
+// labelDictMinKeys is the number of distinct "password"-family keys at or above
+// which the body is treated as an i18n/label table — so a *label-shaped*
+// password value in it reads as a translation, not a credential. Two is enough:
+// a genuine record rarely pairs the bare "password" key with a second
+// password-family key whose value is *also* label-shaped, whereas a translation
+// table always carries several. The value-shape gate (labelLikeValue) is what
+// actually protects real leaks; this count only decides whether label-shaped
+// values are eligible to be treated as translations at all — so a lone
+// `{"password":"password"}` (no siblings) still flags as a weak-credential leak.
+const labelDictMinKeys = 2
 
 // passwordKeyRe matches a JSON key in the "password" family — plain
 // "password" plus relatives like "passwordHint", "newPassword",
-// "confirm_password". Used to spot i18n label tables, which carry many.
-var passwordKeyRe = regexp.MustCompile(`(?i)"([a-z0-9_]*password[a-z0-9_]*)"\s*:`)
+// "confirm_password", "forgot-password". The `_-` in the class catches both
+// snake_case and kebab-case i18n keys, which label tables carry many of.
+var passwordKeyRe = regexp.MustCompile(`(?i)"([a-z0-9_-]*password[a-z0-9_-]*)"\s*:`)
 
 // distinctPasswordKeys counts the distinct (case-insensitive) password-
 // family JSON keys present in body.
@@ -199,9 +204,12 @@ func distinctPasswordKeys(body []byte) int {
 
 // labelLikeValue reports whether a password value reads as a UI label /
 // translation rather than a credential: the field's own English label
-// ("Password"), descriptive text with whitespace ("Forgot password?",
-// "كلمة المرور", "mot de passe"), or a pure non-Latin-script word with no
-// ASCII alphanumerics (a single foreign-language translation).
+// ("Password"), or descriptive text containing whitespace ("Forgot password?",
+// "كلمة المرور", "mot de passe"). It deliberately does NOT treat a single
+// whitespace-free token as a label just because it is non-Latin — a one-word
+// non-ASCII value is at least as likely to be a real password (e.g. a Cyrillic
+// or Arabic credential) as a translation, and missing a real leak is the worse
+// error.
 func labelLikeValue(val string) bool {
 	v := strings.TrimSpace(val)
 	if v == "" {
@@ -210,20 +218,16 @@ func labelLikeValue(val string) bool {
 	if strings.EqualFold(v, "password") {
 		return true
 	}
-	hasASCIIAlnum := false
 	for _, r := range v {
 		if unicode.IsSpace(r) {
 			return true
 		}
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			hasASCIIAlnum = true
-		}
 	}
-	return !hasASCIIAlnum
+	return false
 }
 
-// passwordValueRe re-extracts the password value from an already-matched
-// password_field byte slice so the guard can inspect just the value.
+// passwordValueRe extracts every `"password":"<value>"` value from a body so
+// the guard can inspect each one (regexp.Find hands it only the first match).
 var passwordValueRe = regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]*)"`)
 
 // exposureCheck implements the Check interface for the response-body
