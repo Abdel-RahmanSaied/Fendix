@@ -2,5 +2,6 @@
 - [Fendix project overview](project_fendix_overview.md) — what Fendix is, where the enterprise-readiness plan lives, working conventions a new session needs.
 - [Fendix sprint shipping pattern](feedback_fendix_sprint_shipping_pattern.md) — how to actually execute a sprint from `tasks/enterprise-readiness/`, including the sprint-file-lies + status-section-honesty disciplines.
 - [Fendix build artifacts + stash trap](gotcha_fendix_build_artifacts_and_stash.md) — `make build` modifies a tracked .gitkeep; `git stash pop` after a checkout-main round trip can silently drop your edits because of it.
+- [Local dev + PreProduction share one RDS](gotcha_fendix_shared_dev_preprod_rds.md) — local `migrate` mutates the staging DB; a PreProd deploy then reports "No migrations to apply" (expected, not a bug).
 - [Fendix known-failing tests on main](project_fendix_known_failing_tests.md) — pre-existing failures NOT to fix as part of any sprint; cross-check before claiming a regression.
 - [Spec upload feature (in progress)](project_spec_upload_feature.md) — OpenAPI file upload + the artifact-path cwd bug being fixed alongside it; engine size-cap done.
