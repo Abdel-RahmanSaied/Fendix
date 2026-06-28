@@ -502,7 +502,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			slog.Info("python available", "version", pyStatus.Version, "binary", pyStatus.Binary)
 			bundle.SetPythonVersion(pyStatus.Version)
 			wbFindings := o.runWhiteboxScan(ctx)
-			findings = append(findings, wbFindings...)
+			findings = append(findings, evidence.ToFindings(wbFindings)...)
 		}
 	}
 
@@ -512,7 +512,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// against a blackbox auth check exactly like the built-in secrets
 	// analyzer does.
 	if !o.cfg.NoPlugins {
-		findings = append(findings, o.runPlugins(ctx)...)
+		findings = append(findings, evidence.ToFindings(o.runPlugins(ctx))...)
 	}
 
 	// 5. Correlate black-box and white-box findings. v0.22: correlation now
@@ -835,7 +835,7 @@ func (o *Orchestrator) checkFailOn(findings []models.Finding) int {
 // run whenever either condition holds). Plugin failures are logged
 // at WARN and the scan continues — a broken plugin must not
 // interrupt the embedded engines.
-func (o *Orchestrator) runPlugins(ctx context.Context) []models.Finding {
+func (o *Orchestrator) runPlugins(ctx context.Context) []evidence.Evidence {
 	cwd, _ := os.Getwd()
 	// Repo-local plugins (<cwd>/.fendix/plugins) are opt-in (F-H2): the
 	// scanned repo is attacker-controlled in CI, so a `.fendix/plugins/`
@@ -901,7 +901,10 @@ func (o *Orchestrator) runPlugins(ctx context.Context) []models.Finding {
 		slog.Info("plugin complete", "plugin", p.Name, "findings", len(findings))
 		out = append(out, findings...)
 	}
-	return out
+	// External plugins emit Finding-shaped protocol JSON; adapt to Evidence
+	// at this ingestion boundary (v0.22). No native provenance to add — the
+	// wire format carries only Finding fields.
+	return evidence.FromFindings(out)
 }
 
 // absPathOrEmpty resolves p to an absolute path. Returns "" for an
@@ -933,7 +936,7 @@ func absPathOrEmpty(p string) string {
 // (matching SEC-* IDs mean dedup collapses any overlap), but they aren't
 // on by default. The Python files stay in-tree for one release window in
 // case of rollback; TASK-118 deletes them.
-func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
+func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []evidence.Evidence {
 	checks := []string{"auth", "injection", "deps"}
 	if len(o.cfg.Checks) > 0 {
 		checks = o.cfg.Checks
@@ -958,11 +961,11 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []models.Finding {
 	if result.Err != nil {
 		slog.Error("python engine failed — ensure Python 3 is installed and python/requirements.txt dependencies are available", "error", result.Err)
 		// Return whatever findings we collected before the error
-		return result.Findings
+		return evidence.FromFindings(result.Findings)
 	}
 
 	slog.Info("whitebox scan complete", "findings", len(result.Findings))
-	return result.Findings
+	return evidence.FromFindings(result.Findings)
 }
 
 // escalateNonCorrelatedReachable bumps severity by one level on findings
