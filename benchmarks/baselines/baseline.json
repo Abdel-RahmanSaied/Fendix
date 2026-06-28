@@ -1,0 +1,26 @@
+{
+  "version": "v0.19.0-3-g5d999f6",
+  "created_at": "2026-06-28T08:54:20.228325Z",
+  "results": {
+    "dvwa": {
+      "target": "dvwa",
+      "true_pos": 4,
+      "false_pos": 8,
+      "true_neg": 0,
+      "false_neg": 0,
+      "scan_duration": 12824477333,
+      "memory_peak_mb": 0,
+      "timestamp": "2026-06-28T11:53:26.629062+03:00"
+    },
+    "juiceshop": {
+      "target": "juiceshop",
+      "true_pos": 4,
+      "false_pos": 13,
+      "true_neg": 0,
+      "false_neg": 0,
+      "scan_duration": 28567883792,
+      "memory_peak_mb": 0,
+      "timestamp": "2026-06-28T11:54:20.228043+03:00"
+    }
+  }
+}

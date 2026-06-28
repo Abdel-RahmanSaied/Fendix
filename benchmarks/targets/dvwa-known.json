@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "target": "dvwa",
+  "_note": "v1 starting-point ground truth for an UNAUTHENTICATED black-box scan of DVWA. Most DVWA bugs sit behind login + /setup.php DB init + a security-level cookie; an unauth scan reaches only the surface. Types map to Fendix finding categories. Calibrate against the first real `fendix benchmark run` (TASK B6); authenticated coverage is a v0.21+ enhancement.",
+  "negatives": 0,
+  "vulnerabilities": [
+    {
+      "id": "DVWA_HEADERS_CSP",
+      "type": "headers",
+      "location": "Content-Security-Policy",
+      "severity": "MEDIUM",
+      "confirmed": true
+    },
+    {
+      "id": "DVWA_HEADERS_XFO",
+      "type": "headers",
+      "location": "X-Frame-Options",
+      "severity": "MEDIUM",
+      "confirmed": true
+    },
+    {
+      "id": "DVWA_HEADERS_XCTO",
+      "type": "headers",
+      "location": "X-Content-Type-Options",
+      "severity": "LOW",
+      "confirmed": true
+    },
+    {
+      "id": "DVWA_COOKIE_FLAGS",
+      "type": "cookie",
+      "location": "",
+      "severity": "LOW",
+      "confirmed": true
+    }
+  ]
+}

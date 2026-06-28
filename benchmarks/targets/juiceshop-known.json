@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "target": "juiceshop",
+  "_note": "v1 starting-point ground truth for an UNAUTHENTICATED black-box scan of OWASP Juice Shop. Types map to Fendix finding categories; locations match against endpoint/title. Calibrate against the first real `fendix benchmark run` (TASK B6) and expand as authenticated coverage lands.",
+  "negatives": 0,
+  "vulnerabilities": [
+    {
+      "id": "JS_HEADERS_CSP",
+      "type": "headers",
+      "location": "Content-Security-Policy",
+      "severity": "MEDIUM",
+      "confirmed": true
+    },
+    {
+      "id": "JS_HEADERS_XCTO",
+      "type": "headers",
+      "location": "X-Content-Type-Options",
+      "severity": "LOW",
+      "confirmed": true
+    },
+    {
+      "id": "JS_HEADERS_XFO",
+      "type": "headers",
+      "location": "X-Frame-Options",
+      "severity": "MEDIUM",
+      "confirmed": true
+    },
+    {
+      "id": "JS_CORS",
+      "type": "cors",
+      "location": "",
+      "severity": "MEDIUM",
+      "confirmed": false
+    }
+  ]
+}

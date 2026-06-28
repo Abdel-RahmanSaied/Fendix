@@ -89,12 +89,22 @@ The roadmap's "build baseline infra" is **already ~60% built** as shell/Python h
 | A4 | Scaffold dirs + `.gitkeep` (`benchmarks/{baselines,targets,results}`, `metrics/`) | Architect | — | engine root | DONE |
 | A5 | CI baseline job — **new `baseline.yml`** (additive; does NOT touch `benchmark.yml`); SHA-pinned for actionlint | Architect | A1,A2 | `.github/workflows/baseline.yml` | DONE |
 | A6 | Unit tests for A1–A3 (rates+edges, save/load+regression, collector+rotation+env) | Architect | A1,A2,A3 | `go/internal/benchmark/*_test.go`, `go/internal/metrics/*_test.go` | DONE |
-| B1 | OWASP Benchmark target — **reconcile with `scripts/heavy-eval` corpus** before re-downloading | Benchmark | A1 | `go/internal/benchmark/targets/owasp.go` | TODO |
-| B2 | DVWA target (Docker, real container) — genuinely new | Benchmark | A1 | `go/internal/benchmark/targets/dvwa.go` | TODO |
-| B3 | Juice Shop target — **wrap/ingest `scripts/benchmark/run-juice-shop.sh`**, don't duplicate | Benchmark | A1 | `go/internal/benchmark/targets/juiceshop.go` | TODO |
-| B4 | `fendix benchmark run/baseline/compare` subcommand | Benchmark | A1,A2 | `go/cmd/fendix/benchmark.go` (+wire `main.go`) | TODO |
-| B5 | Ground-truth vuln lists | Benchmark | — | `benchmarks/targets/{dvwa,juiceshop}-known.json` | TODO |
-| B6 | Generate first committed baseline | Benchmark | B1-B5 | `benchmarks/baselines/baseline.json` | TODO |
+| B1 | OWASP Benchmark target — **loud-SKIP until v0.27** (Java; Fendix has no Java analyzer yet — see BLOCKER #2) | Benchmark | A1 | `go/internal/benchmark/targets/owasp.go` | DONE |
+| B2 | DVWA target (real Docker container, unauth DAST; auth scan = v0.21+) | Benchmark | A1 | `go/internal/benchmark/targets/dvwa.go` | DONE |
+| B3 | Juice Shop target (real Docker container, image pinned to match `democmd`) | Benchmark | A1 | `go/internal/benchmark/targets/juiceshop.go` | DONE |
+| B4 | `fendix benchmark run/baseline/compare` subcommand (+ docker/scan helpers, registry, scoring) | Benchmark | A1,A2 | `go/cmd/fendix/benchmark.go`, `go/internal/benchmark/targets/{target,docker}.go` | DONE |
+| B5 | Ground-truth vuln lists (v1, unauth-scoped, calibrate vs first run) | Benchmark | — | `benchmarks/targets/{dvwa,juiceshop}-known.json` | DONE |
+| B6 | Generate first committed baseline (live Docker run: DVWA + Juice Shop) | Benchmark | B1-B5 | `benchmarks/baselines/baseline.json` | DONE |
+
+### Baseline captured (v0.20, fendix v0.19.0-3-g5d999f6, 2026-06-28)
+
+| Target | Recall | TP | FP | FN | Duration | Precision | FPRate |
+|--------|--------|----|----|----|----------|-----------|--------|
+| dvwa (unauth DAST) | **100%** | 4 | 8 | 0 | 12.8s | 33.3%¹ | n/a² |
+| juiceshop (DAST) | **100%** | 4 | 13 | 0 | 28.6s | 23.5%¹ | n/a² |
+| owasp | — | — | — | — | — | SKIPPED (Java → v0.27) | — |
+
+¹ Precision is a **lower bound**: ground truth lists only 4 confirmed vulns each, so legitimate findings beyond that list count as "FP" (DVWA emitted 13 findings total, Juice Shop 17). Not a real false-positive count. ² FPRate undefined without a labeled negative corpus (TrueNeg=0). **Reliable v0.20 signals: recall (100%) + scan duration.** Future runs gate on >10% movement vs these stored raw counts.
 | M1 | Instrument scan pipeline (scan/correlation/finding-count/mem) behind `FENDIX_METRICS` (default off → NoopCollector). **Extend, never rewrite `orchestrator.go`** | Metrics | A3 | `go/internal/engine/orchestrator.go` | TODO |
 | M2 | Static metrics dashboard (Chart.js CDN, dark, no build) | Metrics | A3 | `tools/dashboard/index.html` | TODO |
 | M3 | `fendix metrics show/export/clear` subcommand | Metrics | A3 | `go/cmd/fendix/metrics.go` (+wire `main.go`) | TODO |
@@ -136,6 +146,8 @@ Not fixed in v0.20 (v0.21 "Earn Trust" owns these). Already cataloged in
 - **(C) Formalize-only (lightest):** No Go framework; generate `baseline.json` from existing numbers + add only the metrics collector/dashboard + a small compare script.
 
 **Resolved by operator answers:** repo target, CLI shape (subcommands), Docker availability.
+
+**BLOCKER #2 — OWASP Benchmark vs the Java timeline (roadmap inconsistency).** v0.20 and v0.26 both list **OWASP Benchmark** as a target, but it is a **Java** application and Fendix has **no Java analyzer until v0.27**. Running it now yields recall ≈ 0 — a misleading baseline, not a real one (violates Rule 5). **Decision taken:** the OWASP target loudly **SKIPS** with that reason; the real v0.20 DAST baseline is DVWA + Juice Shop (language-agnostic HTTP probing). **Action for the roadmap owner:** either (a) move OWASP Benchmark from v0.20/v0.26 to v0.27+ (after Java), or (b) swap in a language-appropriate SAST corpus for v0.20 (the existing `scripts/heavy-eval` Juliet-style corpus already covers Python/Go SAST and could be wrapped as a 4th target). Recommend (a)+(b).
 
 **Minor (Architect's discretion, documented):**
 - Benchmark/metrics data dirs are CWD-relative; add `--baseline-dir`/`--metrics-dir` overrides + document "run from engine root."
