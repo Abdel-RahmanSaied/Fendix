@@ -5,6 +5,15 @@ Phase: v0.24 — Decision Reports (Core product)
 Exit criteria: *"Engineers see decisions, not just findings. PR blocking works. SARIF compatibility intact."*
 Success metrics: PR blocking works on `BLOCK` findings · report generation adds < 200ms · SARIF output validated.
 
+## ✅ PHASE v0.24 — COMPLETE (2026-06-28)
+
+Exit criteria met; adversarial 6-lens review → **SHIP** (0 critical/high); Reviewer → **SHIP**.
+Decision summary + visible confidence surfaced across JSON/SARIF/HTML/CLI/PR; PR blocking via the
+contract-locked exit code; raw schema backward-compatible; perf ≪200ms; full suite green. Net
+security win: closed 3 pre-existing action.yml shell-injections. Audit: `SECURITY_AUDIT_v024.md`.
+Review: `REVIEW_v024.md`. Handoff: `NEXT_v025.md`. Built via understand-workflow → implement →
+adversarial-review-workflow. Commits: 5ab9f8f · f85f3b9 · 48a139e · 2f924e5 · f152abd · 7853615.
+
 ## Governing invariant (NEW for this phase)
 v0.20–v0.23 were output-stable. **v0.24 is the FIRST phase that intentionally
 changes user-facing output** (decision summary + visible confidence). So:
@@ -31,5 +40,13 @@ changes user-facing output** (decision summary + visible confidence). So:
 | D7 | Adversarial review (multi-lens verify: schema back-compat, SARIF validity, blocking semantics, perf <200ms) |
 | D8 | Security audit + review + close + `NEXT_v025.md` |
 
-## Status
-Understand workflow running (maps surfaces → implementation blueprint); task plan above is refined once it lands.
+## Status (2026-06-28)
+Understand workflow → blueprint done. Implementation complete + committed:
+- **D1** (5ab9f8f): Finding decision/confidence fields + evidence round-trip + orchestrator stamping + exit-code via decision.ExitCode (checkFailOn removed; lock holds).
+- **D2** (f85f3b9): JSON `decisions` block + CountStatuses + schema.json/md lockstep (also re-synced the v0.22 fields the schema had drifted from).
+- **D3** (48a139e): SARIF decision-driven level + result properties; HTML decision cards + per-finding score + i18n.
+- **D4** (2f924e5): CLI human decision summary on stderr (stdout stays format-pure — verified).
+- **D5** (f152abd): PR comment decision summary + status badges; action.yml message + routed all `${{ inputs.* }}` through env (fixed 3 pre-existing injections). 8c Check Run deferred (needs `checks: write` App permission).
+- **D6**: snapshots don't drift, perf gate green (Score 729ns/op → ~0.7ms/1k findings ≪ 200ms), full suite PASS.
+- **D7**: adversarial review workflow running (6 refutation lenses).
+- **D8**: fix any review findings → audit → review → close → push (pending review).
