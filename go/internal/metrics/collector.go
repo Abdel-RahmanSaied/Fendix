@@ -25,6 +25,11 @@ import (
 // else — including unset — disables it. Opt-in is mandatory.
 const EnvFlag = "FENDIX_METRICS"
 
+// EnvPathFlag optionally overrides where the event log is written. Useful
+// for tests and for sandboxes where the default relative path isn't
+// writable. Ignored unless EnvFlag is enabled.
+const EnvPathFlag = "FENDIX_METRICS_PATH"
+
 // DefaultPath is where the append-only event log lives, relative to the
 // working directory. It is gitignored — it is local-only telemetry.
 const DefaultPath = "metrics/events.jsonl"
@@ -74,7 +79,11 @@ func FromEnv(path string) Collector {
 		return NoopCollector{}
 	}
 	if path == "" {
-		path = DefaultPath
+		if p := os.Getenv(EnvPathFlag); p != "" {
+			path = p
+		} else {
+			path = DefaultPath
+		}
 	}
 	return NewFileCollector(path)
 }

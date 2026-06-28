@@ -111,12 +111,12 @@ Every finding triaged real-vs-false (ground truth v2.0), so **precision is now a
 | M2 | Static metrics dashboard (Chart.js CDN+SRI, dark, drag-drop NDJSON, no build) | Metrics | A3 | `tools/dashboard/index.html` | DONE |
 | M3 | `fendix metrics show/export/clear` subcommand (+ `metrics.LoadEvents`/`Summarize`) | Metrics | A3 | `go/cmd/fendix/metrics.go`, `go/internal/metrics/reader.go` (+wire `main.go`) | DONE |
 | M4 | Privacy guard (MetricEvent has only counts/timings; size-cap rotation in FileCollector) — verified: events carry no paths/hosts/content | Metrics | A3 | collector + M1 | DONE |
-| T1 | CLI smoke suite (incl. new `benchmark`/`metrics` cmds) | Test | B4,M3 | `go/tests/smoke/cli_test.go` | TODO |
-| T2 | Output snapshot regression + fixtures | Test | — | `go/tests/regression/output_format_test.go`, `go/tests/fixtures/{simple-go-project,simple-python-project}/`, `go/tests/regression/snapshots/` | TODO |
-| T3 | Benchmark-result regression test (within 10% of baseline) | Test | A2,B6 | `go/tests/regression/benchmark_regression_test.go` | TODO |
-| T4 | Performance regression test (duration <30s, mem <500MB) | Test | T2 | `go/tests/regression/performance_test.go` | TODO |
-| T5 | **Extend `ci.yml`** with smoke+regression jobs (do NOT create competing `test.yml`) | Test | T1-T4 | `.github/workflows/ci.yml` | TODO |
-| T6 | Test docs | Test | T1-T5 | `go/tests/README.md` | TODO |
+| T1 | CLI smoke suite (version/help/scan json+sarif/benchmark/metrics) + shared `harness` | Test | B4,M3 | `go/tests/smoke/cli_test.go`, `go/tests/harness/harness.go` | DONE |
+| T2 | Output snapshot regression + fixtures (planted IaC finding via Dockerfile :latest) | Test | — | `go/tests/regression/output_format_test.go`, `go/tests/fixtures/*`, `go/tests/regression/snapshots/*` | DONE |
+| T3 | Benchmark-baseline integrity + regression-detection test (Docker-free; live compare is in CI via `benchmark compare`) | Test | A2,B6 | `go/tests/regression/benchmark_regression_test.go` | DONE |
+| T4 | Performance regression test (duration <30s, mem <500MB via FENDIX_METRICS) | Test | T2 | `go/tests/regression/performance_test.go` | DONE |
+| T5 | CI: smoke+regression already run by existing `ci.yml` `go test ./...` — added clarifying comment, **no redundant `test.yml`** (Rule 1/10) | Test | T1-T4 | `.github/workflows/ci.yml` | DONE |
+| T6 | Test docs | Test | T1-T5 | `go/tests/README.md` | DONE |
 | S1 | Security audit of all v0.20 NEW code (SSRF surface of OWASP download + Docker, secrets, privacy of events.jsonl) | Security | A,B,M,T | `SECURITY_AUDIT_v020.md` | TODO |
 | R1 | Enforce Constitution + exit criteria; SHIP/DO-NOT-SHIP | Reviewer | S1 | `REVIEW_v020.md` | TODO |
 | O1 | Final verify (`make build/test/e2e`), close phase, v0.21 kickoff | Orchestrator | R1 | `NEXT_v021.md` + manifest update | TODO |

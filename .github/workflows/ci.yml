@@ -29,6 +29,10 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # `./...` includes the v0.20 subprocess suites under tests/smoke and
+      # tests/regression (CLI smoke, output-snapshot + perf + benchmark-
+      # baseline regression). They build the fendix binary via tests/harness
+      # and need no Docker/network, so they run on every push/PR here.
       - name: Test
         run: go test -race -v ./...
 
