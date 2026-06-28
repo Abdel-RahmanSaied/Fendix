@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/cli"
@@ -20,6 +21,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/hookcmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/ignorecmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/initcmd"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/metrics"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/pluginscmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/policy"
@@ -44,12 +46,22 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
+	start := time.Now()
 	rootCmd := newRootCmd()
-	if err := rootCmd.Execute(); err != nil {
-		// Sprint 03 introduced *cli.ExitError so subcommands (today: just
-		// verify) can dictate a specific process exit code that's
-		// CI-script-friendly. Catch and translate before falling through
-		// to the generic error-prints-then-exit-2 path.
+	// ExecuteC (not Execute) returns the command that actually ran, so the
+	// CLI-success-rate metric can record WHICH subcommand was invoked.
+	cmd, err := rootCmd.ExecuteC()
+
+	// Record one phase="cli" event for every invocation — success OR failure
+	// — so the success rate reflects real first-try outcomes (v0.25). Opt-in:
+	// metrics.FromEnv is a no-op unless FENDIX_METRICS is set.
+	code, class, success := classifyResult(cmd, err)
+	recordCLIMetric(commandName(cmd), code, class, success, time.Since(start))
+
+	if err != nil {
+		// Sprint 03 introduced *cli.ExitError so subcommands can dictate a
+		// specific, CI-script-friendly exit code. Catch and translate before
+		// falling through to the generic error-prints-then-exit-2 path.
 		var exitErr *cli.ExitError
 		if errors.As(err, &exitErr) {
 			if exitErr.Message != "" {
@@ -65,6 +77,73 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(2)
 	}
+}
+
+// commandName returns the leaf subcommand name for the metric, never the
+// args. Falls back to "fendix" (e.g. an unknown-command error leaves cmd at
+// the root) or "unknown" if cobra gave us nothing.
+func commandName(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "unknown"
+	}
+	return cmd.Name()
+}
+
+// classifyResult maps an Execute result to (exit code that main WILL use,
+// coarse error class, success). Success convention: exit 0 = clean, exit 1 =
+// the tool ran and reported a blocking/verification outcome (still a usable
+// result), 2+ = the tool could not produce a usable result.
+func classifyResult(cmd *cobra.Command, err error) (code int, class string, success bool) {
+	if err == nil {
+		return 0, "", true
+	}
+	var exitErr *cli.ExitError
+	if errors.As(err, &exitErr) {
+		code = exitErr.Code
+	} else {
+		code = 2
+	}
+	if code <= 1 {
+		return code, "", true
+	}
+	switch {
+	case isUsageError(err):
+		class = "usage"
+	case commandName(cmd) == "scan":
+		class = "scan-error"
+	default:
+		class = "runtime"
+	}
+	return code, class, false
+}
+
+// isUsageError recognises cobra's flag/argument errors so they bucket as
+// "usage" (the user mistyped the invocation) rather than a runtime failure.
+func isUsageError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, sub := range []string{"unknown flag", "unknown shorthand", "unknown command", "invalid argument", "required flag", "accepts ", "flag needs an argument"} {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordCLIMetric appends one CLI-invocation event. It is best-effort: a
+// metrics write must never change the user's exit code, so errors are dropped.
+func recordCLIMetric(command string, code int, class string, success bool, dur time.Duration) {
+	c := metrics.FromEnv("")
+	_ = c.Record(metrics.MetricEvent{
+		Version:    Version,
+		Phase:      "cli",
+		DurationMs: dur.Milliseconds(),
+		Timestamp:  time.Now().UTC(),
+		Command:    command,
+		ExitCode:   code,
+		Success:    success,
+		ErrorClass: class,
+	})
+	_ = c.Flush()
 }
 
 func newRootCmd() *cobra.Command {
@@ -405,7 +484,10 @@ func newScanCmd() *cobra.Command {
 			orch := engine.NewOrchestrator(cfg, Version)
 			exitCode := orch.Run(ctx)
 			if exitCode != 0 {
-				os.Exit(exitCode)
+				// Route through main() (instead of os.Exit here) so deferred
+				// cleanup runs and the CLI-success-rate metric is recorded for
+				// scans too. Empty message → main prints nothing, just exits.
+				return cli.ExitWithCode(exitCode, "")
 			}
 			return nil
 		},

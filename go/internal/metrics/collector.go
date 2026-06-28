@@ -99,6 +99,17 @@ func FromEnv(path string) Collector {
 	return NewFileCollector(path)
 }
 
+// ResolvePath returns the path the collector actually writes to: the
+// FENDIX_METRICS_PATH override if set, else DefaultPath. The reader commands
+// (metrics show/export/clear) use this so they read what FromEnv wrote —
+// without it a user who sets FENDIX_METRICS_PATH would see an empty log.
+func ResolvePath() string {
+	if p := os.Getenv(EnvPathFlag); p != "" {
+		return p
+	}
+	return DefaultPath
+}
+
 func enabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvFlag))) {
 	case "1", "true", "yes":

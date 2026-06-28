@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/metrics"
@@ -18,7 +19,7 @@ func newMetricsCmd() *cobra.Command {
 		Use:   "metrics",
 		Short: "Inspect local product metrics (opt-in via FENDIX_METRICS)",
 		Long: `Show, export, or clear the local metrics event log written when
-FENDIX_METRICS is set. All data stays on disk (` + metrics.DefaultPath + `);
+FENDIX_METRICS is set. All data stays on disk (` + metrics.ResolvePath() + `);
 nothing is ever sent anywhere.`,
 	}
 	cmd.AddCommand(newMetricsShowCmd(), newMetricsExportCmd(), newMetricsClearCmd())
@@ -30,7 +31,7 @@ func newMetricsShowCmd() *cobra.Command {
 		Use:   "show",
 		Short: "Print a summary of the last 30 scans",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			events, err := metrics.LoadEvents(metrics.DefaultPath)
+			events, err := metrics.LoadEvents(metrics.ResolvePath())
 			if err != nil {
 				return err
 			}
@@ -49,9 +50,38 @@ func newMetricsShowCmd() *cobra.Command {
 			fmt.Fprintf(out, "Avg memory:         %.0fMB\n", s.AvgMemoryMB)
 			fmt.Fprintf(out, "Last run:           %s\n", s.LastRun.Format("2006-01-02 15:04 MST"))
 			fmt.Fprintf(out, "Trend (duration):   %s\n", arrow)
+
+			// CLI success rate (v0.25): spans ALL recorded invocations, not
+			// just scans. Only shown once per-invocation events exist, so an
+			// older scan-only log doesn't print a misleading 0%.
+			if cs := metrics.SummarizeCommands(events, 0); cs.Total > 0 {
+				meets := "✓"
+				if cs.SuccessRate < 0.95 {
+					meets = "✗ below target"
+				}
+				fmt.Fprintln(out, "─────────────────────────────")
+				fmt.Fprintf(out, "CLI success rate:   %.1f%% (%d/%d, target ≥95%% %s)\n",
+					cs.SuccessRate*100, cs.Success, cs.Total, meets)
+				if len(cs.ByErrorClass) > 0 {
+					for _, k := range sortedKeys(cs.ByErrorClass) {
+						fmt.Fprintf(out, "  failures (%s): %d\n", k, cs.ByErrorClass[k])
+					}
+				}
+			}
 			return nil
 		},
 	}
+}
+
+// sortedKeys returns a map's keys in stable order so the failure-class
+// breakdown prints deterministically (and is snapshot-testable).
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func newMetricsExportCmd() *cobra.Command {
@@ -60,7 +90,7 @@ func newMetricsExportCmd() *cobra.Command {
 		Short: "Dump all recorded events",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
-			events, err := metrics.LoadEvents(metrics.DefaultPath)
+			events, err := metrics.LoadEvents(metrics.ResolvePath())
 			if err != nil {
 				return err
 			}
@@ -91,12 +121,12 @@ func newMetricsClearCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			yes, _ := cmd.Flags().GetBool("yes")
 			out := cmd.OutOrStdout()
-			if _, err := os.Stat(metrics.DefaultPath); os.IsNotExist(err) {
+			if _, err := os.Stat(metrics.ResolvePath()); os.IsNotExist(err) {
 				fmt.Fprintln(out, "Nothing to clear — no metrics log exists.")
 				return nil
 			}
 			if !yes {
-				fmt.Fprintf(out, "Delete %s? [y/N] ", metrics.DefaultPath)
+				fmt.Fprintf(out, "Delete %s? [y/N] ", metrics.ResolvePath())
 				reader := bufio.NewReader(cmd.InOrStdin())
 				line, _ := reader.ReadString('\n')
 				if strings.ToLower(strings.TrimSpace(line)) != "y" {
@@ -104,10 +134,10 @@ func newMetricsClearCmd() *cobra.Command {
 					return nil
 				}
 			}
-			if err := os.Remove(metrics.DefaultPath); err != nil {
+			if err := os.Remove(metrics.ResolvePath()); err != nil {
 				return fmt.Errorf("removing metrics log: %w", err)
 			}
-			fmt.Fprintf(out, "Removed %s\n", metrics.DefaultPath)
+			fmt.Fprintf(out, "Removed %s\n", metrics.ResolvePath())
 			return nil
 		},
 	}
