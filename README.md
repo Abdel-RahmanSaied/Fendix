@@ -823,6 +823,8 @@ cd python && python -m pytest tests/ -v
 - [Semgrep rule guide](docs/semgrep-rules.md) — write project-specific static-analysis rules.
 - [Per-check reference](docs/checks/) — one page per built-in check.
 - [Architecture decision records](docs/adr/) — why Fendix is built the way it is.
+- [Trust Center](docs/trust-center.md) — one index for security posture, HIGH-finding status, signing/verification, and how to reproduce every claim.
+- [Privacy & data handling](docs/privacy.md) — what Fendix reads, sends (nothing but opt-in CVE lookups), and stores. No telemetry.
 - [Security policy](SECURITY.md) and [active-scanner threat model](docs/threat-model.md).
 
 ---
