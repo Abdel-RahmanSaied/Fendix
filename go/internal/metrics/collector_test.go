@@ -123,3 +123,29 @@ func TestMemoryMB(t *testing.T) {
 		t.Errorf("MemoryMB(1MiB) = %v, want 1.0", got)
 	}
 }
+
+func TestFileCollectorRoundTripsCLIFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	c := NewFileCollector(path)
+	want := MetricEvent{
+		Version: "v0.25.0", Phase: "cli", Command: "scan",
+		ExitCode: 1, Success: false, ErrorClass: "scan-findings",
+	}
+	if err := c.Record(want); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := c.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	got, err := LoadEvents(path)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+	g := got[0]
+	if g.Command != "scan" || g.ExitCode != 1 || g.Success != false || g.ErrorClass != "scan-findings" {
+		t.Errorf("CLI fields did not round-trip: %+v", g)
+	}
+}

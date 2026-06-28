@@ -85,3 +85,32 @@ func TestSummarizeEmpty(t *testing.T) {
 		t.Errorf("empty summary = %+v", s)
 	}
 }
+
+func TestSummarizeCommands(t *testing.T) {
+	events := []MetricEvent{
+		{Phase: "scan", FindingCount: 3},                          // ignored (not cli)
+		{Phase: "cli", Command: "scan", Success: true},            // ok
+		{Phase: "cli", Command: "scan", ErrorClass: "scan-error"}, // fail
+		{Phase: "cli", Command: "verify", ErrorClass: "usage"},    // fail
+		{Phase: "cli", Command: "version", Success: true},         // ok
+	}
+	s := SummarizeCommands(events, 0)
+	if s.Total != 4 {
+		t.Fatalf("Total = %d, want 4 (scan-phase event excluded)", s.Total)
+	}
+	if s.Success != 2 {
+		t.Errorf("Success = %d, want 2", s.Success)
+	}
+	if s.SuccessRate != 0.5 {
+		t.Errorf("SuccessRate = %v, want 0.5", s.SuccessRate)
+	}
+	if s.ByErrorClass["scan-error"] != 1 || s.ByErrorClass["usage"] != 1 {
+		t.Errorf("ByErrorClass = %v, want scan-error:1 usage:1", s.ByErrorClass)
+	}
+}
+
+func TestSummarizeCommandsEmptyRateIsZero(t *testing.T) {
+	if s := SummarizeCommands(nil, 0); s.Total != 0 || s.SuccessRate != 0 {
+		t.Errorf("empty = %+v, want Total 0 / rate 0 (no divide-by-zero)", s)
+	}
+}

@@ -68,8 +68,12 @@ v0.20 added an **opt-in, local-only** metrics log:
 - Written to `metrics/events.jsonl` (override with `FENDIX_METRICS_PATH`); the
   default is `.gitignore`d.
 - **Structural data only** — version, scan phase, duration, finding *count*,
-  memory. By construction the event record has no field for source code, file
-  paths, hostnames, secrets, or finding content.
+  memory. v0.25 adds per-invocation events (phase `cli`) recording the
+  **subcommand name** (`scan`, `version`, … — never its arguments), the exit
+  code, a success flag, and a coarse **error *class*** (`usage`, `scan-error`,
+  … — never the error text). These power the local `CLI success rate` line in
+  `fendix metrics show`. By construction the event record still has no field for
+  source code, file paths, hostnames, secrets, arguments, or finding content.
 - **Never transmitted.** `fendix metrics show/export/clear` operate purely on
   the local file. There is no analytics endpoint.
 

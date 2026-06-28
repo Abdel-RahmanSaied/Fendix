@@ -39,15 +39,26 @@ const DefaultPath = "metrics/events.jsonl"
 // <path>.1 before the new events are written. 10 MiB ~= 100k events.
 const defaultMaxBytes int64 = 10 << 20
 
-// MetricEvent is one structural observation about a scan phase. Every
-// field is a count, a duration, or a version string — never user data.
+// MetricEvent is one structural observation about a scan phase or CLI
+// invocation. Every field is a count, a duration, a version string, a
+// command name, or an error CLASS — never user data (no paths, args, hosts,
+// or finding content). PRIVACY: keep it that way.
 type MetricEvent struct {
 	Version      string    `json:"version"`
-	Phase        string    `json:"phase"` // "scan", "correlation", "report"
+	Phase        string    `json:"phase"` // "scan" (a scan) or "cli" (one invocation)
 	DurationMs   int64     `json:"duration_ms"`
 	FindingCount int       `json:"finding_count"`
 	MemoryMB     float64   `json:"memory_mb"`
 	Timestamp    time.Time `json:"timestamp"`
+	// --- v0.25 CLI-success-rate instrumentation (phase "cli") -----------
+	// Command is the subcommand name only ("scan", "version", …) — never the
+	// args. ErrorClass is a coarse bucket ("usage", "scan-findings",
+	// "scan-error", …), never the error text. All omitempty so scan-phase
+	// events are byte-identical to pre-v0.25.
+	Command    string `json:"command,omitempty"`
+	ExitCode   int    `json:"exit_code,omitempty"`
+	Success    bool   `json:"success,omitempty"`
+	ErrorClass string `json:"error_class,omitempty"`
 }
 
 // Collector records metric events. Record must be cheap (it is called on

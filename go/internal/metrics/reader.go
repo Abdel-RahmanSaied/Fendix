@@ -90,6 +90,50 @@ func Summarize(events []MetricEvent, lastN int) Summary {
 	return s
 }
 
+// CommandSummary is the aggregate view of CLI-invocation events (phase
+// "cli") behind the "metrics show" success-rate line. Unlike Summarize it
+// does NOT filter to scans — it counts every recorded invocation so the rate
+// reflects real first-try success across all commands (the v0.25 metric).
+type CommandSummary struct {
+	Total       int
+	Success     int
+	SuccessRate float64 // Success/Total in [0,1]; 0 when Total == 0
+	// ByErrorClass counts FAILURES grouped by coarse class ("usage",
+	// "scan-error", …). Successes are not included.
+	ByErrorClass map[string]int
+}
+
+// SummarizeCommands aggregates the most recent lastN CLI-invocation events
+// (lastN <= 0 means all). It reads phase "cli" events only — never scans, so
+// a scan that also emits a "scan" event is counted once here.
+func SummarizeCommands(events []MetricEvent, lastN int) CommandSummary {
+	cli := make([]MetricEvent, 0, len(events))
+	for _, e := range events {
+		if e.Phase == "cli" {
+			cli = append(cli, e)
+		}
+	}
+	if lastN > 0 && len(cli) > lastN {
+		cli = cli[len(cli)-lastN:]
+	}
+	s := CommandSummary{Total: len(cli), ByErrorClass: map[string]int{}}
+	for _, e := range cli {
+		if e.Success {
+			s.Success++
+			continue
+		}
+		class := e.ErrorClass
+		if class == "" {
+			class = "unknown"
+		}
+		s.ByErrorClass[class]++
+	}
+	if s.Total > 0 {
+		s.SuccessRate = float64(s.Success) / float64(s.Total)
+	}
+	return s
+}
+
 // durationTrend compares the mean duration of the older half of the window
 // against the newer half. Needs at least 4 points to be meaningful.
 func durationTrend(scans []MetricEvent) string {
