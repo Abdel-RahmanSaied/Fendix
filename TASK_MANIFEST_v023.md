@@ -4,6 +4,15 @@ Date: 2026-06-28
 Phase: v0.23 — Confidence Engine (Core product)
 Exit criteria: *"Every security decision comes with a confidence score and a plain-text reason. No black boxes. No AI in the scoring path."*
 
+## ✅ PHASE v0.23 — COMPLETE (2026-06-28)
+
+Exit criteria met; Reviewer: **SHIP**. `internal/confidence.Score` produces a
+deterministic 0–100 score + per-rule plain-text reasons + lineage trace (no AI,
+no black boxes), wired into `decision.Decision.Score`. Internal — public output
+byte-identical (snapshot/schema/full suite green); confidence 98% cov.
+Audit: `SECURITY_AUDIT_v023.md` (0 crit/high). Review: `REVIEW_v023.md`. Handoff: `NEXT_v024.md`.
+Commit: c921116 (C1–C4).
+
 ## Governing invariants
 - **No AI in the scoring path** (Constitution Rule 8) — deterministic, rule-based, auditable.
 - **Internal only in v0.23** — roadmap "Won't Do" forbids a user-facing confidence UI; CLI output stays byte-identical (guarded by `tests/regression/output_format` snapshots + `reporters/schema_test.go`). The score feeds v0.24's decision reports.
