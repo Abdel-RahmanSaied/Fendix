@@ -87,12 +87,14 @@ runs:
   steps:
     - name: Install Fendix
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        if [ "${{ inputs.version }}" = "latest" ]; then
+        if [ "$VERSION" = "latest" ]; then
           curl -fsSL https://get.fendix.dev/install.sh | sh
         else
-          curl -fsSL https://get.fendix.dev/install.sh | sh -s -- --version "${{ inputs.version }}"
+          curl -fsSL https://get.fendix.dev/install.sh | sh -s -- --version "$VERSION"
         fi
         fendix version
 
@@ -110,20 +112,30 @@ runs:
     - name: Run Fendix scan
       id: scan
       shell: bash
+      env:
+        # Route every input through env (never interpolate ${{ }} into a run:
+        # script) — the exact untrusted-input rule Fendix ships.
+        CODE: ${{ inputs.code }}
+        URL: ${{ inputs.url }}
+        SPEC: ${{ inputs.spec }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        FORMAT: ${{ inputs.format }}
+        OUTPUT: ${{ inputs.output }}
+        DIFF: ${{ inputs.diff }}
+        EXTRA_ARGS: ${{ inputs.extra-args }}
       run: |
         set -uo pipefail
         args=()
-        [ -n "${{ inputs.code }}" ] && args+=(--code "${{ inputs.code }}")
-        [ -n "${{ inputs.url }}" ]  && args+=(--url "${{ inputs.url }}")
-        [ -n "${{ inputs.spec }}" ] && args+=(--spec "${{ inputs.spec }}")
-        [ -n "${{ inputs.fail-on }}" ] && args+=(--fail-on "${{ inputs.fail-on }}")
-        args+=(--format "${{ inputs.format }}" --output "${{ inputs.output }}")
+        [ -n "$CODE" ] && args+=(--code "$CODE")
+        [ -n "$URL" ]  && args+=(--url "$URL")
+        [ -n "$SPEC" ] && args+=(--spec "$SPEC")
+        [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
+        args+=(--format "$FORMAT" --output "$OUTPUT")
 
         # Diff-aware scoping. On a pull_request event, 'auto'/'true' scope the
         # scan to files changed versus the PR base ref, so the check is fast
         # and only flags net-new issues. Requires fetch-depth: 0 on checkout.
-        diff_mode="${{ inputs.diff }}"
-        if [ "$diff_mode" = "true" ] || { [ "$diff_mode" = "auto" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; }; then
+        if [ "$DIFF" = "true" ] || { [ "$DIFF" = "auto" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; }; then
           base="${GITHUB_BASE_REF:-}"
           if [ -n "$base" ]; then
             git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
@@ -133,14 +145,15 @@ runs:
           fi
         fi
 
-        [ -n "${{ inputs.extra-args }}" ] && args+=(${{ inputs.extra-args }})
+        # shellcheck disable=SC2206  # intentional word-split into multiple flags
+        [ -n "$EXTRA_ARGS" ] && args+=($EXTRA_ARGS)
 
         echo "fendix scan ${args[*]}"
         set +e
         fendix scan "${args[@]}"
         code=$?
         set -e
-        echo "report=${{ inputs.output }}" >> "$GITHUB_OUTPUT"
+        echo "report=$OUTPUT" >> "$GITHUB_OUTPUT"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         # Don't abort the job here on exit 1 — let the SARIF upload run first,
         # then re-raise the failure in the final step so findings are visible.
@@ -155,14 +168,18 @@ runs:
     - name: Enforce fail-on threshold
       if: ${{ always() }}
       shell: bash
+      env:
+        # Route inputs through env (never interpolate ${{ }} into a run:
+        # script) — the untrusted-input rule Fendix itself ships.
+        CODE: ${{ steps.scan.outputs.exit-code }}
+        FAIL_ON: ${{ inputs.fail-on }}
       run: |
-        code="${{ steps.scan.outputs.exit-code }}"
-        if [ "$code" = "0" ]; then
-          echo "✓ Fendix: no findings at or above the fail-on threshold."
-        elif [ "$code" = "1" ]; then
-          echo "✗ Fendix: findings at or above '${{ inputs.fail-on }}' — see the Security tab."
+        if [ "$CODE" = "0" ]; then
+          echo "✓ Fendix: no BLOCK-status findings (nothing at or above the fail-on threshold)."
+        elif [ "$CODE" = "1" ]; then
+          echo "✗ Fendix: BLOCK-status findings (severity at or above '${FAIL_ON}') — see the Security tab annotations + decision summary."
           exit 1
         else
-          echo "✗ Fendix: scan error (exit $code)."
-          exit "$code"
+          echo "✗ Fendix: scan error (exit $CODE)."
+          exit "$CODE"
         fi

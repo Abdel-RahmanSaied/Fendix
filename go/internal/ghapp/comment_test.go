@@ -386,3 +386,24 @@ func TestEscapeMarkdown(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderPRComment_DecisionStatus covers the v0.24 PR-comment surfacing:
+// a Decisions summary line + a per-finding status badge + confidence score.
+func TestRenderPRComment_DecisionStatus(t *testing.T) {
+	body, err := RenderPRComment([]byte(`{
+		"metadata": {"mode": "whitebox", "endpoints_scanned": 0, "duration": "1s"},
+		"summary": {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0},
+		"sources": {"blackbox": 0, "whitebox": 1, "correlated": 0},
+		"total": 1,
+		"decisions": {"total": 1, "confirmed": 1, "blocking": 1, "warning": 0, "informational": 0},
+		"findings": [{"severity": "HIGH", "title": "SQLi", "category": "injection", "endpoint": "app.py:10", "line": "app.py:10", "status": "BLOCK", "confidence_score": 90}]
+	}`))
+	if err != nil {
+		t.Fatalf("RenderPRComment: %v", err)
+	}
+	for _, want := range []string{"**Decisions:**", "1 blocking", "`BLOCK`", "(90/100)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("PR comment missing %q:\n%s", want, body)
+		}
+	}
+}

@@ -34,13 +34,22 @@ type findingsReport struct {
 		Whitebox   int `json:"whitebox"`
 		Correlated int `json:"correlated"`
 	} `json:"sources"`
-	Total    int `json:"total"`
+	Total     int `json:"total"`
+	Decisions struct {
+		Total         int `json:"total"`
+		Confirmed     int `json:"confirmed"`
+		Blocking      int `json:"blocking"`
+		Warning       int `json:"warning"`
+		Informational int `json:"informational"`
+	} `json:"decisions"` // v0.24
 	Findings []struct {
-		Severity string `json:"severity"`
-		Title    string `json:"title"`
-		Category string `json:"category"`
-		Endpoint string `json:"endpoint"`
-		Line     string `json:"line"`
+		Severity        string `json:"severity"`
+		Title           string `json:"title"`
+		Category        string `json:"category"`
+		Endpoint        string `json:"endpoint"`
+		Line            string `json:"line"`
+		Status          string `json:"status"`           // v0.24
+		ConfidenceScore int    `json:"confidence_score"` // v0.24
 	} `json:"findings"`
 }
 
@@ -116,6 +125,12 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 	fmt.Fprintf(&b, "Mode: `%s` · Endpoints scanned: %d · Duration: %s\n\n",
 		mode, r.Metadata.EndpointsScanned, duration)
 
+	// v0.24 decision summary — what needs action, not just a finding count.
+	if total > 0 {
+		fmt.Fprintf(&b, "**Decisions:** %d blocking · %d warning · %d informational · %d high-confidence\n\n",
+			r.Decisions.Blocking, r.Decisions.Warning, r.Decisions.Informational, r.Decisions.Confirmed)
+	}
+
 	b.WriteString("| Severity | Count | Source | Count |\n")
 	b.WriteString("|---|---|---|---|\n")
 	fmt.Fprintf(&b, "| Critical | %d | Blackbox | %d |\n", r.Summary.Critical, r.Sources.Blackbox)
@@ -144,8 +159,19 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 			// location in a backtick-safe inline code span so a crafted
 			// title can't inject Markdown, break out of the inline code,
 			// or spoof a fake finding/heading.
-			fmt.Fprintf(&b, "- **[%s]** %s — %s\n",
-				escapeSeverity(f.Severity), escapeMarkdown(f.Title), inlineCode(where))
+			// v0.24: lead with the decision verdict + show the confidence
+			// score. Status/score come from our own scanner JSON (a fixed
+			// enum / int), not attacker-controlled, so they're badge-safe.
+			badge := ""
+			if f.Status != "" {
+				badge = "`" + f.Status + "` "
+			}
+			score := ""
+			if f.ConfidenceScore > 0 {
+				score = fmt.Sprintf(" _(%d/100)_", f.ConfidenceScore)
+			}
+			fmt.Fprintf(&b, "- %s**[%s]** %s — %s%s\n",
+				badge, escapeSeverity(f.Severity), escapeMarkdown(f.Title), inlineCode(where), score)
 			// TASK-124: one-click suppression snippet. Keyed on
 			// (endpoint, category) — the (title, category, endpoint)
 			// hash in the trailing comment lets users map back to the
