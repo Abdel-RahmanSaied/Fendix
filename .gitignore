@@ -48,6 +48,18 @@ bench-results/
 # catalog is at tasks/FP_CORPUS.md.
 fp-corpus-results/
 
+# v0.20 benchmark suite (internal/benchmark). The committed baseline and
+# ground-truth lists ARE tracked; downloaded corpora and per-run results
+# are not.
+benchmarks/results/*
+!benchmarks/results/.gitkeep
+benchmarks/targets/owasp/
+
+# v0.20 metrics (internal/metrics). Opt-in, local-only telemetry — never
+# committed. Only the .gitkeep keeps the dir.
+metrics/*.jsonl
+metrics/*.jsonl.1
+
 # Environment / secrets
 .env
 .env.*
