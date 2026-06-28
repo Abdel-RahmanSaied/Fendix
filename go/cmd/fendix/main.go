@@ -75,6 +75,13 @@ func main() {
 		// the error here ourselves before exiting. Without this, errors
 		// from any subcommand vanish silently.
 		fmt.Fprintln(os.Stderr, "Error:", err)
+		// For a mistyped invocation (bad flag / wrong arg count), point the
+		// user at the right help — but NOT for a runtime failure, where the
+		// full usage block would just be noise. SilenceUsage stays on; this is
+		// a single targeted line instead.
+		if cmd != nil && isUsageError(err) {
+			fmt.Fprintf(os.Stderr, "Run '%s --help' for usage.\n", cmd.CommandPath())
+		}
 		os.Exit(2)
 	}
 }
@@ -153,17 +160,35 @@ func newRootCmd() *cobra.Command {
 		Long: `Fendix finds vulnerabilities before attackers do.
 
 It combines black-box HTTP scanning with white-box static analysis
-to produce high-confidence security findings with evidence.`,
-		SilenceUsage:  true,
-		SilenceErrors: true,
+to produce high-confidence security findings with evidence.
+
+Get started:
+  fendix demo                          try Fendix on a built-in sample target
+  fendix init                          set up Fendix in the current repo
+  fendix scan --code . --fail-on HIGH  scan this repo, fail CI on HIGH and above`,
+		SilenceUsage:               true,
+		SilenceErrors:              true,
+		SuggestionsMinimumDistance: 2,
+		// Bare `fendix` shows help rather than a usage error (and is recorded
+		// as a successful invocation, not a failure).
+		Run: func(cmd *cobra.Command, _ []string) { _ = cmd.Help() },
+	}
+
+	// Surface the commands a newcomer needs first; everything else falls under
+	// cobra's "Additional Commands:" so the top of `fendix --help` isn't a flat
+	// 16-command dump.
+	const groupCore = "core"
+	root.AddGroup(&cobra.Group{ID: groupCore, Title: "Core commands:"})
+	core := []func() *cobra.Command{newScanCmd, newInitCmd, newDemoCmd}
+	for _, mk := range core {
+		c := mk()
+		c.GroupID = groupCore
+		root.AddCommand(c)
 	}
 
 	root.AddCommand(newVersionCmd())
-	root.AddCommand(newScanCmd())
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newVerifyCmd())
-	root.AddCommand(newInitCmd())
-	root.AddCommand(newDemoCmd())
 	root.AddCommand(newNotifyCmd())
 	root.AddCommand(newJiraCmd())
 	root.AddCommand(newDBCmd())
@@ -388,7 +413,11 @@ func newScanCmd() *cobra.Command {
 			}
 
 			if urlFlag == "" && specFlag == "" && codeFlag == "" {
-				return fmt.Errorf("at least one of --url, --spec, or --code is required")
+				return fmt.Errorf("a scan target is required — provide at least one of:\n" +
+					"  --code .                       scan source code in the current directory\n" +
+					"  --url https://api.example.com  scan a running API\n" +
+					"  --spec openapi.yaml            scan endpoints from an OpenAPI spec\n" +
+					"or run 'fendix demo' to try Fendix on a built-in sample target")
 			}
 
 			cfg := &models.ScanConfig{

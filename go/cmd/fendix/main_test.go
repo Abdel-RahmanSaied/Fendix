@@ -105,3 +105,46 @@ func TestMetricsShow_RendersCLISuccessRate(t *testing.T) {
 		}
 	}
 }
+
+func TestScanEmptyTargetTeachingError(t *testing.T) {
+	root := newRootCmd()
+	root.SetArgs([]string{"scan"})
+	root.SetOut(new(strings.Builder))
+	root.SetErr(new(strings.Builder))
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected an error for scan with no target")
+	}
+	for _, want := range []string{"--code .", "--url", "--spec", "fendix demo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("teaching error missing %q:\n%s", want, err.Error())
+		}
+	}
+}
+
+func TestBadFlagIsUsageError(t *testing.T) {
+	root := newRootCmd()
+	root.SetArgs([]string{"scan", "--workrs", "5"})
+	root.SetOut(new(strings.Builder))
+	root.SetErr(new(strings.Builder))
+	err := root.Execute()
+	if err == nil || !isUsageError(err) {
+		t.Fatalf("bad flag should be a usage error, got %v", err)
+	}
+}
+
+func TestRootHelpHasQuickstartAndGroups(t *testing.T) {
+	root := newRootCmd()
+	var out strings.Builder
+	root.SetOut(&out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--help: %v", err)
+	}
+	help := out.String()
+	for _, want := range []string{"Get started:", "fendix demo", "Core commands:", "scan", "init", "demo"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("root help missing %q", want)
+		}
+	}
+}
