@@ -32,6 +32,7 @@ import (
 
 	"golang.org/x/vuln/scan"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -50,7 +51,7 @@ var ErrNoGoMod = errors.New("govulncheck: no go.mod at path root")
 // Returns ErrNoGoMod when modulePath has no go.mod — callers should
 // check errors.Is(err, ErrNoGoMod) and treat it as "not a Go module,
 // nothing to do" rather than a real failure.
-func Scan(ctx context.Context, modulePath string) ([]models.Finding, error) {
+func Scan(ctx context.Context, modulePath string) ([]evidence.Evidence, error) {
 	abs, err := filepath.Abs(modulePath)
 	if err != nil {
 		return nil, fmt.Errorf("govulncheck: resolve path: %w", err)
@@ -147,7 +148,7 @@ type traceFrame struct {
 // govulncheck's NDJSON is genuinely line-delimited in -json mode (the
 // pretty-printed multi-line form is only emitted in text mode), so a
 // straight Scanner suffices.
-func parseFindings(stdout []byte, modName string) ([]models.Finding, error) {
+func parseFindings(stdout []byte, modName string) ([]evidence.Evidence, error) {
 	osvs := map[string]*osvRecord{}
 	calledIDs := map[string]bool{}
 
@@ -186,7 +187,7 @@ func parseFindings(stdout []byte, modName string) ([]models.Finding, error) {
 	}
 	sort.Strings(ids) // deterministic output
 
-	findings := make([]models.Finding, 0, len(ids))
+	findings := make([]evidence.Evidence, 0, len(ids))
 	for _, id := range ids {
 		osv := osvs[id]
 		if osv == nil {
@@ -201,7 +202,7 @@ func parseFindings(stdout []byte, modName string) ([]models.Finding, error) {
 // Python deps.py output shape so existing dedup logic collapses overlap
 // during the transition window before TASK-118 drops the Python deps
 // path entirely.
-func buildFinding(osv *osvRecord, modName string) models.Finding {
+func buildFinding(osv *osvRecord, modName string) evidence.Evidence {
 	summary := osv.Summary
 	if summary == "" {
 		summary = osv.ID
@@ -223,8 +224,9 @@ func buildFinding(osv *osvRecord, modName string) models.Finding {
 	// overlap during the transition window.
 	idSlug := strings.ReplaceAll(osv.ID, "-", "_")
 	line := modName
-	return models.Finding{
+	return evidence.Evidence{
 		ID:         "SEC-DEPS-GO-" + idSlug,
+		RuleID:     osv.ID, // v0.22 native provenance (OSV/CVE id)
 		Title:      fmt.Sprintf("Vulnerable Go module: %s (%s)", summary, osv.ID),
 		Severity:   models.SeverityHigh,
 		Source:     models.SourceWhitebox,

@@ -39,6 +39,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -92,7 +93,7 @@ var commandContext = exec.CommandContext
 // The provided ctx is honoured: cancellation kills the semgrep
 // subprocess. A 120s deadline is layered onto ctx if ctx has no
 // shorter deadline already.
-func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
+func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 	return ScanWithAllowlist(ctx, codePath, nil)
 }
 
@@ -106,7 +107,7 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 // files. An empty (non-nil) allowlist would make semgrep scan everything
 // (no --include narrows nothing), so the caller short-circuits that case;
 // here we simply skip adding includes when there are no relative paths.
-func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]models.Finding, error) {
+func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]evidence.Evidence, error) {
 	if codePath == "" {
 		return nil, ErrCodePathMissing
 	}
@@ -240,7 +241,7 @@ type semgrepOutput struct {
 // JSONDecodeError and returns an empty list. The Scan caller is
 // responsible for surfacing real failures (timeout, ctx cancel,
 // non-success exit with no parseable output).
-func parseAndMap(stdout []byte, codeRoot string) ([]models.Finding, error) {
+func parseAndMap(stdout []byte, codeRoot string) ([]evidence.Evidence, error) {
 	if len(stdout) == 0 {
 		return nil, nil
 	}
@@ -252,7 +253,7 @@ func parseAndMap(stdout []byte, codeRoot string) ([]models.Finding, error) {
 	if err != nil {
 		absRoot = codeRoot
 	}
-	findings := make([]models.Finding, 0, len(out.Results))
+	findings := make([]evidence.Evidence, 0, len(out.Results))
 	for i := range out.Results {
 		f, ok := mapResult(&out.Results[i], absRoot)
 		if !ok {
@@ -266,9 +267,9 @@ func parseAndMap(stdout []byte, codeRoot string) ([]models.Finding, error) {
 // mapResult converts one Semgrep result to a fendix Finding. Returns
 // (zero, false) if the result lacks the minimal fields needed to be
 // useful (no path or no rule id).
-func mapResult(r *semgrepResult, absRoot string) (models.Finding, bool) {
+func mapResult(r *semgrepResult, absRoot string) (evidence.Evidence, bool) {
 	if r.CheckID == "" || r.Path == "" {
-		return models.Finding{}, false
+		return evidence.Evidence{}, false
 	}
 	rel := r.Path
 	if absPath, err := filepath.Abs(r.Path); err == nil {
@@ -298,7 +299,7 @@ func mapResult(r *semgrepResult, absRoot string) (models.Finding, bool) {
 
 	id := "SEC-" + strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(r.CheckID), "-", "_"), ".", "_")
 
-	return models.Finding{
+	return evidence.Evidence{
 		ID:         id,
 		Title:      title,
 		Severity:   resolveSeverity(r),
@@ -311,6 +312,7 @@ func mapResult(r *semgrepResult, absRoot string) (models.Finding, bool) {
 		References: resolveCWE(r),
 		Confidence: resolveConfidence(r),
 		Line:       &endpointCopy,
+		RuleID:     r.CheckID,
 	}, true
 }
 

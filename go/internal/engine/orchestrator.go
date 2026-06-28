@@ -343,7 +343,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			switch {
 			case err == nil:
 				slog.Info("native go deps scan complete", "findings", len(nativeFindings))
-				findings = append(findings, nativeFindings...)
+				findings = append(findings, evidence.ToFindings(nativeFindings)...)
 				scanStatus.ok("govulncheck")
 			case errors.Is(err, govulncheck.ErrNoGoMod):
 				slog.Debug("no go.mod at code path, skipping native go deps scan")
@@ -368,7 +368,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		// network). --use-pip-audit is ignored offline because pip-audit
 		// itself reaches out to osv.dev.
 		var (
-			pipFindings []models.Finding
+			pipFindings []evidence.Evidence
 			pipErr      error
 		)
 		switch {
@@ -382,7 +382,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		case o.cfg.Offline:
 			slog.Debug("native pypi dep-CVE scan starting", "mode", "offline snapshot")
 			pipFindings, pipErr = pip.ScanOffline(o.cfg.CodePath, pip.DefaultRecurseDepth, offlineSnap)
-			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, pipFindings, pipErr)
+			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, evidence.ToFindings(pipFindings), pipErr)
 		default:
 			pipMode := "OSV.dev"
 			if o.cfg.UsePipAudit {
@@ -393,12 +393,12 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 				ctx, o.cfg.CodePath, pip.DefaultRecurseDepth,
 				pip.Options{UsePipAudit: o.cfg.UsePipAudit},
 			)
-			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, pipFindings, pipErr)
+			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, evidence.ToFindings(pipFindings), pipErr)
 		}
 
 		// npm: same offline routing as pip.
 		var (
-			npmFindings []models.Finding
+			npmFindings []evidence.Evidence
 			npmErr      error
 		)
 		switch {
@@ -411,10 +411,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			scanStatus.skip("npm", "offline mode: no usable snapshot")
 		case o.cfg.Offline:
 			npmFindings, npmErr = npm.ScanOffline(o.cfg.CodePath, offlineSnap)
-			findings = o.recordNpmScanResult(&scanStatus, &findings, npmFindings, npmErr)
+			findings = o.recordNpmScanResult(&scanStatus, &findings, evidence.ToFindings(npmFindings), npmErr)
 		default:
 			npmFindings, npmErr = npm.Scan(ctx, o.cfg.CodePath)
-			findings = o.recordNpmScanResult(&scanStatus, &findings, npmFindings, npmErr)
+			findings = o.recordNpmScanResult(&scanStatus, &findings, evidence.ToFindings(npmFindings), npmErr)
 		}
 	}
 
@@ -454,7 +454,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		switch {
 		case err == nil:
 			slog.Info("native semgrep scan complete", "findings", len(semgrepFindings))
-			findings = append(findings, semgrepFindings...)
+			findings = append(findings, evidence.ToFindings(semgrepFindings)...)
 			scanStatus.ok("semgrep")
 		case errors.Is(err, semgrep.ErrSemgrepUnavailable):
 			slog.Info("semgrep not installed — skipping (install with: pip install semgrep)")
@@ -481,7 +481,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		default:
 			if len(textFindings) > 0 {
 				slog.Info("native textscan complete", "findings", len(textFindings))
-				findings = append(findings, textFindings...)
+				findings = append(findings, evidence.ToFindings(textFindings)...)
 			}
 			scanStatus.ok("textscan")
 		}

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 )
 
 // pip-audit JSON sample matching the >= 2.7.0 schema. Two pinned deps
@@ -164,7 +164,7 @@ func TestScanViaSubprocess_PipAuditNotInstalled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	stderr := captureStderr(t, func() {
 		got, err := ScanRecursiveWithOptions(context.Background(), codeDir, DefaultRecurseDepth,
 			Options{UsePipAudit: true})

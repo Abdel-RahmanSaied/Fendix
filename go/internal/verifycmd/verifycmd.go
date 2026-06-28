@@ -62,6 +62,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
@@ -488,14 +489,18 @@ func verifyDep(ctx context.Context, f *models.Finding, opts Options, out *Result
 	var err error
 	switch {
 	case strings.HasSuffix(manifest, "requirements.txt"):
-		newFindings, err = pip.Scan(ctx, manifestDir)
+		var pipEv []evidence.Evidence
+		pipEv, err = pip.Scan(ctx, manifestDir)
+		newFindings = evidence.ToFindings(pipEv)
 		if errors.Is(err, pip.ErrNoRequirements) {
 			out.Status = StatusResolved
 			out.Reason = fmt.Sprintf("requirements.txt removed from %s — finding presumed resolved", manifestDir)
 			return
 		}
 	case strings.HasSuffix(manifest, "package.json") || strings.HasSuffix(manifest, "package-lock.json"):
-		newFindings, err = npm.Scan(ctx, manifestDir)
+		var npmEv []evidence.Evidence
+		npmEv, err = npm.Scan(ctx, manifestDir)
+		newFindings = evidence.ToFindings(npmEv)
 		if errors.Is(err, npm.ErrNoLockfile) || errors.Is(err, npm.ErrLockfileMissingButPackageJsonPresent) {
 			out.Status = StatusResolved
 			out.Reason = fmt.Sprintf("package-lock.json no longer scannable at %s — finding presumed resolved (manual verify recommended)", manifestDir)

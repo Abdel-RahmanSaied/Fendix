@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -20,8 +20,8 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-func findingsByID(findings []models.Finding) map[string][]models.Finding {
-	out := map[string][]models.Finding{}
+func findingsByID(findings []evidence.Evidence) map[string][]evidence.Evidence {
+	out := map[string][]evidence.Evidence{}
 	for _, f := range findings {
 		out[f.ID] = append(out[f.ID], f)
 	}

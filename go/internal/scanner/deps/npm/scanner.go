@@ -44,6 +44,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 )
@@ -98,7 +99,7 @@ const osvMaxConcurrentBatches = 4
 // only an OSV-id reference; the serial fallback preserves the alias
 // behaviour for any chunk that hits it. CVE-* alias hydration via
 // GET /v1/vulns/{id} is deferred to Sprint 02.6.
-func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
+func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 	abs, err := filepath.Abs(codePath)
 	if err != nil {
 		return nil, fmt.Errorf("npm: resolve path: %w", err)
@@ -144,7 +145,7 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 
 	// Phase 2: cache lookup. Anything fresh in cache produces findings
 	// now; misses go into the batch queue.
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	var misses []pkgWithManifest
 	for _, p := range allPairs {
 		if vulns, ok := readCache(cache, p.pkg.name, p.pkg.version); ok {
@@ -163,7 +164,7 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	if len(misses) > 0 {
 		sem := semaphore.NewWeighted(osvMaxConcurrentBatches)
 		var batchMu sync.Mutex
-		batchFindings := make([]models.Finding, 0)
+		batchFindings := make([]evidence.Evidence, 0)
 		var wg sync.WaitGroup
 		for start := 0; start < len(misses); start += osvBatchMaxSize {
 			end := start + osvBatchMaxSize
@@ -208,7 +209,7 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 // ErrNoLockfile / ErrLockfileMissingButPackageJsonPresent are returned
 // for the same conditions as the online Scan, so the orchestrator can
 // errors.Is-check them and emit the same advisory / skip.
-func ScanOffline(codePath string, snap *offline.Snapshot) ([]models.Finding, error) {
+func ScanOffline(codePath string, snap *offline.Snapshot) ([]evidence.Evidence, error) {
 	if snap == nil {
 		return nil, errors.New("npm: offline snapshot is nil")
 	}
@@ -240,7 +241,7 @@ func ScanOffline(codePath string, snap *offline.Snapshot) ([]models.Finding, err
 	}
 
 	const manifestName = "package-lock.json"
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	for _, p := range pkgs {
 		for _, a := range snap.LookupVulnerable("npm", p.name, p.version) {
 			findings = append(findings, buildFinding(p, advisoryToOSV(a), manifestName))
@@ -279,7 +280,7 @@ type pkgWithManifest struct {
 // batch-level failure (non-2xx, length mismatch, transport error) it
 // falls back to the per-package /v1/query path so individual findings
 // still surface. Cache writes happen on both paths.
-func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
+func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []evidence.Evidence {
 	pkgs := make([]resolvedPackage, len(chunk))
 	for i, p := range chunk {
 		pkgs[i] = p.pkg
@@ -289,7 +290,7 @@ func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, 
 		fmt.Fprintf(os.Stderr, "[fendix] npm: querybatch failed (%v); falling back to per-package /v1/query for %d packages\n", err, len(chunk))
 		return runSerialFallback(ctx, client, cache, chunk)
 	}
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	for _, p := range chunk {
 		key := p.pkg.name + "@" + p.pkg.version
 		vulns := results[key]
@@ -306,8 +307,8 @@ func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, 
 // runSerialFallback walks the chunk one package at a time using the
 // classic /v1/query endpoint. Used when /v1/querybatch fails so any
 // transient batch-only outage doesn't hide CVE coverage.
-func runSerialFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
-	var findings []models.Finding
+func runSerialFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []evidence.Evidence {
+	var findings []evidence.Evidence
 	for _, p := range chunk {
 		vulns, err := queryOSV(ctx, client, cache, p.pkg.name, p.pkg.version)
 		if err != nil {
@@ -593,7 +594,7 @@ func queryOSV(ctx context.Context, client *http.Client, cacheDir, pkg, version s
 
 // buildFinding maps one OSV vulnerability to a fendix Finding, matching
 // the Python deps.py output shape exactly so dedup catches the overlap.
-func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) models.Finding {
+func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.Evidence {
 	summary := v.Summary
 	if summary == "" {
 		summary = v.ID
@@ -619,7 +620,7 @@ func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) models.Fi
 
 	idSlug := strings.ReplaceAll(v.ID, "-", "_")
 	line := manifestName
-	return models.Finding{
+	return evidence.Evidence{
 		ID:         "SEC-DEPS-" + idSlug,
 		Title:      fmt.Sprintf("Vulnerable dependency: %s@%s (%s)", pkg.name, pkg.version, v.ID),
 		Severity:   models.SeverityHigh,
@@ -631,6 +632,7 @@ func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) models.Fi
 		References: refs,
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
+		RuleID:     v.ID,
 	}
 }
 
@@ -647,7 +649,7 @@ func firstFixVersion(v osvVuln) string {
 	return ""
 }
 
-func sortFindingsByID(fs []models.Finding) {
+func sortFindingsByID(fs []evidence.Evidence) {
 	sort.SliceStable(fs, func(i, j int) bool { return fs[i].ID < fs[j].ID })
 }
 

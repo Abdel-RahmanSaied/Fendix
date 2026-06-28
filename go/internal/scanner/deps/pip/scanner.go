@@ -42,6 +42,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 )
@@ -123,7 +124,7 @@ const osvMaxConcurrentBatches = 4
 // Network errors against api.osv.dev bubble up as wrapped errors —
 // the orchestrator logs + continues; the Python deps.py path provides
 // fallback coverage until Phase 17b removes it.
-func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
+func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 	abs, err := filepath.Abs(codePath)
 	if err != nil {
 		return nil, fmt.Errorf("pip: resolve path: %w", err)
@@ -148,7 +149,7 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 	client := &http.Client{Timeout: httpTimeout}
 	cache, _ := cacheDir() // empty string disables caching — Scan still works
 
-	findings := make([]models.Finding, 0)
+	findings := make([]evidence.Evidence, 0)
 	for _, p := range pkgs {
 		vulns, err := queryOSV(ctx, client, cache, p.name, p.version)
 		if err != nil {
@@ -201,7 +202,7 @@ type Options struct {
 // Preserved as a thin wrapper around ScanRecursiveWithOptions for
 // backward compat. Callers that want the new flag use the With-Options
 // variant.
-func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models.Finding, error) {
+func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]evidence.Evidence, error) {
 	return ScanRecursiveWithOptions(ctx, codePath, maxDepth, Options{})
 }
 
@@ -210,7 +211,7 @@ func ScanRecursive(ctx context.Context, codePath string, maxDepth int) ([]models
 // the scanner shells out to it; otherwise it falls back to the native
 // OSV.dev /v1/query client. The fallback emits a stderr warning so the
 // caller knows their flag was honoured at "best effort" only.
-func ScanRecursiveWithOptions(ctx context.Context, codePath string, maxDepth int, opts Options) ([]models.Finding, error) {
+func ScanRecursiveWithOptions(ctx context.Context, codePath string, maxDepth int, opts Options) ([]evidence.Evidence, error) {
 	if opts.UsePipAudit {
 		if path, err := exec.LookPath("pip-audit"); err == nil {
 			return scanViaSubprocess(ctx, codePath, maxDepth, path)
@@ -231,7 +232,7 @@ func ScanRecursiveWithOptions(ctx context.Context, codePath string, maxDepth int
 // Returns the empty slice (not ErrNoRequirements) when the walk finds
 // no manifests, matching scanViaOSV's "checked everywhere, nothing to
 // scan" contract.
-func ScanOffline(codePath string, maxDepth int, snap *offline.Snapshot) ([]models.Finding, error) {
+func ScanOffline(codePath string, maxDepth int, snap *offline.Snapshot) ([]evidence.Evidence, error) {
 	if snap == nil {
 		return nil, errors.New("pip: offline snapshot is nil")
 	}
@@ -247,10 +248,10 @@ func ScanOffline(codePath string, maxDepth int, snap *offline.Snapshot) ([]model
 		return nil, fmt.Errorf("pip: walk for requirements.txt: %w", err)
 	}
 	if len(manifests) == 0 {
-		return []models.Finding{}, nil
+		return []evidence.Evidence{}, nil
 	}
 
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	for _, m := range manifests {
 		content, err := os.ReadFile(m)
 		if err != nil {
@@ -305,7 +306,7 @@ func advisoryToOSV(a offline.Advisory) osvVuln {
 // an OSV-id reference; CVE-* aliases (which the per-package /v1/query
 // path includes) are deferred to Sprint 02.5. The serial fallback path
 // preserves alias coverage for any chunk that hits it.
-func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Finding, error) {
+func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]evidence.Evidence, error) {
 	if maxDepth < 0 {
 		maxDepth = 0
 	}
@@ -318,7 +319,7 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Fi
 		return nil, fmt.Errorf("pip: walk for requirements.txt: %w", err)
 	}
 	if len(manifests) == 0 {
-		return []models.Finding{}, nil
+		return []evidence.Evidence{}, nil
 	}
 
 	// Phase 1: collect all (package, manifest-rel-path) pairs across
@@ -345,7 +346,7 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Fi
 		}
 	}
 	if len(allPairs) == 0 {
-		return []models.Finding{}, nil
+		return []evidence.Evidence{}, nil
 	}
 
 	client := &http.Client{Timeout: httpTimeout}
@@ -355,7 +356,7 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Fi
 	// now; misses go into the batch queue. Note we look up per-pair (not
 	// per-package), so the same package present in two manifests gets
 	// the cache hit applied to both manifests' findings.
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	var misses []pkgWithManifest
 	for _, p := range allPairs {
 		if vulns, ok := readCache(cache, p.pkg.name, p.pkg.version); ok {
@@ -374,7 +375,7 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Fi
 	if len(misses) > 0 {
 		sem := semaphore.NewWeighted(osvMaxConcurrentBatches)
 		var batchMu sync.Mutex
-		batchFindings := make([]models.Finding, 0)
+		batchFindings := make([]evidence.Evidence, 0)
 		var wg sync.WaitGroup
 		for start := 0; start < len(misses); start += osvBatchMaxSize {
 			end := start + osvBatchMaxSize
@@ -414,7 +415,7 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]models.Fi
 // batch-level failure (non-2xx, length mismatch, transport error) it
 // falls back to the per-package /v1/query path so individual findings
 // still surface. Cache writes happen on both paths.
-func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
+func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []evidence.Evidence {
 	pkgs := make([]pinnedPackage, len(chunk))
 	for i, p := range chunk {
 		pkgs[i] = p.pkg
@@ -424,7 +425,7 @@ func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, 
 		fmt.Fprintf(os.Stderr, "[fendix] pip: querybatch failed (%v); falling back to per-package /v1/query for %d packages\n", err, len(chunk))
 		return runSerialFallback(ctx, client, cache, chunk)
 	}
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	for _, p := range chunk {
 		key := p.pkg.name + "@" + p.pkg.version
 		vulns := results[key]
@@ -441,8 +442,8 @@ func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, 
 // runSerialFallback walks the chunk one package at a time using the
 // classic /v1/query endpoint. Used when /v1/querybatch fails so any
 // transient batch-only outage doesn't hide CVE coverage.
-func runSerialFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []models.Finding {
-	var findings []models.Finding
+func runSerialFallback(ctx context.Context, client *http.Client, cache string, chunk []pkgWithManifest) []evidence.Evidence {
+	var findings []evidence.Evidence
 	for _, p := range chunk {
 		vulns, err := queryOSV(ctx, client, cache, p.pkg.name, p.pkg.version)
 		if err != nil {
@@ -571,7 +572,7 @@ func queryOSVBatch(ctx context.Context, client *http.Client, pkgs []pinnedPackag
 //
 // The scan-budget context is inherited verbatim — pip-audit invocations
 // honour the same wall-clock cap the orchestrator passes to the package.
-func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAuditPath string) ([]models.Finding, error) {
+func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAuditPath string) ([]evidence.Evidence, error) {
 	if maxDepth < 0 {
 		maxDepth = 0
 	}
@@ -584,9 +585,9 @@ func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAu
 		return nil, fmt.Errorf("pip: walk for requirements.txt: %w", err)
 	}
 	if len(manifests) == 0 {
-		return []models.Finding{}, nil
+		return []evidence.Evidence{}, nil
 	}
-	var all []models.Finding
+	var all []evidence.Evidence
 	for _, m := range manifests {
 		rel, _ := filepath.Rel(abs, m)
 		if rel == "" {
@@ -618,7 +619,7 @@ func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAu
 // parsePipAuditJSON maps pip-audit's --format json output to []models.Finding.
 // Targets pip-audit >= 2.7.0 schema. Returns a clear error on older schemas
 // or any malformed JSON.
-func parsePipAuditJSON(jsonBytes []byte, manifestRelPath string) ([]models.Finding, error) {
+func parsePipAuditJSON(jsonBytes []byte, manifestRelPath string) ([]evidence.Evidence, error) {
 	var report struct {
 		Dependencies []struct {
 			Name    string `json:"name"`
@@ -634,7 +635,7 @@ func parsePipAuditJSON(jsonBytes []byte, manifestRelPath string) ([]models.Findi
 	if err := json.Unmarshal(jsonBytes, &report); err != nil {
 		return nil, fmt.Errorf("decode pip-audit JSON (expected schema from pip-audit >= 2.7.0; upgrade with `pip install -U pip-audit`): %w", err)
 	}
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	for _, d := range report.Dependencies {
 		for _, v := range d.Vulns {
 			// Reuse buildFinding for shape parity. Convert pip-audit's
@@ -870,7 +871,7 @@ func queryOSV(ctx context.Context, client *http.Client, cacheDir, pkg, version s
 
 // buildFinding maps one OSV vulnerability to a fendix Finding, matching
 // the Python deps.py output shape exactly so dedup catches the overlap.
-func buildFinding(pkg pinnedPackage, v osvVuln, manifestName string) models.Finding {
+func buildFinding(pkg pinnedPackage, v osvVuln, manifestName string) evidence.Evidence {
 	summary := v.Summary
 	if summary == "" {
 		summary = v.ID
@@ -898,8 +899,9 @@ func buildFinding(pkg pinnedPackage, v osvVuln, manifestName string) models.Find
 
 	idSlug := strings.ReplaceAll(v.ID, "-", "_")
 	line := manifestName
-	return models.Finding{
+	return evidence.Evidence{
 		ID:         "SEC-DEPS-" + idSlug,
+		RuleID:     v.ID,
 		Title:      fmt.Sprintf("Vulnerable dependency: %s==%s (%s)", pkg.name, pkg.version, v.ID),
 		Severity:   models.SeverityHigh,
 		Source:     models.SourceWhitebox,
@@ -931,7 +933,7 @@ func firstFixVersion(v osvVuln) string {
 
 // sortFindingsByID puts findings in deterministic order so the report
 // is stable across runs of the same scan.
-func sortFindingsByID(fs []models.Finding) {
+func sortFindingsByID(fs []evidence.Evidence) {
 	sort.SliceStable(fs, func(i, j int) bool { return fs[i].ID < fs[j].ID })
 }
 

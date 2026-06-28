@@ -49,6 +49,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -76,7 +77,7 @@ type Rule struct {
 //
 // Errors during file reads are logged via the slog default and
 // skipped — one unreadable file doesn't fail the scan.
-func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
+func Scan(rootDir string, rules []Rule) ([]evidence.Evidence, error) {
 	return ScanWithAllowlist(rootDir, rules, nil)
 }
 
@@ -86,9 +87,9 @@ func Scan(rootDir string, rules []Rule) ([]models.Finding, error) {
 // engine half of `fendix scan --diff`. Directories are still walked (so
 // skip-dir pruning still happens) but non-allowlisted files are skipped
 // before they are read, keeping diff scans sub-second on large trees.
-func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) ([]models.Finding, error) {
+func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) ([]evidence.Evidence, error) {
 	const maxFileBytes = 1 << 20 // 1 MiB
-	var findings []models.Finding
+	var findings []evidence.Evidence
 
 	if rootDir == "" {
 		return nil, fmt.Errorf("textscan: rootDir is required")
@@ -192,7 +193,7 @@ func dockerfileHasUSER(path string) bool {
 // scanFile reads one file line-by-line and applies the supplied
 // rules. We use bufio.Scanner with a generous buffer to handle
 // auto-generated source files with long lines.
-func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
+func scanFile(rootDir, path string, rules []*Rule) ([]evidence.Evidence, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -211,7 +212,7 @@ func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20) // 1 MiB max line
 
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
@@ -236,8 +237,9 @@ func scanFile(rootDir, path string, rules []*Rule) ([]models.Finding, error) {
 				runes := []rune(snippet)
 				snippet = string(runes[:199]) + "…"
 			}
-			findings = append(findings, models.Finding{
+			findings = append(findings, evidence.Evidence{
 				ID:         r.ID,
+				RuleID:     r.ID,
 				Title:      r.Title,
 				Severity:   r.Severity,
 				Source:     models.SourceWhitebox,
