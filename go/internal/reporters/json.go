@@ -23,10 +23,10 @@ type ScanMetadata struct {
 	// indistinguishable from "found exactly 500" vs "found 801, capped to
 	// 500" — a silent coverage gap a CI gate can't detect. When no cap fires,
 	// EndpointsDiscovered == EndpointsCount and EndpointsTruncated is false.
-	EndpointsDiscovered int  `json:"endpoints_discovered,omitempty"`
-	EndpointsTruncated  bool `json:"endpoints_truncated,omitempty"`
-	ActiveProbes        bool `json:"active_probes"`
-	ChecksRun      []string  `json:"checks_run,omitempty"`
+	EndpointsDiscovered int      `json:"endpoints_discovered,omitempty"`
+	EndpointsTruncated  bool     `json:"endpoints_truncated,omitempty"`
+	ActiveProbes        bool     `json:"active_probes"`
+	ChecksRun           []string `json:"checks_run,omitempty"`
 	// ScannerStatus records the per-scanner outcome for the dep-CVE,
 	// secrets, semgrep, and textscan passes (F-L7/F-L13/F-L14). It ends
 	// the historical fail-open behaviour where a scanner crash was logged
