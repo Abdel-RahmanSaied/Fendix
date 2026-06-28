@@ -5,6 +5,17 @@ Phase: v0.22 — Evidence Architecture (Core product)
 Exit criteria: *"CLI works exactly as before. Internal architecture upgraded. All tests pass."*
 Success metrics: existing CLI output unchanged · no perf regression > 10% vs v0.20 baseline · correlation test coverage > 80%.
 
+## ✅ PHASE v0.22 — COMPLETE (2026-06-28)
+
+Exit criteria met; Reviewer: **SHIP**. Full Evidence-first re-plumb done — every
+scanner (secrets, deps pip/npm/govulncheck, semgrep, textscan, all DAST checks,
+Python bridge, plugins) emits `evidence.Evidence`; the orchestrator accumulates
+Evidence end-to-end and correlation runs natively on it (provenance + lineage
+threaded). **Public CLI output byte-identical** (snapshot/schema/reporter/full
+suite green). Correlation coverage 85–100% (evidence+decision 100%, engine 80.5%).
+Audit: `SECURITY_AUDIT_v022.md` (0 crit/high). Review: `REVIEW_v022.md`. Handoff: `NEXT_v023.md`.
+Commits: bbcd2be (E3) · 9fda8a5 (E4) · b091d43 (E1/E2) · 0ba5333 · d7ac5df · 628ca67 · d598172 · 22cd3a5 (E-migrate).
+
 ## The governing invariant (from scoping)
 
 Reporters marshal `reporters.JSONReport` whose `Findings` field is
@@ -38,10 +49,11 @@ Decision today = `checkFailOn()` severity→exit-code (`orchestrator.go:803-820`
 | E2 | `FromFinding`/`ToFinding` (+slice helpers); round-trip identity + byte-identical-JSON + drift-guard + internal-provenance-not-leaked tests. **DONE — invariant proven** | MED |
 | E3 | `CorrelateEvidence` (Correlation Service V2): Evidence in/out, wraps proven `Correlate()` so render is byte-identical, threads provenance + lineage. **Wired into orchestrator** (correlation now runs through Evidence). **DONE — golden test locks render==legacy; output-snapshot + full suite green** | HIGH (core) |
 | E4 | `internal/decision`: `Decision`{Status BLOCK/WARN/INFO/IGNORE, Confidence, Reason, Evidence} + `Decide`/`DecideAll`/`ExitCode`. **DONE — internal only; `ExitCode∘DecideAll` locked == legacy `checkFailOn` across all severity×fail-on combos** | MED |
-| E5 | Migration tests + correlation coverage > 80% + `benchmark compare` (no perf regression) | — |
-| E6 | Security re-audit (`SECURITY_AUDIT_v022.md`) | — |
-| E7 | Reviewer: exit criteria + Constitution (CLI byte-identical) | — |
-| E8 | Orchestrator close + `NEXT_v023.md` | — |
+| E-mig | **Full re-plumb DONE** — all ~26 scanner surfaces emit Evidence; accumulator flipped; correlation native on Evidence | DONE |
+| E5 | Migration tests (round-trip/golden/exit-code locks) + correlation coverage **85–100%** + perf guard green. **DONE** | DONE |
+| E6 | Security re-audit — **DONE** (0 crit/high; output byte-identical; provenance internal-only) | `SECURITY_AUDIT_v022.md` |
+| E7 | Reviewer: exit criteria + Constitution — **DONE → SHIP** | `REVIEW_v022.md` |
+| E8 | Orchestrator close + `NEXT_v023.md` — **DONE** | manifest + handoff |
 
 ## Decision for the owner (gates the phase)
 **How invasive should the v0.22 refactor be?** (the Evidence-model approach) —
