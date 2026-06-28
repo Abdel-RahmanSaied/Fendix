@@ -164,7 +164,9 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 			// enum / int), not attacker-controlled, so they're badge-safe.
 			badge := ""
 			if f.Status != "" {
-				badge = "`" + f.Status + "` "
+				// inlineCode escapes defensively — RenderPRComment is exported
+				// and accepts arbitrary JSON, so don't trust the raw status.
+				badge = inlineCode(f.Status) + " "
 			}
 			score := ""
 			if f.ConfidenceScore > 0 {

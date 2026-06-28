@@ -101,6 +101,11 @@ func Score(ev evidence.Evidence) Result {
 		reasons = append(reasons, trace)
 	}
 
+	// Keep the "no black boxes" contract exact: when corroboration pushes the
+	// raw sum over the ceiling, record the cap so the reasons sum to Value.
+	if score > 100 {
+		reasons = append(reasons, fmt.Sprintf("-%d capped at 100 (corroboration ceiling)", score-100))
+	}
 	score = clamp(score, 0, 100)
 	return Result{Value: score, Band: bandFor(score), Reasons: reasons}
 }

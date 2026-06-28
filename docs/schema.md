@@ -123,6 +123,14 @@ mirror this. The score is deterministic and rule-based (no AI); see
 `internal/confidence`. All v0.24 fields are additive/optional — existing
 consumers are unaffected (minor-release additive policy above).
 
+**SARIF level note:** as of v0.24 the SARIF result `level` follows the
+decision verdict (`BLOCK`→`error`, `WARN`→`warning`, `INFO`→`note`), not raw
+severity. Because nothing is `BLOCK` without a threshold, a bare
+`fendix scan --format sarif` (no `--fail-on`) emits every result at
+`warning`/`note` and zero `error`. SARIF consumers that key off `error` level
+should pass `--fail-on` (the GitHub Action defaults to `fail-on: HIGH`).
+Build-blocking is driven by the exit code, not the SARIF level.
+
 ### Severity ↔ confidence consistency
 
 The orchestrator enforces a consistency rule before reports are written: a

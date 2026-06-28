@@ -1,6 +1,7 @@
 package confidence
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -123,5 +124,29 @@ func BenchmarkScore(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = Score(ev)
+	}
+}
+
+// TestReasonsSumToValue is the "no black boxes" contract: the signed deltas in
+// Reasons must reconstruct Value exactly, including the corroboration cap.
+func TestReasonsSumToValue(t *testing.T) {
+	cases := []evidence.Evidence{
+		{Source: models.SourceBlackbox},
+		{Source: models.SourceWhitebox, SourceTier: models.TierSemgrepShim},
+		{Source: models.SourceCorrelated, RouteConfirmed: true, Reachable: true, ProvenPath: true, SourceTier: models.TierTreeSitter, Payload: "p", Response: "r"},
+	}
+	for _, ev := range cases {
+		r := Score(ev)
+		sum := 0
+		for _, reason := range r.Reasons {
+			var n int
+			// each reason starts with a signed int like "+35 ..." / "-20 ..."
+			if _, err := fmt.Sscanf(reason, "%d", &n); err == nil {
+				sum += n
+			}
+		}
+		if sum != r.Value {
+			t.Errorf("reasons sum %d != Value %d for %+v\n%v", sum, r.Value, ev, r.Reasons)
+		}
 	}
 }
