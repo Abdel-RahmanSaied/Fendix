@@ -4,6 +4,14 @@ Date: 2026-06-28
 Phase: v0.21 — Earn Trust (Foundation)
 Exit criteria: *"Zero unresolved HIGH security issues. Every security claim documented and reproducible."*
 
+## ✅ PHASE v0.21 — COMPLETE (2026-06-28)
+
+Exit criteria met; Reviewer: **SHIP**. Most HIGH fixes were already in place
+(enterprise-readiness sprints) — verified + locked. Genuine new work: config-leak
+FP fix (V1), fail-closed install verification (V4), token env-scrub lock (V5),
+Trust Center + Privacy docs (V6). Build/vet/gofmt/`go test ./...` green.
+Audit: `SECURITY_AUDIT_v021.md` (0 critical/high). Review: `REVIEW_v021.md`. Handoff: `NEXT_v022.md`.
+
 ## ⚠️ Critical scoping finding — most HIGH issues are ALREADY fixed
 
 The `tasks/enterprise-readiness/` sprints (01–18, complete) already closed the
@@ -33,9 +41,9 @@ and lock** these (regression tests), **close the genuine remaining gaps**, and
 | V4 | **install.sh hardening** (F-M1/M2) — **DONE:** checksum now FAIL-CLOSED (silent-skip → error unless `FENDIX_ALLOW_UNVERIFIED=1`); optional cosign verify of `.sig`/`.crt` with the correct main-repo OIDC identity (`SIGN_REPO`, not the homebrew tap), aborts on mismatch | LOW (shipping) | `scripts/install.sh` |
 | V5 | **Regression locks** — VERIFIED already locked: netguard `TestIsBlockedAddr` (metadata IP 169.254.169.254 + RFC1918), plugin `TestDefaultRoots_OmitsRepoLocalByDefault` (F-H2), ghapp `TestFendixScanner_Run_Success` (bare clone URL + extraheader, no `.git/config` token). **Added** the one missing lock: `TestScrubTokenFromEnv` (F-H3 env scrub). **DONE** | LOW (tests only) | `go/internal/ghapp/scanner_test.go` (+verified netguard/plugin) |
 | V6 | **Trust docs** — **DONE.** Threat model (`docs/threat-model.md`, 367 lines) + disclosure (`SECURITY.md`) already existed → linked, not duplicated. **Added** `docs/trust-center.md` (index: HIGH-finding status, signing/verification, reproduce-it-yourself) + `docs/privacy.md` (egress contract, `--offline`, opt-in local metrics, no telemetry); linked both from README | LOW (docs) | `docs/trust-center.md`, `docs/privacy.md`, `README.md` |
-| V7 | Security re-audit of all v0.21 changes | — | `SECURITY_AUDIT_v021.md` |
-| V8 | Reviewer: exit criteria (zero unresolved HIGH) + Constitution | — | `REVIEW_v021.md` |
-| V9 | Orchestrator close + `NEXT_v022.md` | — | manifest + handoff |
+| V7 | Security re-audit of all v0.21 changes — **DONE** (0 critical, 0 new high) | — | `SECURITY_AUDIT_v021.md` |
+| V8 | Reviewer: exit criteria (zero unresolved HIGH) + Constitution — **DONE → SHIP** | — | `REVIEW_v021.md` |
+| V9 | Orchestrator close + `NEXT_v022.md` — **DONE** | — | manifest + handoff |
 
 ## Ambiguities / decisions for the owner
 1. **Scope.** Minimal (V5 regression locks + V6 docs → "HIGH fixed & documented") vs Thorough (also V1–V4 close the genuine gaps). Recommend **Thorough** — v0.20's whole lesson was that the gaps are real (the config-leak FP fires on most SPA apps).
