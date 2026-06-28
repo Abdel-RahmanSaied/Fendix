@@ -77,7 +77,16 @@ type scanJob struct {
 // producer relied on the over-sized buffer never blocking, masking
 // the lack of a cancel path. Workers continue to honour ctx on each
 // loop iteration.
+// Run executes the pool and returns findings projected to models.Finding
+// (back-compat for callers/tests on the Finding shape). New code that wants
+// the richer Evidence should call RunEvidence.
 func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints []scanner.Endpoint) []models.Finding {
+	return evidence.ToFindings(wp.RunEvidence(ctx, cfg, endpoints))
+}
+
+// RunEvidence executes the pool and returns the raw []evidence.Evidence so
+// the orchestrator can keep provenance flowing through correlation (v0.22).
+func (wp *WorkerPool) RunEvidence(ctx context.Context, cfg *models.ScanConfig, endpoints []scanner.Endpoint) []evidence.Evidence {
 	bufSize := wp.workers * 4
 	if bufSize < 1 {
 		bufSize = 1
@@ -141,9 +150,7 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 	}
 
 	slog.Info("worker pool complete", "endpoints", len(endpoints), "checks", len(wp.checks), "findings", len(allFindings))
-	// v0.22: checks emit Evidence; project to Finding at the worker-pool
-	// boundary so the orchestrator's DAST accumulation is unchanged.
-	return evidence.ToFindings(allFindings)
+	return allFindings
 }
 
 // runCheck invokes a single check with a per-job recover() so a panic in

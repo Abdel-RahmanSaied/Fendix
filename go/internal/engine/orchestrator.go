@@ -254,7 +254,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 
 	// 3. Run checks via worker pool
 	pool := NewWorkerPoolChecks(o.cfg.Workers, o.cfg.DelayMs, checks, cc)
-	findings := pool.Run(ctx, o.cfg, endpoints)
+	evid := pool.RunEvidence(ctx, o.cfg, endpoints)
 
 	// scanStatus accumulates the per-scanner outcome (F-L7/F-L13/F-L14).
 	// Every code-scanner below records ok / skipped / failed here instead
@@ -343,7 +343,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			switch {
 			case err == nil:
 				slog.Info("native go deps scan complete", "findings", len(nativeFindings))
-				findings = append(findings, evidence.ToFindings(nativeFindings)...)
+				evid = append(evid, nativeFindings...)
 				scanStatus.ok("govulncheck")
 			case errors.Is(err, govulncheck.ErrNoGoMod):
 				slog.Debug("no go.mod at code path, skipping native go deps scan")
@@ -382,7 +382,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		case o.cfg.Offline:
 			slog.Debug("native pypi dep-CVE scan starting", "mode", "offline snapshot")
 			pipFindings, pipErr = pip.ScanOffline(o.cfg.CodePath, pip.DefaultRecurseDepth, offlineSnap)
-			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, evidence.ToFindings(pipFindings), pipErr)
+			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &evid, pipFindings, pipErr)
 		default:
 			pipMode := "OSV.dev"
 			if o.cfg.UsePipAudit {
@@ -393,7 +393,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 				ctx, o.cfg.CodePath, pip.DefaultRecurseDepth,
 				pip.Options{UsePipAudit: o.cfg.UsePipAudit},
 			)
-			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &findings, evidence.ToFindings(pipFindings), pipErr)
+			o.recordDepScanResult(&scanStatus, "pip", "native pypi deps scan", &evid, pipFindings, pipErr)
 		}
 
 		// npm: same offline routing as pip.
@@ -411,10 +411,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			scanStatus.skip("npm", "offline mode: no usable snapshot")
 		case o.cfg.Offline:
 			npmFindings, npmErr = npm.ScanOffline(o.cfg.CodePath, offlineSnap)
-			findings = o.recordNpmScanResult(&scanStatus, &findings, evidence.ToFindings(npmFindings), npmErr)
+			evid = o.recordNpmScanResult(&scanStatus, &evid, npmFindings, npmErr)
 		default:
 			npmFindings, npmErr = npm.Scan(ctx, o.cfg.CodePath)
-			findings = o.recordNpmScanResult(&scanStatus, &findings, evidence.ToFindings(npmFindings), npmErr)
+			evid = o.recordNpmScanResult(&scanStatus, &evid, npmFindings, npmErr)
 		}
 	}
 
@@ -432,7 +432,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			// v0.22: secrets emits Evidence natively; project to Finding at the
 			// accumulator boundary (provenance threads through once the
 			// accumulator itself is flipped to Evidence in a later batch).
-			findings = append(findings, evidence.ToFindings(secretEvidence)...)
+			evid = append(evid, secretEvidence...)
 			scanStatus.ok("secrets")
 		case errors.Is(err, secrets.ErrCodePathMissing):
 			slog.Debug("code path missing — skipping native secrets scan")
@@ -454,7 +454,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		switch {
 		case err == nil:
 			slog.Info("native semgrep scan complete", "findings", len(semgrepFindings))
-			findings = append(findings, evidence.ToFindings(semgrepFindings)...)
+			evid = append(evid, semgrepFindings...)
 			scanStatus.ok("semgrep")
 		case errors.Is(err, semgrep.ErrSemgrepUnavailable):
 			slog.Info("semgrep not installed — skipping (install with: pip install semgrep)")
@@ -481,7 +481,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		default:
 			if len(textFindings) > 0 {
 				slog.Info("native textscan complete", "findings", len(textFindings))
-				findings = append(findings, evidence.ToFindings(textFindings)...)
+				evid = append(evid, textFindings...)
 			}
 			scanStatus.ok("textscan")
 		}
@@ -502,7 +502,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			slog.Info("python available", "version", pyStatus.Version, "binary", pyStatus.Binary)
 			bundle.SetPythonVersion(pyStatus.Version)
 			wbFindings := o.runWhiteboxScan(ctx)
-			findings = append(findings, evidence.ToFindings(wbFindings)...)
+			evid = append(evid, wbFindings...)
 		}
 	}
 
@@ -512,17 +512,20 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// against a blackbox auth check exactly like the built-in secrets
 	// analyzer does.
 	if !o.cfg.NoPlugins {
-		findings = append(findings, evidence.ToFindings(o.runPlugins(ctx))...)
+		evid = append(evid, o.runPlugins(ctx)...)
 	}
 
-	// 5. Correlate black-box and white-box findings. v0.22: correlation now
-	// runs through the Evidence layer (Correlation Service V2). The rendered
-	// projection is byte-identical to the legacy Correlate() — CorrelateEvidence
-	// wraps it via the lossless adapter — while carrying provenance + lineage
-	// on the Evidence for the future confidence engine. Lineage is dropped at
-	// the ToFindings boundary below, so the public output is unchanged.
+	// 5. Correlate black-box and white-box evidence. v0.22: the whole scan
+	// now accumulates []evidence.Evidence, so correlation runs natively on
+	// Evidence (Correlation Service V2) — provenance + lineage thread through
+	// end-to-end for the future confidence engine. We project to
+	// models.Finding ONCE here for the downstream finalization pipeline
+	// (escalate → dedup → consistency → sort → IDs → ignore/baseline →
+	// render); that projection is byte-identical to the legacy output.
+	findings := evidence.ToFindings(evid)
 	if hasWhitebox(findings) && hasBlackbox(findings) {
-		findings = evidence.ToFindings(CorrelateEvidence(evidence.FromFindings(findings)))
+		evid = CorrelateEvidence(evid)
+		findings = evidence.ToFindings(evid)
 	}
 
 	// 5.4. Escalate non-correlated reachable findings (TASK-125).

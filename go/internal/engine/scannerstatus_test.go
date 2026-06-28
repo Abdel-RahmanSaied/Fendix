@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/npm"
@@ -67,8 +68,8 @@ func TestRecordDepScanResult_RecordsOkAndFail(t *testing.T) {
 	o := &Orchestrator{cfg: &models.ScanConfig{}}
 
 	var status scannerStatusList
-	var findings []models.Finding
-	scanFindings := []models.Finding{{ID: "X", Category: "deps"}}
+	var findings []evidence.Evidence
+	scanFindings := []evidence.Evidence{{ID: "X", Category: "deps"}}
 	o.recordDepScanResult(&status, "pip", "native pypi deps scan", &findings, scanFindings, nil)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding appended, got %d", len(findings))
@@ -78,7 +79,7 @@ func TestRecordDepScanResult_RecordsOkAndFail(t *testing.T) {
 	}
 
 	var status2 scannerStatusList
-	var findings2 []models.Finding
+	var findings2 []evidence.Evidence
 	o.recordDepScanResult(&status2, "pip", "native pypi deps scan", &findings2, nil, errors.New("network down"))
 	if len(status2) != 1 || status2[0].State != reporters.ScannerFailed {
 		t.Errorf("expected pip failed status, got %+v", status2)
@@ -91,7 +92,7 @@ func TestRecordDepScanResult_RecordsOkAndFail(t *testing.T) {
 func TestRecordNpmScanResult_LockfileMissingIsSkip(t *testing.T) {
 	o := &Orchestrator{cfg: &models.ScanConfig{CodePath: "/tmp/x"}}
 	var status scannerStatusList
-	var findings []models.Finding
+	var findings []evidence.Evidence
 	findings = o.recordNpmScanResult(&status, &findings, nil, npm.ErrLockfileMissingButPackageJsonPresent)
 	if len(status) != 1 || status[0].State != reporters.ScannerSkipped {
 		t.Errorf("expected npm skipped, got %+v", status)

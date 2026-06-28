@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/npm"
@@ -75,7 +76,7 @@ func truncateErr(err error) string {
 // that returns an empty slice rather than a sentinel when no manifest is
 // found) and appends any findings. Used by both the online and offline
 // pip paths so they record status identically.
-func (o *Orchestrator) recordDepScanResult(status *scannerStatusList, name, label string, findings *[]models.Finding, scanFindings []models.Finding, err error) {
+func (o *Orchestrator) recordDepScanResult(status *scannerStatusList, name, label string, findings *[]evidence.Evidence, scanFindings []evidence.Evidence, err error) {
 	switch {
 	case err == nil:
 		if len(scanFindings) > 0 {
@@ -95,7 +96,7 @@ func (o *Orchestrator) recordDepScanResult(status *scannerStatusList, name, labe
 // existing sentinel handling (lockfile-missing advisory finding,
 // no-lockfile silent skip). Shared by the online and offline npm paths.
 // Returns the updated findings slice.
-func (o *Orchestrator) recordNpmScanResult(status *scannerStatusList, findings *[]models.Finding, npmFindings []models.Finding, err error) []models.Finding {
+func (o *Orchestrator) recordNpmScanResult(status *scannerStatusList, findings *[]evidence.Evidence, npmFindings []evidence.Evidence, err error) []evidence.Evidence {
 	switch {
 	case err == nil:
 		slog.Info("native npm deps scan complete", "findings", len(npmFindings))
@@ -105,7 +106,7 @@ func (o *Orchestrator) recordNpmScanResult(status *scannerStatusList, findings *
 		// Single INFO finding — flag the gap without producing noise.
 		// Surfaced by the Track 4 heavy-eval on Juice Shop / dvna / etc.
 		slog.Info("npm deps scan: package.json present but lock file missing — emitting advisory finding")
-		*findings = append(*findings, models.Finding{
+		*findings = append(*findings, evidence.Evidence{
 			ID:         "SEC-NPM_LOCKFILE_MISSING",
 			Title:      "npm dep-CVE scan skipped — package-lock.json missing",
 			Severity:   models.SeverityInfo,
