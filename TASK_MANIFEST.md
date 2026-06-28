@@ -118,8 +118,8 @@ Every finding triaged real-vs-false (ground truth v2.0), so **precision is now a
 | T5 | CI: smoke+regression already run by existing `ci.yml` `go test ./...` — added clarifying comment, **no redundant `test.yml`** (Rule 1/10) | Test | T1-T4 | `.github/workflows/ci.yml` | DONE |
 | T6 | Test docs | Test | T1-T5 | `go/tests/README.md` | DONE |
 | S1 | Security audit of all v0.20 NEW code (SSRF surface, secrets, privacy of events.jsonl, dashboard XSS) | Security | A,B,M,T | `SECURITY_AUDIT_v020.md` | DONE — 0 CRITICAL, 0 new HIGH |
-| R1 | Enforce Constitution + exit criteria; SHIP/DO-NOT-SHIP | Reviewer | S1 | `REVIEW_v020.md` | TODO |
-| O1 | Final verify (`make build/test/e2e`), close phase, v0.21 kickoff | Orchestrator | R1 | `NEXT_v021.md` + manifest update | TODO |
+| R1 | Enforce Constitution + exit criteria; SHIP/DO-NOT-SHIP | Reviewer | S1 | `REVIEW_v020.md` | DONE — **SHIP** |
+| O1 | Final verify (`make build/test`), close phase, v0.21 kickoff | Orchestrator | R1 | `NEXT_v021.md` + manifest update | DONE |
 
 ---
 
