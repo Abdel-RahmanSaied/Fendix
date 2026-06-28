@@ -96,15 +96,17 @@ The roadmap's "build baseline infra" is **already ~60% built** as shell/Python h
 | B5 | Ground-truth vuln lists (v1, unauth-scoped, calibrate vs first run) | Benchmark | — | `benchmarks/targets/{dvwa,juiceshop}-known.json` | DONE |
 | B6 | Generate first committed baseline (live Docker run: DVWA + Juice Shop) | Benchmark | B1-B5 | `benchmarks/baselines/baseline.json` | DONE |
 
-### Baseline captured (v0.20, fendix v0.19.0-3-g5d999f6, 2026-06-28)
+### Baseline captured (v0.20, fendix v0.19.0-3-g5d999f6, 2026-06-28) — fully triaged
 
-| Target | Recall | TP | FP | FN | Duration | Precision | FPRate |
-|--------|--------|----|----|----|----------|-----------|--------|
-| dvwa (unauth DAST) | **100%** | 4 | 8 | 0 | 12.8s | 33.3%¹ | n/a² |
-| juiceshop (DAST) | **100%** | 4 | 13 | 0 | 28.6s | 23.5%¹ | n/a² |
-| owasp | — | — | — | — | — | SKIPPED (Java → v0.27) | — |
+Every finding triaged real-vs-false (ground truth v2.0), so **precision is now a real number**:
 
-¹ Precision is a **lower bound**: ground truth lists only 4 confirmed vulns each, so legitimate findings beyond that list count as "FP" (DVWA emitted 13 findings total, Juice Shop 17). Not a real false-positive count. ² FPRate undefined without a labeled negative corpus (TrueNeg=0). **Reliable v0.20 signals: recall (100%) + scan duration.** Future runs gate on >10% movement vs these stored raw counts.
+| Target | Precision | Recall | TP | FP | FN | F1 | Duration | FPRate |
+|--------|-----------|--------|----|----|----|----|----------|--------|
+| dvwa (unauth DAST) | **100%** | **100%** | 13 | 0 | 0 | 1.000 | 12.8s | n/a¹ |
+| juiceshop (DAST) | **70.6%** | **100%** | 12 | **5** | 0 | 0.828 | 28.6s | n/a¹ |
+| owasp | — | — | — | — | — | — | — | SKIPPED (Java → v0.27) |
+
+¹ FPRate undefined for DAST (no labeled negative corpus; TrueNeg=0). The 5 Juice Shop FPs are a **real Fendix accuracy bug** (see Pre-existing issues). Future runs gate on >10% movement vs these stored raw counts.
 | M1 | Instrument scan pipeline (scan/correlation/finding-count/mem) behind `FENDIX_METRICS` (default off → NoopCollector). **Extend, never rewrite `orchestrator.go`** | Metrics | A3 | `go/internal/engine/orchestrator.go` | TODO |
 | M2 | Static metrics dashboard (Chart.js CDN, dark, no build) | Metrics | A3 | `tools/dashboard/index.html` | TODO |
 | M3 | `fendix metrics show/export/clear` subcommand | Metrics | A3 | `go/cmd/fendix/metrics.go` (+wire `main.go`) | TODO |
@@ -131,6 +133,7 @@ Not fixed in v0.20 (v0.21 "Earn Trust" owns these). Already cataloged in
 - **GitHub-App token handling** — historical findings re: token in `.git/config`/process args (`internal/ghapp`, `cmd/fendix-app`). Confirm current state.
 - **Offline-mode hermeticity** — `--offline` claims "no outbound call"; verify dep scanners truly consult only the local snapshot (govulncheck still needs network → recorded SKIPPED).
 - **SSRF egress** — `netguard` + `--allow-private-targets` exist; confirm coverage of metadata IP / RFC1918 on attacker-controlled targets.
+- **NEW (found via benchmark triage 2026-06-28) — config-file-exposure false positives.** The exposure/configleak DAST check flags `/.env`, `/.git/HEAD`, `/.htaccess`, `/.htpasswd`, `/.DS_Store` as exposed on HTTP 200 **alone**, without validating the response body. On SPA catch-all servers (Express/Juice Shop, many Next/React deploys) every unknown path returns `index.html` (200), producing 5 spurious **CRITICAL** findings (all identical 3748-byte bodies). This is precisely the kind of high-severity FP that erodes trust — strong v0.21 candidate. **Fix idea:** require the response body to look like the target file (content-type / signature / not equal to the SPA fallback) before flagging. *Not fixed in v0.20 (Rule 1 — no scan-logic changes).*
 
 > v0.20 rule: **log only.** The final Orchestrator copies these into `NEXT_v021.md`.
 

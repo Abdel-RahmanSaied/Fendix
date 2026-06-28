@@ -1,26 +1,26 @@
 {
   "version": "v0.19.0-3-g5d999f6",
-  "created_at": "2026-06-28T08:54:20.228325Z",
+  "created_at": "2026-06-28T09:03:52.767019Z",
   "results": {
     "dvwa": {
       "target": "dvwa",
-      "true_pos": 4,
-      "false_pos": 8,
+      "true_pos": 13,
+      "false_pos": 0,
       "true_neg": 0,
       "false_neg": 0,
-      "scan_duration": 12824477333,
+      "scan_duration": 12816261709,
       "memory_peak_mb": 0,
-      "timestamp": "2026-06-28T11:53:26.629062+03:00"
+      "timestamp": "2026-06-28T12:03:20.754148+03:00"
     },
     "juiceshop": {
       "target": "juiceshop",
-      "true_pos": 4,
-      "false_pos": 13,
+      "true_pos": 12,
+      "false_pos": 5,
       "true_neg": 0,
       "false_neg": 0,
-      "scan_duration": 28567883792,
+      "scan_duration": 28629344917,
       "memory_peak_mb": 0,
-      "timestamp": "2026-06-28T11:54:20.228043+03:00"
+      "timestamp": "2026-06-28T12:03:52.766392+03:00"
     }
   }
 }

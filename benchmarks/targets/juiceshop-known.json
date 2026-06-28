@@ -1,36 +1,27 @@
 {
-  "version": "1.0",
+  "version": "2.0",
   "target": "juiceshop",
-  "_note": "v1 starting-point ground truth for an UNAUTHENTICATED black-box scan of OWASP Juice Shop. Types map to Fendix finding categories; locations match against endpoint/title. Calibrate against the first real `fendix benchmark run` (TASK B6) and expand as authenticated coverage lands.",
+  "_note": "Full triage of an UNAUTHENTICATED black-box scan of bkimminich/juice-shop:v17.1.1 (captured 2026-06-28, fendix v0.19.0-3). 17 findings reviewed: 12 legitimate (enumerated below), 5 FALSE POSITIVES (see _known_false_positives). Precision therefore ~70.6%. FPRate stays undefined for DAST (no labeled negative corpus).",
   "negatives": 0,
-  "vulnerabilities": [
+  "_known_false_positives": [
     {
-      "id": "JS_HEADERS_CSP",
-      "type": "headers",
-      "location": "Content-Security-Policy",
-      "severity": "MEDIUM",
-      "confirmed": true
-    },
-    {
-      "id": "JS_HEADERS_XCTO",
-      "type": "headers",
-      "location": "X-Content-Type-Options",
-      "severity": "LOW",
-      "confirmed": true
-    },
-    {
-      "id": "JS_HEADERS_XFO",
-      "type": "headers",
-      "location": "X-Frame-Options",
-      "severity": "MEDIUM",
-      "confirmed": true
-    },
-    {
-      "id": "JS_CORS",
-      "type": "cors",
-      "location": "",
-      "severity": "MEDIUM",
-      "confirmed": false
+      "ids": ["/.DS_Store", "/.env", "/.git/HEAD", "/.htaccess", "/.htpasswd"],
+      "category": "data_exposure",
+      "reason": "Juice Shop's Express SPA returns index.html (HTTP 200, identical 3748-byte body) for ANY unknown path. Fendix's config-file-exposure check keys on status 200 alone and does not validate that the body is the actual file, so it false-positives on SPA catch-all servers. Logged as a v0.21 trust issue in TASK_MANIFEST.md — NOT a real exposure."
     }
+  ],
+  "vulnerabilities": [
+    { "id": "JS_CORS_ANY", "type": "cors", "location": "", "severity": "MEDIUM", "confirmed": true },
+    { "id": "JS_HDR_CSP", "type": "headers", "location": "Content-Security-Policy", "severity": "MEDIUM", "confirmed": true },
+    { "id": "JS_HDR_COEP", "type": "headers", "location": "Cross-Origin-Embedder-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "JS_HDR_COOP", "type": "headers", "location": "Cross-Origin-Opener-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "JS_HDR_CORP", "type": "headers", "location": "Cross-Origin-Resource-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "JS_HDR_PERMISSIONS", "type": "headers", "location": "Permissions-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "JS_HDR_REFERRER", "type": "headers", "location": "Referrer-Policy", "severity": "LOW", "confirmed": true },
+    { "id": "JS_HDR_HSTS", "type": "headers", "location": "Strict-Transport-Security", "severity": "MEDIUM", "confirmed": true },
+    { "id": "JS_HDR_XCTO", "type": "headers", "location": "X-Content-Type-Options", "severity": "LOW", "confirmed": true },
+    { "id": "JS_HDR_XFO", "type": "headers", "location": "X-Frame-Options", "severity": "LOW", "confirmed": true },
+    { "id": "JS_RATE_LIMIT", "type": "rate_limiting", "location": "", "severity": "MEDIUM", "confirmed": true },
+    { "id": "JS_VERSION_DISCLOSURE", "type": "data_exposure", "location": "version", "severity": "INFO", "confirmed": true }
   ]
 }

@@ -1,36 +1,22 @@
 {
-  "version": "1.0",
+  "version": "2.0",
   "target": "dvwa",
-  "_note": "v1 starting-point ground truth for an UNAUTHENTICATED black-box scan of DVWA. Most DVWA bugs sit behind login + /setup.php DB init + a security-level cookie; an unauth scan reaches only the surface. Types map to Fendix finding categories. Calibrate against the first real `fendix benchmark run` (TASK B6); authenticated coverage is a v0.21+ enhancement.",
+  "_note": "Full triage of an UNAUTHENTICATED black-box scan of vulnerables/web-dvwa:latest (captured 2026-06-28, fendix v0.19.0-3). All 13 findings reviewed; every one is a legitimate observation on this deliberately-misconfigured app, so precision is 100% here. Authenticated DVWA coverage (SQLi/XSS/etc. behind login + /setup.php) is a v0.21+ enhancement. FPRate stays undefined for DAST (no labeled negative corpus).",
   "negatives": 0,
+  "_known_false_positives": [],
   "vulnerabilities": [
-    {
-      "id": "DVWA_HEADERS_CSP",
-      "type": "headers",
-      "location": "Content-Security-Policy",
-      "severity": "MEDIUM",
-      "confirmed": true
-    },
-    {
-      "id": "DVWA_HEADERS_XFO",
-      "type": "headers",
-      "location": "X-Frame-Options",
-      "severity": "MEDIUM",
-      "confirmed": true
-    },
-    {
-      "id": "DVWA_HEADERS_XCTO",
-      "type": "headers",
-      "location": "X-Content-Type-Options",
-      "severity": "LOW",
-      "confirmed": true
-    },
-    {
-      "id": "DVWA_COOKIE_FLAGS",
-      "type": "cookie",
-      "location": "",
-      "severity": "LOW",
-      "confirmed": true
-    }
+    { "id": "DVWA_COOKIE_HTTPONLY", "type": "cookie", "location": "HttpOnly", "severity": "MEDIUM", "confirmed": true },
+    { "id": "DVWA_COOKIE_SAMESITE", "type": "cookie", "location": "SameSite", "severity": "LOW", "confirmed": true },
+    { "id": "DVWA_HDR_CSP", "type": "headers", "location": "Content-Security-Policy", "severity": "MEDIUM", "confirmed": true },
+    { "id": "DVWA_HDR_COEP", "type": "headers", "location": "Cross-Origin-Embedder-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "DVWA_HDR_COOP", "type": "headers", "location": "Cross-Origin-Opener-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "DVWA_HDR_CORP", "type": "headers", "location": "Cross-Origin-Resource-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "DVWA_HDR_PERMISSIONS", "type": "headers", "location": "Permissions-Policy", "severity": "INFO", "confirmed": true },
+    { "id": "DVWA_HDR_REFERRER", "type": "headers", "location": "Referrer-Policy", "severity": "LOW", "confirmed": true },
+    { "id": "DVWA_HDR_HSTS", "type": "headers", "location": "Strict-Transport-Security", "severity": "MEDIUM", "confirmed": true },
+    { "id": "DVWA_HDR_XCTO", "type": "headers", "location": "X-Content-Type-Options", "severity": "LOW", "confirmed": true },
+    { "id": "DVWA_HDR_XFO", "type": "headers", "location": "X-Frame-Options", "severity": "LOW", "confirmed": true },
+    { "id": "DVWA_SERVER_DISCLOSURE", "type": "headers", "location": "Server version", "severity": "INFO", "confirmed": true },
+    { "id": "DVWA_RATE_LIMIT", "type": "rate_limiting", "location": "", "severity": "MEDIUM", "confirmed": true }
   ]
 }
