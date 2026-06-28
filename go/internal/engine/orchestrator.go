@@ -15,6 +15,7 @@ import (
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/metrics"
@@ -511,9 +512,14 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		findings = append(findings, o.runPlugins(ctx)...)
 	}
 
-	// 5. Correlate black-box and white-box findings
+	// 5. Correlate black-box and white-box findings. v0.22: correlation now
+	// runs through the Evidence layer (Correlation Service V2). The rendered
+	// projection is byte-identical to the legacy Correlate() — CorrelateEvidence
+	// wraps it via the lossless adapter — while carrying provenance + lineage
+	// on the Evidence for the future confidence engine. Lineage is dropped at
+	// the ToFindings boundary below, so the public output is unchanged.
 	if hasWhitebox(findings) && hasBlackbox(findings) {
-		findings = Correlate(findings)
+		findings = evidence.ToFindings(CorrelateEvidence(evidence.FromFindings(findings)))
 	}
 
 	// 5.4. Escalate non-correlated reachable findings (TASK-125).
