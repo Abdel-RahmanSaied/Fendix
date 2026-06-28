@@ -697,6 +697,16 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		"info", counts.Info,
 	)
 
+	// v0.24: human-readable decision summary — engineers see decisions, not
+	// just findings. STDERR only, so stdout stays a pure machine-readable
+	// report (`fendix scan | jq` and SARIF-upload pipelines are unaffected).
+	// Reads the same CountStatuses the JSON/SARIF reports use, so the blocking
+	// count is consistent with the exit code.
+	sc := reporters.CountStatuses(findings)
+	fmt.Fprintf(os.Stderr,
+		"\nDecision summary: %d findings — %d blocking, %d warning, %d informational (%d high-confidence)\n",
+		sc.Total, sc.Blocking, sc.Warning, sc.Informational, sc.Confirmed)
+
 	// Opt-in product metric for this scan (FENDIX_METRICS). NoopCollector
 	// when disabled — no I/O, negligible overhead.
 	o.recordScanMetric(duration, len(findings))
