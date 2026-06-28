@@ -16,6 +16,11 @@
 set -e
 
 REPO="${FENDIX_REPO:-Abdel-RahmanSaied/homebrew-fendix}"
+# SIGN_REPO is the repo whose GitHub Actions OIDC identity cosign-signed the
+# release. It is the MAIN engine repo (not the homebrew tap that may host the
+# download), so it must NOT default to $REPO. Matches the verify command in
+# README "Verifying signed releases". Overridable for forks.
+SIGN_REPO="${FENDIX_SIGN_REPO:-Abdel-RahmanSaied/Fendix}"
 INSTALL_DIR="${FENDIX_DIR:-/usr/local/bin}"
 
 # Colors (if terminal supports them)
@@ -82,7 +87,12 @@ install() {
         error "Download failed. Check that version ${VERSION} exists for ${OS}/${ARCH}."
     fi
 
-    # Verify checksum if available
+    # --- Verify the download (FAIL-CLOSED) -----------------------------------
+    # An install ABORTS unless the binary's SHA-256 matches the published
+    # checksum. Set FENDIX_ALLOW_UNVERIFIED=1 to bypass (NOT recommended —
+    # e.g. an air-gapped mirror without the .sha256 sidecar). Previously a
+    # missing hashing tool or a failed checksum download silently skipped
+    # verification (fail-open); that is the F-M2 trust gap this closes.
     CHECKSUM_URL="${URL}.sha256"
     if curl -fsSL -o "${TMP_DIR}/fendix.sha256" "$CHECKSUM_URL" 2>/dev/null; then
         info "Verifying checksum..."
@@ -91,14 +101,47 @@ install() {
             ACTUAL=$(sha256sum "${TMP_DIR}/fendix" | awk '{print $1}')
         elif command -v shasum >/dev/null 2>&1; then
             ACTUAL=$(shasum -a 256 "${TMP_DIR}/fendix" | awk '{print $1}')
+        elif [ "${FENDIX_ALLOW_UNVERIFIED:-}" = "1" ]; then
+            warn "No sha256sum/shasum found and FENDIX_ALLOW_UNVERIFIED=1 — installing UNVERIFIED."
+            ACTUAL=""
         else
-            warn "No sha256sum or shasum found — skipping checksum verification"
-            ACTUAL="$EXPECTED"
+            error "No sha256sum or shasum available to verify the download. Install one, or re-run with FENDIX_ALLOW_UNVERIFIED=1 to bypass (not recommended)."
         fi
+        if [ -n "$ACTUAL" ] && [ "$EXPECTED" != "$ACTUAL" ]; then
+            error "Checksum mismatch! Expected ${EXPECTED}, got ${ACTUAL}. Refusing to install — the download may be corrupt or tampered."
+        fi
+    elif [ "${FENDIX_ALLOW_UNVERIFIED:-}" = "1" ]; then
+        warn "Checksum file unavailable and FENDIX_ALLOW_UNVERIFIED=1 — installing UNVERIFIED."
+    else
+        error "Could not fetch the published checksum (${CHECKSUM_URL}). Refusing to install an unverified binary. Re-run with FENDIX_ALLOW_UNVERIFIED=1 to bypass (not recommended)."
+    fi
 
-        if [ "$EXPECTED" != "$ACTUAL" ]; then
-            error "Checksum mismatch! Expected ${EXPECTED}, got ${ACTUAL}"
+    # --- Optional cosign keyless signature verification (defense in depth) ----
+    # Releases >= v0.6.0-rc2 ship .sig/.crt sidecars (Sigstore Fulcio, bound to
+    # the GitHub Actions OIDC identity that built the release). If cosign is
+    # installed AND the sidecars exist, verify them and ABORT on failure. cosign
+    # is not required (the checksum already gates the install); its absence, or
+    # missing sidecars on older tags, is informational. Identity/issuer match
+    # README "Verifying signed releases" and release.yml.
+    if command -v cosign >/dev/null 2>&1; then
+        if curl -fsSL -o "${TMP_DIR}/fendix.sig" "${URL}.sig" 2>/dev/null \
+            && curl -fsSL -o "${TMP_DIR}/fendix.crt" "${URL}.crt" 2>/dev/null; then
+            info "Verifying cosign signature..."
+            if cosign verify-blob \
+                --certificate "${TMP_DIR}/fendix.crt" \
+                --signature "${TMP_DIR}/fendix.sig" \
+                --certificate-identity-regexp "^https://github.com/${SIGN_REPO}/" \
+                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                "${TMP_DIR}/fendix" >/dev/null 2>&1; then
+                info "cosign signature verified."
+            else
+                error "cosign signature verification FAILED. Refusing to install."
+            fi
+        else
+            info "cosign present but no .sig/.crt for this release (pre-v0.6.0-rc2?) — relying on the verified checksum."
         fi
+    else
+        info "cosign not installed — skipping signature check (checksum verified). See README 'Verifying signed releases' to verify manually."
     fi
 
     chmod +x "${TMP_DIR}/fendix"
