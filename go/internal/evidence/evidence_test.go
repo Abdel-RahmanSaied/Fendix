@@ -36,6 +36,10 @@ func fullyPopulatedFinding() models.Finding {
 		Route:             &models.Route{Method: "GET", Pattern: "/api/users", Handler: "views.list_users", File: "urls.py", Line: 7},
 		RouteConfirmed:    true,
 		ProvenPath:        true,
+		Status:            "BLOCK",
+		ConfidenceScore:   100,
+		ConfidenceBand:    "HIGH",
+		ConfidenceReasons: []string{"+35 base", "+25 cross-engine agreement"},
 	}
 }
 

@@ -51,6 +51,11 @@ type Evidence struct {
 	Route             *models.Route
 	RouteConfirmed    bool
 	ProvenPath        bool
+	// v0.24 decision-report fields (render block; project 1:1 onto Finding).
+	Status            string
+	ConfidenceScore   int
+	ConfidenceBand    string
+	ConfidenceReasons []string
 
 	// --- v0.22 provenance: INTERNAL ONLY, never serialized into Finding ---
 	// RuleID is the precise rule/check identity (e.g. a semgrep rule id or a
@@ -95,6 +100,10 @@ func FromFinding(f models.Finding) Evidence {
 		Route:             f.Route,
 		RouteConfirmed:    f.RouteConfirmed,
 		ProvenPath:        f.ProvenPath,
+		Status:            f.Status,
+		ConfidenceScore:   f.ConfidenceScore,
+		ConfidenceBand:    f.ConfidenceBand,
+		ConfidenceReasons: f.ConfidenceReasons,
 	}
 }
 
@@ -123,6 +132,10 @@ func (e Evidence) ToFinding() models.Finding {
 		Route:             e.Route,
 		RouteConfirmed:    e.RouteConfirmed,
 		ProvenPath:        e.ProvenPath,
+		Status:            e.Status,
+		ConfidenceScore:   e.ConfidenceScore,
+		ConfidenceBand:    e.ConfidenceBand,
+		ConfidenceReasons: e.ConfidenceReasons,
 	}
 }
 

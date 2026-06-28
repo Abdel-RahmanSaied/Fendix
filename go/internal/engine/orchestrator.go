@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/decision"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
@@ -658,6 +659,27 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// 11. Sanitize credentials from findings before rendering
 	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
 
+	// 11.5. v0.24 Decision Reports: derive a decision + deterministic
+	// confidence score for every FINAL finding (post escalate/dedup/
+	// consistency/sort/IDs/ignore/baseline/sanitize), and stamp them onto the
+	// findings so all reporters + the exit code read one source of truth.
+	// Confidence is scored from the Finding-projected Evidence; Payload/
+	// Response/Lineage (Evidence-internal) aren't on Finding, so a score may
+	// be a few points lower than on the pre-projection Evidence — deterministic
+	// and correct for the projected provenance (documented in confidence.go).
+	if o.cfg.FailOn != "" && models.SeverityRank(models.Severity(o.cfg.FailOn)) == 0 {
+		// Preserve the legacy invalid-threshold WARN (was in checkFailOn).
+		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
+	}
+	decisions := decision.DecideAll(evidence.FromFindings(findings), o.cfg.FailOn)
+	for i := range decisions {
+		d := decisions[i]
+		findings[i].Status = string(d.Status)
+		findings[i].ConfidenceScore = d.Score.Value
+		findings[i].ConfidenceBand = string(d.Score.Band)
+		findings[i].ConfidenceReasons = d.Score.Reasons
+	}
+
 	// 12. Render report
 	if err := o.renderReport(findings, meta); err != nil {
 		slog.Error("report rendering failed — check --output path is writable and --format is json/html/sarif", "error", err)
@@ -755,7 +777,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	}
 
 	// 8. Check fail-on threshold
-	return o.checkFailOn(findings)
+	// v0.24: exit code derives from the decision layer. Byte-identical to the
+	// legacy checkFailOn (locked by decision.TestExitCodeMatchesLegacyCheckFailOn)
+	// because `decisions` were built from the same finalized findings + FailOn.
+	return decision.ExitCode(decisions)
 }
 
 // recordScanMetric emits one structural MetricEvent for the completed scan.
@@ -809,26 +834,6 @@ func (o *Orchestrator) renderReport(findings []models.Finding, meta reporters.Sc
 	default:
 		return fmt.Errorf("unsupported format %q — use json, html, sarif, or pdf", o.cfg.Format)
 	}
-}
-
-// checkFailOn returns exit code 1 if findings exist at or above the --fail-on severity.
-func (o *Orchestrator) checkFailOn(findings []models.Finding) int {
-	if o.cfg.FailOn == "" {
-		return 0
-	}
-
-	threshold := models.SeverityRank(models.Severity(o.cfg.FailOn))
-	if threshold == 0 {
-		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
-		return 0
-	}
-
-	for _, f := range findings {
-		if models.SeverityRank(f.Severity) >= threshold {
-			return 1
-		}
-	}
-	return 0
 }
 
 // runPlugins discovers plugins under the configured roots and runs

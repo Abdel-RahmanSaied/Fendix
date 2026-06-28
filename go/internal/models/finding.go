@@ -136,6 +136,25 @@ type Finding struct {
 	// it" case and forces the finding to CRITICAL. Never set from
 	// RouteConfirmed alone.
 	ProvenPath bool `json:"proven_path,omitempty"`
+
+	// --- v0.24 Decision Reports (additive, omitempty) -------------------
+	// These surface the internal Decision + Confidence Engine in the public
+	// report. Stamped once by the orchestrator from the finalized finding
+	// set; absent (and byte-identical to pre-v0.24) when a reporter is
+	// called without the orchestrator's decision pass.
+	//
+	// Status is the decision verdict: BLOCK / WARN / INFO.
+	Status string `json:"status,omitempty"`
+	// ConfidenceScore is the deterministic 0–100 confidence score (v0.23).
+	ConfidenceScore int `json:"confidence_score,omitempty"`
+	// ConfidenceBand is the score-derived HIGH/MEDIUM/LOW band. It is
+	// intentionally distinct from the existing `confidence` enum (which
+	// scanners/correlation set): `confidence` is unchanged for backward
+	// compat; `confidence_band` is the v0.23 scorer's bucket and may equal it.
+	ConfidenceBand string `json:"confidence_band,omitempty"`
+	// ConfidenceReasons is the plain-text, per-rule breakdown of the score
+	// (the "no black boxes" contract).
+	ConfidenceReasons []string `json:"confidence_reasons,omitempty"`
 }
 
 // SeverityRank returns a numeric rank for severity comparison.
