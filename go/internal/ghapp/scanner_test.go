@@ -45,6 +45,46 @@ func TestBasicAuthToken(t *testing.T) {
 	}
 }
 
+// F-H3 regression lock: the installation token must never survive into the
+// scan/report subprocess environment (which may run untrusted fork-PR code).
+// scrubTokenFromEnv drops any entry whose VALUE contains the token, matched
+// on value (not key name).
+func TestScrubTokenFromEnv(t *testing.T) {
+	const token = "ghs_secrettoken123"
+	env := []string{
+		"PATH=/usr/bin",
+		"GITHUB_TOKEN=" + token,              // dropped: value is the token
+		"LEAKED=prefix-" + token + "-suffix", // dropped: value contains the token
+		"HOME=/home/runner",
+		token + "=harmless", // KEPT: token is the key, value is clean
+	}
+	got := scrubTokenFromEnv(env, token)
+
+	for _, e := range got {
+		if i := strings.IndexByte(e, '='); i >= 0 && strings.Contains(e[i+1:], token) {
+			t.Errorf("scrubbed env still leaks the token in a value: %q", e)
+		}
+	}
+	// The clean entries (including the one keyed by the token) survive.
+	want := map[string]bool{"PATH=/usr/bin": true, "HOME=/home/runner": true, token + "=harmless": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries %v, want %d", len(got), got, len(want))
+	}
+	for _, e := range got {
+		if !want[e] {
+			t.Errorf("unexpected entry survived: %q", e)
+		}
+	}
+}
+
+// scrubTokenFromEnv with an empty token must be a no-op (nothing to scrub).
+func TestScrubTokenFromEnv_EmptyToken(t *testing.T) {
+	env := []string{"A=1", "B=2"}
+	if got := scrubTokenFromEnv(env, ""); len(got) != 2 {
+		t.Errorf("empty token should not scrub; got %v", got)
+	}
+}
+
 func TestValidateHTTPSCloneURL(t *testing.T) {
 	if err := validateHTTPSCloneURL("https://github.com/owner/repo.git"); err != nil {
 		t.Errorf("https URL should validate, got: %v", err)
