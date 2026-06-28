@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -505,5 +506,26 @@ func TestMapResult_TitleAtMost120Chars(t *testing.T) {
 	}
 	if len(f.Title) > 120 {
 		t.Errorf("title length %d; want ≤120", len(f.Title))
+	}
+}
+
+// TestScanWithAllowlist_EmptyReturnsNothingWithoutRunning is the B3/S7 guard:
+// an empty (non-nil) allowlist must return nothing WITHOUT looking up or
+// running semgrep — otherwise no --include is added and the whole tree is
+// scanned (the diff footgun).
+func TestScanWithAllowlist_EmptyReturnsNothingWithoutRunning(t *testing.T) {
+	dir := t.TempDir()
+	origLook := LookPath
+	called := false
+	LookPath = func(string) (string, error) { called = true; return "", errors.New("must not be called") }
+	t.Cleanup(func() { LookPath = origLook })
+
+	allow := gitdiff.NewAllowlist(dir, nil) // non-nil, zero files
+	got, err := ScanWithAllowlist(context.Background(), dir, allow)
+	if err != nil || got != nil {
+		t.Fatalf("empty allowlist: got (%v, %v), want (nil, nil)", got, err)
+	}
+	if called {
+		t.Error("semgrep was looked up despite an empty allowlist (would scan the whole tree)")
 	}
 }

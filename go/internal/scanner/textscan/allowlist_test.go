@@ -74,6 +74,30 @@ func TestScanWithAllowlist_EmptyFindsNothing(t *testing.T) {
 	}
 }
 
+// TestScanWithAllowlist_FastPathPrunesVendor is the B3/S8 parity guard: the
+// diff-aware fast path must still skip files under a pruned dir (vendor/),
+// exactly as the full walk does — even when such a file is in the allowlist
+// (a committed vendor/ change).
+func TestScanWithAllowlist_FastPathPrunesVendor(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.go", vulnGo)
+	writeFile(t, root, "vendor/v.go", vulnGo) // committed vendor → must be pruned
+
+	allow := gitdiff.NewAllowlist(root, []string{"a.go", filepath.Join("vendor", "v.go")})
+	scoped, err := ScanWithAllowlist(root, AllRules(), allow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) == 0 {
+		t.Fatal("expected findings from a.go")
+	}
+	for _, f := range scoped {
+		if f.Line == nil || filepath.Base(stripLine(*f.Line)) != "a.go" {
+			t.Errorf("fast path scanned a pruned/out-of-scope file: %+v", f.Line)
+		}
+	}
+}
+
 // stripLine drops a trailing ":<lineno>" from a "file:line" endpoint string.
 func stripLine(s string) string {
 	for i := len(s) - 1; i >= 0; i-- {

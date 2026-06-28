@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -704,5 +705,53 @@ func TestScan_DoesNotOverSuppressRealSecrets(t *testing.T) {
 	}
 	if _, ok := idsFound(fs)["SEC-AWS_ACCESS_KEY"]; !ok {
 		t.Fatalf("AWS example key must still be detected (not over-suppressed); got %+v", fs)
+	}
+}
+
+// TestScanWithAllowlist_FastPathParity is the B3/S8 safety net: the diff-aware
+// fast path (scan only allowlisted files) must produce the SAME findings as the
+// full walk for those files — and must still prune skipDirs (a committed
+// vendor/ file the walk never reaches stays unscanned).
+func TestScanWithAllowlist_FastPathParity(t *testing.T) {
+	dir := t.TempDir()
+	secret := `AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"`
+	changed := writeFile(t, dir, "app.py", secret)
+	writeFile(t, dir, "vendor/dep.py", secret) // committed vendor → must be skipped
+	writeFile(t, dir, "untouched.py", secret)  // not in allowlist → must be ignored
+
+	allow := gitdiff.NewAllowlist(dir, []string{changed, filepath.Join(dir, "vendor/dep.py")})
+	fast, err := ScanWithAllowlist(context.Background(), dir, allow)
+	if err != nil {
+		t.Fatalf("fast path: %v", err)
+	}
+
+	// Every finding must be from app.py — vendor pruned, untouched out of scope.
+	for _, f := range fast {
+		if !strings.Contains(f.Endpoint, "app.py") {
+			t.Errorf("fast path scanned an out-of-scope/pruned file: %s", f.Endpoint)
+		}
+	}
+	if len(fast) == 0 {
+		t.Fatal("fast path found nothing; expected the app.py secret")
+	}
+
+	// Parity: a full walk filtered to app.py yields the same finding IDs.
+	full, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("full scan: %v", err)
+	}
+	fullApp := map[string]struct{}{}
+	for _, f := range full {
+		if strings.Contains(f.Endpoint, "app.py") {
+			fullApp[f.ID] = struct{}{}
+		}
+	}
+	for id := range idsFound(fast) {
+		if _, ok := fullApp[id]; !ok {
+			t.Errorf("fast path produced %s that the walk did not", id)
+		}
+	}
+	if len(fullApp) != len(idsFound(fast)) {
+		t.Errorf("finding-ID count diverged: fast=%d walk(app.py)=%d", len(idsFound(fast)), len(fullApp))
 	}
 }

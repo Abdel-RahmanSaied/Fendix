@@ -336,6 +336,39 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 
 	var findings []evidence.Evidence
 
+	// A diff that matched zero scannable files → nothing to do. Guard here too
+	// (the orchestrator also short-circuits) since this is exported.
+	if allow.Empty() {
+		return nil, nil
+	}
+
+	// Diff-aware fast path: when the allowlist names specific changed files,
+	// scan exactly those — O(changed files) — instead of walking the whole
+	// tree to filter it down to them. Parity with the walk below is preserved:
+	// the same skipDirs prune is applied (a committed vendor/ file the walk
+	// would skip stays skipped) and directories are excluded via Lstat.
+	// (Empty allowlists are short-circuited by the orchestrator.)
+	if allow != nil && !allow.Empty() {
+		for _, path := range allow.AbsPaths() {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if underSkipDir(absRoot, path) {
+				continue
+			}
+			info, err := os.Lstat(path)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			fileFindings, err := scanFile(path, absRoot, fs.FileInfoToDirEntry(info))
+			if err != nil {
+				continue
+			}
+			findings = append(findings, fileFindings...)
+		}
+		return findings, nil
+	}
+
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErrIn error) error {
 		if walkErrIn != nil {
 			// Permissions errors / vanished files — skip but keep walking.
@@ -386,6 +419,24 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 // any findings it produces. The file is silently skipped if it isn't
 // readable, exceeds maxFileBytes, or has an extension that's not in
 // scanExtensions (unless it's a .env-style file).
+// underSkipDir reports whether any directory component of abs (relative to
+// root) is a pruned directory. The diff-aware fast path uses it to preserve
+// parity with the walk, which prunes skipDirs subtrees (e.g. a committed
+// vendor/ file the walk never reaches).
+func underSkipDir(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, part := range parts[:len(parts)-1] { // dir components only, not the file
+		if _, skip := skipDirs[part]; skip {
+			return true
+		}
+	}
+	return false
+}
+
 func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 	name := d.Name()
 	envFile := isEnvFile(name)

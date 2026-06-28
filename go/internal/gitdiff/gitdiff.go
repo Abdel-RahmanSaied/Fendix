@@ -164,6 +164,22 @@ func (a *Allowlist) Len() int {
 	return len(a.abs)
 }
 
+// AbsPaths returns the allowlist entries as cleaned absolute paths, sorted.
+// The diff-aware scanners use it to scan only the changed files directly —
+// O(changed files) — instead of walking the whole tree to filter down to
+// them. A nil/empty allowlist yields nil.
+func (a *Allowlist) AbsPaths() []string {
+	if a == nil {
+		return nil
+	}
+	out := make([]string, 0, len(a.abs))
+	for abs := range a.abs {
+		out = append(out, abs)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // RelPaths returns the allowlist entries relative to root, sorted. Used to
 // build the semgrep `--include` glob set and for diagnostic logging. A nil
 // or empty allowlist yields an empty slice.

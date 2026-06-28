@@ -88,7 +88,6 @@ func Scan(rootDir string, rules []Rule) ([]evidence.Evidence, error) {
 // skip-dir pruning still happens) but non-allowlisted files are skipped
 // before they are read, keeping diff scans sub-second on large trees.
 func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) ([]evidence.Evidence, error) {
-	const maxFileBytes = 1 << 20 // 1 MiB
 	var findings []evidence.Evidence
 
 	if rootDir == "" {
@@ -96,6 +95,31 @@ func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) (
 	}
 	if _, err := os.Stat(rootDir); err != nil {
 		return nil, fmt.Errorf("textscan: %s: %w", rootDir, err)
+	}
+
+	// A diff that matched zero scannable files → nothing to do. Guard here too
+	// (the orchestrator also short-circuits) since this is exported.
+	if allow.Empty() {
+		return nil, nil
+	}
+
+	// Diff-aware fast path: when the allowlist names specific changed files,
+	// scan exactly those — O(changed files) — instead of walking the whole
+	// tree to filter down to them. Parity with the walk: skip symlinks and any
+	// file under a pruned dir, then run the same scanCandidate body. (Empty
+	// allowlists are short-circuited by the orchestrator.)
+	if allow != nil && !allow.Empty() {
+		for _, path := range allow.AbsPaths() {
+			info, err := os.Lstat(path)
+			if err != nil || info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+				continue
+			}
+			if underSkipDir(rootDir, path) {
+				continue
+			}
+			findings = append(findings, scanCandidate(rootDir, path, fs.FileInfoToDirEntry(info), rules)...)
+		}
+		return findings, nil
 	}
 
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, walkErr error) error {
@@ -113,12 +137,7 @@ func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) (
 		}
 		if d.IsDir() {
 			// Skip noisy build / vendor / VCS dirs.
-			name := d.Name()
-			if name == ".git" || name == "node_modules" || name == "vendor" ||
-				name == "__pycache__" || name == ".venv" || name == "build" ||
-				name == "dist" || name == ".pytest_cache" ||
-				name == ".next" || name == ".nuxt" || name == ".svelte-kit" ||
-				name == ".cache" || name == "target" {
+			if _, skip := textSkipDirs[d.Name()]; skip {
 				return filepath.SkipDir
 			}
 			return nil
@@ -128,42 +147,73 @@ func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) (
 		if !allow.Allows(path) {
 			return nil
 		}
-		// Find which rules apply to this path.
-		applicable := make([]*Rule, 0, len(rules))
-		for i := range rules {
-			if rules[i].Applies != nil && rules[i].Applies(path) {
-				applicable = append(applicable, &rules[i])
-			}
-		}
-		if len(applicable) == 0 {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		if info.Size() > maxFileBytes {
-			return nil
-		}
-		// Skip binary blobs. Reading PNGs/jars/sqlite line-by-line
-		// against every regex is CPU waste and produces false-positive
-		// AKIA hits in random binary noise. We sniff the first 512
-		// bytes here; the AWS-key + similar rules then never run on
-		// non-text.
-		if looksBinary, _ := isBinaryFile(path); looksBinary {
-			return nil
-		}
-		got, err := scanFile(rootDir, path, applicable)
-		if err != nil {
-			return nil
-		}
-		findings = append(findings, got...)
+		findings = append(findings, scanCandidate(rootDir, path, d, rules)...)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", rootDir, err)
 	}
 	return findings, nil
+}
+
+// textSkipDirs are the build / vendor / VCS directories pruned from the scan.
+// Single-sourced so the full walk and the diff-aware fast path agree on what
+// to skip.
+var textSkipDirs = map[string]struct{}{
+	".git": {}, "node_modules": {}, "vendor": {}, "__pycache__": {},
+	".venv": {}, "build": {}, "dist": {}, ".pytest_cache": {},
+	".next": {}, ".nuxt": {}, ".svelte-kit": {}, ".cache": {}, "target": {},
+}
+
+const textMaxFileBytes = 1 << 20 // 1 MiB
+
+// scanCandidate runs the applicable rules against a single file that has
+// already passed the symlink / dir / allowlist gates. Shared by the full walk
+// and the diff-aware fast path so both apply identical rule-applicability,
+// size, and binary-sniff logic — no parity drift between the two code paths.
+func scanCandidate(rootDir, path string, d fs.DirEntry, rules []Rule) []evidence.Evidence {
+	applicable := make([]*Rule, 0, len(rules))
+	for i := range rules {
+		if rules[i].Applies != nil && rules[i].Applies(path) {
+			applicable = append(applicable, &rules[i])
+		}
+	}
+	if len(applicable) == 0 {
+		return nil
+	}
+	info, err := d.Info()
+	if err != nil || info.Size() > textMaxFileBytes {
+		return nil
+	}
+	// Skip binary blobs. Reading PNGs/jars/sqlite line-by-line against every
+	// regex is CPU waste and produces false-positive AKIA hits in binary
+	// noise; sniff the first 512 bytes so the AWS-key et al. rules never run
+	// on non-text.
+	if looksBinary, _ := isBinaryFile(path); looksBinary {
+		return nil
+	}
+	got, err := scanFile(rootDir, path, applicable)
+	if err != nil {
+		return nil
+	}
+	return got
+}
+
+// underSkipDir reports whether any directory component of abs (relative to
+// root) is a pruned directory — preserving walk parity for the diff-aware
+// fast path (e.g. a committed vendor/ file the walk would never reach).
+func underSkipDir(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, part := range parts[:len(parts)-1] { // dir components only, not the file
+		if _, skip := textSkipDirs[part]; skip {
+			return true
+		}
+	}
+	return false
 }
 
 // dockerfileHasUSER reports whether a Dockerfile-shaped file

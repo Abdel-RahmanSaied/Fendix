@@ -104,9 +104,9 @@ func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 //
 // semgrep's --include takes a glob/path relative to the scan root; passing
 // the exact relative path of each changed file restricts the run to those
-// files. An empty (non-nil) allowlist would make semgrep scan everything
-// (no --include narrows nothing), so the caller short-circuits that case;
-// here we simply skip adding includes when there are no relative paths.
+// files. An empty (non-nil) allowlist scopes to zero files, so we return
+// nothing rather than run semgrep with no --include — which would scan the
+// WHOLE tree, the exact opposite of the diff intent (the historical footgun).
 func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]evidence.Evidence, error) {
 	if codePath == "" {
 		return nil, ErrCodePathMissing
@@ -118,6 +118,13 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 		return nil, fmt.Errorf("semgrep: stat %q: %w", codePath, err)
 	} else if !info.IsDir() {
 		return nil, fmt.Errorf("semgrep: %q is not a directory", codePath)
+	}
+
+	// A diff that matched zero scannable files → nothing to do. Guard here too
+	// (not just in the orchestrator) because this function is exported and
+	// callable directly; without it an empty allowlist scans everything.
+	if allow.Empty() {
+		return nil, nil
 	}
 
 	bin, err := LookPath("semgrep")

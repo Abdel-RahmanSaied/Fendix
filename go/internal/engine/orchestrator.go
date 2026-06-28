@@ -307,9 +307,21 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			allow = gitdiff.NewAllowlist(o.cfg.CodePath, changed)
 			slog.Info("diff-aware scan: scoped to changed files",
 				"files", allow.Len(), "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
-			if allow.Empty() {
-				slog.Info("diff-aware scan: no changed files — whitebox scanners will report nothing")
-			}
+		}
+	}
+
+	// Diff-aware short-circuit: an empty (non-nil) allowlist means the diff
+	// matched zero scannable files, so the file-walking whitebox scanners
+	// (secrets/semgrep/textscan) have nothing to look at. Skip them outright
+	// instead of walking the whole tree to filter everything out — this turns
+	// a no-code-change commit's scan into ~git-diff time.
+	diffEmpty := o.cfg.CodePath != "" && allow != nil && allow.Empty()
+	if diffEmpty {
+		slog.Info("diff-aware scan: no changed files — skipping whitebox file scanners")
+		scanStatus.skip("secrets", "diff: no changed files")
+		scanStatus.skip("textscan", "diff: no changed files")
+		if !o.cfg.Fast {
+			scanStatus.skip("semgrep", "diff: no changed files")
 		}
 	}
 
@@ -425,7 +437,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// Python implementation so any overlap (e.g. user explicitly passes
 	// --checks secrets) dedupes cleanly. No network access — runs in
 	// offline mode unchanged.
-	if o.cfg.CodePath != "" {
+	if o.cfg.CodePath != "" && !diffEmpty {
 		secretEvidence, err := secrets.ScanWithAllowlist(ctx, o.cfg.CodePath, allow)
 		switch {
 		case err == nil:
@@ -450,7 +462,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// graceful absence matches the existing posture for missing
 	// Python. Same SEC-* IDs as the Python wrapper so dedup absorbs
 	// any overlap when a user opts the Python path back in.
-	if o.cfg.CodePath != "" && !o.cfg.Fast {
+	if o.cfg.CodePath != "" && !o.cfg.Fast && !diffEmpty {
 		semgrepFindings, err := semgrep.ScanWithAllowlist(ctx, o.cfg.CodePath, allow)
 		switch {
 		case err == nil:
@@ -473,7 +485,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// for Go, JS/TS, Dockerfile, and Kubernetes YAML. Pure stdlib,
 	// no external tooling required. Fast (<1s on typical repos)
 	// because it's filename-extension-routed line scanning.
-	if o.cfg.CodePath != "" {
+	if o.cfg.CodePath != "" && !diffEmpty {
 		textFindings, err := textscan.ScanWithAllowlist(o.cfg.CodePath, textscan.AllRules(), allow)
 		switch {
 		case err != nil:
