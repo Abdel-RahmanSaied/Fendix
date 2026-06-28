@@ -186,6 +186,46 @@ func TestCheckConfigLeak_FiresOnGitInternals(t *testing.T) {
 	}
 }
 
+// TestCheckConfigLeak_SkipsSPAHTMLFallback reproduces the v0.20 Juice Shop
+// false positive: an SPA / catch-all server answers 200 with index.html for
+// EVERY unknown path, including /.env. A status-only check fired a phantom
+// CRITICAL; the body (HTML) proves it is a framework fallback, not a leak.
+func TestCheckConfigLeak_SkipsSPAHTMLFallback(t *testing.T) {
+	srv := serveConfigLeak(t, map[string]string{
+		"/.env": "<!DOCTYPE html><html><head><title>App</title></head><body>SPA</body></html>",
+	}, http.StatusOK)
+
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
+	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: srv.URL + "/.env"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Errorf("got %d findings; want 0 — an HTML 200 is an SPA catch-all, not a real .env leak", len(findings))
+	}
+}
+
+// TestCheckConfigLeak_SkipsExplicitHTMLContentType covers the header path:
+// even when the body isn't obviously HTML, a text/html Content-Type marks
+// the response as a framework fallback.
+func TestCheckConfigLeak_SkipsExplicitHTMLContentType(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.git/HEAD", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("app shell"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
+	ep := Endpoint{Method: "GET", Path: "/.git/HEAD", FullURL: srv.URL + "/.git/HEAD"}
+
+	findings := CheckConfigLeak(context.Background(), cfg, ep)
+	if len(findings) != 0 {
+		t.Errorf("got %d findings; want 0 — text/html Content-Type means SPA fallback", len(findings))
+	}
+}
+
 func TestCheckConfigLeak_HandlesEmptyURL(t *testing.T) {
 	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	ep := Endpoint{Method: "GET", Path: "/.env", FullURL: ""}

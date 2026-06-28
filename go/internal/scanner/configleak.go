@@ -136,14 +136,31 @@ func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpo
 		return nil
 	}
 
-	// 4.15: DO NOT capture the served-file body in evidence. The 200
-	// status + path is sufficient proof of the leak, and persisting a
-	// leaked secret-file body into a finding is itself a leak (and the
-	// hand-rolled redactor was broken for JSON / compound .env keys).
-	// We measure the body length (bounded read) for a size descriptor
-	// only — the bytes are discarded, never stored.
-	const bodyLenCap = 1 << 20 // 1 MiB ceiling for the size probe
-	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, bodyLenCap))
+	// Read a bounded prefix of the body: the first sniffLen bytes feed an
+	// HTML/SPA-fallback check; the rest is drained only for the size
+	// descriptor. The bytes are NEVER stored (persisting a leaked
+	// secret-file body would itself be a leak; the 200 + path is the proof).
+	const (
+		bodyLenCap = 1 << 20 // 1 MiB ceiling for the size probe
+		sniffLen   = 512     // http.DetectContentType inspects ≤512 bytes
+	)
+	head := make([]byte, sniffLen)
+	hn, _ := io.ReadFull(resp.Body, head)
+	head = head[:hn]
+	rest, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, bodyLenCap))
+	n := int64(hn) + rest
+
+	// SPA / catch-all guard. Single-page-app and framework servers
+	// (Express, Next, Vite, CRA, …) return their index.html with HTTP 200
+	// for EVERY unknown path, so a status-only check fires a phantom
+	// CRITICAL on every such app (found via the v0.20 Juice Shop baseline:
+	// 5 identical text/html index.html responses on /.env, /.git/HEAD, …).
+	// A genuinely exposed .env / .git/HEAD / .htpasswd is served as
+	// text/plain or octet-stream, never as an HTML document — so an HTML
+	// body means "framework fallback", not "config file served".
+	if looksLikeHTML(resp.Header.Get("Content-Type"), head) {
+		return nil
+	}
 
 	line := endpoint.Path
 	return []models.Finding{{
@@ -208,4 +225,19 @@ func normalizeForConfigLeak(p string) string {
 		p = p[:i]
 	}
 	return p
+}
+
+// looksLikeHTML reports whether a 200 response is an HTML document — i.e.
+// a single-page-app / framework catch-all fallback rather than a served
+// config file. It trusts an explicit text/html Content-Type, and falls
+// back to sniffing the body prefix (for servers that omit the header) via
+// the same detector the net/http stdlib uses.
+func looksLikeHTML(contentType string, head []byte) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/html") {
+		return true
+	}
+	if len(head) == 0 {
+		return false
+	}
+	return strings.Contains(http.DetectContentType(head), "text/html")
 }
