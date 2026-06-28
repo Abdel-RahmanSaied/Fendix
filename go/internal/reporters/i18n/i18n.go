@@ -70,6 +70,8 @@ type Strings struct {
 	FieldReferences    string
 	FieldLocation      string
 	ConfidenceLabel    string // appears as "{Source} · {Confidence} confidence"
+	StatusBlocking     string // v0.24 decision card
+	StatusConfirmed    string // v0.24 decision card
 	ScanStartedLabel   string
 	DurationLabel      string
 	ModeLabel          string

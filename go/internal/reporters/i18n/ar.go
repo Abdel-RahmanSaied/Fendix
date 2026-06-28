@@ -70,6 +70,8 @@ func Arabic() Strings {
 		FieldReferences:    "المراجع",                     // TRANSLATION_REVIEW_NEEDED
 		FieldLocation:      "الموقع",                      // TRANSLATION_REVIEW_NEEDED
 		ConfidenceLabel:    "ثقة",                         // TRANSLATION_REVIEW_NEEDED
+		StatusBlocking:     "حاجب",                        // TRANSLATION_REVIEW_NEEDED
+		StatusConfirmed:    "مؤكد",                        // TRANSLATION_REVIEW_NEEDED
 		ScanStartedLabel:   "بدأ الفحص:",                  // TRANSLATION_REVIEW_NEEDED
 		DurationLabel:      "المدة:",                      // TRANSLATION_REVIEW_NEEDED
 		ModeLabel:          "الوضع:",                      // TRANSLATION_REVIEW_NEEDED

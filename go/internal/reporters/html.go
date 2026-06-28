@@ -37,6 +37,8 @@ h1{font-size:1.75rem;margin-bottom:.5rem;color:#f8fafc}
 .stat.medium{background:#422006;border:1px solid #d97706;color:#fcd34d}
 .stat.low{background:#1e3a5f;border:1px solid #3b82f6;color:#93c5fd}
 .stat.info{background:#1e293b;border:1px solid #475569;color:#94a3b8}
+.stat.block{background:#450a0a;border:1px solid #ef4444;color:#fecaca}
+.stat.confirmed{background:#052e16;border:1px solid #22c55e;color:#86efac}
 .toolbar{display:flex;gap:.75rem;margin-bottom:1rem;align-items:center;flex-wrap:wrap}
 .toolbar button{background:#334155;color:#e2e8f0;border:1px solid #475569;border-radius:.5rem;padding:.4rem 1rem;font-size:.8rem;cursor:pointer;transition:background .15s}
 .toolbar button:hover{background:#475569}
@@ -100,6 +102,8 @@ body{background:#fff;color:#1e293b;padding:1rem}
 <div class="stat medium"><div class="count">{{.Summary.Medium}}</div><div class="label">{{.I18n.SeverityMedium}}</div></div>
 <div class="stat low"><div class="count">{{.Summary.Low}}</div><div class="label">{{.I18n.SeverityLow}}</div></div>
 <div class="stat info"><div class="count">{{.Summary.Info}}</div><div class="label">{{.I18n.SeverityInfo}}</div></div>
+<div class="stat block"><div class="count">{{.Decisions.Blocking}}</div><div class="label">{{.I18n.StatusBlocking}}</div></div>
+<div class="stat confirmed"><div class="count">{{.Decisions.Confirmed}}</div><div class="label">{{.I18n.StatusConfirmed}}</div></div>
 </div>
 <div class="toolbar">
 <span class="sort-label">{{.I18n.SortByLabel}}</span>
@@ -122,7 +126,7 @@ body{background:#fff;color:#1e293b;padding:1rem}
 <div class="finding-body">
 <div class="field"><div class="field-label">{{$.I18n.FieldEvidence}}</div><div class="evidence">{{.Evidence}}</div></div>
 <div class="field"><div class="field-label">{{$.I18n.FieldFix}}</div><div class="field-value">{{.Fix}}</div></div>
-<div class="field"><div class="field-label">{{$.I18n.FieldSource}}</div><div class="field-value">{{.Source}} &middot; {{.Confidence}} {{$.I18n.ConfidenceLabel}}</div></div>
+<div class="field"><div class="field-label">{{$.I18n.FieldSource}}</div><div class="field-value">{{.Source}} &middot; {{.Confidence}} {{$.I18n.ConfidenceLabel}}{{if .ConfidenceScore}} ({{.ConfidenceScore}}/100){{end}}{{if .Status}} &middot; {{.Status}}{{end}}</div></div>
 <div class="field"><div class="field-label">{{$.I18n.FieldCategory}}</div><div class="field-value">{{.Category}}</div></div>
 {{if gt (len .AffectedEndpoints) 1}}<div class="field"><div class="field-label">{{$.I18n.FieldAffected}} ({{len .AffectedEndpoints}})</div><div class="field-value"><ul class="affected-list">{{range .AffectedEndpoints}}<li>{{.}}</li>{{end}}</ul></div></div>{{end}}
 {{if .Reachable}}<div class="field"><div class="field-label">{{$.I18n.FieldReachable}} ({{len .TaintChain}})</div><div class="field-value"><ol class="affected-list">{{range .TaintChain}}<li><code>{{.File}}:{{.Line}}</code> &mdash; <code>{{.Expr}}</code></li>{{end}}</ol></div></div>{{end}}
@@ -237,11 +241,12 @@ func RenderHTMLOpts(w io.Writer, findings []models.Finding, meta ScanMetadata, o
 	findings = NeutralizeFindings(findings)
 	data := htmlTemplateData{
 		JSONReport: JSONReport{
-			Metadata: meta,
-			Summary:  CountSeverities(findings),
-			Sources:  CountSources(findings),
-			Total:    len(findings),
-			Findings: findings,
+			Metadata:  meta,
+			Summary:   CountSeverities(findings),
+			Sources:   CountSources(findings),
+			Total:     len(findings),
+			Decisions: CountStatuses(findings),
+			Findings:  findings,
 		},
 		Lang: lang,
 		RTL:  i18n.IsRTL(lang),

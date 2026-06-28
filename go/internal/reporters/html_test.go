@@ -420,3 +420,21 @@ func TestRenderHTML_SingletonHasNoAffectedSection(t *testing.T) {
 		t.Error("singleton finding should not render 'Affected endpoints' section")
 	}
 }
+
+// TestRenderHTML_DecisionCards covers the v0.24 HTML: a Blocking decision
+// card + per-finding confidence score appear.
+func TestRenderHTML_DecisionCards(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "x", Severity: models.SeverityHigh, Category: "c", Status: "BLOCK", ConfidenceScore: 80, ConfidenceBand: "HIGH"},
+	}
+	if err := RenderHTML(&buf, findings, ScanMetadata{}); err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"stat block", "Blocking", "Confirmed", "(80/100)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("HTML missing %q", want)
+		}
+	}
+}

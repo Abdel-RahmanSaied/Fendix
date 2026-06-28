@@ -84,6 +84,10 @@ type SARIFResultProperties struct {
 	RouteMethod  string `json:"route_method,omitempty"`
 	RoutePattern string `json:"route_pattern,omitempty"`
 	RouteHandler string `json:"route_handler,omitempty"`
+	// v0.24 decision-report fields.
+	Status          string `json:"status,omitempty"`
+	ConfidenceScore int    `json:"confidence_score,omitempty"`
+	ConfidenceBand  string `json:"confidence_band,omitempty"`
 }
 
 // SARIFCodeFlow groups one or more threadFlows (SARIF §3.36). A taint chain
@@ -196,12 +200,15 @@ func taintChainToCodeFlow(chain []models.TaintLink) *SARIFCodeFlow {
 // flag, route binding) into a result's properties. Returns nil when there's
 // nothing to record so the field stays omitted.
 func sarifResultProperties(f models.Finding) *SARIFResultProperties {
-	if f.SourceTier == "" && !f.Reachable && f.Route == nil {
+	if f.SourceTier == "" && !f.Reachable && f.Route == nil && f.Status == "" && f.ConfidenceScore == 0 {
 		return nil
 	}
 	p := &SARIFResultProperties{
-		SourceTier: string(f.SourceTier),
-		Reachable:  f.Reachable,
+		SourceTier:      string(f.SourceTier),
+		Reachable:       f.Reachable,
+		Status:          f.Status,
+		ConfidenceScore: f.ConfidenceScore,
+		ConfidenceBand:  f.ConfidenceBand,
 	}
 	if f.Route != nil {
 		p.RouteMethod = f.Route.Method
@@ -265,6 +272,25 @@ func sarifLevel(s models.Severity) string {
 		return "warning"
 	default:
 		return "note"
+	}
+}
+
+// sarifLevelForStatus drives the SARIF level (and thus the GitHub annotation
+// color) from the v0.24 decision verdict: BLOCK→error, WARN→warning,
+// INFO→note. When no decision is stamped (status==""), it falls back to the
+// severity-based level so output is byte-identical to pre-v0.24. This is the
+// intended v0.24 behavioral change: a HIGH finding BELOW the --fail-on
+// threshold is WARN→warning (not error), so annotations reflect "what blocks".
+func sarifLevelForStatus(status string, sev models.Severity) string {
+	switch status {
+	case "BLOCK":
+		return "error"
+	case "WARN":
+		return "warning"
+	case "INFO":
+		return "note"
+	default:
+		return sarifLevel(sev)
 	}
 }
 
@@ -411,8 +437,10 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		result := SARIFResult{
 			RuleID:    key,
 			RuleIndex: ruleMap[key],
-			Level:     sarifLevel(f.Severity),
-			Message:   SARIFMessage{Text: NeutralizeText(f.Evidence)},
+			// v0.24: per-result level follows the decision verdict (BLOCK→error,
+			// WARN→warning, INFO→note); falls back to severity when unstamped.
+			Level:   sarifLevelForStatus(f.Status, f.Severity),
+			Message: SARIFMessage{Text: NeutralizeText(f.Evidence)},
 		}
 
 		// Build locations from either line (whitebox) or endpoint(s) (blackbox).

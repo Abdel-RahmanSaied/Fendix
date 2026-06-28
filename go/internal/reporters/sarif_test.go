@@ -911,3 +911,43 @@ func TestRenderSARIF_DASTUpgradeCategoriesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestSARIF_DecisionDrivesLevel covers the v0.24 behavioral change: the
+// result level follows the decision status, not raw severity (BLOCK→error,
+// WARN→warning), and confidence/status land in result properties.
+func TestSARIF_DecisionDrivesLevel(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "blk", Severity: models.SeverityHigh, Category: "x", Status: "BLOCK", ConfidenceScore: 80, ConfidenceBand: "HIGH"},
+		{ID: "SEC-002", Title: "wrn", Severity: models.SeverityHigh, Category: "y", Status: "WARN", ConfidenceScore: 45, ConfidenceBand: "MEDIUM"},
+	}
+	var buf bytes.Buffer
+	if err := RenderSARIF(&buf, findings, ScanMetadata{}); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	results := log.Runs[0].Results
+	if results[0].Level != "error" {
+		t.Errorf("BLOCK/HIGH result level = %q, want error", results[0].Level)
+	}
+	if results[1].Level != "warning" {
+		t.Errorf("WARN/HIGH result level = %q, want warning (decision overrides severity)", results[1].Level)
+	}
+	if results[0].Properties == nil || results[0].Properties.Status != "BLOCK" || results[0].Properties.ConfidenceScore != 80 {
+		t.Errorf("decision properties not stamped: %+v", results[0].Properties)
+	}
+}
+
+// TestSARIF_NoDecisionFallsBackToSeverity confirms byte-compat: unstamped
+// findings keep severity-based levels.
+func TestSARIF_NoDecisionFallsBackToSeverity(t *testing.T) {
+	var buf bytes.Buffer
+	_ = RenderSARIF(&buf, []models.Finding{{ID: "SEC-001", Title: "a", Severity: models.SeverityHigh, Category: "x"}}, ScanMetadata{})
+	var log SARIFLog
+	_ = json.Unmarshal(buf.Bytes(), &log)
+	if log.Runs[0].Results[0].Level != "error" {
+		t.Errorf("unstamped HIGH should stay error, got %q", log.Runs[0].Results[0].Level)
+	}
+}

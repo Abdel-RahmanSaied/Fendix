@@ -47,6 +47,8 @@ func English() Strings {
 		FieldReferences:    "References",
 		FieldLocation:      "Location",
 		ConfidenceLabel:    "confidence",
+		StatusBlocking:     "Blocking",
+		StatusConfirmed:    "Confirmed",
 		ScanStartedLabel:   "Scan started:",
 		DurationLabel:      "Duration:",
 		ModeLabel:          "Mode:",
