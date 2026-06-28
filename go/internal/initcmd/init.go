@@ -141,7 +141,8 @@ func Run(opts Options) error {
 	printAddCommand(opts.Out, ci, files)
 	fmt.Fprintln(opts.Out)
 	fmt.Fprintln(opts.Out, "Run a scan now:")
-	fmt.Fprintln(opts.Out, "  fendix scan --url https://api.example.com")
+	fmt.Fprintf(opts.Out, "  %s\n", recommendedScan(det))
+	fmt.Fprintln(opts.Out, "  fendix demo   # or try Fendix on a built-in sample target")
 	if ci != CIGitHub {
 		fmt.Fprintln(opts.Out)
 		fmt.Fprintln(opts.Out, "Wiring instructions: see NEXT-STEPS-fendix.md (just written).")
@@ -151,6 +152,21 @@ func Run(opts Options) error {
 }
 
 // resolveCI returns the CI system to emit templates for. An explicit
+// recommendedScan picks the most useful `fendix scan` invocation for what
+// init detected: an OpenAPI spec if one was found, else local code if a stack
+// was detected, else a placeholder URL. Reuses the Detection already computed
+// for the summary line so the suggestion matches the repo in front of the user.
+func recommendedScan(det Detection) string {
+	switch {
+	case len(det.Specs) > 0:
+		return "fendix scan --spec " + det.Specs[0].Path
+	case len(det.Stacks) > 0:
+		return "fendix scan --code . --fail-on HIGH"
+	default:
+		return "fendix scan --url https://api.example.com"
+	}
+}
+
 // opts.CI wins; otherwise DetectCI inspects the project; the final
 // fallback is GitHub (the most common case for new projects).
 func resolveCI(explicit, rootDir string) (string, error) {

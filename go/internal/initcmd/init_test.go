@@ -160,3 +160,24 @@ func TestRun_DetectionEchoedToOutput(t *testing.T) {
 		t.Errorf("detection line missing or wrong stack:\n%s", out.String())
 	}
 }
+
+// TestRecommendedScan covers S11: init suggests the scan command that matches
+// what it detected — spec over code over URL fallback.
+func TestRecommendedScan(t *testing.T) {
+	cases := []struct {
+		name string
+		det  Detection
+		want string
+	}{
+		{"spec wins", Detection{Specs: []SpecLocation{{Path: "api/openapi.yaml"}}, Stacks: []Stack{{Name: "Go"}}}, "fendix scan --spec api/openapi.yaml"},
+		{"code when no spec", Detection{Stacks: []Stack{{Name: "Go"}}}, "fendix scan --code . --fail-on HIGH"},
+		{"url fallback", Detection{}, "fendix scan --url https://api.example.com"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := recommendedScan(c.det); got != c.want {
+				t.Errorf("recommendedScan = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

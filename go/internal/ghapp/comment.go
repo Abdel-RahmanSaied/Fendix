@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -51,6 +52,38 @@ type findingsReport struct {
 		Status          string `json:"status"`           // v0.24
 		ConfidenceScore int    `json:"confidence_score"` // v0.24
 	} `json:"findings"`
+}
+
+// statusRank orders findings by decision verdict for the PR-comment top-N:
+// BLOCK first (it fails the build), then WARN, then INFO, then anything
+// unstamped. Lower is more urgent.
+func statusRank(s string) int {
+	switch s {
+	case "BLOCK":
+		return 0
+	case "WARN":
+		return 1
+	case "INFO":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// severityRank is the secondary triage key (within a decision band).
+func severityRank(s string) int {
+	switch strings.ToUpper(s) {
+	case "CRITICAL":
+		return 0
+	case "HIGH":
+		return 1
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 3
+	default:
+		return 4
+	}
 }
 
 // findingHash returns a short stable hash of (title, category, endpoint).
@@ -122,33 +155,63 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 		pluralS = ""
 	}
 	fmt.Fprintf(&b, "## Fendix scan: %d finding%s\n\n", total, pluralS)
+
+	// v0.25 verdict banner — answer "can I merge?" at a glance, before any
+	// table. Blocking is our own decision count, not attacker-controlled.
+	switch {
+	case r.Decisions.Blocking > 0:
+		fmt.Fprintf(&b, "🔴 **%d blocking — this PR fails the Fendix gate.**\n\n", r.Decisions.Blocking)
+	case total > 0:
+		b.WriteString("🟢 **Gate passes — no blocking findings.**\n\n")
+	}
+
 	fmt.Fprintf(&b, "Mode: `%s` · Endpoints scanned: %d · Duration: %s\n\n",
 		mode, r.Metadata.EndpointsScanned, duration)
 
-	// v0.24 decision summary — what needs action, not just a finding count.
+	// v0.24 decision summary + the v0.25 collapsed counts matrix. The banner
+	// and this line are the at-a-glance answer; the full severity/source table
+	// is one click away for anyone who wants it (and skipped entirely when
+	// there's nothing to count).
 	if total > 0 {
 		fmt.Fprintf(&b, "**Decisions:** %d blocking · %d warning · %d informational · %d high-confidence\n\n",
 			r.Decisions.Blocking, r.Decisions.Warning, r.Decisions.Informational, r.Decisions.Confirmed)
-	}
 
-	b.WriteString("| Severity | Count | Source | Count |\n")
-	b.WriteString("|---|---|---|---|\n")
-	fmt.Fprintf(&b, "| Critical | %d | Blackbox | %d |\n", r.Summary.Critical, r.Sources.Blackbox)
-	fmt.Fprintf(&b, "| High | %d | Whitebox | %d |\n", r.Summary.High, r.Sources.Whitebox)
-	fmt.Fprintf(&b, "| Medium | %d | Correlated | %d |\n", r.Summary.Medium, r.Sources.Correlated)
-	fmt.Fprintf(&b, "| Low | %d | _Total_ | **%d** |\n", r.Summary.Low, total)
-	fmt.Fprintf(&b, "| Info | %d | | |\n\n", r.Summary.Info)
+		b.WriteString("<details><summary>Counts by severity &amp; source</summary>\n\n")
+		b.WriteString("| Severity | Count | Source | Count |\n")
+		b.WriteString("|---|---|---|---|\n")
+		fmt.Fprintf(&b, "| Critical | %d | Blackbox | %d |\n", r.Summary.Critical, r.Sources.Blackbox)
+		fmt.Fprintf(&b, "| High | %d | Whitebox | %d |\n", r.Summary.High, r.Sources.Whitebox)
+		fmt.Fprintf(&b, "| Medium | %d | Correlated | %d |\n", r.Summary.Medium, r.Sources.Correlated)
+		fmt.Fprintf(&b, "| Low | %d | _Total_ | **%d** |\n", r.Summary.Low, total)
+		fmt.Fprintf(&b, "| Info | %d | | |\n", r.Summary.Info)
+		b.WriteString("\n</details>\n\n")
+	}
 
 	if total == 0 {
 		b.WriteString("_No new findings vs. baseline. ✅_\n\n")
 	} else {
 		b.WriteString("### Top findings\n")
-		topN := len(r.Findings)
+		// v0.25: surface the build-failing findings first. Sort a COPY by
+		// decision status (BLOCK>WARN>INFO) → severity → confidence so the
+		// truncated top-5 is the most actionable set, not whatever sorts first
+		// alphabetically by endpoint. The copy leaves the report's JSON order
+		// (and SEC-NNN IDs) untouched.
+		ranked := append(r.Findings[:0:0], r.Findings...)
+		sort.SliceStable(ranked, func(i, j int) bool {
+			if ri, rj := statusRank(ranked[i].Status), statusRank(ranked[j].Status); ri != rj {
+				return ri < rj
+			}
+			if ri, rj := severityRank(ranked[i].Severity), severityRank(ranked[j].Severity); ri != rj {
+				return ri < rj
+			}
+			return ranked[i].ConfidenceScore > ranked[j].ConfidenceScore
+		})
+		topN := len(ranked)
 		if topN > 5 {
 			topN = 5
 		}
 		for i := 0; i < topN; i++ {
-			f := r.Findings[i]
+			f := ranked[i]
 			where := f.Endpoint
 			if where == "" {
 				where = f.Line

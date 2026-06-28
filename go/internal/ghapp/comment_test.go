@@ -407,3 +407,71 @@ func TestRenderPRComment_DecisionStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderPRComment_VerdictBanner covers S10: a blocking scan leads with a
+// "fails the gate" banner; a clean-but-nonempty scan says "Gate passes"; and
+// the counts table is collapsed into <details>.
+func TestRenderPRComment_VerdictBanner(t *testing.T) {
+	blocking := `{
+		"metadata": {"mode": "whitebox", "endpoints_scanned": 0, "duration": "1s"},
+		"summary": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
+		"sources": {"blackbox": 0, "whitebox": 1, "correlated": 0},
+		"total": 1,
+		"decisions": {"total": 1, "confirmed": 1, "blocking": 1, "warning": 0, "informational": 0},
+		"findings": [{"severity": "CRITICAL", "title": "RCE", "category": "injection", "endpoint": "z.py:9", "line": "z.py:9", "status": "BLOCK", "confidence_score": 95}]
+	}`
+	body, err := RenderPRComment([]byte(blocking))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"fails the Fendix gate", "<details><summary>Counts"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("blocking comment missing %q:\n%s", want, body)
+		}
+	}
+
+	passing := `{
+		"metadata": {"mode": "whitebox", "endpoints_scanned": 0, "duration": "1s"},
+		"summary": {"critical": 0, "high": 0, "medium": 0, "low": 1, "info": 0},
+		"sources": {"blackbox": 0, "whitebox": 1, "correlated": 0},
+		"total": 1,
+		"decisions": {"total": 1, "confirmed": 0, "blocking": 0, "warning": 0, "informational": 1},
+		"findings": [{"severity": "LOW", "title": "x", "category": "misc", "endpoint": "a.py:1", "line": "a.py:1", "status": "INFO", "confidence_score": 20}]
+	}`
+	body2, err := RenderPRComment([]byte(passing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body2, "Gate passes") {
+		t.Errorf("non-blocking comment should say Gate passes:\n%s", body2)
+	}
+}
+
+// TestRenderPRComment_TriageOrder covers S9: a BLOCK/CRITICAL finding on a
+// last-alphabetical endpoint must appear before an INFO/LOW finding on a
+// first-alphabetical endpoint in the rendered top findings.
+func TestRenderPRComment_TriageOrder(t *testing.T) {
+	report := `{
+		"metadata": {"mode": "whitebox", "endpoints_scanned": 0, "duration": "1s"},
+		"summary": {"critical": 1, "high": 0, "medium": 0, "low": 1, "info": 0},
+		"sources": {"blackbox": 0, "whitebox": 2, "correlated": 0},
+		"total": 2,
+		"decisions": {"total": 2, "confirmed": 1, "blocking": 1, "warning": 0, "informational": 1},
+		"findings": [
+			{"severity": "LOW", "title": "AAAlowINFO", "category": "misc", "endpoint": "a.py:1", "line": "a.py:1", "status": "INFO", "confidence_score": 10},
+			{"severity": "CRITICAL", "title": "ZZZcritBLOCK", "category": "injection", "endpoint": "z.py:9", "line": "z.py:9", "status": "BLOCK", "confidence_score": 95}
+		]
+	}`
+	body, err := RenderPRComment([]byte(report))
+	if err != nil {
+		t.Fatal(err)
+	}
+	iBlock := strings.Index(body, "ZZZcritBLOCK")
+	iInfo := strings.Index(body, "AAAlowINFO")
+	if iBlock < 0 || iInfo < 0 {
+		t.Fatalf("both findings should render:\n%s", body)
+	}
+	if iBlock > iInfo {
+		t.Errorf("BLOCK/CRITICAL must rank before INFO/LOW in top findings:\n%s", body)
+	}
+}
