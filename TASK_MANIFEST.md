@@ -117,7 +117,7 @@ Every finding triaged real-vs-false (ground truth v2.0), so **precision is now a
 | T4 | Performance regression test (duration <30s, mem <500MB via FENDIX_METRICS) | Test | T2 | `go/tests/regression/performance_test.go` | DONE |
 | T5 | CI: smoke+regression already run by existing `ci.yml` `go test ./...` — added clarifying comment, **no redundant `test.yml`** (Rule 1/10) | Test | T1-T4 | `.github/workflows/ci.yml` | DONE |
 | T6 | Test docs | Test | T1-T5 | `go/tests/README.md` | DONE |
-| S1 | Security audit of all v0.20 NEW code (SSRF surface of OWASP download + Docker, secrets, privacy of events.jsonl) | Security | A,B,M,T | `SECURITY_AUDIT_v020.md` | TODO |
+| S1 | Security audit of all v0.20 NEW code (SSRF surface, secrets, privacy of events.jsonl, dashboard XSS) | Security | A,B,M,T | `SECURITY_AUDIT_v020.md` | DONE — 0 CRITICAL, 0 new HIGH |
 | R1 | Enforce Constitution + exit criteria; SHIP/DO-NOT-SHIP | Reviewer | S1 | `REVIEW_v020.md` | TODO |
 | O1 | Final verify (`make build/test/e2e`), close phase, v0.21 kickoff | Orchestrator | R1 | `NEXT_v021.md` + manifest update | TODO |
 
@@ -135,7 +135,9 @@ Not fixed in v0.20 (v0.21 "Earn Trust" owns these). Already cataloged in
 - **SSRF egress** — `netguard` + `--allow-private-targets` exist; confirm coverage of metadata IP / RFC1918 on attacker-controlled targets.
 - **NEW (found via benchmark triage 2026-06-28) — config-file-exposure false positives.** The exposure/configleak DAST check flags `/.env`, `/.git/HEAD`, `/.htaccess`, `/.htpasswd`, `/.DS_Store` as exposed on HTTP 200 **alone**, without validating the response body. On SPA catch-all servers (Express/Juice Shop, many Next/React deploys) every unknown path returns `index.html` (200), producing 5 spurious **CRITICAL** findings (all identical 3748-byte bodies). This is precisely the kind of high-severity FP that erodes trust — strong v0.21 candidate. **Fix idea:** require the response body to look like the target file (content-type / signature / not equal to the SPA fallback) before flagging. *Not fixed in v0.20 (Rule 1 — no scan-logic changes).*
 
-> v0.20 rule: **log only.** The final Orchestrator copies these into `NEXT_v021.md`.
+- **FIXED (pre-existing, isolated commit) — gofmt drift in `internal/reporters/json.go`.** Struct-field alignment surfaced by go1.25.3 `gofmt -l`; would have failed the `ci.yml` format check. Fixed in a formatting-only commit separate from v0.20 feature work (no behavior change).
+
+> v0.20 rule: **log only** (except the trivial gofmt fix above, which unblocks CI). The final Orchestrator copies these into `NEXT_v021.md`.
 
 ---
 
