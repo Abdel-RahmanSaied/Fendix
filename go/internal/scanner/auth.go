@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -44,7 +45,7 @@ func (authCheck) Enabled(cfg *models.ScanConfig) bool {
 // CheckAuth runs authentication checks on an endpoint.
 // When auth is configured, it tests: unauthenticated access, malformed JWT,
 // expired JWT, and alg:none JWT confusion.
-func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return authCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
@@ -53,7 +54,7 @@ func CheckAuth(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 // returns the raw 3xx (CheckRedirect: ErrUseLastResponse) so a redirect
 // to a login page reads as "auth enforced". The per-job deadline comes
 // from ctx (runCheck).
-func (authCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (authCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	if cfg.Auth == nil {
 		return nil
@@ -62,7 +63,7 @@ func (authCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	client := cc.NoFollow
 
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
-	var findings []models.Finding
+	var findings []ev.Evidence
 
 	missingAuth := checkUnauthenticated(ctx, client, cfg, endpoint, epLabel)
 	if missingAuth != nil {
@@ -173,7 +174,7 @@ func endpointAcceptsGarbageAuth(ctx context.Context, client *http.Client, cfg *m
 
 // checkUnauthenticated sends a request without auth credentials.
 // If the server returns 200 instead of 401/403, it's a CRITICAL finding.
-func checkUnauthenticated(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *models.Finding {
+func checkUnauthenticated(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *ev.Evidence {
 	req, err := http.NewRequestWithContext(ctx, endpoint.Method, endpoint.FullURL, bodyForMethod(endpoint.Method))
 	if err != nil {
 		logagg.Warn("auth", "auth check: failed to create unauthenticated request", "url", endpoint.FullURL, "error", err)
@@ -190,7 +191,7 @@ func checkUnauthenticated(ctx context.Context, client *http.Client, cfg *models.
 
 	twoXX, bodyLen := readOutcome(resp)
 	if twoXX {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "Missing authentication on endpoint",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -310,8 +311,8 @@ func isThreeOrFiveDot(s string) bool {
 // 1. Malformed JWT → server should reject with 401
 // 2. Expired JWT → server should reject with 401
 // 3. alg:none JWT confusion → server should reject with 401
-func checkJWTBypasses(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) []models.Finding {
-	var findings []models.Finding
+func checkJWTBypasses(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) []ev.Evidence {
+	var findings []ev.Evidence
 
 	if f := checkMalformedJWT(ctx, client, cfg, endpoint, epLabel); f != nil {
 		findings = append(findings, *f)
@@ -347,10 +348,10 @@ func sendTamperedJWT(ctx context.Context, client *http.Client, cfg *models.ScanC
 }
 
 // checkMalformedJWT sends a request with a structurally-invalid JWT token.
-func checkMalformedJWT(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *models.Finding {
+func checkMalformedJWT(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *ev.Evidence {
 	twoXX, bodyLen := sendTamperedJWT(ctx, client, cfg, endpoint, "invalid.jwt.token")
 	if twoXX {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "JWT not validated",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -366,11 +367,11 @@ func checkMalformedJWT(ctx context.Context, client *http.Client, cfg *models.Sca
 }
 
 // checkExpiredJWT generates a JWT with exp in the past and tests acceptance.
-func checkExpiredJWT(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *models.Finding {
+func checkExpiredJWT(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *ev.Evidence {
 	expiredToken := buildExpiredJWT(extractJWT(cfg.Auth))
 	twoXX, bodyLen := sendTamperedJWT(ctx, client, cfg, endpoint, expiredToken)
 	if twoXX {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "Expired JWT accepted",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -386,11 +387,11 @@ func checkExpiredJWT(ctx context.Context, client *http.Client, cfg *models.ScanC
 }
 
 // checkAlgNoneJWT sends a JWT with alg:none (no signature) to test for algorithm confusion.
-func checkAlgNoneJWT(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *models.Finding {
+func checkAlgNoneJWT(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, epLabel string) *ev.Evidence {
 	algNoneToken := buildAlgNoneJWT(extractJWT(cfg.Auth))
 	twoXX, bodyLen := sendTamperedJWT(ctx, client, cfg, endpoint, algNoneToken)
 	if twoXX {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "JWT algorithm confusion (alg:none accepted)",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,

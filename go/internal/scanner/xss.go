@@ -51,6 +51,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -99,12 +100,12 @@ func (reflectedXSSCheck) Enabled(cfg *models.ScanConfig) bool {
 // before each probe, a ProbeRecord per probe, auth via cfg.Auth.ApplyToRequest.
 // At most one finding per target is emitted. Uses cc.Client (follows redirects)
 // because the signal is the response BODY, not a raw Location header.
-func (reflectedXSSCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (reflectedXSSCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	if !cc.Cfg.EnableActive {
 		return nil
 	}
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	maxProbes := effectiveMaxProbes(cc.Cfg)
 
 	for _, t := range targetsForEndpoint(ep) {
@@ -132,7 +133,7 @@ func (reflectedXSSCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint)
 // a finding iff the payload's HTML metacharacters survive un-encoded in a
 // text/html response. Returns (finding, true) on a hit, (zero, false) otherwise.
 // Always records a ProbeRecord.
-func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (models.Finding, bool) {
+func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (ev.Evidence, bool) {
 	// Per-probe random marker: unique per probe so a reflection cannot collide
 	// with static page text, and unguessable so the target can't fingerprint it.
 	marker := xssMarkerPrefix + randHex(8)
@@ -146,7 +147,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 	req, err := buildProbeRequest(ctx, ep, param, payload, loc)
 	if err != nil {
 		logagg.Warn("xss", "failed to create xss probe request", "error", err)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	cc.Cfg.Auth.ApplyToRequest(req)
 
@@ -167,7 +168,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 		logagg.Warn("xss", "xss probe request failed", "endpoint", ep.FullURL, "error", err)
 		record.Status = 0
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB max
@@ -180,7 +181,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 	// bail before any body inspection.
 	if resp.StatusCode >= 400 {
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	// CONTENT-TYPE GATE (the single biggest FP control). If the response is not
@@ -189,7 +190,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 	// NOT reflected XSS. Emit nothing.
 	if !strings.Contains(strings.ToLower(ct), "text/html") {
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	bodyStr := string(body)
@@ -200,7 +201,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 	// finding (mere marker reflection is not XSS).
 	if !strings.Contains(bodyStr, rawSignature) {
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	// Confirmed raw survival in a text/html body → executable → HIGH/HIGH.
@@ -215,7 +216,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 		evidence += fmt.Sprintf(" Snippet: %s", snippet)
 	}
 
-	return models.Finding{
+	return ev.Evidence{
 		Title:    "Reflected Cross-Site Scripting (XSS)",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -306,7 +307,7 @@ func TestCheckHeaders_WeakCSP(t *testing.T) {
 			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 			findings := CheckHeaders(context.Background(), cfg, ep)
 
-			var weak *models.Finding
+			var weak *ev.Evidence
 			for i := range findings {
 				if findings[i].Title == "Weak Content-Security-Policy" {
 					weak = &findings[i]
@@ -374,7 +375,7 @@ func TestCheckHeaders_HSTSDepth(t *testing.T) {
 			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 			findings := CheckHeaders(context.Background(), cfg, ep)
 
-			var hstsFinding *models.Finding
+			var hstsFinding *ev.Evidence
 			for i := range findings {
 				switch findings[i].Title {
 				case "Missing Strict-Transport-Security header", "HSTS disabled", "HSTS max-age too short":

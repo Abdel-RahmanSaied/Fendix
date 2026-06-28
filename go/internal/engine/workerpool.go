@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
@@ -82,7 +83,7 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 		bufSize = 1
 	}
 	jobs := make(chan scanJob, bufSize)
-	results := make(chan []models.Finding, bufSize)
+	results := make(chan []evidence.Evidence, bufSize)
 
 	var wg sync.WaitGroup
 	for i := 0; i < wp.workers; i++ {
@@ -134,13 +135,15 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 		close(results)
 	}()
 
-	var allFindings []models.Finding
+	var allFindings []evidence.Evidence
 	for batch := range results {
 		allFindings = append(allFindings, batch...)
 	}
 
 	slog.Info("worker pool complete", "endpoints", len(endpoints), "checks", len(wp.checks), "findings", len(allFindings))
-	return allFindings
+	// v0.22: checks emit Evidence; project to Finding at the worker-pool
+	// boundary so the orchestrator's DAST accumulation is unchanged.
+	return evidence.ToFindings(allFindings)
 }
 
 // runCheck invokes a single check with a per-job recover() so a panic in
@@ -151,13 +154,13 @@ func (wp *WorkerPool) Run(ctx context.Context, cfg *models.ScanConfig, endpoints
 // Returning the panic as a finding (rather than swallowing it) keeps the
 // failure visible in the report — operators see *which* check died on
 // *which* endpoint, which is the support signal a silent skip would lose.
-func runCheck(ctx context.Context, cc *scanner.CheckContext, cfg *models.ScanConfig, job scanJob, workerID int) (findings []models.Finding) {
+func runCheck(ctx context.Context, cc *scanner.CheckContext, cfg *models.ScanConfig, job scanJob, workerID int) (findings []evidence.Evidence) {
 	defer func() {
 		if r := recover(); r != nil {
 			epLabel := fmt.Sprintf("%s %s", job.endpoint.Method, job.endpoint.Path)
 			slog.Error("scanner check panicked — job contained, scan continues",
 				"worker", workerID, "endpoint", epLabel, "check", job.check.Name(), "panic", r)
-			findings = []models.Finding{{
+			findings = []evidence.Evidence{{
 				Title:      "Scanner check panicked",
 				Severity:   models.SeverityInfo,
 				Source:     models.SourceBlackbox,

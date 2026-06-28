@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
@@ -77,7 +78,7 @@ func TestWorkerPool_LargeConcurrentScan_RaceClean(t *testing.T) {
 	// paths (which already have their own tests).
 	client := &http.Client{Timeout: 5 * time.Second}
 	httpCheck := func(counter *atomic.Int64, title string) scanner.CheckFn {
-		return func(ctx context.Context, _ *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+		return func(ctx context.Context, _ *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 			counter.Add(1)
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep.FullURL, nil)
 			if err != nil {
@@ -89,7 +90,7 @@ func TestWorkerPool_LargeConcurrentScan_RaceClean(t *testing.T) {
 			}
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			return []models.Finding{{
+			return []evidence.Evidence{{
 				Title:    title,
 				Severity: models.SeverityLow,
 				Source:   models.SourceBlackbox,

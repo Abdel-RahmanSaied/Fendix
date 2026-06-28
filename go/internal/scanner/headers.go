@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -18,7 +19,7 @@ type headerCheck struct {
 	Name     string
 	Severity models.Severity
 	Category string
-	Check    func(value string) *models.Finding
+	Check    func(value string) *ev.Evidence
 }
 
 // securityHeaders returns the list of header checks. Implemented headers:
@@ -32,7 +33,7 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "Strict-Transport-Security",
 			Severity: models.SeverityMedium,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				return checkHSTS(endpoint, value)
 			},
 		},
@@ -40,9 +41,9 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "X-Content-Type-Options",
 			Severity: models.SeverityLow,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				if strings.ToLower(value) != "nosniff" {
-					return &models.Finding{
+					return &ev.Evidence{
 						Title:      "Missing or incorrect X-Content-Type-Options header",
 						Severity:   models.SeverityLow,
 						Source:     models.SourceBlackbox,
@@ -61,10 +62,10 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "X-Frame-Options",
 			Severity: models.SeverityLow,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				v := strings.ToUpper(value)
 				if v != "DENY" && v != "SAMEORIGIN" {
-					return &models.Finding{
+					return &ev.Evidence{
 						Title:      "Missing or incorrect X-Frame-Options header",
 						Severity:   models.SeverityLow,
 						Source:     models.SourceBlackbox,
@@ -83,7 +84,7 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "Content-Security-Policy",
 			Severity: models.SeverityMedium,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				return checkCSP(endpoint, value)
 			},
 		},
@@ -91,9 +92,9 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "Server",
 			Severity: models.SeverityInfo,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				if value != "" && containsVersion(value) {
-					return &models.Finding{
+					return &ev.Evidence{
 						Title:      "Server version disclosed in header",
 						Severity:   models.SeverityInfo,
 						Source:     models.SourceBlackbox,
@@ -112,9 +113,9 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "X-Powered-By",
 			Severity: models.SeverityInfo,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				if value != "" {
-					return &models.Finding{
+					return &ev.Evidence{
 						Title:      "X-Powered-By header discloses technology",
 						Severity:   models.SeverityInfo,
 						Source:     models.SourceBlackbox,
@@ -136,7 +137,7 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "Referrer-Policy",
 			Severity: models.SeverityLow,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				v := strings.ToLower(strings.TrimSpace(value))
 				if v == "" || v == "unsafe-url" {
 					sev := models.SeverityLow
@@ -144,7 +145,7 @@ func securityHeaders(endpoint string) []headerCheck {
 					if v == "unsafe-url" {
 						evidence = "Referrer-Policy: unsafe-url (leaks full URL cross-origin)"
 					}
-					return &models.Finding{
+					return &ev.Evidence{
 						Title:      "Missing Referrer-Policy header",
 						Severity:   sev,
 						Source:     models.SourceBlackbox,
@@ -163,9 +164,9 @@ func securityHeaders(endpoint string) []headerCheck {
 			Name:     "Permissions-Policy",
 			Severity: models.SeverityInfo,
 			Category: "headers",
-			Check: func(value string) *models.Finding {
+			Check: func(value string) *ev.Evidence {
 				if value == "" {
-					return &models.Finding{
+					return &ev.Evidence{
 						Title:      "Missing Permissions-Policy header",
 						Severity:   models.SeverityInfo,
 						Source:     models.SourceBlackbox,
@@ -197,9 +198,9 @@ func missingHeaderInfo(endpoint, name, fix string) headerCheck {
 		Name:     name,
 		Severity: models.SeverityInfo,
 		Category: "headers",
-		Check: func(value string) *models.Finding {
+		Check: func(value string) *ev.Evidence {
 			if value == "" {
-				return &models.Finding{
+				return &ev.Evidence{
 					Title:      fmt.Sprintf("Missing %s header", name),
 					Severity:   models.SeverityInfo,
 					Source:     models.SourceBlackbox,
@@ -219,9 +220,9 @@ func missingHeaderInfo(endpoint, name, fix string) headerCheck {
 // checkHSTS implements HSTS presence + max-age depth (4.9). Absent →
 // "Missing" MEDIUM; max-age=0 or missing max-age directive →
 // "HSTS disabled" MEDIUM; max-age < 180 days → "too short" LOW.
-func checkHSTS(endpoint, value string) *models.Finding {
+func checkHSTS(endpoint, value string) *ev.Evidence {
 	if value == "" {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "Missing Strict-Transport-Security header",
 			Severity:   models.SeverityMedium,
 			Source:     models.SourceBlackbox,
@@ -238,7 +239,7 @@ func checkHSTS(endpoint, value string) *models.Finding {
 	maxAge, hasMaxAge := parseHSTSMaxAge(value)
 
 	if !hasMaxAge || maxAge == 0 {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "HSTS disabled",
 			Severity:   models.SeverityMedium,
 			Source:     models.SourceBlackbox,
@@ -251,7 +252,7 @@ func checkHSTS(endpoint, value string) *models.Finding {
 		}
 	}
 	if maxAge < minMaxAge {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "HSTS max-age too short",
 			Severity:   models.SeverityLow,
 			Source:     models.SourceBlackbox,
@@ -295,9 +296,9 @@ func parseHSTSMaxAge(value string) (int64, bool) {
 // Content-Security-Policy": unsafe-inline/unsafe-eval or a wildcard
 // source in script-src/default-src is MEDIUM; missing BOTH default-src
 // AND script-src is LOW.
-func checkCSP(endpoint, value string) *models.Finding {
+func checkCSP(endpoint, value string) *ev.Evidence {
 	if value == "" {
-		return &models.Finding{
+		return &ev.Evidence{
 			Title:      "Missing Content-Security-Policy header",
 			Severity:   models.SeverityMedium,
 			Source:     models.SourceBlackbox,
@@ -314,7 +315,7 @@ func checkCSP(endpoint, value string) *models.Finding {
 	if weakness == "" {
 		return nil
 	}
-	return &models.Finding{
+	return &ev.Evidence{
 		Title:      "Weak Content-Security-Policy",
 		Severity:   severity,
 		Source:     models.SourceBlackbox,
@@ -400,14 +401,14 @@ func (headersCheck) Tier() Tier                          { return TierPassive }
 func (headersCheck) Enabled(cfg *models.ScanConfig) bool { return true }
 
 // CheckHeaders sends a GET request and checks for missing/misconfigured security headers.
-func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckHeaders(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return headersCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
 // Run holds the unchanged security-header detection body. Outbound
 // requests go through the shared SSRF-guarded follow-redirect client
 // (cc.Client); the per-job deadline comes from ctx (runCheck).
-func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	client := cc.Client
 
@@ -448,7 +449,7 @@ func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
 	checks := securityHeaders(epLabel)
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	for _, hc := range checks {
 		value := resp.Header.Get(hc.Name)
 		if finding := hc.Check(value); finding != nil {

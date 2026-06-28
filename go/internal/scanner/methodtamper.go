@@ -88,6 +88,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -149,7 +150,7 @@ type methodTamperResult struct {
 // a ctx.Done()/budget check before every probe, a ProbeRecord per probe, and
 // auth applied via cfg.Auth.ApplyToRequest. NoFollow is used so a 3xx to a login
 // page reads as "not 2xx" (auth enforced) rather than being followed to a 200.
-func (methodTamperCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (methodTamperCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	if cc == nil || cc.Cfg == nil || !cc.Cfg.EnableActive {
 		return nil
 	}
@@ -175,7 +176,7 @@ func (methodTamperCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint)
 		doBypass = false
 	}
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 
 	if doBypass {
 		if f, ok := methodTamperBypassFindings(ctx, cc, ep); ok {
@@ -198,17 +199,17 @@ func (methodTamperCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint)
 // credentials is gated (401/403), then tries each alternate verb WITHOUT
 // credentials. Returns ONE HIGH finding listing every body-bearing verb that
 // returned a non-trivial 2xx where canonical-no-auth was gated, or ok=false.
-func methodTamperBypassFindings(ctx context.Context, cc *CheckContext, ep Endpoint) (models.Finding, bool) {
+func methodTamperBypassFindings(ctx context.Context, cc *CheckContext, ep Endpoint) (ev.Evidence, bool) {
 	// (i) Canonical verb WITHOUT auth must be gated for the comparison to mean
 	// anything. If the canonical verb is already open without auth, that is the
 	// auth check's job (missing-authentication), not a verb-bypass.
 	canonNoAuth := methodTamperProbe(ctx, cc, ep, ep.Method, false)
 	if !canonNoAuth.transportOK {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	gated := canonNoAuth.status == http.StatusUnauthorized || canonNoAuth.status == http.StatusForbidden
 	if !gated {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	// (ii)+(iii) Try each alternate verb WITHOUT auth; a body-bearing 2xx where
@@ -251,7 +252,7 @@ probeLoop:
 	}
 
 	if len(bypassVerbs) == 0 {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	sort.Strings(bypassVerbs)
 	return methodTamperBypassFinding(ep, bypassVerbs, canonNoAuth.status, headNoted), true
@@ -261,7 +262,7 @@ probeLoop:
 // MEDIUM finding listing every enabled dangerous method, or ok=false. These run
 // regardless of auth — a public endpoint accepting writes/TRACE is still a
 // finding.
-func methodTamperDangerousFindings(ctx context.Context, cc *CheckContext, ep Endpoint, canon methodTamperResult) (models.Finding, bool) {
+func methodTamperDangerousFindings(ctx context.Context, cc *CheckContext, ep Endpoint, canon methodTamperResult) (ev.Evidence, bool) {
 	var enabled []string
 	traceXST := false
 
@@ -304,7 +305,7 @@ dangerLoop:
 	}
 
 	if len(enabled) == 0 {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	sort.Strings(enabled)
 	return methodTamperDangerousFinding(ep, enabled, traceXST), true
@@ -397,7 +398,7 @@ func is2xx(status int) bool {
 // methodTamperBypassFinding builds the HIGH verb-based access-control bypass
 // finding listing every bypassing verb. Confidence is High for a clean 401/403
 // → 2xx flip (canonNoAuthStatus is 401/403, which is the only way we get here).
-func methodTamperBypassFinding(ep Endpoint, bypassVerbs []string, canonNoAuthStatus int, headNoted bool) models.Finding {
+func methodTamperBypassFinding(ep Endpoint, bypassVerbs []string, canonNoAuthStatus int, headNoted bool) ev.Evidence {
 	evidence := fmt.Sprintf(
 		"Verb-based access-control bypass on %s %s: the canonical verb %s WITHOUT credentials returned %d (gated), "+
 			"but the alternate verb(s) %s WITHOUT credentials returned a 2xx with a body — the auth filter only covers some verbs, "+
@@ -407,7 +408,7 @@ func methodTamperBypassFinding(ep Endpoint, bypassVerbs []string, canonNoAuthSta
 	if headNoted {
 		evidence += " (A HEAD 2xx that advertised a non-empty Content-Length was also observed but is not itself treated as the bypass — HEAD returns no body by contract.)"
 	}
-	return models.Finding{
+	return ev.Evidence{
 		Title:    "HTTP method tampering — verb-based access-control bypass",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -425,14 +426,14 @@ func methodTamperBypassFinding(ep Endpoint, bypassVerbs []string, canonNoAuthSta
 // methodTamperDangerousFinding builds the MEDIUM dangerous-method finding listing
 // every enabled dangerous method. References include CWE-693 when TRACE/XST was
 // confirmed and CWE-650 for PUT/DELETE.
-func methodTamperDangerousFinding(ep Endpoint, enabled []string, traceXST bool) models.Finding {
+func methodTamperDangerousFinding(ep Endpoint, enabled []string, traceXST bool) ev.Evidence {
 	refs := []string{"CWE-650"}
 	xstNote := ""
 	if traceXST {
 		refs = append([]string{"CWE-693"}, refs...)
 		xstNote = " TRACE is enabled and echoes the request (Cross-Site Tracing / XST — a vector for stealing HttpOnly cookies via a separate client-side flaw)."
 	}
-	return models.Finding{
+	return ev.Evidence{
 		Title:    "HTTP method tampering — dangerous method enabled",
 		Severity: models.SeverityMedium,
 		Source:   models.SourceBlackbox,

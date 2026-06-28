@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
@@ -24,7 +25,7 @@ import (
 func TestWorkerPool_CancelDuringProduce(t *testing.T) {
 	var calls atomic.Int32
 	const slowJobMs = 25
-	check := func(ctx context.Context, _ *models.ScanConfig, _ scanner.Endpoint) []models.Finding {
+	check := func(ctx context.Context, _ *models.ScanConfig, _ scanner.Endpoint) []evidence.Evidence {
 		calls.Add(1)
 		select {
 		case <-time.After(slowJobMs * time.Millisecond):
@@ -86,7 +87,7 @@ func TestWorkerPool_BufferIsBounded(t *testing.T) {
 	var inFlight atomic.Int32
 	var peakInFlight atomic.Int32
 
-	check := func(ctx context.Context, _ *models.ScanConfig, _ scanner.Endpoint) []models.Finding {
+	check := func(ctx context.Context, _ *models.ScanConfig, _ scanner.Endpoint) []evidence.Evidence {
 		cur := inFlight.Add(1)
 		// Update high-water-mark monotonically.
 		for {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -47,7 +48,7 @@ func TestResilience_GarbageResponseBody(t *testing.T) {
 
 	cfg := defaultCfg()
 	ep := makeEndpoint(srv.URL)
-	checks := []func(ctx context.Context, cfg *models.ScanConfig, ep Endpoint) []models.Finding{
+	checks := []func(ctx context.Context, cfg *models.ScanConfig, ep Endpoint) []ev.Evidence{
 		CheckHeaders,
 		CheckCORS,
 		CheckExposure,

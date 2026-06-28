@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -82,7 +83,7 @@ func (idorCheck) Enabled(cfg *models.ScanConfig) bool {
 //     resource or missing authz → MEDIUM confidence (heuristic).
 //
 // Requires cfg.AuthUser2 to be set (--auth-user2 flag).
-func CheckIDOR(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckIDOR(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return idorCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
@@ -91,7 +92,7 @@ func CheckIDOR(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) [
 // raw 3xx (CheckRedirect: ErrUseLastResponse) so a redirect is compared
 // as-is rather than followed. The per-job deadline comes from ctx
 // (runCheck).
-func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	if cfg.Auth == nil || cfg.AuthUser2 == nil {
 		return nil
@@ -124,7 +125,7 @@ func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 				"Endpoint is bound to an object identifier; user2 (a different account) accessed user1's resource: "+
 					"user1 HTTP %d (%d bytes), user2 HTTP %d (%d bytes). user2 should not be authorized for this id.",
 				resp1Status, len(resp1Body), resp2Status, len(resp2Body))
-			return []models.Finding{
+			return []ev.Evidence{
 				{
 					Title:      "IDOR — cross-tenant object access (id mutation)",
 					Severity:   models.SeverityHigh,
@@ -164,7 +165,7 @@ func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		evidence += fmt.Sprintf("; body preview: %s...", resp1Body[:200])
 	}
 
-	return []models.Finding{
+	return []ev.Evidence{
 		{
 			Title:      "Potential IDOR — identical responses for different users",
 			Severity:   models.SeverityHigh,

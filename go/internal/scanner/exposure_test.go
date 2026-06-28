@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -376,7 +377,7 @@ func TestCheckExposure_ValueShapeSecrets(t *testing.T) {
 			cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
 			findings := CheckExposure(context.Background(), cfg, ep)
 
-			var got *models.Finding
+			var got *ev.Evidence
 			for i := range findings {
 				if findings[i].Title == tt.wantTitle {
 					got = &findings[i]

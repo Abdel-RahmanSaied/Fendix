@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -383,7 +384,7 @@ func (injectionCheck) Enabled(cfg *models.ScanConfig) bool {
 // This function MUST only be called when cfg.EnableActive is true.
 // It runs SQLi (time/error/boolean), CMDi, and CRLF probes across each
 // declared query/header/body parameter.
-func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return injectionCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
@@ -391,7 +392,7 @@ func CheckInjection(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoi
 // comes from the CheckContext (cc.Audit == currentAuditLog()), so probe
 // records still accumulate in the one package-level log the orchestrator
 // reads post-scan via scanner.GlobalAuditRecords (e.g. --debug-bundle).
-func (injectionCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (injectionCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	if !cc.Cfg.EnableActive {
 		return nil
 	}
@@ -403,13 +404,13 @@ func (injectionCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 // query params, header params, and (for POST/PUT/PATCH) body fields — and
 // runs all configured probe types against each. The per-endpoint probe
 // budget (cfg.MaxProbesPerEndpoint, default 20) caps total probe count.
-func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint, auditLog *ProbeAuditLog) []models.Finding {
+func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint, auditLog *ProbeAuditLog) []ev.Evidence {
 	if !cfg.EnableActive {
 		return nil
 	}
 
 	client := guardedClient(cfg)
-	var findings []models.Finding
+	var findings []ev.Evidence
 	maxProbes := effectiveMaxProbes(cfg)
 
 	for _, t := range targetsForEndpoint(endpoint) {
@@ -447,8 +448,8 @@ func CheckInjectionWithAudit(ctx context.Context, cfg *models.ScanConfig, endpoi
 // probeSQLi sends time-based blind SQLi payloads and checks for delayed responses.
 // Supports query, header, and body locations (TASK-086) — same detection logic
 // regardless of where the payload is placed.
-func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
-	var findings []models.Finding
+func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []ev.Evidence {
+	var findings []ev.Evidence
 	maxProbes := effectiveMaxProbes(cfg)
 
 	baseline, err := measureBaseline(ctx, client, cfg, endpoint.Method, endpoint.FullURL)
@@ -544,7 +545,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 				}
 			}
 
-			findings = append(findings, models.Finding{
+			findings = append(findings, ev.Evidence{
 				Title:    fmt.Sprintf("Potential SQL Injection (%s, time-based)", p.DB),
 				Severity: models.SeverityHigh,
 				Source:   models.SourceBlackbox,
@@ -581,7 +582,7 @@ func paramLabel(param string, loc ProbeLocation) string {
 // HIGH-confidence — the response body literally contains "you have an error in
 // your SQL syntax", which is unambiguous evidence the input reached an
 // unparameterized query.
-func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []ev.Evidence {
 	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
 	// scan context is already cancelled (--max-requests / --max-duration / Ctrl-C).
 	select {
@@ -640,7 +641,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 		if len(match) > 160 {
 			match = match[:160] + "..."
 		}
-		return []models.Finding{{
+		return []ev.Evidence{{
 			Title:    fmt.Sprintf("SQL Injection (%s, error-based)", p.DB),
 			Severity: models.SeverityHigh,
 			Source:   models.SourceBlackbox,
@@ -663,7 +664,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 // server's response shape changes — status flip or response-body length delta
 // > sqliBooleanLengthThreshold (5%). Either signal indicates the payload was
 // concatenated into the WHERE clause and the engine evaluated the condition.
-func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []ev.Evidence {
 	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
 	// scan context is already cancelled.
 	select {
@@ -732,7 +733,7 @@ func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.Scan
 		return nil
 	}
 
-	return []models.Finding{{
+	return []ev.Evidence{{
 		Title:    "SQL Injection (boolean-based)",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -802,7 +803,7 @@ func sendBoolProbe(ctx context.Context, client *http.Client, cfg *models.ScanCon
 // "fendix1287end" only appears if a shell evaluated the embedded `$((13*99))`
 // arithmetic — a server that merely reflects the input echoes "13*99" and is
 // not flagged.
-func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []models.Finding {
+func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, loc ProbeLocation, auditLog *ProbeAuditLog) []ev.Evidence {
 	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
 	// scan context is already cancelled.
 	select {
@@ -859,7 +860,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		}
 		evidence += fmt.Sprintf(", response snippet: %s", string(body))
 
-		return []models.Finding{{
+		return []ev.Evidence{{
 			Title:      "Command Injection confirmed",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -881,7 +882,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 // the resulting Set-Cookie header is reflected in the response. Query-only —
 // header values can't smuggle CR/LF past the http client, and body values
 // don't reach response-header construction in any reasonable framework.
-func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, auditLog *ProbeAuditLog) []models.Finding {
+func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig, endpoint Endpoint, param string, auditLog *ProbeAuditLog) []ev.Evidence {
 	// Fix 2.5: soft-stop uniformity — bail before sending any request if the
 	// scan context is already cancelled.
 	select {
@@ -939,7 +940,7 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			record.Finding = true
 			auditLog.Record(record)
 
-			return []models.Finding{{
+			return []ev.Evidence{{
 				Title:      "Header Injection / CRLF",
 				Severity:   models.SeverityHigh,
 				Source:     models.SourceBlackbox,

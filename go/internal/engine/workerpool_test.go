@@ -7,19 +7,20 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
 
 func TestWorkerPool_RunsAllChecks(t *testing.T) {
 	var callCount atomic.Int32
-	check1 := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	check1 := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		callCount.Add(1)
-		return []models.Finding{{Title: "check1", Severity: models.SeverityLow, Source: models.SourceBlackbox}}
+		return []evidence.Evidence{{Title: "check1", Severity: models.SeverityLow, Source: models.SourceBlackbox}}
 	}
-	check2 := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	check2 := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		callCount.Add(1)
-		return []models.Finding{{Title: "check2", Severity: models.SeverityMedium, Source: models.SourceBlackbox}}
+		return []evidence.Evidence{{Title: "check2", Severity: models.SeverityMedium, Source: models.SourceBlackbox}}
 	}
 
 	pool := NewWorkerPool(2, 0, []scanner.CheckFn{check1, check2})
@@ -42,7 +43,7 @@ func TestWorkerPool_RunsAllChecks(t *testing.T) {
 
 func TestWorkerPool_RespectsContext(t *testing.T) {
 	var callCount atomic.Int32
-	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		callCount.Add(1)
 		return nil
 	}
@@ -70,8 +71,8 @@ func TestWorkerPool_CollectsFindings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
-		return []models.Finding{
+	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
+		return []evidence.Evidence{
 			{Title: "finding for " + ep.Path, Severity: models.SeverityLow, Source: models.SourceBlackbox},
 		}
 	}
@@ -105,8 +106,8 @@ func TestWorkerPool_EmptyChecks(t *testing.T) {
 }
 
 func TestWorkerPool_EmptyEndpoints(t *testing.T) {
-	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
-		return []models.Finding{{Title: "should not appear"}}
+	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
+		return []evidence.Evidence{{Title: "should not appear"}}
 	}
 
 	pool := NewWorkerPool(2, 0, []scanner.CheckFn{check})
@@ -124,11 +125,11 @@ func TestWorkerPool_EmptyEndpoints(t *testing.T) {
 // every other job still runs to completion.
 func TestWorkerPool_PanicIsContained(t *testing.T) {
 	var goodCalls atomic.Int32
-	good := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	good := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		goodCalls.Add(1)
-		return []models.Finding{{Title: "ok " + ep.Path, Severity: models.SeverityLow, Source: models.SourceBlackbox}}
+		return []evidence.Evidence{{Title: "ok " + ep.Path, Severity: models.SeverityLow, Source: models.SourceBlackbox}}
 	}
-	boom := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	boom := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		panic("synthetic check failure on " + ep.Path)
 	}
 
@@ -179,7 +180,7 @@ func TestWorkerPool_SingleWorker(t *testing.T) {
 	var maxConcurrent atomic.Int32
 	var current atomic.Int32
 
-	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	check := func(ctx context.Context, cfg *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		c := current.Add(1)
 		if c > maxConcurrent.Load() {
 			maxConcurrent.Store(c)

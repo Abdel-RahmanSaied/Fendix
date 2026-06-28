@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
@@ -42,7 +43,7 @@ var scanBenchSizes = []int{10, 100, 500, 1000}
 // per call. Same shape as the workerpool large-scale test — but here we
 // expose it for the benchmark suite to reuse across sizes.
 func benchHTTPCheck(client *http.Client, counter *atomic.Int64, title string) scanner.CheckFn {
-	return func(ctx context.Context, _ *models.ScanConfig, ep scanner.Endpoint) []models.Finding {
+	return func(ctx context.Context, _ *models.ScanConfig, ep scanner.Endpoint) []evidence.Evidence {
 		counter.Add(1)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep.FullURL, nil)
 		if err != nil {
@@ -54,7 +55,7 @@ func benchHTTPCheck(client *http.Client, counter *atomic.Int64, title string) sc
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		return []models.Finding{{
+		return []evidence.Evidence{{
 			Title:    title,
 			Severity: models.SeverityLow,
 			Source:   models.SourceBlackbox,

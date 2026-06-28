@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // cookieFindingTitles collects finding titles for assertions.
-func cookieFindingTitles(fs []models.Finding) map[string]models.Finding {
-	m := make(map[string]models.Finding, len(fs))
+func cookieFindingTitles(fs []ev.Evidence) map[string]ev.Evidence {
+	m := make(map[string]ev.Evidence, len(fs))
 	for _, f := range fs {
 		m[f.Title] = f
 	}
@@ -20,7 +21,7 @@ func cookieFindingTitles(fs []models.Finding) map[string]models.Finding {
 }
 
 // hasRef reports whether a finding's References slice contains want.
-func hasRef(f models.Finding, want string) bool {
+func hasRef(f ev.Evidence, want string) bool {
 	for _, r := range f.References {
 		if r == want {
 			return true
@@ -33,7 +34,7 @@ func hasRef(f models.Finding, want string) bool {
 // For TLS servers the test client (srv.Client) is wired in so the cert is
 // trusted; that client is not SSRF-guarded, which is fine for unit testing the
 // cookie classification logic.
-func runCookieCheck(t *testing.T, srv *httptest.Server, tls bool) []models.Finding {
+func runCookieCheck(t *testing.T, srv *httptest.Server, tls bool) []ev.Evidence {
 	t.Helper()
 	cfg := &models.ScanConfig{Timeout: 5, AllowPrivate: true}
 	cc := NewCheckContext(cfg)
@@ -56,7 +57,7 @@ func TestCookieFlags_SessionCookieNoFlagsHTTPS(t *testing.T) {
 		t.Fatalf("expected 3 findings (HttpOnly, Secure, SameSite), got %d: %v", len(findings), findings)
 	}
 
-	var httpOnly, secure, sameSite *models.Finding
+	var httpOnly, secure, sameSite *ev.Evidence
 	for i := range findings {
 		f := findings[i]
 		if f.Category != "cookie" {
@@ -179,7 +180,7 @@ func TestCookieFlags_SameSiteNoneWithoutSecure(t *testing.T) {
 	defer srv.Close()
 
 	findings := runCookieCheck(t, srv, true)
-	var sameSite *models.Finding
+	var sameSite *ev.Evidence
 	for i := range findings {
 		if hasRef(findings[i], "CWE-1275") {
 			sameSite = &findings[i]

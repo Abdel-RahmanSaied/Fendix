@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -57,13 +58,13 @@ func gqlIntrospectionHandler(body string) http.HandlerFunc {
 }
 
 // findGraphQLFinding returns the introspection finding (HIGH) if present.
-func findGraphQLFinding(findings []models.Finding, titleContains string) (models.Finding, bool) {
+func findGraphQLFinding(findings []ev.Evidence, titleContains string) (ev.Evidence, bool) {
 	for _, f := range findings {
 		if strings.Contains(f.Title, titleContains) {
 			return f, true
 		}
 	}
-	return models.Finding{}, false
+	return ev.Evidence{}, false
 }
 
 // TestGraphQL_IntrospectionEnabled: /graphql answers a valid introspection

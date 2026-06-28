@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -40,10 +41,10 @@ func (t Tier) String() string {
 // adapter structs registered in DefaultChecks().
 type Check interface {
 	Name() string                        // stable id, e.g. "configleak"
-	Category() string                    // models.Finding.Category bucket
+	Category() string                    // ev.Evidence.Category bucket
 	Tier() Tier                          // intrusiveness / input class
 	Enabled(cfg *models.ScanConfig) bool // tier-implied gate
-	Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding
+	Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence
 }
 
 // AsCheck adapts an existing free CheckFn into the Check interface so the
@@ -65,7 +66,7 @@ func (c fnCheck) Name() string                        { return c.name }
 func (c fnCheck) Category() string                    { return c.category }
 func (c fnCheck) Tier() Tier                          { return c.tier }
 func (c fnCheck) Enabled(cfg *models.ScanConfig) bool { return c.enabled == nil || c.enabled(cfg) }
-func (c fnCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (c fnCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	return c.fn(ctx, cc.Cfg, ep)
 }
 

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -64,14 +65,14 @@ func (rateLimitCheck) Enabled(cfg *models.ScanConfig) bool { return true }
 
 // CheckRateLimit sends multiple rapid requests to detect rate limiting.
 // If all requests succeed with no 429 or rate-limit headers, it reports a finding.
-func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return rateLimitCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
 // Run holds the unchanged rate-limit detection body. Outbound requests
 // go through the shared SSRF-guarded follow-redirect client (cc.Client);
 // the per-job deadline comes from ctx (runCheck).
-func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	// TASK-123: skip rate-limit check on static-file endpoints. The
 	// check costs N requests per endpoint and the finding it produces
@@ -154,7 +155,7 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 	for _, h := range rateLimitHeaders[:3] {
 		headerList = append(headerList, h)
 	}
-	return []models.Finding{
+	return []ev.Evidence{
 		{
 			Title:    fmt.Sprintf("No rate limiting observed within %d requests", successfulProbes),
 			Severity: models.SeverityMedium,

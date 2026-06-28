@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -92,14 +93,14 @@ func (configLeakCheck) Enabled(cfg *models.ScanConfig) bool { return true }
 // first check so noisier downstream checks (headers / cors /
 // ratelimit) can be deduped naturally by the existing pipeline when
 // they fire on the same path.
-func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckConfigLeak(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return configLeakCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
 // Run holds the unchanged config-leak detection body. Outbound requests
 // go through the shared SSRF-guarded follow-redirect client (cc.Client);
 // the per-job deadline comes from ctx (runCheck).
-func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	if endpoint.FullURL == "" {
 		return nil
@@ -163,7 +164,7 @@ func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpo
 	}
 
 	line := endpoint.Path
-	return []models.Finding{{
+	return []ev.Evidence{{
 		Title:      title,
 		Severity:   models.SeverityCritical,
 		Source:     models.SourceBlackbox,

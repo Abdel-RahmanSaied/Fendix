@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -922,22 +923,22 @@ func TestProbes_SoftStopOnCancel(t *testing.T) {
 
 	type probeFn struct {
 		name string
-		fn   func(ctx context.Context, a *ProbeAuditLog) []models.Finding
+		fn   func(ctx context.Context, a *ProbeAuditLog) []ev.Evidence
 	}
 	probes := []probeFn{
-		{"probeSQLi", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+		{"probeSQLi", func(ctx context.Context, a *ProbeAuditLog) []ev.Evidence {
 			return probeSQLi(ctx, client, cfg, ep, "id", LocQuery, a)
 		}},
-		{"probeSQLiErrorBased", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+		{"probeSQLiErrorBased", func(ctx context.Context, a *ProbeAuditLog) []ev.Evidence {
 			return probeSQLiErrorBased(ctx, client, cfg, ep, "id", LocQuery, a)
 		}},
-		{"probeSQLiBoolean", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+		{"probeSQLiBoolean", func(ctx context.Context, a *ProbeAuditLog) []ev.Evidence {
 			return probeSQLiBoolean(ctx, client, cfg, ep, "id", LocQuery, a)
 		}},
-		{"probeCMDi", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+		{"probeCMDi", func(ctx context.Context, a *ProbeAuditLog) []ev.Evidence {
 			return probeCMDi(ctx, client, cfg, ep, "id", LocQuery, a)
 		}},
-		{"probeCRLF", func(ctx context.Context, a *ProbeAuditLog) []models.Finding {
+		{"probeCRLF", func(ctx context.Context, a *ProbeAuditLog) []ev.Evidence {
 			return probeCRLF(ctx, client, cfg, ep, "id", a)
 		}},
 	}

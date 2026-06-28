@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -750,7 +751,7 @@ func TestAuth_StatusOnlyIsMedium(t *testing.T) {
 		endpoint := Endpoint{Method: "GET", Path: "/empty", FullURL: server.URL + "/empty"}
 
 		findings := CheckAuth(context.Background(), cfg, endpoint)
-		var f *models.Finding
+		var f *ev.Evidence
 		for i := range findings {
 			if findings[i].Title == "Missing authentication on endpoint" {
 				f = &findings[i]
@@ -778,7 +779,7 @@ func TestAuth_StatusOnlyIsMedium(t *testing.T) {
 		endpoint := Endpoint{Method: "GET", Path: "/users", FullURL: server.URL + "/users"}
 
 		findings := CheckAuth(context.Background(), cfg, endpoint)
-		var f *models.Finding
+		var f *ev.Evidence
 		for i := range findings {
 			if findings[i].Title == "Missing authentication on endpoint" {
 				f = &findings[i]

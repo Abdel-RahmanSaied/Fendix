@@ -88,6 +88,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -200,12 +201,12 @@ func (SSRFCheck) Enabled(cfg *models.ScanConfig) bool {
 // probe, a ProbeRecord per probe, and auth applied via cfg.Auth.ApplyToRequest.
 // Skips non-2xx/3xx baseline endpoints (a 404 surface is not a feature, same as
 // headers/cors). At most one finding per target, precedence (a)>(b)>(c).
-func (SSRFCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (SSRFCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	if cc == nil || cc.Cfg == nil || !cc.Cfg.EnableActive {
 		return nil
 	}
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	maxProbes := effectiveMaxProbes(cc.Cfg)
 
 	// SSRF lives in URL-shaped params; filter the target set first (all-params
@@ -285,7 +286,7 @@ func ssrfBaselineServiceable(ctx context.Context, cc *CheckContext, ep Endpoint)
 // probeSSRF runs the in-band SSRF signals against one (param, location) target
 // and returns the first finding by precedence (a error-leak > b reflected-fetch
 // > c timing). Returns (finding, true) on a hit, (zero, false) otherwise.
-func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (models.Finding, bool) {
+func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (ev.Evidence, bool) {
 	// Unique per-target canary so a hit cannot collide with static page text and
 	// the host cannot be guessed/special-cased by the target.
 	canary := "fendix-ssrf-" + randHex(8)
@@ -322,7 +323,7 @@ func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string,
 		return f, true
 	}
 
-	return models.Finding{}, false
+	return ev.Evidence{}, false
 }
 
 // ssrfFetchProbe sends one canary URL probe via the body-following client and
@@ -337,10 +338,10 @@ func probeSSRF(ctx context.Context, cc *CheckContext, ep Endpoint, param string,
 // in-band marker would be indistinguishable from input reflection of an injected
 // URL component (see the file-level NOTE), making it the dominant FP source.
 // Reflected-content fetch-back is confirmable only out-of-band (documented FN).
-func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation, injectURL, canaryHost string) (models.Finding, bool) {
+func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation, injectURL, canaryHost string) (ev.Evidence, bool) {
 	body, status, ok := ssrfSendBody(ctx, cc, ep, param, loc, injectURL)
 	if !ok {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	// (a) ERROR-LEAK: error signature AND our canary host both present.
@@ -349,7 +350,7 @@ func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param st
 			"Outbound fetch error leakage: response (status=%d) contains fetch-stack error %q AND our canary host %q, proving the server attempted to fetch the injected URL %q. %s",
 			status, sig, canaryHost, injectURL, paramLabel(param, loc),
 		)
-		return models.Finding{
+		return ev.Evidence{
 			Title:    "SSRF — outbound fetch error leakage",
 			Severity: models.SeverityHigh,
 			Source:   models.SourceBlackbox,
@@ -363,19 +364,19 @@ func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param st
 		}, true
 	}
 
-	return models.Finding{}, false
+	return ev.Evidence{}, false
 }
 
 // ssrfRedirectProbe sends the canary URL via the NON-following client and fires
 // (b, redirect-echo, MEDIUM) when the raw 3xx Location header carries our canary
 // host — a server-side fetcher that 30x's onward to the supplied URL.
-func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation, injectURL, canaryHost string) (models.Finding, bool) {
+func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation, injectURL, canaryHost string) (ev.Evidence, bool) {
 	if cc.Audit.Count(ep.FullURL) >= effectiveMaxProbes(cc.Cfg) {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	select {
 	case <-ctx.Done():
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	default:
 	}
 
@@ -383,7 +384,7 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 	req, err := buildProbeRequest(ctx, ep, param, injectURL, loc)
 	if err != nil {
 		logagg.Warn("ssrf", "failed to create redirect-echo probe request", "error", err)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	cc.Cfg.Auth.ApplyToRequest(req)
 
@@ -402,7 +403,7 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 		logagg.Warn("ssrf", "redirect-echo probe request failed", "endpoint", ep.FullURL, "error", err)
 		record.Status = 0
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	resp.Body.Close()
 	record.Status = resp.StatusCode
@@ -425,7 +426,7 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 		if locHost == strings.ToLower(canaryHost) {
 			record.Finding = true
 			cc.Audit.Record(record)
-			return models.Finding{
+			return ev.Evidence{
 				Title:    "SSRF — server-side fetch of attacker-controlled URL",
 				Severity: models.SeverityMedium,
 				Source:   models.SourceBlackbox,
@@ -444,7 +445,7 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 	}
 
 	cc.Audit.Record(record)
-	return models.Finding{}, false
+	return ev.Evidence{}, false
 }
 
 // ssrfTimingProbe is the confirmation-only timing-differential signal (MEDIUM).
@@ -459,23 +460,23 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 // so this rarely fires in the loopback test environment — which is correct: a
 // host we can't make hang produces no timing differential. The branch exists so
 // real targets with a slow-failing fetcher are still surfaced at MEDIUM.
-func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (models.Finding, bool) {
+func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param string, loc ProbeLocation) (ev.Evidence, bool) {
 	maxProbes := effectiveMaxProbes(cc.Cfg)
 	// Need at least the baseline samples (3) plus one timing probe; bail if the
 	// budget can't cover them rather than overshoot the operator's cap.
 	if cc.Audit.Count(ep.FullURL)+4 > maxProbes {
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	select {
 	case <-ctx.Done():
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	default:
 	}
 
 	baseline, err := measureBaseline(ctx, cc.Client, cc.Cfg, ep.Method, ep.FullURL)
 	if err != nil {
 		logagg.Warn("ssrf", "failed to measure baseline for timing", "endpoint", ep.FullURL, "error", err)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	// A host under the sentinel TLD that a server-side fetcher would block on
@@ -486,13 +487,13 @@ func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param s
 	for i := 0; i < n; i++ {
 		select {
 		case <-ctx.Done():
-			return models.Finding{}, false
+			return ev.Evidence{}, false
 		default:
 		}
 		start := time.Now()
 		req, err := buildProbeRequest(ctx, ep, param, hangURL, loc)
 		if err != nil {
-			return models.Finding{}, false
+			return ev.Evidence{}, false
 		}
 		cc.Cfg.Auth.ApplyToRequest(req)
 		resp, err := cc.Client.Do(req)
@@ -511,7 +512,7 @@ func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param s
 			cc.Audit.Record(record)
 			// A transport error (fast NXDOMAIN at our own guard, refused dial)
 			// is NOT a timing signal — abandon the timing branch.
-			return models.Finding{}, false
+			return ev.Evidence{}, false
 		}
 		resp.Body.Close()
 		record.Status = resp.StatusCode
@@ -524,7 +525,7 @@ func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param s
 	// be attributable to a server-side connect-timeout rather than jitter.
 	const ssrfTimingThreshold = 4 * time.Second
 	if probe > baseline+ssrfTimingThreshold {
-		return models.Finding{
+		return ev.Evidence{
 			Title:    "SSRF — timing differential",
 			Severity: models.SeverityMedium,
 			Source:   models.SourceBlackbox,
@@ -541,7 +542,7 @@ func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param s
 		}, true
 	}
 
-	return models.Finding{}, false
+	return ev.Evidence{}, false
 }
 
 // ssrfSendBody sends one probe (param=injectURL at loc) via the body-following

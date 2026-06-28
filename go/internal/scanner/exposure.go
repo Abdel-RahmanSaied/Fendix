@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -241,14 +242,14 @@ func (exposureCheck) Tier() Tier                          { return TierPassive }
 func (exposureCheck) Enabled(cfg *models.ScanConfig) bool { return true }
 
 // CheckExposure scans response bodies for sensitive data patterns.
-func CheckExposure(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding {
+func CheckExposure(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence {
 	return exposureCheck{}.Run(ctx, NewCheckContext(cfg), endpoint)
 }
 
 // Run holds the unchanged data-exposure detection body. Outbound
 // requests go through the shared SSRF-guarded follow-redirect client
 // (cc.Client); the per-job deadline comes from ctx (runCheck).
-func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	client := cc.Client
 
@@ -274,7 +275,7 @@ func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoin
 	}
 
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
-	var findings []models.Finding
+	var findings []ev.Evidence
 
 	for _, pat := range exposurePatterns {
 		match := pat.Pattern.Find(body)
@@ -289,7 +290,7 @@ func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoin
 				evidence = evidence[:maxEvidenceLen] + "..."
 			}
 
-			findings = append(findings, models.Finding{
+			findings = append(findings, ev.Evidence{
 				Title:      pat.Title,
 				Severity:   pat.Severity,
 				Source:     models.SourceBlackbox,

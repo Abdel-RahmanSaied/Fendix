@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -37,13 +38,13 @@ func methodTamperEP(server *httptest.Server, method, path string) Endpoint {
 
 // findMethodTamperFinding returns the first finding whose Title contains the
 // given substring (case-insensitive).
-func findMethodTamperFinding(findings []models.Finding, titleContains string) (models.Finding, bool) {
+func findMethodTamperFinding(findings []ev.Evidence, titleContains string) (ev.Evidence, bool) {
 	for _, f := range findings {
 		if strings.Contains(strings.ToLower(f.Title), strings.ToLower(titleContains)) {
 			return f, true
 		}
 	}
-	return models.Finding{}, false
+	return ev.Evidence{}, false
 }
 
 // hasAuthHeader reports whether the request carries an Authorization header (the
@@ -263,7 +264,7 @@ func TestMethodTamper_MultipleVerbsOneFinding(t *testing.T) {
 	ep := methodTamperEP(server, http.MethodGet, "/admin")
 	findings := methodTamperCheck{}.Run(context.Background(), NewCheckContext(cfg), ep)
 
-	var bypass []models.Finding
+	var bypass []ev.Evidence
 	for _, f := range findings {
 		if strings.Contains(strings.ToLower(f.Title), "bypass") {
 			bypass = append(bypass, f)

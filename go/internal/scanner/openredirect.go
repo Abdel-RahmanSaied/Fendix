@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -90,12 +91,12 @@ func (openRedirectCheck) Enabled(cfg *models.ScanConfig) bool {
 // most one finding is emitted per parameter — once a param confirms, the
 // remaining payloads for that param are skipped (the underlying vuln is the
 // same; more payloads would just be noise).
-func (openRedirectCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (openRedirectCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	if !cc.Cfg.EnableActive {
 		return nil
 	}
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	maxProbes := effectiveMaxProbes(cc.Cfg)
 
 paramLoop:
@@ -129,14 +130,14 @@ paramLoop:
 // the raw 3xx Location confirms an off-origin redirect to the sentinel host.
 // Returns (finding, true) on a hit, (zero, false) otherwise. Always records a
 // ProbeRecord.
-func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param string, p redirectPayload) (models.Finding, bool) {
+func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param string, p redirectPayload) (ev.Evidence, bool) {
 	probeURL := buildProbeURL(ep.FullURL, param, p.Value)
 
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, ep.Method, probeURL, nil)
 	if err != nil {
 		logagg.Warn("open-redirect", "failed to create probe request", "error", err)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	cc.Cfg.Auth.ApplyToRequest(req)
 
@@ -157,7 +158,7 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 		logagg.Warn("open-redirect", "probe request failed", "endpoint", ep.FullURL, "error", err)
 		record.Status = 0
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	resp.Body.Close()
 	record.Status = resp.StatusCode
@@ -166,18 +167,18 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 	// if the payload is echoed in the body) is NOT an open redirect.
 	if resp.StatusCode < 300 || resp.StatusCode > 399 {
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	location := resp.Header.Get("Location")
 	if location == "" {
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 
 	target, host, ok := parseRedirectTarget(location)
 	if !ok {
 		cc.Audit.Record(record)
-		return models.Finding{}, false
+		return ev.Evidence{}, false
 	}
 	scheme := ""
 	if target != nil {
@@ -193,7 +194,7 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 		// sentinel-host gate is needed (and the host of such a URL is empty).
 		if !dangerousRedirectScheme(scheme) {
 			cc.Audit.Record(record)
-			return models.Finding{}, false
+			return ev.Evidence{}, false
 		}
 		severity = models.SeverityHigh
 		confidence = models.ConfidenceHigh
@@ -201,7 +202,7 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 		// URL payloads: LOAD-BEARING host-equality gate (never substring).
 		if !redirectHostConfirmed(host, p.SuffixBypass) {
 			cc.Audit.Record(record)
-			return models.Finding{}, false
+			return ev.Evidence{}, false
 		}
 		if p.SuffixBypass {
 			// Subdomain-style bypass: the match is host-suffix rather than
@@ -224,7 +225,7 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 		param, p.Value, resp.StatusCode, location, host,
 	)
 
-	return models.Finding{
+	return ev.Evidence{
 		Title:    "Open Redirect",
 		Severity: severity,
 		Source:   models.SourceBlackbox,

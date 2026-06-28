@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -45,7 +46,7 @@ var cookieSessionList = []string{
 	"connect.sid", "laravel_session",
 }
 
-func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []models.Finding {
+func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
 	client := cc.Client
 
@@ -72,11 +73,11 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 	isHTTPS := strings.HasPrefix(strings.ToLower(endpoint.FullURL), "https://")
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	// Dedup per (cookie-name, flag) so repeated Set-Cookie for the same name
 	// (e.g. set twice in one response) emits at most one finding per flag.
 	seen := make(map[string]bool)
-	emit := func(name, flag string, f models.Finding) {
+	emit := func(name, flag string, f ev.Evidence) {
 		key := strings.ToLower(name) + "|" + flag
 		if seen[key] {
 			return
@@ -95,7 +96,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 
 		// Missing HttpOnly — exposes the cookie to document.cookie / XSS theft.
 		if !c.HttpOnly {
-			emit(c.Name, "httponly", models.Finding{
+			emit(c.Name, "httponly", ev.Evidence{
 				Title:      "Session cookie missing HttpOnly flag",
 				Severity:   models.SeverityMedium,
 				Source:     models.SourceBlackbox,
@@ -111,7 +112,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		// Missing Secure — only meaningful over https (Secure is a no-op /
 		// not assertable on plain http responses).
 		if isHTTPS && !c.Secure {
-			emit(c.Name, "secure", models.Finding{
+			emit(c.Name, "secure", ev.Evidence{
 				Title:      "Session cookie missing Secure flag",
 				Severity:   models.SeverityMedium,
 				Source:     models.SourceBlackbox,
@@ -140,7 +141,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 					severity = models.SeverityMedium
 				}
 			}
-			emit(c.Name, "samesite", models.Finding{
+			emit(c.Name, "samesite", ev.Evidence{
 				Title:      "Session cookie missing or weak SameSite attribute",
 				Severity:   severity,
 				Source:     models.SourceBlackbox,

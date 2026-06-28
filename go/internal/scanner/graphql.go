@@ -77,6 +77,7 @@ import (
 	"sync"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -155,7 +156,7 @@ func (graphQLCheck) Enabled(cfg *models.ScanConfig) bool {
 // probes each candidate. Active-probe discipline mirrors hostHeaderCheck /
 // SSRFCheck: a ctx.Done()/budget check before every probe, a ProbeRecord per
 // probe, and auth applied via cfg.Auth.ApplyToRequest.
-func (graphQLCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (graphQLCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	if cc == nil || cc.Cfg == nil || !cc.Cfg.EnableActive {
 		return nil
 	}
@@ -185,7 +186,7 @@ func (graphQLCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []mo
 
 	maxProbes := effectiveMaxProbes(cc.Cfg)
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	for _, candidate := range candidates {
 		// Active discipline: soft-stop on cancellation, then budget cap — both
 		// checked before sending the probe (mirrors hostHeaderCheck).
@@ -444,7 +445,7 @@ func containsString(xs []string, s string) bool {
 // graphqlIntrospectionFinding builds the HIGH introspection-enabled finding.
 // Evidence notes the exposed mutation surface when mutations are present, but
 // severity stays HIGH either way.
-func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) models.Finding {
+func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) ev.Evidence {
 	evidence := fmt.Sprintf(
 		"GraphQL introspection enabled at %s: POSTing the standard introspection query returned a valid GraphQL response (Content-Type %q) with data.__schema.queryType=%q. An attacker can enumerate the full schema (types, fields, arguments) — the reconnaissance starting point for the API.",
 		url, res.contentType, res.queryType,
@@ -452,7 +453,7 @@ func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) mod
 	if res.hasMutations {
 		evidence += fmt.Sprintf(" Mutations are also exposed (data.__schema.mutationType=%q), revealing every state-changing operation available.", res.mutationType)
 	}
-	return models.Finding{
+	return ev.Evidence{
 		Title:    "GraphQL introspection enabled",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -468,8 +469,8 @@ func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) mod
 
 // graphqlGETExecutionFinding builds the MEDIUM GET-execution (CSRF surface)
 // sub-finding.
-func graphqlGETExecutionFinding(url string) models.Finding {
-	return models.Finding{
+func graphqlGETExecutionFinding(url string) ev.Evidence {
+	return ev.Evidence{
 		Title:    "GraphQL query execution via GET (CSRF surface)",
 		Severity: models.SeverityMedium,
 		Source:   models.SourceBlackbox,

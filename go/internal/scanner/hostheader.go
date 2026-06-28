@@ -72,6 +72,7 @@ import (
 	"strings"
 	"time"
 
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -155,7 +156,7 @@ type hostHeaderBaseline struct {
 // cfg.Auth.ApplyToRequest. Skips endpoints whose baseline status is 404 (not a
 // feature). Dedups so a host reflected via N headers yields ONE finding per
 // shape, not N.
-func (hostHeaderCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []models.Finding {
+func (hostHeaderCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) []ev.Evidence {
 	if cc == nil || cc.Cfg == nil || !cc.Cfg.EnableActive {
 		return nil
 	}
@@ -172,7 +173,7 @@ func (hostHeaderCheck) Run(ctx context.Context, cc *CheckContext, ep Endpoint) [
 		return nil
 	}
 
-	var findings []models.Finding
+	var findings []ev.Evidence
 	// Dedup flags: one finding per shape per endpoint, even when the host is
 	// reflected via multiple Host-family headers.
 	redirFlagged := false
@@ -350,8 +351,8 @@ func hostHeaderLocationHost(location string) string {
 }
 
 // hostHeaderRedirectFinding builds the HIGH/High redirect-host reflection finding.
-func hostHeaderRedirectFinding(ep Endpoint, v hostHeaderVector, status int, location string) models.Finding {
-	return models.Finding{
+func hostHeaderRedirectFinding(ep Endpoint, v hostHeaderVector, status int, location string) ev.Evidence {
+	return ev.Evidence{
 		Title:    "Host Header Injection — attacker-controlled redirect host",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -371,7 +372,7 @@ func hostHeaderRedirectFinding(ep Endpoint, v hostHeaderVector, status int, loca
 // hostHeaderLinkFinding builds the body absolute-link reflection finding. It is
 // HIGH when the surrounding context looks like a password-reset / verify flow or
 // the match sits in an href/src attribute, MEDIUM otherwise.
-func hostHeaderLinkFinding(ep Endpoint, v hostHeaderVector, body string) models.Finding {
+func hostHeaderLinkFinding(ep Endpoint, v hostHeaderVector, body string) ev.Evidence {
 	severity := models.SeverityMedium
 	confidence := models.ConfidenceMedium
 	linkContext := "off-origin absolute link"
@@ -383,7 +384,7 @@ func hostHeaderLinkFinding(ep Endpoint, v hostHeaderVector, body string) models.
 	}
 
 	match := hostHeaderURLPositionRe.FindString(body)
-	return models.Finding{
+	return ev.Evidence{
 		Title:    "Host Header Injection — attacker-controlled absolute link in body",
 		Severity: severity,
 		Source:   models.SourceBlackbox,

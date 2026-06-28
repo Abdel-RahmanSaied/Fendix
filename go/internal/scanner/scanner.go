@@ -3,9 +3,12 @@
 // sends HTTP requests, and returns findings based on the responses.
 package scanner
 
-import "context"
+import (
+	"context"
 
-import "github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+)
 
 // Endpoint represents a discovered API endpoint to scan.
 //
@@ -28,4 +31,4 @@ type Endpoint struct {
 
 // CheckFn is the signature for all scanner check functions.
 // Each check receives a context, config, and endpoint, and returns findings.
-type CheckFn func(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []models.Finding
+type CheckFn func(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint) []ev.Evidence

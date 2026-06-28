@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
@@ -50,7 +51,7 @@ func FuzzWorkerPool_CancelTiming(f *testing.F) {
 		busy := time.Duration(busyMicros%200) * time.Microsecond
 
 		var calls atomic.Int64
-		check := func(ctx context.Context, _ *models.ScanConfig, _ scanner.Endpoint) []models.Finding {
+		check := func(ctx context.Context, _ *models.ScanConfig, _ scanner.Endpoint) []evidence.Evidence {
 			calls.Add(1)
 			if busy > 0 {
 				// Yield-ish wait that respects ctx — same shape a real check
