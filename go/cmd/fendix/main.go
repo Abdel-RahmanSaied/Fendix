@@ -93,6 +93,7 @@ to produce high-confidence security findings with evidence.`,
 	root.AddCommand(ignorecmd.NewCmd())
 	root.AddCommand(hookcmd.NewCmd())
 	root.AddCommand(newBenchmarkCmd())
+	root.AddCommand(newMetricsCmd())
 
 	return root
 }

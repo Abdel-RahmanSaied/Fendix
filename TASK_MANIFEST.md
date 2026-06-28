@@ -107,10 +107,10 @@ Every finding triaged real-vs-false (ground truth v2.0), so **precision is now a
 | owasp | — | — | — | — | — | — | — | SKIPPED (Java → v0.27) |
 
 ¹ FPRate undefined for DAST (no labeled negative corpus; TrueNeg=0). The 5 Juice Shop FPs are a **real Fendix accuracy bug** (see Pre-existing issues). Future runs gate on >10% movement vs these stored raw counts.
-| M1 | Instrument scan pipeline (scan/correlation/finding-count/mem) behind `FENDIX_METRICS` (default off → NoopCollector). **Extend, never rewrite `orchestrator.go`** | Metrics | A3 | `go/internal/engine/orchestrator.go` | TODO |
-| M2 | Static metrics dashboard (Chart.js CDN, dark, no build) | Metrics | A3 | `tools/dashboard/index.html` | TODO |
-| M3 | `fendix metrics show/export/clear` subcommand | Metrics | A3 | `go/cmd/fendix/metrics.go` (+wire `main.go`) | TODO |
-| M4 | Privacy guard (no paths/hostnames/finding-content; size cap) | Metrics | A3 | within collector + M1 | TODO |
+| M1 | Instrument scan pipeline (scan duration/finding-count/mem) behind `FENDIX_METRICS` (default off → NoopCollector); ~25-line additive hook + `recordScanMetric`, no scan logic touched | Metrics | A3 | `go/internal/engine/orchestrator.go` | DONE |
+| M2 | Static metrics dashboard (Chart.js CDN+SRI, dark, drag-drop NDJSON, no build) | Metrics | A3 | `tools/dashboard/index.html` | DONE |
+| M3 | `fendix metrics show/export/clear` subcommand (+ `metrics.LoadEvents`/`Summarize`) | Metrics | A3 | `go/cmd/fendix/metrics.go`, `go/internal/metrics/reader.go` (+wire `main.go`) | DONE |
+| M4 | Privacy guard (MetricEvent has only counts/timings; size-cap rotation in FileCollector) — verified: events carry no paths/hosts/content | Metrics | A3 | collector + M1 | DONE |
 | T1 | CLI smoke suite (incl. new `benchmark`/`metrics` cmds) | Test | B4,M3 | `go/tests/smoke/cli_test.go` | TODO |
 | T2 | Output snapshot regression + fixtures | Test | — | `go/tests/regression/output_format_test.go`, `go/tests/fixtures/{simple-go-project,simple-python-project}/`, `go/tests/regression/snapshots/` | TODO |
 | T3 | Benchmark-result regression test (within 10% of baseline) | Test | A2,B6 | `go/tests/regression/benchmark_regression_test.go` | TODO |

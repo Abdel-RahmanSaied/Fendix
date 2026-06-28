@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fendix — Metrics Dashboard</title>
+<!--
+  v0.20 internal metrics dashboard. No build step, no server, no telemetry.
+  Drag your metrics/events.jsonl onto the page (or use the file picker).
+  Everything runs locally in the browser; nothing is uploaded anywhere.
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+        integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#3fb950; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:20px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; font-weight:600; }
+  h1 .v { color:var(--accent); }
+  .muted { color:var(--muted); }
+  #drop { margin-left:auto; border:1px dashed var(--border); border-radius:8px; padding:10px 16px; cursor:pointer; color:var(--muted); transition:.15s; }
+  #drop.drag { border-color:var(--accent); color:var(--fg); background:rgba(63,185,80,.08); }
+  input[type=file]{ display:none; }
+  .stats { display:flex; gap:16px; flex-wrap:wrap; padding:20px 24px 0; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 18px; min-width:140px; }
+  .stat .n { font-size:24px; font-weight:600; }
+  .stat .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; padding:20px 24px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .card h2 { font-size:13px; margin:0 0 12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .empty { padding:60px 24px; text-align:center; color:var(--muted); }
+  code { background:#21262d; padding:1px 6px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fendix <span class="v">metrics</span></h1>
+  <span class="muted" id="src">no data loaded</span>
+  <label id="drop">Drop <code>events.jsonl</code> here, or click to choose
+    <input type="file" id="file" accept=".jsonl,.json,application/json" />
+  </label>
+</header>
+
+<div id="empty" class="empty">
+  Enable metrics with <code>FENDIX_METRICS=true</code>, run a scan, then load
+  <code>metrics/events.jsonl</code>.
+</div>
+
+<section class="stats" id="stats" style="display:none"></section>
+<section class="grid" id="grid" style="display:none">
+  <div class="card"><h2>Scan duration (s)</h2><canvas id="cDur"></canvas></div>
+  <div class="card"><h2>Findings per scan</h2><canvas id="cFind"></canvas></div>
+  <div class="card"><h2>Memory (MB)</h2><canvas id="cMem"></canvas></div>
+  <div class="card"><h2>Scans by version</h2><canvas id="cVer"></canvas></div>
+</section>
+
+<script>
+const charts = {};
+const C = { grid:'#30363d', tick:'#8b949e', line:'#3fb950', bar:'#1f6feb' };
+
+function parseNDJSON(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    try { out.push(JSON.parse(line)); } catch (_) { /* tolerate partial trailing line */ }
+  }
+  // Some exporters emit a single JSON array; accept that too.
+  if (out.length === 1 && Array.isArray(out[0])) return out[0];
+  return out;
+}
+
+function lineChart(id, labels, data, color) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), {
+    type:'line',
+    data:{ labels, datasets:[{ data, borderColor:color, backgroundColor:color+'33', tension:.25, fill:true, pointRadius:2 }] },
+    options:{ plugins:{legend:{display:false}}, scales:{
+      x:{ grid:{color:C.grid}, ticks:{color:C.tick, maxTicksLimit:8} },
+      y:{ grid:{color:C.grid}, ticks:{color:C.tick}, beginAtZero:true } } }
+  });
+}
+
+function barChart(id, labels, data, color) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), {
+    type:'bar',
+    data:{ labels, datasets:[{ data, backgroundColor:color }] },
+    options:{ plugins:{legend:{display:false}}, scales:{
+      x:{ grid:{color:C.grid}, ticks:{color:C.tick} },
+      y:{ grid:{color:C.grid}, ticks:{color:C.tick}, beginAtZero:true } } }
+  });
+}
+
+function stat(label, value) {
+  return `<div class="stat"><div class="n">${value}</div><div class="l">${label}</div></div>`;
+}
+
+function render(events) {
+  const scans = events.filter(e => e.phase === 'scan').slice(-30);
+  document.getElementById('empty').style.display = scans.length ? 'none' : 'block';
+  document.getElementById('stats').style.display = scans.length ? 'flex' : 'none';
+  document.getElementById('grid').style.display = scans.length ? 'grid' : 'none';
+  if (!scans.length) return;
+
+  const labels = scans.map((e,i) => (e.timestamp || '').slice(5,16) || ('#'+(i+1)));
+  const dur = scans.map(e => (e.duration_ms||0)/1000);
+  const find = scans.map(e => e.finding_count||0);
+  const mem = scans.map(e => e.memory_mb||0);
+  const avg = a => a.length ? (a.reduce((x,y)=>x+y,0)/a.length) : 0;
+
+  document.getElementById('stats').innerHTML =
+    stat('Scans', scans.length) +
+    stat('Avg duration', avg(dur).toFixed(1)+'s') +
+    stat('Avg findings', avg(find).toFixed(1)) +
+    stat('Avg memory', avg(mem).toFixed(0)+'MB');
+
+  lineChart('cDur', labels, dur, C.line);
+  lineChart('cFind', labels, find, C.line);
+  lineChart('cMem', labels, mem, C.line);
+
+  const byVer = {};
+  for (const e of scans) byVer[e.version||'?'] = (byVer[e.version||'?']||0)+1;
+  barChart('cVer', Object.keys(byVer), Object.values(byVer), C.bar);
+}
+
+function load(file) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    const events = parseNDJSON(fr.result);
+    document.getElementById('src').textContent = `${file.name} — ${events.length} events`;
+    render(events);
+  };
+  fr.readAsText(file);
+}
+
+const drop = document.getElementById('drop');
+const input = document.getElementById('file');
+input.addEventListener('change', e => { if (e.target.files[0]) load(e.target.files[0]); });
+['dragover','dragenter'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
+document.addEventListener('drop', e => { if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/diagnostic"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/logagg"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/metrics"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/plugin"
@@ -42,6 +44,11 @@ type Orchestrator struct {
 	// scan to native-Go-only output (the silent no-op bug). nil when SAST was
 	// not requested or the engine resolved cleanly.
 	engineErr error
+	// metrics is the opt-in product-metrics collector (v0.20). It is a
+	// NoopCollector unless FENDIX_METRICS is set, so the scan path pays
+	// nothing when metrics are disabled. nil only when an Orchestrator is
+	// constructed directly in a test; recordScanMetric guards for that.
+	metrics metrics.Collector
 }
 
 // NewOrchestrator creates an orchestrator from scan config.
@@ -84,6 +91,7 @@ func NewOrchestrator(cfg *models.ScanConfig, version string) *Orchestrator {
 		spawner:   NewPythonSpawner("", engineDir),
 		version:   version,
 		engineErr: engineErr,
+		metrics:   metrics.FromEnv(""),
 	}
 }
 
@@ -92,6 +100,7 @@ func NewOrchestratorWithSpawner(cfg *models.ScanConfig, spawner *PythonSpawner) 
 	return &Orchestrator{
 		cfg:     cfg,
 		spawner: spawner,
+		metrics: metrics.FromEnv(""),
 	}
 }
 
@@ -654,6 +663,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		"info", counts.Info,
 	)
 
+	// Opt-in product metric for this scan (FENDIX_METRICS). NoopCollector
+	// when disabled — no I/O, negligible overhead.
+	o.recordScanMetric(duration, len(findings))
+
 	// Surface aggregated WARN suppression counts so operators can tell at a
 	// glance how many transient errors were silenced (vs. the visible cap
 	// emissions). One Info line per scan; empty when no events occurred.
@@ -731,6 +744,33 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 
 	// 8. Check fail-on threshold
 	return o.checkFailOn(findings)
+}
+
+// recordScanMetric emits one structural MetricEvent for the completed scan.
+// It is a no-op when metrics are disabled (NoopCollector) or the collector
+// is nil (direct test construction). PRIVACY: only counts and timings are
+// recorded — never paths, hosts, or finding content. Recording failures are
+// logged at DEBUG and never affect the scan result.
+func (o *Orchestrator) recordScanMetric(dur time.Duration, findingCount int) {
+	if o.metrics == nil {
+		return
+	}
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	ev := metrics.MetricEvent{
+		Version:      o.version,
+		Phase:        "scan",
+		DurationMs:   dur.Milliseconds(),
+		FindingCount: findingCount,
+		MemoryMB:     metrics.MemoryMB(ms.HeapAlloc),
+		Timestamp:    time.Now().UTC(),
+	}
+	if err := o.metrics.Record(ev); err != nil {
+		slog.Debug("metrics record failed", "error", err)
+	}
+	if err := o.metrics.Flush(); err != nil {
+		slog.Debug("metrics flush failed", "error", err)
+	}
 }
 
 // renderReport writes the scan report to the configured output.
