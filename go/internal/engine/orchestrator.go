@@ -425,11 +425,14 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// --checks secrets) dedupes cleanly. No network access — runs in
 	// offline mode unchanged.
 	if o.cfg.CodePath != "" {
-		secretFindings, err := secrets.ScanWithAllowlist(ctx, o.cfg.CodePath, allow)
+		secretEvidence, err := secrets.ScanWithAllowlist(ctx, o.cfg.CodePath, allow)
 		switch {
 		case err == nil:
-			slog.Info("native secrets scan complete", "findings", len(secretFindings))
-			findings = append(findings, secretFindings...)
+			slog.Info("native secrets scan complete", "findings", len(secretEvidence))
+			// v0.22: secrets emits Evidence natively; project to Finding at the
+			// accumulator boundary (provenance threads through once the
+			// accumulator itself is flipped to Evidence in a later batch).
+			findings = append(findings, evidence.ToFindings(secretEvidence)...)
 			scanStatus.ok("secrets")
 		case errors.Is(err, secrets.ErrCodePathMissing):
 			slog.Debug("code path missing — skipping native secrets scan")

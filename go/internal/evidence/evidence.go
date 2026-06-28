@@ -28,8 +28,10 @@ import (
 // correlation service and (eventually) the decision layer.
 type Evidence struct {
 	// --- Render block: projected 1:1 onto models.Finding ------------------
-	// Keep in lockstep with models.Finding. `Detail` maps to Finding.Evidence
-	// (the human-readable snippet); every other field shares its name.
+	// Field names match models.Finding EXACTLY (including Evidence — yes, an
+	// Evidence field on the Evidence type), so a scanner migrates from
+	// building models.Finding{...} to evidence.Evidence{...} by swapping the
+	// type name and nothing else. Keep in lockstep with models.Finding.
 	ID                string
 	Fingerprint       string
 	Title             string
@@ -38,7 +40,7 @@ type Evidence struct {
 	Category          string
 	Endpoint          string
 	AffectedEndpoints []string
-	Detail            string // → models.Finding.Evidence
+	Evidence          string // the human-readable snippet (== models.Finding.Evidence)
 	Fix               string
 	References        []string
 	Confidence        models.Confidence
@@ -82,7 +84,7 @@ func FromFinding(f models.Finding) Evidence {
 		Category:          f.Category,
 		Endpoint:          f.Endpoint,
 		AffectedEndpoints: f.AffectedEndpoints,
-		Detail:            f.Evidence,
+		Evidence:          f.Evidence,
 		Fix:               f.Fix,
 		References:        f.References,
 		Confidence:        f.Confidence,
@@ -110,7 +112,7 @@ func (e Evidence) ToFinding() models.Finding {
 		Category:          e.Category,
 		Endpoint:          e.Endpoint,
 		AffectedEndpoints: e.AffectedEndpoints,
-		Evidence:          e.Detail,
+		Evidence:          e.Evidence,
 		Fix:               e.Fix,
 		References:        e.References,
 		Confidence:        e.Confidence,

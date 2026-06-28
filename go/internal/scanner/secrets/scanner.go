@@ -37,6 +37,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -303,7 +304,7 @@ var envPatterns = []pattern{
 //
 // The context is checked between files; cancellation aborts the walk
 // with ctx.Err().
-func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
+func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 	return ScanWithAllowlist(ctx, codePath, nil)
 }
 
@@ -313,7 +314,7 @@ func Scan(ctx context.Context, codePath string) ([]models.Finding, error) {
 // secrets half of `fendix scan --diff`. The directory walk and skip-dir
 // pruning are unchanged; non-allowlisted files are skipped before scanFile
 // opens them.
-func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]models.Finding, error) {
+func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allowlist) ([]evidence.Evidence, error) {
 	if codePath == "" {
 		return nil, ErrCodePathMissing
 	}
@@ -333,7 +334,7 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 		return nil, fmt.Errorf("secrets: resolve %q: %w", codePath, err)
 	}
 
-	var findings []models.Finding
+	var findings []evidence.Evidence
 
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErrIn error) error {
 		if walkErrIn != nil {
@@ -385,7 +386,7 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 // any findings it produces. The file is silently skipped if it isn't
 // readable, exceeds maxFileBytes, or has an extension that's not in
 // scanExtensions (unless it's a .env-style file).
-func scanFile(path, root string, d fs.DirEntry) ([]models.Finding, error) {
+func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 	name := d.Name()
 	envFile := isEnvFile(name)
 	if !envFile {
@@ -421,7 +422,7 @@ func scanFile(path, root string, d fs.DirEntry) ([]models.Finding, error) {
 		active = append(active, envPatterns...)
 	}
 
-	var out []models.Finding
+	var out []evidence.Evidence
 	isJSOrTS := strings.HasSuffix(name, ".js") || strings.HasSuffix(name, ".ts")
 	text := string(data)
 	lineno := 0
@@ -449,8 +450,9 @@ func scanFile(path, root string, d fs.DirEntry) ([]models.Finding, error) {
 				safeEvidence := truncateEvidence(strings.ReplaceAll(line, secret, truncateSecret(secret)), loc[0])
 				lineRef := fmt.Sprintf("%s:%d", rel, lineno)
 				lineCopy := lineRef
-				out = append(out, models.Finding{
+				out = append(out, evidence.Evidence{
 					ID:         "SEC-" + pat.id,
+					RuleID:     "secrets/" + pat.id, // v0.22 native provenance
 					Title:      pat.title,
 					Severity:   pat.severity,
 					Source:     models.SourceWhitebox,

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
@@ -28,7 +29,7 @@ func writeFile(t *testing.T, tmpDir, relPath, content string) string {
 }
 
 // idsFound returns the set of finding IDs in fs.
-func idsFound(fs []models.Finding) map[string]struct{} {
+func idsFound(fs []evidence.Evidence) map[string]struct{} {
 	out := make(map[string]struct{}, len(fs))
 	for _, f := range fs {
 		out[f.ID] = struct{}{}
@@ -244,7 +245,7 @@ func TestScan_EnvUnquotedSecretDetected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	var envHits []models.Finding
+	var envHits []evidence.Evidence
 	for _, f := range fs {
 		if f.ID == "SEC-ENV_SECRET" && strings.Contains(f.Endpoint, ".env") {
 			envHits = append(envHits, f)
