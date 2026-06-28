@@ -37,7 +37,7 @@ Decision today = `checkFailOn()` severity→exit-code (`orchestrator.go:803-820`
 | E1 | `internal/evidence` package: Evidence type (superset of Finding + provenance: RuleID/Payload/Response/DetectedAt/Lineage/Metadata). **DONE — additive, no behavior change** | LOW (additive) |
 | E2 | `FromFinding`/`ToFinding` (+slice helpers); round-trip identity + byte-identical-JSON + drift-guard + internal-provenance-not-leaked tests. **DONE — invariant proven** | MED |
 | E3 | Correlation Service V2 over Evidence; keep `Correlate()` output identical (golden test) | HIGH (core) |
-| E4 | Internal `Decision` object + map `checkFailOn` onto it (exit codes unchanged) | MED |
+| E4 | `internal/decision`: `Decision`{Status BLOCK/WARN/INFO/IGNORE, Confidence, Reason, Evidence} + `Decide`/`DecideAll`/`ExitCode`. **DONE — internal only; `ExitCode∘DecideAll` locked == legacy `checkFailOn` across all severity×fail-on combos** | MED |
 | E5 | Migration tests + correlation coverage > 80% + `benchmark compare` (no perf regression) | — |
 | E6 | Security re-audit (`SECURITY_AUDIT_v022.md`) | — |
 | E7 | Reviewer: exit criteria + Constitution (CLI byte-identical) | — |
