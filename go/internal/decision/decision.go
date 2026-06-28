@@ -10,6 +10,7 @@
 package decision
 
 import (
+	"github.com/Abdel-RahmanSaied/Fendix/internal/confidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -35,6 +36,10 @@ type Decision struct {
 	Status     Status
 	Confidence models.Confidence
 	Reason     string
+	// Score is the v0.23 deterministic confidence score (0–100) + plain-text
+	// reason breakdown for this decision. Internal in v0.23 (not serialized);
+	// surfaced in v0.24's decision reports.
+	Score confidence.Result
 	// Evidence is the supporting evidence this verdict was derived from.
 	Evidence evidence.Evidence
 }
@@ -50,7 +55,7 @@ func Decide(ev evidence.Evidence, failOn string) Decision {
 	}
 	rank := models.SeverityRank(ev.Severity)
 
-	d := Decision{Confidence: ev.Confidence, Evidence: ev}
+	d := Decision{Confidence: ev.Confidence, Score: confidence.Score(ev), Evidence: ev}
 	switch {
 	case threshold > 0 && rank >= threshold:
 		d.Status = StatusBlock

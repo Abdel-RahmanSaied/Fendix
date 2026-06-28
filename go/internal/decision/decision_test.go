@@ -104,3 +104,14 @@ func TestDecideAllNil(t *testing.T) {
 		t.Error("DecideAll(nil) should be nil")
 	}
 }
+
+func TestDecidePopulatesConfidenceScore(t *testing.T) {
+	// v0.23: every decision carries a deterministic score + reasons.
+	d := Decide(evidence.Evidence{Source: models.SourceCorrelated, Reachable: true}, "HIGH")
+	if d.Score.Value <= 0 {
+		t.Errorf("decision has no confidence score: %+v", d.Score)
+	}
+	if len(d.Score.Reasons) == 0 {
+		t.Error("decision score has no plain-text reasons (no black boxes)")
+	}
+}
