@@ -84,13 +84,26 @@ type SourceCounts struct {
 	Correlated int `json:"correlated"`
 }
 
+// StatusCounts is the v0.24 decision summary: a wall of findings reduced to
+// "what needs action". Confirmed counts HIGH-confidence findings (the v0.23
+// score axis), kept deliberately distinct from sources.correlated (cross-engine
+// agreement) so the two signals aren't conflated.
+type StatusCounts struct {
+	Total         int `json:"total"`         // == len(findings)
+	Confirmed     int `json:"confirmed"`     // confidence_band == HIGH
+	Blocking      int `json:"blocking"`      // status == BLOCK
+	Warning       int `json:"warning"`       // status == WARN
+	Informational int `json:"informational"` // status == INFO
+}
+
 // JSONReport is the top-level structure for JSON report output.
 type JSONReport struct {
-	Metadata ScanMetadata     `json:"metadata"`
-	Summary  SeverityCounts   `json:"summary"`
-	Sources  SourceCounts     `json:"sources"`
-	Total    int              `json:"total"`
-	Findings []models.Finding `json:"findings"`
+	Metadata  ScanMetadata     `json:"metadata"`
+	Summary   SeverityCounts   `json:"summary"`
+	Sources   SourceCounts     `json:"sources"`
+	Total     int              `json:"total"`
+	Decisions StatusCounts     `json:"decisions"` // v0.24 (additive)
+	Findings  []models.Finding `json:"findings"`
 }
 
 // CountSeverities tallies findings by severity level.
@@ -129,6 +142,28 @@ func CountSources(findings []models.Finding) SourceCounts {
 	return counts
 }
 
+// CountStatuses tallies the v0.24 decision summary from the per-finding
+// status + confidence band stamped by the orchestrator. When findings carry
+// no decision fields (reporter called without the orchestrator pass), only
+// Total is non-zero — additive and harmless.
+func CountStatuses(findings []models.Finding) StatusCounts {
+	counts := StatusCounts{Total: len(findings)}
+	for _, f := range findings {
+		switch f.Status {
+		case "BLOCK":
+			counts.Blocking++
+		case "WARN":
+			counts.Warning++
+		case "INFO":
+			counts.Informational++
+		}
+		if f.ConfidenceBand == string(models.ConfidenceHigh) {
+			counts.Confirmed++
+		}
+	}
+	return counts
+}
+
 // RenderJSON writes a full JSON report to the writer.
 //
 // The `findings` field is always serialised as a JSON array (`[]` when the
@@ -139,11 +174,12 @@ func RenderJSON(w io.Writer, findings []models.Finding, meta ScanMetadata) error
 		findings = []models.Finding{}
 	}
 	report := JSONReport{
-		Metadata: meta,
-		Summary:  CountSeverities(findings),
-		Sources:  CountSources(findings),
-		Total:    len(findings),
-		Findings: findings,
+		Metadata:  meta,
+		Summary:   CountSeverities(findings),
+		Sources:   CountSources(findings),
+		Total:     len(findings),
+		Decisions: CountStatuses(findings),
+		Findings:  findings,
 	}
 
 	encoder := json.NewEncoder(w)

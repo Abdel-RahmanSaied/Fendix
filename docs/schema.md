@@ -29,6 +29,7 @@ changes are reserved for major versions.
 | `summary` | object | yes | Severity counts. Sums to `total`. |
 | `sources` | object | yes | Source counts (blackbox / whitebox / correlated). Sums to `total`. |
 | `total` | integer | yes | Total findings in `findings`. |
+| `decisions` | object | no | **v0.24** decision summary (`StatusCounts`): `total`, `confirmed` (HIGH-confidence), `blocking` (status BLOCK), `warning` (WARN), `informational` (INFO). Additive; absent on pre-v0.24 output. |
 | `findings` | array of `Finding` | yes | Each finding produced by the scan, sorted deterministically. May be empty. |
 
 ---
@@ -102,6 +103,25 @@ changes are reserved for major versions.
 | `line` | string \| null | yes | File and line for whitebox findings, e.g. `"src/config.py:14"`. Always serialised; `null` when not applicable. |
 | `taint_chain` | array of `TaintLink` | no | Whitebox dataflow proof: ordered chain from source (e.g. `request.args.get`) through intermediate assignments to the sink. Each link is `{file, line, expr}`. Emitted by the Python AST analyzer for SQLi / SSRF / open-redirect / XSS / command-injection findings when intra-function dataflow resolves end-to-end. Inherited onto the merged `source: "correlated"` finding. Omitted when no chain was proven. |
 | `reachable` | boolean | no | Whitebox-proven that user input reaches the sink. Currently implies `taint_chain` is non-empty. Used by the correlator to apply a *second* severity escalation on top of the standard correlated-bonus (so MEDIUM × MEDIUM × reachable → CRITICAL). Omitted (treat as `false`) when not proven. |
+| `fingerprint` | string | no | Content-derived stable identity `sha1(category\|endpoint\|title)`; survives across scans for suppressions/baselines. |
+| `source_tier` | string enum | no | Analyzer tier that produced a whitebox finding: `native_go`, `tree_sitter_sidecar`, `semgrep_shim`. |
+| `route` | object | no | HTTP route binding `{method, pattern, handler, file, line}` (Proven Path v1). |
+| `route_confirmed` | boolean | no | A live blackbox scan hit the finding's `route.pattern`. |
+| `proven_path` | boolean | no | `route_confirmed` AND `reachable` — DAST hit + SAST taint path + exact route. |
+| `status` | string enum | no | **v0.24** decision verdict: `BLOCK`, `WARN`, `INFO`. |
+| `confidence_score` | integer (0–100) | no | **v0.24** deterministic confidence score (see Confidence Engine). |
+| `confidence_band` | string enum | no | **v0.24** score-derived band `HIGH`/`MEDIUM`/`LOW`. Distinct from `confidence` (the scanner/correlator enum, unchanged for back-compat). |
+| `confidence_reasons` | array of string | no | **v0.24** plain-text, per-rule breakdown of the score (no black boxes). |
+
+### Decision summary & confidence (v0.24)
+
+`decisions` reduces the finding list to "what needs action": `blocking`
+(status `BLOCK` — at/above `--fail-on`, the build-failing set), `warning`,
+`informational`, and `confirmed` (HIGH-confidence, the v0.23 score axis — kept
+distinct from `sources.correlated`). Per-finding `status` + `confidence_*`
+mirror this. The score is deterministic and rule-based (no AI); see
+`internal/confidence`. All v0.24 fields are additive/optional — existing
+consumers are unaffected (minor-release additive policy above).
 
 ### Severity ↔ confidence consistency
 

@@ -200,3 +200,42 @@ func TestRenderJSON_IncludesSourceCounts(t *testing.T) {
 		t.Errorf("expected 3 checks, got %d", len(report.Metadata.ChecksRun))
 	}
 }
+
+// TestRenderJSON_DecisionSummary covers the v0.24 additive decision report:
+// the top-level `decisions` block tallies statuses + HIGH-confidence, and
+// per-finding status/confidence_score serialize.
+func TestRenderJSON_DecisionSummary(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "a", Severity: models.SeverityHigh, Category: "x", Status: "BLOCK", ConfidenceScore: 80, ConfidenceBand: "HIGH"},
+		{ID: "SEC-002", Title: "b", Severity: models.SeverityLow, Category: "y", Status: "INFO", ConfidenceScore: 45, ConfidenceBand: "MEDIUM"},
+	}
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, findings, ScanMetadata{}); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	var rep JSONReport
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if rep.Decisions.Total != 2 || rep.Decisions.Blocking != 1 || rep.Decisions.Informational != 1 || rep.Decisions.Confirmed != 1 {
+		t.Errorf("decision summary wrong: %+v", rep.Decisions)
+	}
+	if rep.Findings[0].Status != "BLOCK" || rep.Findings[0].ConfidenceScore != 80 {
+		t.Errorf("per-finding decision fields not serialized: %+v", rep.Findings[0])
+	}
+}
+
+// TestRenderJSON_NoDecisionFieldsByDefault confirms backward-compat: findings
+// without decision fields omit them (omitempty), and Decisions has only Total.
+func TestRenderJSON_NoDecisionFieldsByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, []models.Finding{{ID: "SEC-001", Title: "a", Severity: models.SeverityLow, Category: "x"}}, ScanMetadata{}); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	for _, absent := range []string{"\"status\"", "\"confidence_score\"", "\"confidence_band\""} {
+		if bytes.Contains(buf.Bytes(), []byte(absent)) {
+			t.Errorf("unstamped finding should omit %s: %s", absent, s)
+		}
+	}
+}

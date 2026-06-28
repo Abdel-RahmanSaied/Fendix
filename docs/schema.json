@@ -11,6 +11,7 @@
     "summary":  { "$ref": "#/definitions/SeverityCounts" },
     "sources":  { "$ref": "#/definitions/SourceCounts" },
     "total":    { "type": "integer", "minimum": 0 },
+    "decisions": { "$ref": "#/definitions/StatusCounts" },
     "findings": {
       "type": "array",
       "items": { "$ref": "#/definitions/Finding" }
@@ -54,6 +55,30 @@
         "correlated": { "type": "integer", "minimum": 0 }
       }
     },
+    "StatusCounts": {
+      "description": "v0.24 decision summary. Additive; not in the root `required` set.",
+      "type": "object",
+      "required": ["total", "confirmed", "blocking", "warning", "informational"],
+      "additionalProperties": false,
+      "properties": {
+        "total":         { "type": "integer", "minimum": 0 },
+        "confirmed":     { "type": "integer", "minimum": 0 },
+        "blocking":      { "type": "integer", "minimum": 0 },
+        "warning":       { "type": "integer", "minimum": 0 },
+        "informational": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "Route": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method":  { "type": "string" },
+        "pattern": { "type": "string" },
+        "handler": { "type": "string" },
+        "file":    { "type": "string" },
+        "line":    { "type": "integer", "minimum": 0 }
+      }
+    },
     "TaintLink": {
       "type": "object",
       "required": ["file", "line", "expr"],
@@ -82,7 +107,16 @@
         "confidence":         { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
         "line":               { "type": ["string", "null"] },
         "taint_chain":        { "type": "array", "items": { "$ref": "#/definitions/TaintLink" } },
-        "reachable":          { "type": "boolean" }
+        "reachable":          { "type": "boolean" },
+        "fingerprint":        { "type": "string" },
+        "source_tier":        { "type": "string", "enum": ["native_go", "tree_sitter_sidecar", "semgrep_shim"] },
+        "route":              { "$ref": "#/definitions/Route" },
+        "route_confirmed":    { "type": "boolean" },
+        "proven_path":        { "type": "boolean" },
+        "status":             { "type": "string", "enum": ["BLOCK", "WARN", "INFO"] },
+        "confidence_score":   { "type": "integer", "minimum": 0, "maximum": 100 },
+        "confidence_band":    { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "confidence_reasons": { "type": "array", "items": { "type": "string" } }
       },
       "allOf": [
         {
