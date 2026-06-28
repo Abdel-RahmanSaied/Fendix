@@ -5,6 +5,17 @@ Phase: v0.25 — Developer Experience (Core product)
 Exit criteria: *"Time-to-triage drops ≥ 30% from baseline. Measured, not assumed."*
 Success metrics: avg time-to-triage ≥30% reduction vs v0.20 baseline · CLI success rate ≥95% · ignored-findings rate decreasing.
 
+## ✅ PHASE v0.25 — COMPLETE (2026-06-29)
+
+Adversarial 6-lens review → **SHIP** (0 critical/high); Reviewer → **SHIP**. Shipped the DX changes
++ the instrumentation: CLI-success-rate metrics, teaching errors + quickstart/grouped help,
+O(changed-files) incremental scans (with proven walk parity — committed vendor/ + symlink scope-escape
+closed), triage-first PR comment, detection-aware `init`. Schema + regression snapshots unchanged;
+exit codes byte-identical. Net security win: closed the diff fast-path symlink scope-escape.
+**Honest caveat (Rule 5):** the ≥30% time-to-triage / ≥95% CLI-success-rate are now MEASURABLE, not
+yet MEASURED over real usage — validation queued in NEXT_v026. Audit: `SECURITY_AUDIT_v025.md`.
+Review: `REVIEW_v025.md`. Handoff: `NEXT_v026.md`. Commits: f7fbbaf · c754f53 · f5a88fd · 7b91138 · 288b86a · 43cbbae.
+
 ## Governing principle (roadmap)
 "Make using Fendix faster and less frustrating. **Measure it. Ship only what
 moves the metric.**" DX is adoption — ignored findings = no security improvement.
@@ -45,3 +56,13 @@ moves the metric.**" DX is adoption — ignored findings = no security improveme
 **Honest measurement contract:** time-to-triage ≥30% is a POST-RELEASE human measurement (timed "read PR comment → merge decision" on v0.20 vs v0.25 comments), NOT a CI gate. v0.25 ships the DX changes + the instrumentation; no test/dashboard implies the tool measured human triage time.
 
 **Cross-batch gate:** every batch runs `go test ./tests/regression/...` — snapshots project only `category|severity|title`, so additive output passes unchanged; any JSON change → `docs/schema.md` lockstep.
+
+## Status (2026-06-29) — implementation complete + committed
+- **B0** (f7fbbaf): MetricEvent gains Command/ExitCode/Success/ErrorClass (omitempty); SummarizeCommands; privacy.md.
+- **B1** (c754f53): one cli event per invocation (incl. failures); `metrics show` CLI success rate + failure classes; scan routes exit via cli.ExitWithCode; metrics show/export/clear honour FENDIX_METRICS_PATH.
+- **B2** (f5a88fd): teaching empty-target error; usage hint on bad flags; root quickstart + command groups.
+- **B3** (7b91138): empty-allowlist short-circuit; semgrep footgun fixed; secrets/textscan scan O(changed files) via AbsPaths with walk-parity (skipDirs/symlinks/shared scanCandidate) + parity tests.
+- **B4** (288b86a): PR verdict banner + collapsed counts + triage-ordered top-5 (copy-sort); `init` recommends the detected scan + `fendix demo`.
+- Adversarial review (`wjoujx3uf`) running (6 lenses) → then audit/review/close/push. Handoff drafted: NEXT_v026.md.
+
+**Honest status:** v0.25 ships the DX changes + the instrumentation. The ≥30% time-to-triage and ≥95% CLI-success-rate are now MEASURABLE but not yet MEASURED over real usage (tracked in NEXT_v026).
