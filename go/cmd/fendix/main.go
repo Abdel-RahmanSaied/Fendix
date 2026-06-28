@@ -128,7 +128,7 @@ func classifyResult(cmd *cobra.Command, err error) (code int, class string, succ
 // "usage" (the user mistyped the invocation) rather than a runtime failure.
 func isUsageError(err error) bool {
 	msg := strings.ToLower(err.Error())
-	for _, sub := range []string{"unknown flag", "unknown shorthand", "unknown command", "invalid argument", "required flag", "accepts ", "flag needs an argument"} {
+	for _, sub := range []string{"unknown flag", "unknown shorthand", "unknown command", "invalid argument", "required flag", "accepts ", "flag needs an argument", "a scan target is required"} {
 		if strings.Contains(msg, sub) {
 			return true
 		}

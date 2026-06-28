@@ -345,15 +345,17 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 	// Diff-aware fast path: when the allowlist names specific changed files,
 	// scan exactly those — O(changed files) — instead of walking the whole
 	// tree to filter it down to them. Parity with the walk below is preserved:
-	// the same skipDirs prune is applied (a committed vendor/ file the walk
-	// would skip stays skipped) and directories are excluded via Lstat.
-	// (Empty allowlists are short-circuited by the orchestrator.)
-	if allow != nil && !allow.Empty() {
+	// the same skipDirs prune (a committed vendor/ file stays skipped), the
+	// file set stays a strict subset of the walk's (TraversesSymlink rejects
+	// any file reached through a symlinked parent — which the walk never
+	// descends and which could escape the repo root), and directories are
+	// excluded via Lstat. (Empty allowlists already returned above.)
+	if allow != nil {
 		for _, path := range allow.AbsPaths() {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			if underSkipDir(absRoot, path) {
+			if underSkipDir(absRoot, path) || gitdiff.TraversesSymlink(absRoot, path) {
 				continue
 			}
 			info, err := os.Lstat(path)

@@ -23,6 +23,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -178,6 +180,32 @@ func (a *Allowlist) AbsPaths() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TraversesSymlink reports whether reaching abs from root crosses a symlinked
+// directory component (or escapes root). filepath.WalkDir never descends into
+// symlinked directories, so the diff-aware fast scanners MUST skip any
+// allowlist entry whose parent path traverses one — otherwise they read files
+// the full walk would never reach, breaking walk parity and (worse) letting a
+// symlinked parent point outside the repo. A bare os.Lstat(abs) does not catch
+// this: it follows intermediate symlinks and only reveals a final-component
+// symlink. We Lstat each directory component instead. Returns true (refuse) on
+// any error or if abs is not contained in root.
+func TraversesSymlink(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true // unrelatable or outside root → refuse
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	cur := root
+	for _, p := range parts[:len(parts)-1] { // directory components only, not the file itself
+		cur = filepath.Join(cur, p)
+		fi, err := os.Lstat(cur)
+		if err != nil || fi.Mode()&fs.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // RelPaths returns the allowlist entries relative to root, sorted. Used to

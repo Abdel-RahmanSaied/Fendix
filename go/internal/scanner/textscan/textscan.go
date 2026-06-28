@@ -105,16 +105,18 @@ func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) (
 
 	// Diff-aware fast path: when the allowlist names specific changed files,
 	// scan exactly those — O(changed files) — instead of walking the whole
-	// tree to filter down to them. Parity with the walk: skip symlinks and any
-	// file under a pruned dir, then run the same scanCandidate body. (Empty
-	// allowlists are short-circuited by the orchestrator.)
-	if allow != nil && !allow.Empty() {
+	// tree to filter down to them. The reachable set stays a strict subset of
+	// the walk's: skip symlinks (the walk refuses them) AND any file reached
+	// through a symlinked parent dir (which WalkDir never descends, and which
+	// could escape rootDir), plus the same pruned dirs; then run the shared
+	// scanCandidate body. (Empty allowlists already returned above.)
+	if allow != nil {
 		for _, path := range allow.AbsPaths() {
 			info, err := os.Lstat(path)
 			if err != nil || info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 				continue
 			}
-			if underSkipDir(rootDir, path) {
+			if underSkipDir(rootDir, path) || gitdiff.TraversesSymlink(rootDir, path) {
 				continue
 			}
 			findings = append(findings, scanCandidate(rootDir, path, fs.FileInfoToDirEntry(info), rules)...)

@@ -157,12 +157,17 @@ func RenderPRComment(findingsJSON []byte) (string, error) {
 	fmt.Fprintf(&b, "## Fendix scan: %d finding%s\n\n", total, pluralS)
 
 	// v0.25 verdict banner — answer "can I merge?" at a glance, before any
-	// table. Blocking is our own decision count, not attacker-controlled.
+	// table. Blocking is our own decision count, not attacker-controlled. Only
+	// claim "passes" when decision data is actually present; a report missing
+	// the decisions object (older/partial/forged) must not show a false green
+	// while criticals sit in the table below.
 	switch {
 	case r.Decisions.Blocking > 0:
 		fmt.Fprintf(&b, "🔴 **%d blocking — this PR fails the Fendix gate.**\n\n", r.Decisions.Blocking)
-	case total > 0:
+	case r.Decisions.Total > 0:
 		b.WriteString("🟢 **Gate passes — no blocking findings.**\n\n")
+	case total > 0:
+		fmt.Fprintf(&b, "⚪ **%d finding%s — see details below.**\n\n", total, pluralS)
 	}
 
 	fmt.Fprintf(&b, "Mode: `%s` · Endpoints scanned: %d · Duration: %s\n\n",

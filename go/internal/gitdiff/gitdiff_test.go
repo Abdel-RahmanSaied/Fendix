@@ -189,3 +189,27 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+func TestTraversesSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "real", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	// A normal in-repo file: no symlink in its path → allowed.
+	if TraversesSymlink(root, filepath.Join(root, "real", "sub", "f.go")) {
+		t.Error("real path wrongly flagged as traversing a symlink")
+	}
+	// A file reached through the symlinked dir → refused (scope escape).
+	if !TraversesSymlink(root, filepath.Join(root, "link", "f.go")) {
+		t.Error("path through a symlinked parent must be refused")
+	}
+	// A path entirely outside root → refused.
+	if !TraversesSymlink(root, filepath.Join(outside, "f.go")) {
+		t.Error("path outside root must be refused")
+	}
+}

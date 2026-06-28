@@ -755,3 +755,24 @@ func TestScanWithAllowlist_FastPathParity(t *testing.T) {
 		t.Errorf("finding-ID count diverged: fast=%d walk(app.py)=%d", len(idsFound(fast)), len(fullApp))
 	}
 }
+
+// TestScanWithAllowlist_RefusesSymlinkedParent is the v0.25 M2 fix: the
+// diff-aware fast path must not read a file reached through a symlinked parent
+// directory — the full walk never descends one, and it could escape the repo.
+func TestScanWithAllowlist_RefusesSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, outside, "creds.env", `AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"`)
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	// Allowlist a file *through* the symlinked dir (a forged/abnormal entry).
+	allow := gitdiff.NewAllowlist(root, []string{filepath.Join(root, "link", "creds.env")})
+	got, err := ScanWithAllowlist(context.Background(), root, allow)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fast path read a file outside the repo via a symlinked parent: %d findings", len(got))
+	}
+}

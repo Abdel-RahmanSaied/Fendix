@@ -1,6 +1,7 @@
 package textscan
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -106,4 +107,24 @@ func stripLine(s string) string {
 		}
 	}
 	return s
+}
+
+// TestScanWithAllowlist_RefusesSymlinkedParent is the v0.25 M1 fix: the
+// diff-aware fast path must not read a file reached through a symlinked parent
+// directory (walk parity + repo-scope containment).
+func TestScanWithAllowlist_RefusesSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, outside, "leak.go", vulnGo)
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	allow := gitdiff.NewAllowlist(root, []string{filepath.Join(root, "link", "leak.go")})
+	got, err := ScanWithAllowlist(root, AllRules(), allow)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fast path read a file outside the repo via a symlinked parent: %d findings", len(got))
+	}
 }
