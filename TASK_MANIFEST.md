@@ -4,6 +4,12 @@ Date: 2026-06-28
 Phase: v0.20 — Establish Baselines (Foundation)
 Exit criteria: *"Baseline numbers exist. Every future change compares against them."*
 
+## ✅ PHASE v0.20 — COMPLETE (2026-06-28)
+
+All 8 agents executed. Exit criteria met and verified; Reviewer recommendation: **SHIP**.
+Baseline: dvwa P100%/R100%, juiceshop P70.6%/R100% (committed). Build/vet/gofmt/`go test ./...` green.
+Handoff: `NEXT_v021.md`. Security: `SECURITY_AUDIT_v020.md` (0 critical, 0 new high). Review: `REVIEW_v020.md`.
+
 ---
 
 ## Repo topology (decided)
