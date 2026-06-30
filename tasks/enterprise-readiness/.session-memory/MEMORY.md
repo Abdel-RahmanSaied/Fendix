@@ -5,3 +5,4 @@
 - [Local dev + PreProduction share one RDS](gotcha_fendix_shared_dev_preprod_rds.md) — local `migrate` mutates the staging DB; a PreProd deploy then reports "No migrations to apply" (expected, not a bug).
 - [Fendix known-failing tests on main](project_fendix_known_failing_tests.md) — pre-existing failures NOT to fix as part of any sprint; cross-check before claiming a regression.
 - [Spec upload feature (in progress)](project_spec_upload_feature.md) — OpenAPI file upload + the artifact-path cwd bug being fixed alongside it; engine size-cap done.
+- [v1.0.0 frontend release](project_v1_frontend_release.md) — the v1.0 frontend overhaul (perf/SEO/data-honesty pass, done 2026-07-01) + two deferred follow-ups (pricing server-render; /releases >2MB fetch).
