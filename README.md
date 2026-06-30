@@ -18,13 +18,14 @@ Reproducible numbers, captured on the current binary (`v0.19.0-41-g17e8937`, 202
 | Track | P / R / F1 | Reproduce |
 |---|---|---|
 | Python taint engine (40 cases, CI-gated) | 1.000 / 1.000 / 1.000 | `cd python && PYTHONPATH=. python3 benchmark/run_benchmark.py` |
-| SAST synthetic corpus (full binary) | 1.000 / 0.974 / **0.987** | `python3 scripts/accuracy/run.py --python-engine bin/fendix` |
+| SAST synthetic corpus (full binary) | 1.000 / 1.000 / **1.000** | `python3 scripts/accuracy/run.py --python-engine bin/fendix` |
 | DAST DVWA / Juice Shop (regression coverage) | 13 found · 0 FP / 12 found · 5 FP | `fendix benchmark run --target all` |
 
-One SSRF false negative (multi-hop string-concat) is disclosed, not hidden — we
-publish 0.987, not a rounded 1.000. Full methodology, caveats, and the OWASP/Java
-omission are in **[BENCHMARKS.md](BENCHMARKS.md)**. Every number there is
-re-runnable; a non-reproducing number is a bug.
+The synthetic-corpus F1 is **1.000 — reproduced on the current binary and
+CI-gated** (the one multi-hop SSRF case v0.26 disclosed as a false negative was
+fixed in v0.27), not the stale v0.11.0 claim. Full methodology, caveats, and the
+OWASP/Java omission are in **[BENCHMARKS.md](BENCHMARKS.md)**. Every number there
+is re-runnable; a non-reproducing number is a bug.
 
 ---
 

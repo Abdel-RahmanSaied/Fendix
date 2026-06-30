@@ -46,22 +46,24 @@ python3 scripts/accuracy/run.py --python-engine bin/fendix
 | Metric | Value |
 |---|---:|
 | Precision | **1.000** |
-| Recall | **0.974** |
-| F1 | **0.987** |
-| True positives | 37 / 38 expected |
+| Recall | **1.000** |
+| F1 | **1.000** |
+| True positives | 38 / 38 expected |
 | False positives | 0 |
-| False negatives | **1** |
+| False negatives | 0 |
 | Categories | 7 (sqli, cmdi, path_traversal, ssrf, open_redirect, xss, secrets) |
 
 - **Corpus:** `scripts/accuracy/manifest.json` + `scripts/accuracy/corpus/`
-  (56 cases: 38 EXPECT_TP + 18 EXPECT_TN; the binary detects 37 of the 38).
-- **Known false negative (disclosed):** one multi-hop SSRF case —
-  `target = request.args["x"]; url = "https://" + target; requests.get(url)` —
-  is missed because taint does not propagate through the string-concatenation
-  `BinOp` into the `requests.get` sink (`scripts/accuracy/corpus/ssrf.py:19`).
-  Tracked for a v0.27 taint-engine improvement. We publish 0.987, not a
-  rounded-up 1.000.
-- **CI-gated:** as of v0.26, on push/PR (see `.github/workflows/`), floor F1 ≥ 0.98.
+  (56 cases: 38 EXPECT_TP + 18 EXPECT_TN).
+- **v0.27 SSRF fix:** v0.26 disclosed one multi-hop SSRF false negative
+  (`target = request.args["x"]; url = "https://" + target; requests.get(url)` —
+  taint didn't propagate through the scheme-concatenation into the
+  `requests.get` sink). v0.27 fixed the taint engine (a bare/unterminated
+  scheme literal is no longer treated as a fixed host), so this case is now
+  detected and F1 is **1.000 — legitimately reproduced and CI-gated**, not the
+  stale v0.11.0 claim. Re-run the command above to verify.
+- **CI-gated:** on push/PR (`.github/workflows/heavy-eval.yml`), floor F1 ≥ 0.99
+  (trips on the first real regression, e.g. re-introducing the SSRF FN → 0.987).
 - **Caveat:** canonical-pattern corpus we author; it measures whether the full
   `fendix scan` binary flags these shapes, not real-world detection rate.
 

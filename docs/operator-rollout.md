@@ -11,7 +11,7 @@
 - [ ] `fly` CLI authenticated (`fly auth login`) — or substitute your preferred platform
 - [ ] Repo is public on GitHub (required for Marketplace)
 - [ ] v0.11.0 release artifacts built successfully (`gh run list -w release.yml | head -2` shows the v0.11.0 run as `completed success`)
-- [ ] Accuracy scorecard verified locally — `make build && python3 scripts/accuracy/run.py --python-engine` should report `OVERALL  1.000  0.974  0.987` (P/R/F1; one disclosed SSRF false negative at `ssrf.py:19`). A value below the CI floor (F1 < 0.98) means a regression and submission should wait; [BENCHMARKS.md](../BENCHMARKS.md) is canonical.
+- [ ] Accuracy scorecard verified locally — `make build && python3 scripts/accuracy/run.py --python-engine` should report `OVERALL  1.000  1.000  1.000` (P/R/F1; v0.27 fixed the v0.26-disclosed SSRF FN). A value below the CI floor (F1 < 0.99) means a regression and submission should wait; [BENCHMARKS.md](../BENCHMARKS.md) is canonical.
 
 ---
 
@@ -123,7 +123,7 @@ Draft in [`docs/launch-post.md`](launch-post.md). Three versions:
 
 **Timing:** Post after the Marketplace listing is approved (shows "Install" button works).
 
-**Headline angle:** Lead with the F1 = 0.987 labeled-corpus result (P 1.000 / R 0.974; one disclosed SSRF false negative) and the "6.1 ms cold start, no Python required" cold-start number — those are the two concrete, falsifiable claims that distinguish fendix from the field. Quote the canonical, reproducible numbers from [BENCHMARKS.md](../BENCHMARKS.md). Avoid "fast" and "accurate" as standalone adjectives; numbers do the work.
+**Headline angle:** Lead with the F1 = 1.000 labeled-corpus result (reproduced + CI-gated; v0.26's disclosed SSRF FN fixed in v0.27) and the "6.1 ms cold start, no Python required" cold-start number — those are the two concrete, falsifiable claims that distinguish fendix from the field. Quote the canonical, reproducible numbers from [BENCHMARKS.md](../BENCHMARKS.md). Avoid "fast" and "accurate" as standalone adjectives; numbers do the work.
 
 ---
 

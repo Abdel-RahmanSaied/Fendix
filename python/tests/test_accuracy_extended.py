@@ -596,6 +596,59 @@ class TestConstantHostUrl:
         assert _has(code, "SEC-PY_SSRF")
 
 
+class TestMultiHopSSRF:
+    """v0.27 B1: taint through a `scheme + tainted` concat into the sink. These
+    were the v0.26-disclosed false negatives; the `_literal_url_fixes_host`
+    fix (bare/unterminated scheme is NOT a fixed host) closes them."""
+
+    def test_inline_scheme_concat_is_ssrf(self) -> None:
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def h():\n"
+            "    return requests.get('https://' + request.args['x'])\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_assignment_hop_scheme_concat_is_ssrf(self) -> None:
+        # The exact ssrf.py:19 corpus shape.
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def h():\n"
+            "    raw = request.args['target']\n"
+            "    url = 'https://' + raw\n"
+            "    return requests.get(url)\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_fstring_tainted_host_is_ssrf(self) -> None:
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def h():\n"
+            "    return requests.get(f\"https://{request.args['h']}/p\")\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_unterminated_host_extension_is_ssrf(self) -> None:
+        # "https://host" + tail extends the HOST (no terminator) → SSRF, not a
+        # constant-host URL with tainted path.
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def h():\n"
+            "    return requests.get('https://internal' + request.args['suffix'])\n"
+        )
+        assert _has(code, "SEC-PY_SSRF")
+
+    def test_terminated_constant_host_tainted_path_not_ssrf(self) -> None:
+        # Regression guard: a genuinely fixed host with taint only in the path
+        # must STILL be suppressed (the fix must not over-fire).
+        code = (
+            "import requests\nfrom flask import request\n"
+            "def h():\n"
+            "    return requests.get('https://api.example.com/' + request.args['path'])\n"
+        )
+        assert not _has(code, "SEC-PY_SSRF")
+
+
 class TestPathTraversalNeedsSource:
     def test_dunder_file_relative_not_flagged(self) -> None:
         code = "from pathlib import Path\nBASE_DIR = Path(__file__).resolve().parent.parent\nopen(BASE_DIR)\n"

@@ -24,7 +24,7 @@ Fendix scans every pull request with two engines working together:
 
 **The key insight:** When both engines agree on the same vulnerability, Fendix escalates severity and confidence — correlated findings rise above the noise. When taint analysis also proves data flows from a request source to a dangerous sink, severity escalates a second time (e.g., MEDIUM → CRITICAL). You control the `fail_on` threshold, so you can choose to only block merges on high-confidence correlated findings.
 
-**Measured accuracy (current binary, 2026-06-30):** F1 = 0.987 on the labeled synthetic corpus (37 TPs / 0 FPs / 1 FN across 7 detection categories — one multi-hop SSRF case disclosed, not hidden); P/R/F1 = 1.000 on the 40-case Python taint-engine corpus (CI-gated). Real-world: DVWA 13/13 and OWASP Juice Shop 12 findings (regression coverage of the unauthenticated surface; 5 raw FPs — no FP-*rate* claimed without a negative corpus). Full methodology + caveats + reproduce commands in [BENCHMARKS.md](https://github.com/Abdel-RahmanSaied/Fendix/blob/main/BENCHMARKS.md).
+**Measured accuracy (current binary, 2026-06-30):** F1 = 1.000 on the labeled synthetic corpus (38 TPs / 0 FPs / 0 FNs across 7 detection categories — reproduced and CI-gated; v0.26 disclosed one multi-hop SSRF false negative, fixed in v0.27); P/R/F1 = 1.000 on the 40-case Python taint-engine corpus (CI-gated). Real-world: DVWA 13/13 and OWASP Juice Shop 12 findings (regression coverage of the unauthenticated surface; 5 raw FPs — no FP-*rate* claimed without a negative corpus). Full methodology + caveats + reproduce commands in [BENCHMARKS.md](https://github.com/Abdel-RahmanSaied/Fendix/blob/main/BENCHMARKS.md).
 
 ### What happens on every PR
 

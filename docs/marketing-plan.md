@@ -1,10 +1,11 @@
 # Fendix — 90-Day Marketing Plan
 
 > ⚠️ Accuracy figures below are superseded by **[BENCHMARKS.md](../BENCHMARKS.md)**
-> (the reproducible source of truth). Current synthetic corpus: F1 0.987 (P 1.000
-> / R 0.974, 37/38 — one disclosed SSRF FN), NOT 1.000. "1.000 recall" refers to
-> the real-world expectation-recall track (44/44 across the CVE-anchored repos),
-> not the synthetic corpus.
+> (the reproducible source of truth). Current synthetic corpus: **F1 1.000**
+> (38/38, reproduced + CI-gated) — v0.26 disclosed one multi-hop SSRF false
+> negative (then 0.987); v0.27 fixed the taint engine, so 1.000 is now
+> legitimate, not the stale v0.11.0 claim. "1.000 recall" elsewhere also refers
+> to the real-world expectation-recall track (44/44 CVE-anchored repos).
 
 > Status: **draft v1**, 2026-05-25
 > Stage assumed: pre-launch (repo private), zero budget, solo operator
@@ -82,7 +83,7 @@ WEEK   1   2   3   4   5   6   7   8   9   10  11  12  13
 You have a real choice here that will shape the launch:
 
 - **Option A — "F1 = 1.000 on labeled corpus" (the v0.11 claim)**. Defensible only if you tune the harness to handle compound multi-endpoint findings (the line 36 issue from today's E2E run). Effort: ~2 hr of work in `scripts/accuracy/run.py`.
-- **Option B — "0.987 synthetic F1 (P 1.000 / R 0.974, 37/38 — one disclosed SSRF FN), 44/44 expectations met on 13 real-world CVE-anchored repos"**. This is what current `main` actually produces (see BENCHMARKS.md). Less round-number but more credible.
+- **Option B — "1.000 synthetic F1 (38/38, reproduced + CI-gated; the v0.26 SSRF FN was fixed in v0.27), 44/44 expectations met on 13 real-world CVE-anchored repos"**. This is what current `main` actually produces (see BENCHMARKS.md) — and unlike the v0.11-era 1.000, it now reproduces and is CI-gated.
 
 **My recommendation: Option B.** Real-world numbers are a stronger story than synthetic corpus perfection. "0 false negatives across 13 CVE-anchored real repos" is what an AppSec engineer actually wants to hear. Update [launch-post.md](launch-post.md) accordingly.
 

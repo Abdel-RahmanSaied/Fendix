@@ -61,11 +61,12 @@ jobs:
       - name: Build fendix binary
         run: make build
 
-      - name: Accuracy gate — synthetic corpus F1 floor (v0.26)
-        # Guards the published synthetic F1 (currently 0.987). This is the gate
-        # whose absence let the headline silently drift 1.000 → 0.987 (MF-1).
-        # Floor 0.98 trips on the first real regression, not run-to-run jitter.
-        run: python3 scripts/accuracy/run.py --python-engine --min-f1 0.98 ./bin/fendix
+      - name: Accuracy gate — synthetic corpus F1 floor
+        # Guards the published synthetic F1 (1.000 as of v0.27, after the SSRF
+        # multi-hop taint fix). Floor 0.99 trips on the first real regression
+        # (e.g. re-introducing the SSRF FN → 0.987 < 0.99) without jitter — the
+        # gate whose absence let the headline silently drift in v0.26 (MF-1).
+        run: python3 scripts/accuracy/run.py --python-engine --min-f1 0.99 ./bin/fendix
 
       - name: Run heavy-eval (fast SAST stages 4a–4d)
         if: github.event.inputs.full != 'true'

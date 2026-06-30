@@ -3,8 +3,9 @@
 > ⚠️ **Historical snapshot — pinned to v0.11.0 (2026-05-13/14).** For current,
 > reproducible numbers on the latest binary see **[BENCHMARKS.md](../BENCHMARKS.md)**,
 > which is the single source of truth and is re-checked in CI. The Track 1
-> synthetic headline below has been corrected to the current value (0.987, one
-> known SSRF false negative); the other tracks remain as captured at v0.11.0.
+> synthetic headline below reflects the current binary: **F1 1.000** after the
+> v0.27 SSRF taint fix (v0.26 disclosed one multi-hop SSRF false negative; v0.27
+> fixed it). The other tracks remain as captured at v0.11.0.
 
 Four independent evaluation tracks against v0.11.0 (2026-05-13/14):
 
@@ -22,8 +23,8 @@ Four independent evaluation tracks against v0.11.0 (2026-05-13/14):
    synthetic corpus can't see, and produces JSON CI can hold a line
    on.
 
-**Headline (current binary): 0.987 F1 on the synthetic corpus (P 1.000 / R
-0.974; one known SSRF false negative) + 0.987 F1 on a stricter Juliet-style
+**Headline (current binary): 1.000 F1 on the synthetic corpus (P 1.000 / R
+1.000; the v0.26 SSRF false negative was fixed in v0.27) + 0.987 F1 on a stricter Juliet-style
 real-shape corpus (CI 0.953–1.000, bootstrapped) + 10/10 bandit-examples
 external cross-validator + 1.000 expectation-recall across 11 real CVE-anchored
 Python/Node/Go repos + 4/4 cleanly-detected DAST targets + govulncheck parity
@@ -51,17 +52,18 @@ fixtures under
 
 | Metric | Value |
 |---|---:|
-| **F1**          | **0.987** |
+| **F1**          | **1.000** |
 | Precision       | 1.000 |
-| Recall          | 0.974 |
-| True positives  | 37 / 38 expected |
+| Recall          | 1.000 |
+| True positives  | 38 / 38 expected |
 | False positives | 0 |
-| False negatives | 1 (SSRF multi-hop string-concat — see note) |
-| Categories at 100 % precision + recall | **6 of 7** |
+| False negatives | 0 |
+| Categories at 100 % precision + recall | **7 of 7** |
 
-> Corrected to the current binary (`v0.19.0-41-g17e8937`, 2026-06-30). The
-> v0.11.0 snapshot scored 1.000 here; the current binary misses one multi-hop
-> SSRF case (`scripts/accuracy/corpus/ssrf.py:19`), tracked for v0.27.
+> Reproduced on the current binary (2026-06-30) and CI-gated (F1 ≥ 0.99). v0.26
+> disclosed one multi-hop SSRF false negative (`ssrf.py:19`); v0.27 fixed the
+> taint engine, so it is now detected — a legitimate 1.000, not the stale
+> v0.11.0 claim. See [BENCHMARKS.md](../BENCHMARKS.md).
 
 ### Per-category breakdown
 
@@ -70,11 +72,11 @@ fixtures under
 | sqli | 5 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
 | cmdi | 5 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
 | path_traversal | 5 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
-| ssrf | 2 | 0 | 1 | 2 | 1.000 | 0.667 | 0.800 |
+| ssrf | 3 | 0 | 0 | 2 | 1.000 | 1.000 | 1.000 |
 | open_redirect | 3 | 0 | 0 | 2 | 1.000 | 1.000 | 1.000 |
 | xss | 4 | 0 | 0 | 2 | 1.000 | 1.000 | 1.000 |
 | secrets | 13 | 0 | 0 | 3 | 1.000 | 1.000 | 1.000 |
-| **OVERALL** | **37** | **0** | **1** | **18** | **1.000** | **0.974** | **0.987** |
+| **OVERALL** | **38** | **0** | **0** | **18** | **1.000** | **1.000** | **1.000** |
 
 ### What was tested
 
@@ -110,19 +112,19 @@ Real bugs the corpus caught (now fixed; commits in git log):
    findings on real codebases. Same family as the TASK-134 spawner-
    enginePath fix.
 
-The 0.987 score is honest at the corpus's scope: fendix flags every
-canonical pattern in the 56-case synthetic corpus **except one** —
-a multi-hop SSRF where the URL is built by string concatenation
-(`url = "https://" + request.args["x"]`). Taint does not yet
-propagate through the concatenation `BinOp` into the `requests.get`
-sink, so that case is a false negative (symmetric to the
-open-redirect multi-hop gap fixed above, which has not yet been
-generalised to the concat shape for SSRF). It is disclosed here and
-tracked for a v0.27 taint-engine fix — we publish 0.987, not a
-rounded-up 1.000. A high score here means fendix rarely misses
-*these specific canonical patterns*, not that it never misses any
-vulnerability anywhere. Real-world tracks (below) measure
-performance against actual production-shape code.
+The 1.000 score is honest at the corpus's scope: fendix flags every
+canonical pattern in the 56-case synthetic corpus. v0.26 disclosed
+one false negative — a multi-hop SSRF where the URL is built by
+string concatenation (`url = "https://" + request.args["x"]`) — and
+v0.27 fixed it: the taint engine no longer treats a bare/unterminated
+scheme literal as a fixed host, so taint now flows through the
+concatenation `BinOp` into the `requests.get` sink (symmetric to the
+open-redirect multi-hop fix). This 1.000 is reproduced on the current
+binary and CI-gated (F1 ≥ 0.99) — not the stale v0.11.0 claim. A
+perfect score here means fendix flags *these specific canonical
+patterns*, not that it never misses any vulnerability anywhere.
+Real-world tracks (below) measure performance against actual
+production-shape code.
 
 ### Categories not in the corpus
 
@@ -308,7 +310,7 @@ Expect ~17 s wall-clock and ~147 findings on the v0.11.0 binary.
 
 | Track | What it measures | Result |
 |---|---|---|
-| **Synthetic corpus** (Track 1) | Precision / recall on canonical patterns we control | **F1 = 0.987** (37/38 TPs, 0 FPs, 1 FN across 7 categories; current binary — 1.000 at v0.11.0) |
+| **Synthetic corpus** (Track 1) | Precision / recall on canonical patterns we control | **F1 = 1.000** (38/38 TPs, 0 FPs, 0 FNs across 7 categories; current binary, CI-gated — v0.26's disclosed SSRF FN was fixed in v0.27) |
 | **Juice Shop** (Track 2) | DAST findings on a known-vulnerable web target | **+5 CRITICALs vs v0.6.1**; 35 % faster scan; every TASK-133 config-leak pattern fired correctly |
 | **PyGoat** (Track 3) | SAST findings on a real Django OWASP-Top-10 demo | **147 findings in 17 s** covering 12 distinct vulnerability classes; every category PyGoat advertises was detected |
 

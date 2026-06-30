@@ -2422,15 +2422,37 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             return False
         return True
 
+    @staticmethod
+    def _literal_url_fixes_host(s: str) -> bool:
+        """True only if literal `s` fixes the scheme AND host. The authority
+        (everything after 'http(s)://' up to the first '/', '?' or '#') must be
+        BOTH non-empty AND terminated by one of those delimiters. So:
+          "https://"                      -> False (empty authority: host is in
+                                             the tainted tail -> SSRF)
+          "https://api"                   -> False (unterminated: `+ ".evil.com"`
+                                             extends the host -> SSRF)
+          "https://api.twitter.com/2/"    -> True  (fixed host; taint only in the
+                                             path -> not SSRF)
+        Fixes the v0.26-disclosed multi-hop SSRF FN, where a bare-scheme prefix
+        was wrongly treated as a constant host."""
+        for scheme in ("http://", "https://"):
+            if s.startswith(scheme):
+                rest = s[len(scheme):]
+                for i, ch in enumerate(rest):
+                    if ch in "/?#":
+                        return i > 0  # non-empty authority, terminated
+                return False  # no terminator -> host unterminated/extendable
+        return False
+
     def _url_authority_is_constant(self, expr: ast.AST, _depth: int = 0) -> bool:
         """True if the URL expression's scheme+authority is fixed — a literal
-        'http(s)://...' string, a settings.* / module-UPPER_CASE / self.*url
+        'http(s)://host/...' string, a settings.* / module-UPPER_CASE / self.*url
         constant, or a `<base> + <path>` / f-string whose LEADING segment is one
         of those. Taint in only the path/query of a constant-host URL is not SSRF."""
         if _depth >= _MAX_TAINT_HOPS:
             return False
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-            return expr.value.startswith(("http://", "https://"))
+            return self._literal_url_fixes_host(expr.value)
         if isinstance(expr, ast.Attribute):
             if isinstance(expr.value, ast.Name) and expr.value.id == "settings":
                 return True
@@ -2447,7 +2469,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if isinstance(expr, ast.JoinedStr) and expr.values:
             first = expr.values[0]
             if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                return first.value.startswith(("http://", "https://"))
+                return self._literal_url_fixes_host(first.value)
             if isinstance(first, ast.FormattedValue):
                 return self._url_authority_is_constant(first.value, _depth + 1)
         if isinstance(expr, ast.Call):
