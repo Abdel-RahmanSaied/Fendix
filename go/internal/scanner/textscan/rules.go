@@ -330,6 +330,41 @@ func JavaRules() []Rule {
 			Applies: HasJavaExtension,
 			Fix:     "Validate the URL against an allowlist of permitted hosts/schemes before the request; never pass a raw request parameter to an HTTP client.",
 		},
+		{
+			ID:         "JAVA_XSS_REFLECTED",
+			Title:      "Reflected XSS: request value written straight to the servlet response",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "xss",
+			CWE:        "CWE-79",
+			// A RESPONSE-like receiver's writer (getWriter()/getOutputStream())
+			// emitting a request source ON THE SAME LINE, unencoded. The
+			// receiver must contain "resp" (response/resp/httpResponse/
+			// this.response) — without it, any object with a getWriter()
+			// (a log, a report, a Socket) would false-positive (v0.29 review).
+			// The request-source qualifier is also required. `[^()]*` guards
+			// inner-call crossing. FN class: a writer aliased to a non-"resp"
+			// local (`PrintWriter out = response.getWriter(); out.print(req)`),
+			// or value assembled on a prior line — needs the deferred taint engine.
+			Pattern: regexp.MustCompile(`[\w]*[Rr]esp[\w]*\.(?:getWriter|getOutputStream)\(\)\.(?:print|println|write|append)\s*\([^()]*` + javaReqSource),
+			Applies: HasJavaExtension,
+			Fix:     "HTML-encode untrusted output (OWASP Encoder: Encode.forHtml(...)) or use a context-aware templating engine; never write a raw request parameter to the response.",
+		},
+		{
+			ID:         "JAVA_PATH_TRAVERSAL",
+			Title:      "Path traversal: filesystem path built from a request parameter",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-22",
+			// A file-API sink (new File / Paths.get / FileInputStream / etc.)
+			// taking a request source ON THE SAME LINE. Request-source qualifier
+			// required (a constant path is fine). `[^()]*` guards inner-call
+			// crossing. FN class: path assembled on a prior line.
+			Pattern: regexp.MustCompile(`(?:new\s+(?:[\w.]+\.)?File(?:InputStream|Reader|OutputStream|Writer)?|Paths\.get)\s*\([^()]*` + javaReqSource),
+			Applies: HasJavaExtension,
+			Fix:     "Resolve the path against a fixed base directory and verify it stays within it (canonical path + prefix check), or map the request value to an allowlisted file; never pass it straight to a file API.",
+		},
 	}
 }
 

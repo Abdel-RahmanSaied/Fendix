@@ -271,3 +271,43 @@ func mustScan(t *testing.T, dir string, rules []Rule) []evidence.Evidence {
 	}
 	return got
 }
+
+func TestJavaRules_v029_DetectsXSSAndPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Web.java", `import jakarta.servlet.http.*;
+public class Web {
+  void xss(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    response.getWriter().println(request.getParameter("q"));
+  }
+  void path(HttpServletRequest request) throws Exception {
+    new java.io.File(request.getParameter("p"));
+  }
+}`)
+	by := findingsByID(mustScan(t, dir, JavaRules()))
+	if len(by["JAVA_XSS_REFLECTED"]) != 1 {
+		t.Errorf("JAVA_XSS_REFLECTED = %d; want 1", len(by["JAVA_XSS_REFLECTED"]))
+	}
+	if len(by["JAVA_PATH_TRAVERSAL"]) != 1 {
+		t.Errorf("JAVA_PATH_TRAVERSAL = %d; want 1", len(by["JAVA_PATH_TRAVERSAL"]))
+	}
+}
+
+func TestJavaRules_v029_NoFalsePositives(t *testing.T) {
+	dir := t.TempDir()
+	// Must NOT fire:
+	//   - a writer printing a CONSTANT + a constant file path (no request source)
+	//   - a NON-response receiver's getWriter()/getOutputStream() even WITH a
+	//     request source (the v0.29-review receiver-collision FP class): an
+	//     audit log, a report exporter, a Socket — none are an HTTP response.
+	writeFile(t, dir, "Ok29.java", `import jakarta.servlet.http.*;
+public class Ok29 {
+  void okxss(HttpServletResponse response) throws Exception { response.getWriter().println("<h1>static</h1>"); }
+  void okpath() throws Exception { new java.io.File("/etc/app/config.yml"); }
+  void auditLog(java.io.PrintWriter auditLog, HttpServletRequest request) { auditLog.getWriter().println("login user=" + request.getParameter("u")); }
+  void report(Exporter report, HttpServletRequest request) { report.getWriter().write(request.getParameter("title")); }
+  void proxy(java.net.Socket socket, HttpServletRequest request) throws Exception { socket.getOutputStream().write(request.getInputStream().readAllBytes()); }
+}`)
+	if got := mustScan(t, dir, JavaRules()); len(got) != 0 {
+		t.Errorf("expected no findings on safe Java, got %d: %+v", len(got), got)
+	}
+}
