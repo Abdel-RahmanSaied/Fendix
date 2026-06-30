@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-rc1] - 2026-07-01
+## [1.0.0] - 2026-07-01
 
-**Headline:** Fendix v1.0 — the production milestone. Bundles the v0.20→v0.29 engine-quality arc — a decision/confidence layer
+**Headline:** Fendix v1.0 — the production milestone (validated via v1.0.0-rc1:
+signed pipeline green, cosign signature verified). Bundles the v0.20→v0.29 engine-quality arc — a decision/confidence layer
 surfaced across every output, an honesty pass that made every accuracy number
 reproducible + CI-gated, faster developer experience, and Java SAST coverage.
 Each phase was adversarially reviewed before merge. The scan-report JSON schema
