@@ -50,7 +50,10 @@ func selectTargets(name string) ([]targets.Target, error) {
 }
 
 // runSuite scans and scores each target. Targets that report ErrTargetSkipped
-// (e.g. OWASP until v0.27) are noted and omitted, not treated as failures.
+// from Scan() (e.g. OWASP — Java, needs deep taint; SKIPPED until v0.28+) are
+// noted and omitted, not treated as failures. OWASP also returns
+// ErrTargetSkipped from Run() as defence in depth, but Scan() short-circuits
+// here first so Run() is never reached for it.
 func runSuite(ctx context.Context, fendixBin string, ts []targets.Target, out io.Writer) ([]benchmark.BenchmarkResult, error) {
 	var results []benchmark.BenchmarkResult
 	for _, t := range ts {

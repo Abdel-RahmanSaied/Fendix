@@ -184,13 +184,19 @@ func TestJavaRules_DetectsCoreVulns(t *testing.T) {
 
 func TestJavaRules_NoFalsePositives(t *testing.T) {
 	dir := t.TempDir()
-	// Safe shapes: parameterized SQL, literal exec argv, a non-SQL Executor
-	// .execute(...) with concat (must NOT trip JAVA_SQL_INJECTION), SHA-256.
+	// Safe shapes that previously risked a false positive:
+	//   - parameterized SQL (? placeholders, no concat)
+	//   - literal exec argv
+	//   - non-SQL Executor.execute(...) with a SQL-looking word ("update"/
+	//     "delete from") AND a concat — incl. nested in an inner call. The
+	//     MF-A regression: must NOT trip JAVA_SQL_INJECTION (Executor != JDBC).
+	//   - SHA-256 (strong digest)
 	writeFile(t, dir, "Safe.java", `public class Safe {
-  void ok(java.sql.Connection c, String id, java.util.concurrent.Executor ex) throws Exception {
+  void ok(java.sql.Connection c, String name, java.util.concurrent.Executor ex) throws Exception {
     var ps = c.prepareStatement("SELECT * FROM u WHERE id = ?");
     Runtime.getRuntime().exec(new String[]{"ls", "-la"});
-    ex.execute(new Task(id + "-suffix"));
+    ex.execute(makeTask("update view for " + name));
+    ex.execute("delete from cache " + name);
     java.security.MessageDigest.getInstance("SHA-256");
   }
 }`)

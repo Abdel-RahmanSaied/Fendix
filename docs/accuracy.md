@@ -25,10 +25,12 @@ Four independent evaluation tracks against v0.11.0 (2026-05-13/14):
 
 **Headline (current binary): 1.000 F1 on the synthetic corpus (P 1.000 / R
 1.000; the v0.26 SSRF false negative was fixed in v0.27) + 0.987 F1 on a stricter Juliet-style
-real-shape corpus (CI 0.953–1.000, bootstrapped) + 10/10 bandit-examples
-external cross-validator + 1.000 expectation-recall across 11 real CVE-anchored
-Python/Node/Go repos + 4/4 cleanly-detected DAST targets + govulncheck parity
-on Go dep CVEs.** Detail below; all numbers reproducible from
+real-shape corpus (CI 0.953–1.000, bootstrapped) + 5/5 real-detection
+bandit-examples cross-validator (+5 permissive advisories) + 1.000 recall over
+the *falsifiable* expectations of the real CVE-anchored Python/Node/Go repos
+(permissive min_count:0 presence-advisories excluded — see Track 4) + 4/4
+cleanly-detected DAST targets + govulncheck parity on Go dep CVEs.** Detail
+below; all numbers reproducible from
 `scripts/accuracy/run.py`, `scripts/benchmark/run-juice-shop.sh`, and
 `scripts/heavy-eval/run.py` — see [BENCHMARKS.md](../BENCHMARKS.md) for the
 current canonical set.
@@ -453,11 +455,22 @@ is **PyCQA/bandit's `examples/` tree** — 91 files hand-labeled by the
 bandit maintainers as their own regression-test corpus, SHA-pinned
 at `8309bc39605ef3e78eb5ec85096eb638bff1b025`.
 
+> ⚠️ **Permissive (min_count:0) rows — read this before the "N/N" cells in all
+> Track 4 stage tables below.** Some expectation rows are `min_count:0`
+> presence-advisories that **can never miss** (e.g. "an INFO advisory is
+> permitted"). As of **v0.27** the scorer (`scripts/heavy-eval/score.py`)
+> reports those as `permitted_absent` and **excludes them from the recall
+> denominator** — a target whose rows are ALL permissive has **undefined
+> recall, not 1.000**. The historical "N / N = 1.000" cells below predate that
+> fix and counted permissive rows as hits; read them as "N expectations met",
+> and see the real-detection split called out per stage. BENCHMARKS.md is the
+> canonical current source.
+
 | Metric | Value |
 |---|---:|
 | Targets       | 91 labeled `.py` files |
-| Expectations  | 10 (CWE-89/78/918/79/95/502/798 — fendix's scope) |
-| Hits          | **10 / 10 (1.000)** |
+| Expectations  | 10 (5 real min_count≥1 + 5 permissive min_count:0) |
+| Real detections | **5 / 5 (recall 1.000)** + 5 permissive advisories (`permitted_absent`) |
 | Engine gaps surfaced and fixed | 1 (os.popen2/3/4) |
 
 The bandit corpus is deliberately scoped to weaknesses fendix targets;
@@ -496,11 +509,11 @@ ID. 7 new bandit-B610/B611-parity unit tests lock the behaviour in.
 
 | Target | SHA | Findings | Hits / Miss | Notes |
 |---|---|---:|---|---|
-| `node-nodegoat`         | `c5cb68a7` | 399 | 2 / 2 | 395 dep CVEs surfaced from `package-lock.json` (TASK-119 native npm-audit) + 3 hardcoded secrets |
-| `node-juice-shop-src`   | `39b46860` |   7 | 2 / 2 | Source tree only ships `package.json` — fendix now emits a single INFO advisory (SEC-NPM_LOCKFILE_MISSING) instead of skipping silently (Phase 2.6) |
-| `node-dvna`             | `9ba473ad` |   2 | 2 / 2 | Same — INFO advisory emitted; permissive secrets bar met |
-| `node-vulnerable-app`   | `6a025cdf` |   2 | 2 / 2 | INFO advisory emitted; permissive expectations met |
-| **Aggregate**           |            | **410** | **8 / 8** | **expectation-recall = 1.000** |
+| `node-nodegoat`         | `c5cb68a7` | 399 | **2 / 2 real** | 395 dep CVEs surfaced from `package-lock.json` (TASK-119 native npm-audit) + 3 hardcoded secrets |
+| `node-juice-shop-src`   | `39b46860` |   7 | 0 real (2 permissive) | Source tree only ships `package.json` — fendix emits a single INFO advisory (SEC-NPM_LOCKFILE_MISSING); both rows are min_count:0 → **recall n/a** |
+| `node-dvna`             | `9ba473ad` |   2 | 0 real (2 permissive) | INFO advisory; both rows min_count:0 → **recall n/a** (not 1.000) |
+| `node-vulnerable-app`   | `6a025cdf` |   2 | 0 real (2 permissive) | INFO advisory; both rows min_count:0 → **recall n/a** (not 1.000) |
+| **Aggregate**           |            | **410** | **2 / 2 real (1.000)** + 6 permissive | Real-detection recall = 1.000 over node-nodegoat's 2 falsifiable rows; the other 3 targets contribute only `permitted_absent` advisories (corrected v0.27 — was a fabricated "8 / 8 = 1.000") |
 
 **Phase 2.6 engine improvement:** the npm-audit scanner used to skip
 silently when `package-lock.json` was absent. Now, when `package.json`

@@ -249,6 +249,7 @@ def score_category_counts(manifest: dict, raw_findings: list[dict]) -> dict:
     hits_total = 0
     miss_total = 0
     over_total = 0
+    permitted_absent_total = 0
     consumed_finding_idx: set[int] = set()
 
     for exp in expected:
@@ -276,7 +277,20 @@ def score_category_counts(manifest: dict, raw_findings: list[dict]) -> dict:
             consumed_finding_idx.add(i)
 
         n = len(matched)
-        if n >= min_count and (max_count is None or n <= max_count):
+        if min_count == 0:
+            # "permitted_absent": absence is explicitly allowed, so this row can
+            # NEVER miss — counting it as a hit (the old `n >= 0` path) inflated
+            # the hit COUNT and let targets whose every row is min_count:0 score
+            # a fabricated recall=1.000 (v0.27 MF-4). It is advisory only and
+            # excluded from the hits+miss recall denominator. An over-count
+            # (> max_count) is still reported as "over".
+            if max_count is not None and n > max_count:
+                status = "over"
+                over_total += 1
+            else:
+                status = "permitted_absent"
+                permitted_absent_total += 1
+        elif n >= min_count and (max_count is None or n <= max_count):
             status = "hit"
             hits_total += 1
         elif n < min_count:
@@ -316,7 +330,7 @@ def score_category_counts(manifest: dict, raw_findings: list[dict]) -> dict:
     cwe_buckets: dict[str, dict[str, int]] = {}
     for r in rows:
         cwe = r.get("cwe") or "UNTAGGED"
-        b = cwe_buckets.setdefault(cwe, {"hit": 0, "miss": 0, "over": 0})
+        b = cwe_buckets.setdefault(cwe, {"hit": 0, "miss": 0, "over": 0, "permitted_absent": 0})
         b[r["status"]] += 1
     per_cwe = [
         {
@@ -324,6 +338,7 @@ def score_category_counts(manifest: dict, raw_findings: list[dict]) -> dict:
             "hit": b["hit"],
             "miss": b["miss"],
             "over": b["over"],
+            "permitted_absent": b["permitted_absent"],
             "recall": _safe_div(b["hit"], b["hit"] + b["miss"]),
         }
         for cwe, b in sorted(cwe_buckets.items())
@@ -335,6 +350,10 @@ def score_category_counts(manifest: dict, raw_findings: list[dict]) -> dict:
         "hits": hits_total,
         "miss": miss_total,
         "over": over_total,
+        # permitted_absent: min_count:0 advisory rows — NOT counted toward
+        # recall (they can never miss). A target whose rows are ALL
+        # permitted_absent has expectation_recall=null, not a fabricated 1.000.
+        "permitted_absent": permitted_absent_total,
         "expectation_recall": recall_like,
         "rows": rows,
         "per_cwe": per_cwe,

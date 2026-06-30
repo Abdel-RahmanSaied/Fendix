@@ -2434,7 +2434,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
           "https://api.twitter.com/2/"    -> True  (fixed host; taint only in the
                                              path -> not SSRF)
         Fixes the v0.26-disclosed multi-hop SSRF FN, where a bare-scheme prefix
-        was wrongly treated as a constant host."""
+        was wrongly treated as a constant host.
+
+        Deliberately conservative: the authority terminates only on '/', '?' or
+        '#', NOT ':'. So `"https://host:8080" + tainted` is treated as host-NOT-
+        fixed and flagged — a recall-preserving over-fire (better than risking a
+        miss on host/userinfo control like `"https://user:" + tainted`).
+        Documented, not a bug."""
         for scheme in ("http://", "https://"):
             if s.startswith(scheme):
                 rest = s[len(scheme):]

@@ -201,11 +201,16 @@ func JavaRules() []Rule {
 			Confidence: models.ConfidenceMedium,
 			Category:   "injection",
 			CWE:        "CWE-89",
-			// executeQuery/executeUpdate/execute/prepareStatement whose SQL
-			// string literal is immediately concatenated. The SQL-keyword guard
-			// keeps a non-SQL .execute(...) (Executor, etc.) from matching. FN
-			// class: SQL assembled on a prior line.
-			Pattern: regexp.MustCompile(`(?:executeQuery|executeUpdate|prepareStatement|execute)\s*\([^)]*"[^"]*(?i:select|insert|update|delete|from|where)[^"]*"\s*\+`),
+			// executeQuery/executeUpdate/prepareStatement whose SQL string
+			// literal is immediately concatenated. These three are JDBC-specific
+			// names, so an Executor's execute(Runnable) cannot collide; bare
+			// `execute` is deliberately NOT matched (it would fire on a non-SQL
+			// Executor.execute(...) whose argument merely contains a SQL-looking
+			// word). `[^()]*` (not `[^)]*`) so the match cannot cross an inner
+			// call's `(` — e.g. ex.execute(makeTask("update " + x)) stays clean.
+			// FN class: Statement.execute("raw sql" + x) and SQL assembled on a
+			// prior line (needs taint, not line-local regex).
+			Pattern: regexp.MustCompile(`(?:executeQuery|executeUpdate|prepareStatement)\s*\([^()]*"[^"]*(?i:select|insert|update|delete|from|where)[^"]*"\s*\+`),
 			Applies: HasJavaExtension,
 			Fix:     "Use a PreparedStatement with bound `?` parameters: conn.prepareStatement(\"… WHERE x = ?\"). Never concatenate user input into SQL.",
 		},
