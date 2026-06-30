@@ -25,7 +25,7 @@ var ErrTargetSkipped = errors.New("benchmark target skipped")
 // this target loudly SKIPS in BOTH Scan() and Run() (defence in depth: no
 // all-zero result can reach the baseline/Compare path). It un-SKIPS only when
 // a real Java taint analyzer + a labeled owasp-known.json corpus exist (see
-// NEXT_v028). The shipped DAST baseline is DVWA + Juice Shop.
+// NEXT_v029.md). The shipped DAST baseline is DVWA + Juice Shop.
 type OWASP struct{}
 
 // NewOWASP returns the OWASP Benchmark target.

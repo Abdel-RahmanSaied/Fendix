@@ -226,20 +226,40 @@ public class More {
 
 func TestJavaRules_v028_NoFalsePositives(t *testing.T) {
 	dir := t.TempDir()
-	// Safe shapes the v0.28 rules must NOT flag:
-	//   - new Random() with NO security co-token (dice roll)
-	//   - setHttpOnly(true) / setSecure(true)
-	//   - constant-URL request (no request-source token)
-	//   - LDAP search with no string concat
+	// Safe shapes the v0.28 rules must NOT flag — incl. the v0.28-review
+	// JAVA_WEAK_RANDOM FP class (token word in a comment / string literal /
+	// identifier substring, NOT as a security assignment target):
 	writeFile(t, dir, "Ok.java", `import javax.naming.directory.*;
 public class Ok {
   void dice() { int n = new java.util.Random().nextInt(6); }
+  void diceComment() { int n = new java.util.Random().nextInt(6); } // not a token, just dice
+  void backoff() { int n = new java.util.Random().nextInt(500); } // backoff, no secret here
+  void seat() { int sessionIndex = new java.util.Random().nextInt(8); } // UI seat shuffle
+  void place() { String greeting = "Salt Lake City"; int n = new java.util.Random().nextInt(3); }
   void cookie(jakarta.servlet.http.Cookie c) { c.setHttpOnly(true); c.setSecure(true); }
   void okurl() throws Exception { new java.net.URL("https://api.example.com/health"); }
   void okldap(DirContext ctx) throws Exception { ctx.search("ou=x", "(uid=admin)", null); }
 }`)
 	if got := mustScan(t, dir, JavaRules()); len(got) != 0 {
 		t.Errorf("expected no findings on safe Java, got %d: %+v", len(got), got)
+	}
+}
+
+// TestJavaRules_v028_XXE_FQN covers the v0.28-review M2 fix: JAVA_XXE catches a
+// fully-qualified dom4j SAXReader, and JAVA_WEAK_RANDOM fires on a security
+// assignment target (token/password), both in qualified/realistic forms.
+func TestJavaRules_v028_XXE_FQN(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Q.java", `public class Q {
+  void xxe() { org.dom4j.io.SAXReader r = new org.dom4j.io.SAXReader(); }
+  void rng() { this.password = Long.toString(Math.random()); }
+}`)
+	by := findingsByID(mustScan(t, dir, JavaRules()))
+	if len(by["JAVA_XXE"]) != 1 {
+		t.Errorf("JAVA_XXE (FQN SAXReader) = %d; want 1", len(by["JAVA_XXE"]))
+	}
+	if len(by["JAVA_WEAK_RANDOM"]) != 1 {
+		t.Errorf("JAVA_WEAK_RANDOM (password assign) = %d; want 1", len(by["JAVA_WEAK_RANDOM"]))
 	}
 }
 

@@ -117,7 +117,7 @@ re-asserted here.
 | **Java (v0.27–v0.28)** | **regex SAST (line-local): command injection, SQLi-by-concat, weak crypto, insecure deserialization, XXE, insecure cookie, weak randomness, LDAP injection, SSRF** | **regex** |
 | any language | hardcoded-secrets scanner (15 pattern families) | regex |
 
-Java in v0.27 is **regex pattern-matching, line-local** — the same tier as the
+Java (v0.27–v0.28) is **regex pattern-matching, line-local** — the same tier as the
 Go/JS rules, NOT taint analysis. We publish **no Java recall/precision number**:
 there is no labeled Java corpus yet, so any number would be unsourced. Deep
 Java taint analysis (what OWASP Benchmark needs) is a future phase.

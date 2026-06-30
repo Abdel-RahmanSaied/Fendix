@@ -260,7 +260,7 @@ func JavaRules() []Rule {
 			// FEATURE_SECURE_PROCESSING) on a later line — a documented
 			// line-local limit, hence MEDIUM confidence. Whole-file hardening
 			// detection would need scanCandidate context (deferred).
-			Pattern: regexp.MustCompile(`(?:DocumentBuilderFactory|SAXParserFactory|XMLInputFactory)\.newInstance\s*\(|new\s+SAXReader\s*\(`),
+			Pattern: regexp.MustCompile(`(?:DocumentBuilderFactory|SAXParserFactory|XMLInputFactory)\.newInstance\s*\(|new\s+(?:[\w.]+\.)?SAXReader\s*\(`),
 			Applies: HasJavaExtension,
 			Fix:     "Disable DOCTYPE/external entities: factory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true) (or XMLConstants.FEATURE_SECURE_PROCESSING). Prefer a parser that rejects external entities by default.",
 		},
@@ -284,11 +284,18 @@ func JavaRules() []Rule {
 			Confidence: models.ConfidenceMedium,
 			Category:   "crypto",
 			CWE:        "CWE-330",
-			// java.util.Random / Math.random are predictable. Gated on a
-			// security co-token on the SAME line (either order) to cut the heavy
-			// non-security Random FP. FN class: a bare `new Random().nextLong()`
-			// with no nearby security word is not flagged (documented).
-			Pattern: regexp.MustCompile(`(?:(?i:token|secret|password|salt|nonce|otp|session|csrf|api[_]?key).*(?:new\s+(?:java\.util\.)?Random\s*\(|Math\.random\s*\()|(?:new\s+(?:java\.util\.)?Random\s*\(|Math\.random\s*\().*(?i:token|secret|password|salt|nonce|otp|session|csrf|api[_]?key))`),
+			// java.util.Random / Math.random are predictable. To stay
+			// trustworthy at the regex tier, this fires ONLY when the result is
+			// assigned to a security-named variable: a word-bounded security
+			// term is the assignment LHS and `new Random(`/`Math.random(`
+			// appears in the same statement (`[^=;]*` keeps it to one
+			// assignment). This excludes the token word appearing in a comment,
+			// a string literal, or as an identifier substring (the v0.28 review
+			// FP class). FN class (documented, deliberate): a Random NOT
+			// assigned to a security-named var — `return new Random()`, an
+			// inline arg, or a bare `new Random().nextLong()` — is not flagged;
+			// catching those needs the deferred taint engine.
+			Pattern: regexp.MustCompile(`\b(?i:token|secret|password|passwd|salt|nonce|otp|csrf|sessionid|apikey|api_key)\b\s*=\s*[^=;]*(?:new\s+(?:java\.util\.)?Random\s*\(|Math\.random\s*\()`),
 			Applies: HasJavaExtension,
 			Fix:     "Use java.security.SecureRandom for tokens, salts, session IDs, and keys. java.util.Random / Math.random are statistically predictable.",
 		},
