@@ -32,8 +32,20 @@ OWASP number to a future phase with a crisp definition-of-done.
 - The Java-parser architecture decision (operator-owned).
 - Any OWASP Benchmark number.
 
-## Status
-Understand workflow (`ws6q4vord`) running → decides the exact bounded increment
-(high-value line-local Java rules, e.g. XXE / path-traversal / SSRF / LDAP /
-weak-RNG / XSS, + FP guards; possibly OWASP corpus scaffolding behind the SKIP).
-Plan finalized once it lands.
+## ✅ PHASE v0.28 — COMPLETE (2026-06-30)
+
+Adversarial 5-lens review → FIX-FIRST → fixed → **SHIP**; Reviewer → **SHIP**.
+
+- **Implemented** (249ec1e): 5 line-local Java rules at `TierNativeGo` — JAVA_XXE,
+  JAVA_INSECURE_COOKIE, JAVA_WEAK_RANDOM, JAVA_LDAP_INJECTION, JAVA_SSRF (+ shared
+  `javaReqSource`); inert number-free `owasp-known.json` skeleton + a test pinning
+  it empty. Java total: 9 rules.
+- **Review fixes** (8137fad): M1 weak-RNG over-fire (token word in comment/string/
+  identifier-substring) retightened to assignment-target-gated; M2 XXE FQN dom4j
+  SAXReader miss fixed; doc nits.
+
+No Java/OWASP accuracy number; OWASP stays two-layer SKIP; schema stable; full
+suite green. Audit: `SECURITY_AUDIT_v028.md`. Review: `REVIEW_v028.md`. Handoff:
+`NEXT_v029.md` (held-back Java rules + the honest convergence on v1.0 + the three
+operator-owned blockers: Java-parser architecture, release secrets/DNS,
+open-source decision). Deep Java taint engine remains DEFERRED (operator-gated).
