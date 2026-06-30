@@ -51,7 +51,7 @@ I built Fendix because I was tired of running three separate security tools in C
 | Metric | Value | What it means |
 |---|---:|---|
 | Default cold start | **6.1 ms p50** | Process spawn → JSON-on-stdout. 82× under our internal exit gate (<500 ms). |
-| Labeled-corpus F1 | **0.987** | 37/38 expected TPs, 0 FPs, 1 FN (one multi-hop SSRF, disclosed) across 7 detection categories on a 55-case synthetic corpus. Reproduce + caveats in BENCHMARKS.md. |
+| Labeled-corpus F1 | **0.987** | 37/38 expected TPs, 0 FPs, 1 FN (one multi-hop SSRF, disclosed) across 7 detection categories on a 56-case synthetic corpus. Reproduce + caveats in BENCHMARKS.md. |
 | Juice Shop scan | 12 findings, 27 s | 5 CRITICAL (exposed config files), 4 MEDIUM, 2 LOW, 1 INFO. +5 CRITICALs vs v0.6.1. |
 | PyGoat scan | 147 findings, 17 s | Every OWASP Top 10 class PyGoat advertises was detected. 1 CRITICAL (pickle), 9 injection patterns, 133 real CVE-tagged deps. |
 | Binary | **single Go binary**, ~19 MB | No Python required by default. `--python-engine` opt-in for legacy AST/spec auth checks. |

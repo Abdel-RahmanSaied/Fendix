@@ -33,7 +33,8 @@ Labels file shape (per-target ground truth):
     }
 
 Stages:
-    4a   Juliet Python labeled corpus (NIST SARD Python subset)
+    4a   Juliet-STYLE Python labeled corpus (hand-authored; NOT NIST SARD —
+         see note below — Juliet-shape good/bad pairs we wrote ourselves)
     4b   CVE-anchored Python repos
     4c   CVE-anchored Node repos
     4d   CVE-anchored Go repos
@@ -42,10 +43,12 @@ Stages:
 
 Honest scope notes (read these before reading the numbers):
 
-    - NIST Juliet's Python subset is ~70 cases. Java/C/C++ subsets
-      exist but fendix doesn't support those languages, so we don't
-      pull them. The "thousands of samples" framing only applies to
-      Java SAST tools like the OWASP Benchmark.
+    - This is a Juliet-STYLE corpus, NOT NIST SARD. NIST's Juliet test
+      suite covers Java/C/C++ only — there is no official NIST Python
+      Juliet subset (see stage 4a's second target note). Stage 4a is
+      hand-authored good/bad pairs in the Juliet SHAPE for the
+      categories fendix supports. The "thousands of samples" framing
+      applies only to Java SAST tools like the OWASP Benchmark.
     - CVE-anchored real repos are hand-curated: each one points at a
       specific vulnerable SHA + the CVE description + the file(s)
       that hold the sink. Hand-curation is why this stage is ~30
@@ -65,16 +68,16 @@ CACHE_DIR = HEAVY_DIR / "corpus-cache"
 LABELS_DIR = HEAVY_DIR / "labels"
 
 
-# ─── Stage 4a — Juliet Python (NIST SARD) ────────────────────────────
+# ─── Stage 4a — Juliet-STYLE Python (hand-authored, NOT NIST SARD) ────
 #
-# Juliet's Python subset is a single archive (~25 MB). It contains
-# labeled good/bad pairs for canonical CWEs. We don't pull the whole
-# archive — we ship a curated subset on-disk that mirrors the subset
-# fendix is supposed to detect (taint-chain SQLi/cmdi/path-traversal/
-# SSRF/XSS/open-redirect + secrets). Cases are written as standalone
-# .py files in labels/juliet-python/ so we can score with line-level
-# precision exactly like Track 1 does, but using NIST's wording and
-# patterns instead of our own.
+# NIST SARD's Juliet suite is Java/C/C++ only — it has no Python subset.
+# So this is a hand-authored corpus in the Juliet SHAPE: labeled
+# good/bad pairs for the canonical CWEs fendix is supposed to detect
+# (taint-chain SQLi/cmdi/path-traversal/SSRF/XSS/open-redirect +
+# secrets). Cases are standalone .py files in labels/juliet-python/ so
+# we can score with line-level precision exactly like Track 1 does. We
+# call it "Juliet-style" everywhere, never "NIST Juliet", so the name
+# can't imply an external benchmark we don't actually run.
 JULIET_PYTHON: list[dict[str, Any]] = [
     {
         "id": "juliet-python",
@@ -83,7 +86,7 @@ JULIET_PYTHON: list[dict[str, Any]] = [
         "scan": "code",
         "language": "python",
         "labels_file": "labels/juliet-python.json",
-        "notes": "NIST Juliet-style Python labeled good/bad pairs (curated subset)",
+        "notes": "Juliet-style Python labeled good/bad pairs (hand-authored, not NIST SARD)",
     },
     {
         # NIST SARD has no Python suite (Java/C/C++ only) — bandit's

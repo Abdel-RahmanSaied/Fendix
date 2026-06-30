@@ -248,7 +248,7 @@ is the one that demonstrates the wedge.**
 A labeled corpus + runner that puts a tracked **precision / recall / F1** number
 on the Python AST taint engine, so "is it more accurate?" stops being an opinion.
 
-- **Corpus:** `python/benchmark/corpus.json` — 37 minimal, labeled cases across
+- **Corpus:** `python/benchmark/corpus.json` — 40 minimal, labeled cases across
   cmdi / sqli / ssrf / path / deser / xss / llm (+ roadmap categories rce /
   crypto / secrets). Each case is `{id, category, label, expect, code}`;
   `label=vulnerable` → the engine *should* emit `expect`; `label=safe` → it must

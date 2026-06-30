@@ -6,10 +6,11 @@ whether it is CI-gated, and the honest caveat. If you can't re-run it, we don't
 claim it (Product Constitution Rule 5). Scoring is deterministic Python/Go — no
 AI decides a score or a label (Rule 8).
 
-> Captured on `v0.19.0-41-g17e8937`, 2026-06-30, macOS/arm64, Go 1.x. Re-run any
-> command below to reproduce. Numbers in the older `docs/accuracy.md` are a
-> historical snapshot pinned to **v0.11.0** — this page supersedes them for
-> current values.
+> Captured 2026-06-30 on the binary built from `v0.19.0-41-g17e8937`,
+> macOS/arm64, Go 1.x. (v0.26 changed only docs, the Python harness, and CI —
+> the scanner binary is unchanged, so these numbers stand for current `main`.)
+> Re-run any command below to reproduce. Numbers in the older `docs/accuracy.md`
+> are a historical snapshot pinned to **v0.11.0** — this page supersedes them.
 
 ---
 
@@ -53,7 +54,7 @@ python3 scripts/accuracy/run.py --python-engine bin/fendix
 | Categories | 7 (sqli, cmdi, path_traversal, ssrf, open_redirect, xss, secrets) |
 
 - **Corpus:** `scripts/accuracy/manifest.json` + `scripts/accuracy/corpus/`
-  (55 cases: 37 EXPECT_TP + 18 EXPECT_TN).
+  (56 cases: 38 EXPECT_TP + 18 EXPECT_TN; the binary detects 37 of the 38).
 - **Known false negative (disclosed):** one multi-hop SSRF case —
   `target = request.args["x"]; url = "https://" + target; requests.get(url)` —
   is missed because taint does not propagate through the string-concatenation

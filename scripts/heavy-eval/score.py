@@ -24,7 +24,7 @@ from typing import Any
 
 LINE_TOLERANCE = 6
 BOOTSTRAP_ITERATIONS = 1000
-BOOTSTRAP_RNG = random.Random(20260514)  # fixed seed for reproducibility
+BOOTSTRAP_SEED = 20260514  # fixed seed for reproducibility
 
 
 def _safe_div(num: float, den: float) -> float | None:
@@ -194,9 +194,13 @@ def _bootstrap_f1_ci(per_category: list[dict]) -> dict[str, float | None]:
 
     f1_samples: list[float] = []
     n = len(observations)
+    # Local RNG seeded per call: the interval depends ONLY on the observations,
+    # not on how much randomness earlier code consumed. Keeps the published CI
+    # reproducible even if a second line-anchored target is added later.
+    rng = random.Random(BOOTSTRAP_SEED)
     for _ in range(BOOTSTRAP_ITERATIONS):
         # Resample with replacement
-        sample = [observations[BOOTSTRAP_RNG.randrange(n)] for _ in range(n)]
+        sample = [observations[rng.randrange(n)] for _ in range(n)]
         tp = sum(1 for kind, ok in sample if kind == "pos" and ok)
         fn = sum(1 for kind, ok in sample if kind == "pos" and not ok)
         fp = sum(1 for kind, ok in sample if kind == "neg" and not ok)
