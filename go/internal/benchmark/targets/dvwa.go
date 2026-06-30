@@ -11,7 +11,10 @@ import (
 const (
 	// dvwaImage is the classic Damn Vulnerable Web App container (PHP).
 	// DAST is language-agnostic, so PHP is irrelevant to the HTTP probe.
-	dvwaImage         = "vulnerables/web-dvwa:latest"
+	// Digest-pinned for a reproducible baseline (DVWA only publishes :latest;
+	// dvwa-known.json is triaged against this exact image) — same discipline as
+	// Juice Shop's v17.1.1 tag pin (v0.28 deferred item, closed).
+	dvwaImage         = "vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7"
 	dvwaHostPort      = 8080
 	dvwaContainerPort = 80
 )

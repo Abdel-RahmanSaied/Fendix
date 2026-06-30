@@ -7,6 +7,17 @@ evidence, not just framing. This page is where we put the numbers.
 
 ## Cold-start latency (TASK-118 / TASK-136 — v0.9 → v0.11)
 
+> ⚠️ **Indicative, not CI-gated; rows below are historical (v0.8 → v0.18) on an
+> unspecified Apple M-series.** A current spot-check (2026-06-30) of the
+> v0.20→v0.29 binary on Darwin/arm64 — default scan, no `--python-engine` —
+> measured **~40 ms p50** via coarse `/usr/bin/time` (10 ms resolution; one
+> cold-cache first-run outlier discarded). That is consistent with the v0.18.0
+> row (45 ms) and still **~12× under the 500 ms gate** — the perf story holds —
+> but it was NOT taken with the fine-grained `coldstart.py` harness below, so it
+> is not presented as an exact new row. For precise current numbers run that
+> harness on your own hardware. (v0.26 review MF-6: perf marketing is indicative,
+> never a CI-gated accuracy claim.)
+
 Phase 17b's exit gate was **<500 ms p50 cold start for code-only scans
 without Semgrep**, cleared by v0.9.0. Phase 17d (v0.11.0) adds two
 non-trivial detection paths — the native-Go config-leak scanner
