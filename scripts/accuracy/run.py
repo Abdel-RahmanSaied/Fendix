@@ -67,6 +67,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional: write the scorecard as JSON to this path (for CI consumption)",
     )
+    p.add_argument(
+        "--min-f1",
+        type=float,
+        default=None,
+        help="CI gate: exit non-zero if the OVERALL F1 falls below this floor "
+        "(e.g. 0.98). Prevents the published synthetic number from silently drifting.",
+    )
     return p.parse_args()
 
 
@@ -290,12 +297,25 @@ def main() -> int:
     if not has_issues:
         print("  (no missed cases, no false-positive flags — clean run)")
 
+    # Overall aggregate — the gateable headline number.
+    o_tp = sum(r["tp"] for r in per_category)
+    o_fp = sum(r["fp"] for r in per_category)
+    o_fn = sum(r["fn"] for r in per_category)
+    o_prec = o_tp / (o_tp + o_fp) if (o_tp + o_fp) > 0 else 0.0
+    o_rec = o_tp / (o_tp + o_fn) if (o_tp + o_fn) > 0 else 0.0
+    o_f1 = (2 * o_prec * o_rec / (o_prec + o_rec)) if (o_prec + o_rec) > 0 else 0.0
+    overall = {
+        "tp": o_tp, "fp": o_fp, "fn": o_fn,
+        "precision": o_prec, "recall": o_rec, "f1": o_f1,
+    }
+
     if args.output_json:
         Path(args.output_json).write_text(
             json.dumps(
                 {
                     "binary": args.binary,
                     "python_engine": args.python_engine,
+                    "overall": overall,
                     "categories": per_category,
                 },
                 indent=2,
@@ -303,8 +323,14 @@ def main() -> int:
         )
         print(f"\nwrote {args.output_json}")
 
-    # Return 0 always — the scorecard IS the deliverable; CI gating
-    # would happen via --output-json + a separate threshold checker.
+    # CI gate (opt-in via --min-f1): fail the build if the published synthetic
+    # F1 drifts below the floor. This is the guard whose absence let the
+    # headline number silently fall from 1.000 to 0.987 (v0.26 MF-1).
+    if args.min_f1 is not None and o_f1 < args.min_f1:
+        sys.stderr.write(
+            f"\nACCURACY GATE FAILED: overall F1 {o_f1:.3f} < floor {args.min_f1:.3f}\n"
+        )
+        return 1
     return 0
 
 

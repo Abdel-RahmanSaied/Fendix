@@ -4,9 +4,12 @@
 Reads a results directory (bench-results/heavy/<UTC-ISO>/) and exits
 non-zero if any gate fails:
 
-  G1  Stage 4a Juliet F1 >= 0.90
-  G2  Stage 4a bandit-examples expectation_recall >= 0.85
-  G3  Stages 4b/4c/4d aggregate expectation_recall >= 0.90 (if present)
+  G1  Stage 4a Juliet-style F1 >= 0.95          (see *_FLOOR constants below)
+  G2  Stage 4a bandit-examples expectation_recall >= 0.95
+  G3  Stages 4b/4c/4d aggregate expectation_recall >= 0.95 (if present)
+
+The numeric floors are the *_FLOOR constants below — the single source of
+truth. This docstring mirrors them; keep them in sync.
 
 The gates are deliberately set just BELOW the current measured numbers,
 so the first regression is what trips them — not random run-to-run jitter.

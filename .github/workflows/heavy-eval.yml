@@ -4,9 +4,10 @@ name: Heavy-eval
 #
 # On PRs and push to main: runs the FAST sweep (SAST stages 4a–4d only,
 # ~5 min of runner time, no docker). Gates on:
-#   - stage 4a F1 >= 0.90 (line-anchored Juliet-style corpus)
-#   - bandit-examples expectation_recall >= 0.85
-#   - aggregate cat-recall >= 0.90 across stages 4b–4d
+#   - stage 4a F1 >= 0.95 (line-anchored Juliet-style corpus)
+#   - bandit-examples expectation_recall >= 0.95
+#   - aggregate cat-recall >= 0.95 across stages 4b–4d
+# (floors live in scripts/heavy-eval/gate.py — the single source of truth)
 #
 # Manually-triggered FULL run: includes DAST stage 4e + perf stage 4f.
 # Runs on ubuntu-latest; docker images are pulled inline so first-run
@@ -59,6 +60,12 @@ jobs:
 
       - name: Build fendix binary
         run: make build
+
+      - name: Accuracy gate — synthetic corpus F1 floor (v0.26)
+        # Guards the published synthetic F1 (currently 0.987). This is the gate
+        # whose absence let the headline silently drift 1.000 → 0.987 (MF-1).
+        # Floor 0.98 trips on the first real regression, not run-to-run jitter.
+        run: python3 scripts/accuracy/run.py --python-engine --min-f1 0.98 ./bin/fendix
 
       - name: Run heavy-eval (fast SAST stages 4a–4d)
         if: github.event.inputs.full != 'true'
