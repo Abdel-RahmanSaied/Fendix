@@ -108,13 +108,27 @@ gated in `.github/workflows/heavy-eval.yml` at floor **F1 ≥ 0.95**. See that
 harness for its current bootstrapped number; it is enforced in CI rather than
 re-asserted here.
 
+## Language coverage (capability, not an accuracy number)
+
+| Language | How | Tier |
+|---|---|---|
+| Python | interprocedural taint engine (source→sink, sanitizer-aware) | proven taint |
+| Go / JS / TS | regex SAST (line-local) + Go dep-CVE | regex / SCA |
+| **Java (v0.27)** | **regex SAST (line-local): command injection, SQLi-by-concat, weak crypto, insecure deserialization** | **regex** |
+| any language | hardcoded-secrets scanner (15 pattern families) | regex |
+
+Java in v0.27 is **regex pattern-matching, line-local** — the same tier as the
+Go/JS rules, NOT taint analysis. We publish **no Java recall/precision number**:
+there is no labeled Java corpus yet, so any number would be unsourced. Deep
+Java taint analysis (what OWASP Benchmark needs) is a future phase.
+
 ---
 
 ## Not benchmarked yet (honest omissions)
 
 | Item | Why | When |
 |---|---|---|
-| **OWASP Benchmark** (recall/precision) | It is a **Java** application; Fendix has **no Java analyzer until v0.27**. Running it now yields recall ≈ 0 — a misleading baseline (Rule 5). The target **loud-SKIPs** (`go/internal/benchmark/targets/owasp.go`). | v0.27 (Java analyzer) |
+| **OWASP Benchmark** (recall/precision) | It is a **Java** application scored on deep, sanitizer-aware, interprocedural taint. v0.27 ships Java **regex** SAST (line-local) — real coverage, but a regex matcher scores ≈ 0 on the FP-penalized Youden metric (half the cases are sanitized FP twins). The target **loud-SKIPs in both `Scan()` and `Run()`** (`go/internal/benchmark/targets/owasp.go`). | v0.28+ (deep Java taint engine + labeled corpus) |
 | Competitor head-to-head (Semgrep/ZAP/Bandit) | No published shared-corpus methodology exists; implied superiority without one violates Rule 5. | post-v0.26 |
 | Correlation-specific FP reduction | No harness yet isolates the with/without-correlation effect; claims are stated as mechanism, not measured reduction. | post-v0.26 |
 | Real-code precision / FP-rate | No labeled negative corpus on real repos yet; DAST precision stays a lower bound. | v0.27 corpus work |

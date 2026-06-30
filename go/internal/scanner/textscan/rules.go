@@ -13,6 +13,7 @@ func AllRules() []Rule {
 	rules := []Rule{}
 	rules = append(rules, GoRules()...)
 	rules = append(rules, JSRules()...)
+	rules = append(rules, JavaRules()...)
 	rules = append(rules, IaCRules()...)
 	return rules
 }
@@ -165,6 +166,75 @@ func JSRules() []Rule {
 			NegPattern: regexp.MustCompile(`AKIAIOSFODNN7EXAMPLE|AKIAI44QH8DHBEXAMPLE`),
 			Applies:    HasJSExtension,
 			Fix:        "Load credentials from process.env or the AWS SDK's default chain. Rotate the exposed key.",
+		},
+	}
+}
+
+// JavaRules — v0.27 first Java increment. Regex tier, line-local, emitted at
+// the SAME honesty level as the JS rules (TierNativeGo) — this is NOT taint
+// analysis and must never be branded as such (Rule 5). Each rule documents its
+// FP/FN class. No Java accuracy number is published (there is no labeled Java
+// corpus). Hardcoded secrets in Java are already covered by the
+// language-agnostic secrets scanner, so they are deliberately NOT duplicated
+// here. OWASP Benchmark (deep Java taint) stays SKIPPED — see owasp.go.
+func JavaRules() []Rule {
+	return []Rule{
+		{
+			ID:         "JAVA_EXEC_COMMAND_INJECTION",
+			Title:      "Command injection: Runtime.exec / ProcessBuilder with a concatenated argument",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-78",
+			// Runtime.getRuntime().exec(...) or new ProcessBuilder(...) whose
+			// argument is built with `+` concat or String.format. FP class:
+			// concat of two constants. FN class: argv built on a prior line
+			// (needs taint, not line-local regex).
+			Pattern: regexp.MustCompile(`(?:Runtime\.getRuntime\(\)\.exec|new\s+ProcessBuilder)\s*\([^)]*(?:\+|String\.format)`),
+			Applies: HasJavaExtension,
+			Fix:     "Pass the command + args as a String[] / List<String> of literals; never build a shell string from user input. If a shell is unavoidable, validate against an allowlist.",
+		},
+		{
+			ID:         "JAVA_SQL_INJECTION",
+			Title:      "SQL injection: query built by string concatenation",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-89",
+			// executeQuery/executeUpdate/execute/prepareStatement whose SQL
+			// string literal is immediately concatenated. The SQL-keyword guard
+			// keeps a non-SQL .execute(...) (Executor, etc.) from matching. FN
+			// class: SQL assembled on a prior line.
+			Pattern: regexp.MustCompile(`(?:executeQuery|executeUpdate|prepareStatement|execute)\s*\([^)]*"[^"]*(?i:select|insert|update|delete|from|where)[^"]*"\s*\+`),
+			Applies: HasJavaExtension,
+			Fix:     "Use a PreparedStatement with bound `?` parameters: conn.prepareStatement(\"… WHERE x = ?\"). Never concatenate user input into SQL.",
+		},
+		{
+			ID:         "JAVA_WEAK_CRYPTO",
+			Title:      "Weak cryptography: MD5/SHA-1 digest or DES/ECB/RC4 cipher",
+			Severity:   models.SeverityMedium,
+			Confidence: models.ConfidenceMedium,
+			Category:   "crypto",
+			CWE:        "CWE-327",
+			// MessageDigest.getInstance("MD5"/"SHA1") or Cipher.getInstance with
+			// a broken algorithm/mode. FP class: a non-security checksum use of
+			// MD5 (rare in security-reviewed code; flagged anyway, Medium).
+			Pattern: regexp.MustCompile(`(?:MessageDigest\.getInstance\s*\(\s*"(?i:MD5|SHA-?1)"|Cipher\.getInstance\s*\(\s*"[^"]*(?i:DES|ECB|RC4)[^"]*")`),
+			Applies: HasJavaExtension,
+			Fix:     "Use SHA-256+ for digests and AES-GCM (never ECB/DES/RC4) for encryption. For passwords use bcrypt/scrypt/argon2/PBKDF2.",
+		},
+		{
+			ID:         "JAVA_INSECURE_DESERIALIZATION",
+			Title:      "Insecure deserialization: Java ObjectInputStream",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-502",
+			// Constructing a native ObjectInputStream is the classic RCE-gadget
+			// surface. FP class: deserializing fully-trusted local data.
+			Pattern: regexp.MustCompile(`new\s+(?:[\w.]+\.)?ObjectInputStream\s*\(`),
+			Applies: HasJavaExtension,
+			Fix:     "Avoid Java native serialization on untrusted input. Prefer a data format (JSON) with a safe parser, or install an ObjectInputFilter allowlist (JEP 290).",
 		},
 	}
 }

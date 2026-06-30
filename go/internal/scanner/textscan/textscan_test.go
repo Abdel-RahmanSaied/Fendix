@@ -155,3 +155,47 @@ func TestScan_NonexistentRootIsError(t *testing.T) {
 		t.Errorf("expected error on nonexistent rootDir")
 	}
 }
+
+func TestJavaRules_DetectsCoreVulns(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Vuln.java", `public class Vuln {
+  void run(String in) throws Exception {
+    Runtime.getRuntime().exec("sh -c " + in);
+    java.sql.Statement st = null;
+    st.executeQuery("SELECT * FROM users WHERE id = " + in);
+    java.security.MessageDigest.getInstance("MD5");
+    new java.io.ObjectInputStream(System.in);
+  }
+}`)
+	got, err := Scan(dir, JavaRules())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	by := findingsByID(got)
+	for _, id := range []string{
+		"JAVA_EXEC_COMMAND_INJECTION", "JAVA_SQL_INJECTION",
+		"JAVA_WEAK_CRYPTO", "JAVA_INSECURE_DESERIALIZATION",
+	} {
+		if len(by[id]) != 1 {
+			t.Errorf("%s = %d findings; want 1", id, len(by[id]))
+		}
+	}
+}
+
+func TestJavaRules_NoFalsePositives(t *testing.T) {
+	dir := t.TempDir()
+	// Safe shapes: parameterized SQL, literal exec argv, a non-SQL Executor
+	// .execute(...) with concat (must NOT trip JAVA_SQL_INJECTION), SHA-256.
+	writeFile(t, dir, "Safe.java", `public class Safe {
+  void ok(java.sql.Connection c, String id, java.util.concurrent.Executor ex) throws Exception {
+    var ps = c.prepareStatement("SELECT * FROM u WHERE id = ?");
+    Runtime.getRuntime().exec(new String[]{"ls", "-la"});
+    ex.execute(new Task(id + "-suffix"));
+    java.security.MessageDigest.getInstance("SHA-256");
+  }
+}`)
+	got, _ := Scan(dir, JavaRules())
+	if len(got) != 0 {
+		t.Errorf("expected no findings on safe Java, got %d: %+v", len(got), got)
+	}
+}

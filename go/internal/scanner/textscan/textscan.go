@@ -333,6 +333,11 @@ func HasJSExtension(path string) bool {
 	return false
 }
 
+// HasJavaExtension reports Java source files (v0.27 Java regex SAST).
+func HasJavaExtension(path string) bool {
+	return strings.HasSuffix(path, ".java")
+}
+
 // IsDockerfile reports paths the Dockerfile rules apply to.
 // Matches `Dockerfile`, `Dockerfile.<anything>`, and `*.dockerfile`.
 func IsDockerfile(path string) bool {
