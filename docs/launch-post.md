@@ -25,7 +25,7 @@ Plus **transitive SCA**: `poetry.lock` and `Pipfile.lock` are parsed as the full
 
 ---
 
-## Show HN: Fendix — DAST + SAST in one PR check, F1 = 1.000 on the labeled corpus (MIT, single Go binary)
+## Show HN: Fendix — DAST + SAST in one PR check, F1 = 0.987 on the labeled corpus (MIT, single Go binary)
 
 **Link:** https://github.com/Abdel-RahmanSaied/Fendix
 
@@ -51,7 +51,7 @@ I built Fendix because I was tired of running three separate security tools in C
 | Metric | Value | What it means |
 |---|---:|---|
 | Default cold start | **6.1 ms p50** | Process spawn → JSON-on-stdout. 82× under our internal exit gate (<500 ms). |
-| Labeled-corpus F1 | **1.000** | 38/38 TPs, 0 FPs, 0 FNs across 7 detection categories on a 56-case synthetic corpus. Methodology in docs/accuracy.md. |
+| Labeled-corpus F1 | **0.987** | 37/38 expected TPs, 0 FPs, 1 FN (one multi-hop SSRF, disclosed) across 7 detection categories on a 55-case synthetic corpus. Reproduce + caveats in BENCHMARKS.md. |
 | Juice Shop scan | 12 findings, 27 s | 5 CRITICAL (exposed config files), 4 MEDIUM, 2 LOW, 1 INFO. +5 CRITICALs vs v0.6.1. |
 | PyGoat scan | 147 findings, 17 s | Every OWASP Top 10 class PyGoat advertises was detected. 1 CRITICAL (pickle), 9 injection patterns, 133 real CVE-tagged deps. |
 | Binary | **single Go binary**, ~19 MB | No Python required by default. `--python-engine` opt-in for legacy AST/spec auth checks. |
@@ -87,15 +87,15 @@ I'd love feedback on the correlation approach and the plugin contract. Is NDJSON
 
 ## r/devops version (shorter)
 
-**Title:** We open-sourced our security scanner — DAST + SAST in one PR check, F1 = 1.000 on the labeled corpus, no Python required to install
+**Title:** We open-sourced our security scanner — DAST + SAST in one PR check, F1 = 0.987 on the labeled corpus, no Python required to install
 
 Fendix is a hybrid API and code security scanner that runs both a black-box probe and static analysis in a single invocation, then cross-correlates the results.
 
-The key insight: when both engines find the same vulnerability, the finding gets escalated severity and confidence. Set `--fail-on CRITICAL` and only double-confirmed findings block your build. This kills false-positive fatigue without missing confirmed exploitable bugs.
+The key insight: when both engines find the same vulnerability, the finding gets escalated severity and confidence. Set `--fail-on CRITICAL` and only double-confirmed findings block your build — so the gate fires on findings both engines independently confirm. (That's the mechanism; we don't yet have a benchmark isolating the false-positive reduction, so we don't claim a number for it.)
 
 **Headline numbers (v0.11.0):**
 - 6.1 ms p50 cold start (no Python required in the default path)
-- F1 = 1.000 on the labeled accuracy corpus (38 TPs / 0 FPs / 0 FNs across 7 categories)
+- F1 = 0.987 on the labeled accuracy corpus (37 TPs / 0 FPs / 1 disclosed FN across 7 categories)
 - +5 CRITICALs on Juice Shop vs the v0.6.1 baseline (every classic config-leak surface flagged)
 - 147 findings in 17 s on PyGoat (every OWASP Top 10 category covered)
 
@@ -122,7 +122,7 @@ Feedback welcome — especially on the correlation approach and whether the plug
 
 ## r/golang version (technical focus)
 
-**Title:** Fendix v0.11: Hybrid security scanner in Go — 22 packages race-clean, F1 = 1.000 on labeled corpus, no embedded Python (MIT)
+**Title:** Fendix: Hybrid security scanner in Go — 22 packages race-clean, F1 = 0.987 on labeled corpus, no embedded Python (MIT)
 
 Built a security scanner where Go handles the entire default path: HTTP scanning, secret detection, dependency CVEs, plugin orchestration, output rendering. Python is opt-in (`--python-engine`) for the AST taint-analysis path; v0.11 dropped the embedded Python distribution entirely so the binary works on machines without Python installed.
 
@@ -144,7 +144,7 @@ Built a security scanner where Go handles the entire default path: HTTP scanning
 - `fendix plugins list / install <git-url>` subcommand tree
 - `fendix ignore list / validate / prune` for .fendix-ignore lifecycle management
 
-The labeled accuracy corpus (`scripts/accuracy/corpus/`) scores F1 = 1.000 against v0.11.0; the harness (`scripts/accuracy/run.py`) is reproducible and produces JSON for CI gating. Three Go bugs surfaced during the evaluation: `_is_open_redirect` was missing taint-chain posture (0/3 recall → 3/3 after fix), cmdi was firing on literal-string args (0.833 precision → 1.000), orchestrator code_path was relative when the spawner cwd was elsewhere (silent zero-finding bug on real codebases).
+The labeled accuracy corpus (`scripts/accuracy/corpus/`) scores F1 = 0.987 on the current binary (1.000 at v0.11.0; one multi-hop SSRF regressed/uncovered, disclosed in BENCHMARKS.md); the harness (`scripts/accuracy/run.py`) is reproducible and produces JSON for CI gating. Three Go bugs surfaced during the evaluation: `_is_open_redirect` was missing taint-chain posture (0/3 recall → 3/3 after fix), cmdi was firing on literal-string args (0.833 precision → 1.000), orchestrator code_path was relative when the spawner cwd was elsewhere (silent zero-finding bug on real codebases).
 
 https://github.com/Abdel-RahmanSaied/Fendix
 

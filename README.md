@@ -11,6 +11,23 @@ Fendix runs a runtime probe and a static analyzer on every scan. Only findings w
 
 ---
 
+## Accuracy
+
+Reproducible numbers, captured on the current binary (`v0.19.0-41-g17e8937`, 2026-06-30):
+
+| Track | P / R / F1 | Reproduce |
+|---|---|---|
+| Python taint engine (40 cases, CI-gated) | 1.000 / 1.000 / 1.000 | `cd python && PYTHONPATH=. python3 benchmark/run_benchmark.py` |
+| SAST synthetic corpus (full binary) | 1.000 / 0.974 / **0.987** | `python3 scripts/accuracy/run.py --python-engine bin/fendix` |
+| DAST DVWA / Juice Shop (regression coverage) | 13 found · 0 FP / 12 found · 5 FP | `fendix benchmark run --target all` |
+
+One SSRF false negative (multi-hop string-concat) is disclosed, not hidden — we
+publish 0.987, not a rounded 1.000. Full methodology, caveats, and the OWASP/Java
+omission are in **[BENCHMARKS.md](BENCHMARKS.md)**. Every number there is
+re-runnable; a non-reproducing number is a bug.
+
+---
+
 ## What Fendix sends to the network
 
 The trust statement, before anything else.
@@ -570,7 +587,7 @@ User CLI Command
 - **Go** excels at concurrent HTTP scanning, compiles to a single binary, and provides fast CLI startup.
 - **Python** has the best security analysis ecosystem: Semgrep, Bandit, detect-secrets, and mature AST libraries.
 
-The **correlator** is the core differentiator. When the black-box scanner confirms a vulnerability that the static analyzer also flagged, the finding is elevated to `correlated` source with `HIGH` confidence. This dramatically reduces false positives.
+The **correlator** is the core differentiator. When the black-box scanner confirms a vulnerability that the static analyzer also flagged, the finding is elevated to `correlated` source with `HIGH` confidence — so you can gate the build on findings both engines independently confirm. (We describe this as a mechanism, not a measured false-positive reduction: no benchmark yet isolates the correlation effect — see [BENCHMARKS.md](BENCHMARKS.md).)
 
 **Severity scoring model:**
 
