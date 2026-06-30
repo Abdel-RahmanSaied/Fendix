@@ -34,5 +34,25 @@ Java analyzer that then publishes OWASP recall/precision numbers would be
 ## Won't Do (this phase)
 - A full Java AST taint engine to OWASP depth. Any published OWASP/Java accuracy number.
 
-## Status
-Understand workflow (`web4hd1uu`) running → honest-increment blueprint. Plan refined once it lands; a genuine scope decision (how deep to take Java now) may be surfaced.
+## ✅ PHASE v0.27 — COMPLETE (2026-06-30)
+
+Adversarial 6-lens review → FIX-FIRST → all addressed → **SHIP**; Reviewer → **SHIP**.
+Shipped a real-but-bounded first Java increment + the deferred accuracy wins, while keeping
+OWASP an honest SKIP.
+
+- **B1** (0af4bd7): SSRF multi-hop scheme-concat taint fix → synthetic F1 **1.000** (legit,
+  reproduced, CI-gated 0.99); docs reconciled 0.987→1.000 (Track 4a Juliet-style 0.987 left intact).
+- **B3** (df5f5e5): OWASP two-layer skip gate (`Scan()` + `Run()` → `ErrTargetSkipped`) + pinned test.
+- **B2** (41491d3): Java regex SAST — `JavaRules()` (cmdi/SQLi/weak-crypto/insecure-deser) at
+  `TierNativeGo`; vulnerable .java 1→4 findings; framed "regex, line-local", no Java accuracy number.
+- **B4/B5** (6805225): removed 5MB committed blob, dead `memory_mb` gate, silent unpinned-fetch;
+  clarified `_known_false_positives`.
+- **Review fixes** (3e11bf1): MF-A Java-SQL `Executor.execute` FP fixed; **MF-4 implemented**
+  (min_count:0 → `permitted_absent`, excluded from recall) + `accuracy.md` reconciled (Node
+  "8/8=1.000" → "2 real + 6 permissive"; bandit "10/10" → "5 real + 5 permissive"); SSRF `:port`
+  over-fire documented; stale comment refreshed.
+
+OWASP stays SKIP (no fabricated number); no Java accuracy number published. Audit:
+`SECURITY_AUDIT_v027.md`. Review: `REVIEW_v027.md`. Handoff: `NEXT_v028.md` (deep Java taint =
+the real OWASP unlock). Deferred (honest): deep Java taint engine, full heavy-eval refresh,
+SSRF secondary cleanup, B1-findingMatches / B2 path & DVWA-digest hardening.
