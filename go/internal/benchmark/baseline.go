@@ -125,7 +125,6 @@ var higherIsBetter = map[string]bool{
 	"fp_rate":     false,
 	"fn_rate":     false,
 	"duration_ms": false,
-	"memory_mb":   false,
 }
 
 // isRegression decides whether a single metric moved enough in its bad
@@ -169,7 +168,10 @@ func (b *Baseline) Compare(current []BenchmarkResult) *RegressionReport {
 			{"fp_rate", base.FPRate(), cur.FPRate()},
 			{"fn_rate", base.FNRate(), cur.FNRate()},
 			{"duration_ms", float64(base.ScanDuration.Milliseconds()), float64(cur.ScanDuration.Milliseconds())},
-			{"memory_mb", base.MemoryPeakMB, cur.MemoryPeakMB},
+			// memory_mb intentionally NOT gated: MemoryPeakMB is never populated
+			// outside tests (always 0), so it only padded reports with a dead
+			// 0→0 guard (v0.27 B5). `make bench` owns real memory measurement;
+			// the field is kept for future RSS capture.
 		}
 		for _, m := range metrics {
 			pct, regressed := isRegression(m.name, m.base, m.cur)

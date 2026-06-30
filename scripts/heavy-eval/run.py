@@ -140,11 +140,12 @@ def _materialise_git(target: dict) -> Path | None:
             capture_output=True, text=True,
         )
         if proc2.returncode != 0:
-            warn(f"  could not pin to {sha}; using default branch")
-            subprocess.run(
-                ["git", "-C", str(dest), "checkout"], capture_output=True, text=True,
-            )
-            return dest
+            # Could NOT pin to the requested SHA/tag. Do not fall back to the
+            # default branch and score it as if pinned — that publishes a number
+            # from an unknown commit (a Rule 5 reproducibility hole). Skip the
+            # target loudly instead, same as a clone failure (v0.27 B5).
+            err(f"  could not pin to {sha}; skipping (refusing to score an unpinned tree)")
+            return None
         return dest
     subprocess.run(
         ["git", "-C", str(dest), "checkout", "FETCH_HEAD"],

@@ -74,3 +74,5 @@ metrics/*.jsonl.1
 scripts/heavy-eval/corpus-cache/
 
 .remember
+# Compiled test artifacts accidentally committed under heavy-eval labels (v0.27 B5)
+scripts/heavy-eval/labels/**/vulnerable-test

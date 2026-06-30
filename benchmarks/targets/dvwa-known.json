@@ -3,7 +3,7 @@
   "target": "dvwa",
   "_note": "Full triage of an UNAUTHENTICATED black-box scan of vulnerables/web-dvwa:latest (captured 2026-06-28, fendix v0.19.0-3). All 13 findings reviewed; every one is a legitimate observation on this deliberately-misconfigured app, so precision is 100% here. Authenticated DVWA coverage (SQLi/XSS/etc. behind login + /setup.php) is a v0.21+ enhancement. FPRate stays undefined for DAST (no labeled negative corpus).",
   "negatives": 0,
-  "_known_false_positives": [],
+  "_known_false_positives": "Documentary only — NOT parsed (KnownSet has no such field; the leading underscore marks it a comment, like _note). None for this capture. DAST precision is a lower bound and FPRate is undefined without a labeled negative corpus.",
   "vulnerabilities": [
     { "id": "DVWA_COOKIE_HTTPONLY", "type": "cookie", "location": "HttpOnly", "severity": "MEDIUM", "confirmed": true },
     { "id": "DVWA_COOKIE_SAMESITE", "type": "cookie", "location": "SameSite", "severity": "LOW", "confirmed": true },
