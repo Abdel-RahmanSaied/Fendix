@@ -39,5 +39,26 @@ ideally re-checked in CI. Rule 8: AI never decides a score or a label.
 ## Won't Do (defer to v0.27+)
 - Java analyzer + OWASP Benchmark real run. Any corpus needing a language Fendix can't yet analyze.
 
-## Status
-Understand workflow (`wfs1f1xf4`) running → prioritized blueprint. Plan refined once it lands; the live-unsubstantiated-claims audit (Rule 5) is the gating MUST-FIX set.
+## ✅ PHASE v0.26 — COMPLETE (2026-06-30)
+
+Adversarial 6-lens review → FIX-FIRST → all addressed → **SHIP**; Reviewer → **SHIP**.
+A truth-reconciliation phase: the headline accuracy numbers were pinned to v0.11.0 and no
+longer reproduced (live Rule 5 violations). Reproduced the real numbers on the current binary
+and reconciled every public claim.
+
+- **Verified ground truth:** Python taint engine P/R/F1 = 1.000 (40 cases, CI-gated); SAST
+  synthetic P 1.000 / R 0.974 / **F1 0.987** (one disclosed SSRF multi-hop FN); DAST DVWA 13/0,
+  Juice Shop 12/5 (regression coverage; no FP-rate).
+- **B0/B4 (99238b7):** NEW BENCHMARKS.md (every number → reproduce command + stamp + caveat +
+  CI-flag; OWASP documented as SKIPPED); reconciled MF-1/2/5/7 across README/accuracy.md/
+  marketplace/launch-post.
+- **B3+MF-3 (7a3c0e1):** `--min-f1` gate + push/PR CI wiring (closes the drift hole); gate
+  docstring 0.90 → enforced 0.95.
+- **Review fixes (00875b1):** corpus count 56/38 (not 55/37); swept the missed operator-rollout.md
+  (1.000 → 0.987 in two places); marketing-plan recall banner; bootstrap-RNG determinism;
+  NIST-framing comments; count/stamp nits.
+
+We publish 0.987, not a rounded 1.000. Audit: `SECURITY_AUDIT_v026.md`. Review: `REVIEW_v026.md`.
+Handoff: `NEXT_v027.md` (Java analyzer → unlocks OWASP; + deferred accuracy hardening).
+Deferred (honest): SSRF multi-hop taint fix, B1/B2 (DAST scorer/repro), B5 (corpus quality),
+MF-4/MF-6/MF-8.
