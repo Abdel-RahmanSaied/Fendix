@@ -1,6 +1,8 @@
 package targets
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -8,6 +10,25 @@ import (
 )
 
 func ptr(s string) *string { return &s }
+
+// TestOWASPSkipsInBothLayers pins the v0.27 B3 invariant: OWASP must report
+// ErrTargetSkipped from BOTH Scan() and Run(), and Run() must return a nil
+// result — so no all-zero (0.0-recall) BenchmarkResult can ever be persisted
+// to the baseline or fed to Compare(), even if a future refactor calls Run()
+// without Scan() short-circuiting first.
+func TestOWASPSkipsInBothLayers(t *testing.T) {
+	o := NewOWASP()
+	if _, err := o.Scan(context.Background(), "fendix"); !errors.Is(err, ErrTargetSkipped) {
+		t.Errorf("Scan() should return ErrTargetSkipped, got %v", err)
+	}
+	res, err := o.Run(context.Background(), nil)
+	if !errors.Is(err, ErrTargetSkipped) {
+		t.Errorf("Run() should return ErrTargetSkipped, got %v", err)
+	}
+	if res != nil {
+		t.Errorf("Run() must return a nil result when skipped, got %+v", res)
+	}
+}
 
 func TestByName(t *testing.T) {
 	for _, name := range []string{"owasp", "dvwa", "juiceshop"} {

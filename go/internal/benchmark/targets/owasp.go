@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/benchmark"
 )
@@ -16,13 +15,17 @@ var ErrTargetSkipped = errors.New("benchmark target skipped")
 
 // OWASP is the OWASP Benchmark target.
 //
-// IMPORTANT (roadmap honesty, Rule 5): OWASP Benchmark v1.2 is a *Java*
-// web application scored by static analysis. Fendix has no Java analyzer
-// until v0.27 (see fendix-roadmap.md), so running it now would report
-// recall ~0 — a misleading baseline, not a real one. Until Java support
-// lands, this target loudly SKIPS rather than emit a garbage number. The
-// real v0.20 DAST baseline comes from DVWA + Juice Shop; OWASP Benchmark
-// becomes meaningful at v0.27 and feeds the public benchmark at v0.26+.
+// IMPORTANT (roadmap honesty, Rule 5): OWASP Benchmark is a *Java* web
+// application whose score depends on interprocedural, sanitizer-aware
+// source→sink taint analysis (~half its ~2740 cases are deliberate sanitized
+// false-positive twins, so a line-local matcher scores ~0 on the FP-penalized
+// Youden metric). As of v0.27 Fendix ships Java *regex* SAST (line-local,
+// TierNativeGo) — real coverage, but NOT the deep Java taint analysis this
+// benchmark requires. Emitting a number now would be a garbage baseline, so
+// this target loudly SKIPS in BOTH Scan() and Run() (defence in depth: no
+// all-zero result can reach the baseline/Compare path). It un-SKIPS only when
+// a real Java taint analyzer + a labeled owasp-known.json corpus exist (see
+// NEXT_v028). The shipped DAST baseline is DVWA + Juice Shop.
 type OWASP struct{}
 
 // NewOWASP returns the OWASP Benchmark target.
@@ -31,13 +34,20 @@ func NewOWASP() *OWASP { return &OWASP{} }
 // Name implements benchmark.BenchmarkTarget.
 func (o *OWASP) Name() string { return "owasp" }
 
-// Scan reports the target as skipped (Java unsupported until v0.27).
+// owaspSkipReason is shared by Scan() and Run() so both layers report the same
+// honest cause.
+const owaspSkipReason = "owasp: %w — OWASP Benchmark needs interprocedural, sanitizer-aware Java taint analysis; Fendix v0.27 ships Java regex SAST only (line-local), which scores ~0 on its FP-penalized metric. SKIPPED until deep Java taint exists"
+
+// Scan reports the target as skipped.
 func (o *OWASP) Scan(ctx context.Context, fendixBin string) (*benchmark.ScanResult, error) {
-	return nil, fmt.Errorf("owasp: %w — OWASP Benchmark is Java; Fendix Java support lands in v0.27", ErrTargetSkipped)
+	return nil, fmt.Errorf(owaspSkipReason, ErrTargetSkipped)
 }
 
-// Run is unreachable in v0.20 (Scan skips first); it scores an empty
-// result for interface completeness once Java support exists.
+// Run also reports skipped. Previously it returned an all-zero BenchmarkResult
+// "for interface completeness"; that was a latent Rule-5 landmine — a future
+// refactor calling Run() without Scan() short-circuiting first would feed a
+// 0.0-recall result into Compare() and flag a phantom regression. SKIP here too
+// so a fabricated number can never be persisted (target_test.go pins this).
 func (o *OWASP) Run(ctx context.Context, result *benchmark.ScanResult) (*benchmark.BenchmarkResult, error) {
-	return &benchmark.BenchmarkResult{Target: o.Name(), Timestamp: time.Now()}, nil
+	return nil, fmt.Errorf(owaspSkipReason, ErrTargetSkipped)
 }
