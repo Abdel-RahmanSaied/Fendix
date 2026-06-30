@@ -114,7 +114,7 @@ re-asserted here.
 |---|---|---|
 | Python | interprocedural taint engine (source→sink, sanitizer-aware) | proven taint |
 | Go / JS / TS | regex SAST (line-local) + Go dep-CVE | regex / SCA |
-| **Java (v0.27)** | **regex SAST (line-local): command injection, SQLi-by-concat, weak crypto, insecure deserialization** | **regex** |
+| **Java (v0.27–v0.28)** | **regex SAST (line-local): command injection, SQLi-by-concat, weak crypto, insecure deserialization, XXE, insecure cookie, weak randomness, LDAP injection, SSRF** | **regex** |
 | any language | hardcoded-secrets scanner (15 pattern families) | regex |
 
 Java in v0.27 is **regex pattern-matching, line-local** — the same tier as the

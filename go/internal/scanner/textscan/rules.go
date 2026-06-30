@@ -170,11 +170,18 @@ func JSRules() []Rule {
 	}
 }
 
-// JavaRules — v0.27 first Java increment. Regex tier, line-local, emitted at
-// the SAME honesty level as the JS rules (TierNativeGo) — this is NOT taint
-// analysis and must never be branded as such (Rule 5). Each rule documents its
-// FP/FN class. No Java accuracy number is published (there is no labeled Java
-// corpus). Hardcoded secrets in Java are already covered by the
+// javaReqSource matches a Java servlet request-source accessor — the taint
+// SOURCE token. Defined once and shared by the line-local rules that only fire
+// when a request value reaches a sink ON THE SAME LINE (an unqualified sink
+// like `new URL(` is too noisy to flag alone). Recall is intentionally
+// line-local; cross-line flows need the deferred taint engine.
+const javaReqSource = `(?:request|req)\.(?:getParameter|getHeader|getQueryString|getCookies|getInputStream)`
+
+// JavaRules — Java SAST, regex tier (v0.27 first increment + v0.28 expansion).
+// Line-local, emitted at the SAME honesty level as the JS rules (TierNativeGo)
+// — this is NOT taint analysis and must never be branded as such (Rule 5). Each
+// rule documents its FP/FN class. No Java accuracy number is published (there is
+// no labeled Java corpus). Hardcoded secrets are covered by the
 // language-agnostic secrets scanner, so they are deliberately NOT duplicated
 // here. OWASP Benchmark (deep Java taint) stays SKIPPED — see owasp.go.
 func JavaRules() []Rule {
@@ -240,6 +247,81 @@ func JavaRules() []Rule {
 			Pattern: regexp.MustCompile(`new\s+(?:[\w.]+\.)?ObjectInputStream\s*\(`),
 			Applies: HasJavaExtension,
 			Fix:     "Avoid Java native serialization on untrusted input. Prefer a data format (JSON) with a safe parser, or install an ObjectInputFilter allowlist (JEP 290).",
+		},
+		{
+			ID:         "JAVA_XXE",
+			Title:      "XML external entity (XXE): XML parser factory created without hardening",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-611",
+			// Flags creation of an XML parser factory (or dom4j SAXReader). FP
+			// class: the factory IS hardened (disallow-doctype-decl /
+			// FEATURE_SECURE_PROCESSING) on a later line — a documented
+			// line-local limit, hence MEDIUM confidence. Whole-file hardening
+			// detection would need scanCandidate context (deferred).
+			Pattern: regexp.MustCompile(`(?:DocumentBuilderFactory|SAXParserFactory|XMLInputFactory)\.newInstance\s*\(|new\s+SAXReader\s*\(`),
+			Applies: HasJavaExtension,
+			Fix:     "Disable DOCTYPE/external entities: factory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true) (or XMLConstants.FEATURE_SECURE_PROCESSING). Prefer a parser that rejects external entities by default.",
+		},
+		{
+			ID:         "JAVA_INSECURE_COOKIE",
+			Title:      "Insecure cookie: Secure/HttpOnly explicitly disabled",
+			Severity:   models.SeverityMedium,
+			Confidence: models.ConfidenceHigh,
+			Category:   "auth",
+			CWE:        "CWE-614",
+			// Literal `false` to setSecure/setHttpOnly is unambiguous → HIGH
+			// confidence (parallels the boolean k8s privileged:true rules).
+			Pattern: regexp.MustCompile(`\.set(?:Secure|HttpOnly)\s*\(\s*false\s*\)`),
+			Applies: HasJavaExtension,
+			Fix:     "Set cookies Secure + HttpOnly (cookie.setSecure(true); cookie.setHttpOnly(true)). Disable only with a documented reason.",
+		},
+		{
+			ID:         "JAVA_WEAK_RANDOM",
+			Title:      "Insecure randomness: java.util.Random / Math.random in a security context",
+			Severity:   models.SeverityMedium,
+			Confidence: models.ConfidenceMedium,
+			Category:   "crypto",
+			CWE:        "CWE-330",
+			// java.util.Random / Math.random are predictable. Gated on a
+			// security co-token on the SAME line (either order) to cut the heavy
+			// non-security Random FP. FN class: a bare `new Random().nextLong()`
+			// with no nearby security word is not flagged (documented).
+			Pattern: regexp.MustCompile(`(?:(?i:token|secret|password|salt|nonce|otp|session|csrf|api[_]?key).*(?:new\s+(?:java\.util\.)?Random\s*\(|Math\.random\s*\()|(?:new\s+(?:java\.util\.)?Random\s*\(|Math\.random\s*\().*(?i:token|secret|password|salt|nonce|otp|session|csrf|api[_]?key))`),
+			Applies: HasJavaExtension,
+			Fix:     "Use java.security.SecureRandom for tokens, salts, session IDs, and keys. java.util.Random / Math.random are statistically predictable.",
+		},
+		{
+			ID:         "JAVA_LDAP_INJECTION",
+			Title:      "LDAP injection: search filter built by string concatenation",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-90",
+			// A DirContext .search(...) whose LDAP filter string literal (which
+			// contains a `(`) is concatenated. `[^()]*` (not `[^)]*`) so the
+			// match can't cross an inner call's `(` — same guard as
+			// JAVA_SQL_INJECTION. FN class: filter assembled on a prior line.
+			Pattern: regexp.MustCompile(`(?:DirContext|InitialDirContext|InitialLdapContext|ctx)\.search\s*\([^()]*"[^"]*\([^"]*"\s*\+`),
+			Applies: HasJavaExtension,
+			Fix:     "Escape LDAP filter metacharacters (encodeForLDAP) or use parameterised search; never concatenate user input into a filter.",
+		},
+		{
+			ID:         "JAVA_SSRF",
+			Title:      "SSRF: outbound request built directly from a request parameter",
+			Severity:   models.SeverityHigh,
+			Confidence: models.ConfidenceMedium,
+			Category:   "injection",
+			CWE:        "CWE-918",
+			// An outbound-request sink (new URL / openConnection / HttpClient /
+			// RestTemplate) wrapping a servlet request source ON THE SAME LINE.
+			// The request-source qualifier is required — an unqualified `new URL(`
+			// is far too noisy. `[^()]*` guards inner-call crossing. FN class:
+			// the URL built on a prior line (needs the deferred taint engine).
+			Pattern: regexp.MustCompile(`(?:new\s+(?:[\w.]+\.)?URL|\.openConnection|HttpRequest\.newBuilder|new\s+(?:[\w.]+\.)?HttpGet|restTemplate\.(?:getForObject|exchange))\s*\([^()]*` + javaReqSource),
+			Applies: HasJavaExtension,
+			Fix:     "Validate the URL against an allowlist of permitted hosts/schemes before the request; never pass a raw request parameter to an HTTP client.",
 		},
 	}
 }

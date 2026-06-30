@@ -205,3 +205,49 @@ func TestJavaRules_NoFalsePositives(t *testing.T) {
 		t.Errorf("expected no findings on safe Java, got %d: %+v", len(got), got)
 	}
 }
+
+func TestJavaRules_v028_DetectsExpandedVulns(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "More.java", `import javax.naming.directory.*;
+public class More {
+  void xxe() { javax.xml.parsers.DocumentBuilderFactory.newInstance(); }
+  void cookie(jakarta.servlet.http.Cookie c) { c.setHttpOnly(false); }
+  void rng() { String token = "t" + new java.util.Random().nextLong(); }
+  void ldap(DirContext ctx, String u) throws Exception { ctx.search("ou=x", "(uid=" + u + ")", null); }
+  void ssrf(jakarta.servlet.http.HttpServletRequest request) throws Exception { new java.net.URL(request.getParameter("u")); }
+}`)
+	by := findingsByID(mustScan(t, dir, JavaRules()))
+	for _, id := range []string{"JAVA_XXE", "JAVA_INSECURE_COOKIE", "JAVA_WEAK_RANDOM", "JAVA_LDAP_INJECTION", "JAVA_SSRF"} {
+		if len(by[id]) != 1 {
+			t.Errorf("%s = %d findings; want 1", id, len(by[id]))
+		}
+	}
+}
+
+func TestJavaRules_v028_NoFalsePositives(t *testing.T) {
+	dir := t.TempDir()
+	// Safe shapes the v0.28 rules must NOT flag:
+	//   - new Random() with NO security co-token (dice roll)
+	//   - setHttpOnly(true) / setSecure(true)
+	//   - constant-URL request (no request-source token)
+	//   - LDAP search with no string concat
+	writeFile(t, dir, "Ok.java", `import javax.naming.directory.*;
+public class Ok {
+  void dice() { int n = new java.util.Random().nextInt(6); }
+  void cookie(jakarta.servlet.http.Cookie c) { c.setHttpOnly(true); c.setSecure(true); }
+  void okurl() throws Exception { new java.net.URL("https://api.example.com/health"); }
+  void okldap(DirContext ctx) throws Exception { ctx.search("ou=x", "(uid=admin)", null); }
+}`)
+	if got := mustScan(t, dir, JavaRules()); len(got) != 0 {
+		t.Errorf("expected no findings on safe Java, got %d: %+v", len(got), got)
+	}
+}
+
+func mustScan(t *testing.T, dir string, rules []Rule) []evidence.Evidence {
+	t.Helper()
+	got, err := Scan(dir, rules)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	return got
+}

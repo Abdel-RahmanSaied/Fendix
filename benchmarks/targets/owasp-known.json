@@ -1,0 +1,11 @@
+{
+  "version": "v0.28-skeleton",
+  "target": "owasp",
+  "status": "skeleton",
+  "negatives": 0,
+  "vulnerabilities": [],
+  "_note": "NOT a scoreable corpus, and nothing loads it on the scan path. owasp.go SKIPs in BOTH Scan() and Run() (Java needs deep, sanitizer-aware, interprocedural taint analysis that Fendix does not yet have — see owasp.go + NEXT_v029.md). This file is reference scaffolding only: it fixes the corpus SHAPE so the eventual deep-Java-taint phase is 'add the analyzer + ingest labels + flip one SKIP', not 'also invent the corpus format'. TestOWASPSkeletonIsNotScoreable pins it empty so no one can quietly populate it and leave OWASP skipped, or un-SKIP against a half-labeled file.",
+  "_labels_needed": "Positives from OWASP Benchmark expectedresults-*.csv (id=BenchmarkTestNNNNN, the sink file:line as location, severity), AND the deliberate sanitized false-positive twin count encoded in `negatives` (feeds TrueNeg/FPRate). A positives-only list WITHOUT negatives is NOT a valid OWASP corpus — the benchmark's whole point is the FP-penalized score.",
+  "_category_mapping_needed": "An OWASP-category/CWE -> Fendix Category table (sqli->injection, xss->xss, cmdi->injection, pathtraver->..., ldapi->injection, ...) so findingMatches() can score. Without it the corpus cannot be scored even once labeled.",
+  "_definition_of_done": "Un-SKIP owasp.go (Scan+Run) ONLY when ALL hold, in one PR: (1) a real interprocedural sanitizer-aware Java taint analyzer behind a proven path (only then may findings carry a taint tier); (2) this file fully labeled with positives + negatives; (3) the category-mapping table; (4) the real FP-penalized scoring test replacing TestOWASPSkipsInBothLayers + TestOWASPSkeletonIsNotScoreable. Requires the operator's Java-parser architecture decision first (CGo tree-sitter breaks the single-static-binary invariant)."
+}

@@ -116,3 +116,24 @@ func TestCommittedGroundTruthFilesParse(t *testing.T) {
 		}
 	}
 }
+
+// TestOWASPSkeletonIsNotScoreable pins the v0.28 owasp-known.json as an inert
+// SKELETON, not a corpus: it must parse but stay EMPTY (no vulnerabilities, no
+// negatives). This guards two failure modes — a future dev populating it and
+// silently leaving OWASP SKIPPED, or un-SKIPping against a half-labeled file.
+// When the real deep-Java-taint phase lands, this test is replaced by the real
+// FP-penalized scoring test in the SAME change that un-SKIPs owasp.go.
+func TestOWASPSkeletonIsNotScoreable(t *testing.T) {
+	rel := "../../../../benchmarks/targets/owasp-known.json"
+	ks, err := loadKnownSet(rel)
+	if err != nil {
+		t.Fatalf("loadKnownSet(%s): %v", rel, err)
+	}
+	if len(ks.Vulnerabilities) != 0 {
+		t.Errorf("owasp-known.json must stay an empty skeleton, got %d vulnerabilities — "+
+			"populating it requires un-SKIPping owasp.go + the real scoring test (see _definition_of_done)", len(ks.Vulnerabilities))
+	}
+	if ks.Negatives != 0 {
+		t.Errorf("owasp-known.json skeleton must have negatives=0, got %d", ks.Negatives)
+	}
+}
