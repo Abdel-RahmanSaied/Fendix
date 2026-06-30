@@ -490,12 +490,12 @@ finding"). All 5 repos clone cleanly post-fix.
 
 | Target | SHA | Findings | Hits / Miss | Notes |
 |---|---|---:|---|---|
-| `py-pygoat`           | `19d17cc8` | 147 | **10 / 10** | Django ORM SQLi now detected (Phase 2.5); every advertised OWASP class fires |
-| `py-dvpwa`            | `a1d8f89f` |  62 | 3 / 3  | SQLi + XSS both detected |
-| `py-vulpy`            | `5249cc8b` |   3 | 3 / 3  | SQL injection + permissive XSS / secrets met |
-| `py-django-vuln`      | `a48901f1` |  42 | 3 / 3  | SQLi + XSS both detected |
-| `py-flask-vuln`       | `b6a4f97a` |   8 | 4 / 4  | SQLi + permissive XSS/SSRF/secrets met |
-| **Aggregate**         |            | **262** | **23 / 23** | **expectation-recall = 1.000** |
+| `py-pygoat`           | `19d17cc8` | 147 | **10 / 10 real** | Django ORM SQLi now detected (Phase 2.5); every advertised OWASP class fires |
+| `py-dvpwa`            | `a1d8f89f` |  62 | 2 real (+1 permissive) | SQLi + XSS detected; 1 min_count:0 advisory row |
+| `py-vulpy`            | `5249cc8b` |   3 | 1 real (+2 permissive) | SQL injection detected; XSS/secrets are permissive advisories |
+| `py-django-vuln`      | `a48901f1` |  42 | 2 real (+1 permissive) | SQLi + XSS detected; 1 permissive row |
+| `py-flask-vuln`       | `b6a4f97a` |   8 | 1 real (+3 permissive) | SQLi detected; XSS/SSRF/secrets are permissive advisories |
+| **Aggregate**         |            | **262** | **16 / 16 real (1.000)** + 7 permissive | Real-detection recall = 1.000; permissive (min_count:0) rows excluded — reproduced 2026-06-30 (was a fabricated "23 / 23"). |
 
 Track 4 surfaced the PyGoat-SQLi gap that Track 3 had silently
 accepted: fendix's AST matcher only checked `cursor.execute()`, not
@@ -541,9 +541,9 @@ flags 3 reachable CVEs (GO-2022-0956, GO-2021-0061, GO-2020-0036).
 
 | Target | Findings | Hits | Miss | Notes |
 |---|---:|---:|---:|---|
-| `go-vulnerable-module`  |  3 | 1 / 1 | 0 | 3 yaml CVEs exactly match govulncheck oracle |
-| `go-vulnerable-app` (gosec corpus) | 23 | 2 / 2 | 0 | 16 deps findings + 21 secrets findings in test corpus |
-| **Aggregate**           | **26** | **3 / 3** | **0** | **expectation-recall = 1.000** |
+| `go-vulnerable-module`  |  3 | 1 / 1 real | 0 | 3 yaml CVEs exactly match govulncheck oracle |
+| `go-vulnerable-app` (gosec corpus) | 23 | 0 real (+2 permissive) | 0 | both expectations are min_count:0 advisories — recall n/a |
+| **Aggregate**           | **26** | **1 / 1 real (1.000)** + 2 permissive | **0** | reproduced 2026-06-30; permissive rows excluded (was a fabricated "3 / 3") |
 
 **Important honesty note:** the module also imports
 `github.com/dgrijalva/jwt-go@v3.2.0+incompatible` (CVE-2020-26160).
@@ -628,10 +628,10 @@ stages 4c/4d, just not benchmarked here. Raw samples per target in
 | Stage | Mode | Targets | Result |
 |---|---|---:|---|
 | 4a Juliet | line-anchored | 56 cases | **F1 = 0.987** (P 0.974 / R 1.000); 95% CI **[0.953, 1.000]** |
-| 4a bandit-examples | category-count | 91 files / 10 expectations | **10 / 10 (1.000)** |
-| 4b | category-count | 5 / 5 cloneable (SHA-pinned) | **23 / 23 (1.000)** |
-| 4c | category-count | 4 / 4 cloneable (SHA-pinned) | **8 / 8 (1.000)** — lock-file UX surfaced as INFO advisory |
-| 4d | category-count | 2 / 2 | **3 / 3 (1.000)** — govulncheck oracle parity |
+| 4a bandit-examples | category-count | 91 files / 10 expectations | **5 / 5 real (1.000)** + 5 permissive |
+| 4b | category-count | 5 / 5 cloneable (SHA-pinned) | **16 / 16 real (1.000)** + 7 permissive |
+| 4c | category-count | 4 / 4 cloneable (SHA-pinned) | **2 / 2 real (1.000)** + 6 permissive — lock-file UX is an INFO advisory |
+| 4d | category-count | 2 / 2 | **1 / 1 real (1.000)** + 2 permissive — govulncheck oracle parity |
 | 4e | category-count | 4 / 5 booted | **5 / 5 (1.000)** |
 | 4f | perf profile | — | see table above |
 

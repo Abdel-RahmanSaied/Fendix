@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Headline:** the v0.20→v0.29 engine-quality arc — a decision/confidence layer
+surfaced across every output, an honesty pass that made every accuracy number
+reproducible + CI-gated, faster developer experience, and Java SAST coverage.
+Each phase was adversarially reviewed before merge. The scan-report JSON schema
+stayed backward-compatible throughout (additive only).
+
+### Added
+- **Decision reports (v0.24).** Every finding carries a BLOCK/WARN/INFO decision
+  + a deterministic 0–100 confidence score with explainable reasons, surfaced in
+  JSON (`decisions` block), SARIF (level + properties), HTML, the CLI stderr
+  summary, and the PR comment. PR blocking is driven by the (contract-locked)
+  exit code. Confidence is rule-based — no AI decides a score (Rule 8).
+- **Evidence architecture (v0.22) + confidence engine (v0.23).** Internal
+  provenance/lineage threaded through correlation; deterministic confidence
+  scoring whose reasons reconstruct the score exactly.
+- **Benchmark framework + `BENCHMARKS.md` (v0.20/v0.26).** Reproducible
+  recall/precision with per-number reproduce commands, version stamps, caveats,
+  and CI gating; DVWA + Juice Shop DAST baseline; a `fendix benchmark` command.
+- **CLI-success-rate instrumentation (v0.25).** Opt-in metrics record one event
+  per invocation (command name + coarse error class only — no args/PII);
+  `fendix metrics show` reports the rate.
+- **Java SAST — 11 line-local regex rules (v0.27–v0.29):** command injection,
+  SQLi-by-concat, weak crypto, insecure deserialization, XXE, insecure cookie,
+  weak randomness, LDAP injection, SSRF, reflected XSS, path traversal — all at
+  the `native_go` (regex) honesty tier.
+- **Developer experience (v0.25):** teaching error messages, a quickstart +
+  grouped `--help`, detection-aware `fendix init`, triage-first PR comment
+  (leads with the merge verdict), O(changed-files) incremental scans.
+
+### Changed
+- **Accuracy claims reconciled to reproduced numbers (v0.26, Rule 5).** Stale
+  v0.11.0 marketing figures that no longer reproduced were corrected; synthetic
+  F1 is **1.000** again only after the v0.27 SSRF taint fix made it reproduce,
+  and it is now CI-gated (`--min-f1 0.99`). Heavy-eval `min_count:0` advisory
+  rows are excluded from recall (no fabricated "N/N" — reproduced 2026-06-30).
+
+### Fixed
+- **SSRF multi-hop taint (v0.27):** taint now flows through a `"scheme://" +
+  tainted` concatenation into the request sink.
+- Java-SQL `Executor.execute` false positive; weak-random comment/string/
+  identifier false positives; XSS non-response-receiver false positive (v0.28–v0.29).
+
+### Security
+- **GitHub Action shell-injection fixes** — all `${{ inputs.* }}` routed through
+  `env:` (v0.24).
+- **Diff fast-path symlink containment** — incremental scans can't read outside
+  the repo via a symlinked parent (v0.25).
+- **OWASP Benchmark two-layer SKIP** — `Scan()` + `Run()` both refuse to emit a
+  number (Java needs deep taint analysis Fendix doesn't yet have); machine-pinned
+  (v0.27). No Java/OWASP accuracy number is published.
+
 ## [0.19.0] - 2026-06-22
 
 **Headline:** scan from an uploaded OpenAPI/Swagger spec file, plus a
