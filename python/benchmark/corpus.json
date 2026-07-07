@@ -136,6 +136,14 @@
     "known_gap": false
   },
   {
+    "id": "ssrf-settings-authority-safe",
+    "category": "ssrf",
+    "label": "safe",
+    "expect": "SEC-PY_SSRF",
+    "code": "import requests\nfrom django.conf import settings\ndef send():\n    return requests.post(f\"{settings.NOTIFICATION_SERVICE_URL}/notifications/send\", json={})\n",
+    "known_gap": false
+  },
+  {
     "id": "path-direct",
     "category": "path",
     "label": "vulnerable",
