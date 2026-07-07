@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -212,8 +213,13 @@ func (r *RealWorld) TriageReport() string {
 		r.Result.TruePos, r.Result.FalsePos, r.Result.Unknown, r.Result.FindingsPerKLOC())
 	if len(r.Result.PerClass) > 0 {
 		b.WriteString("  FP classes: ")
-		for c, n := range r.Result.PerClass {
-			fmt.Fprintf(&b, "%s=%d ", c, n)
+		classes := make([]benchmark.FPClass, 0, len(r.Result.PerClass))
+		for c := range r.Result.PerClass {
+			classes = append(classes, c)
+		}
+		sort.Slice(classes, func(i, j int) bool { return string(classes[i]) < string(classes[j]) })
+		for _, c := range classes {
+			fmt.Fprintf(&b, "%s=%d ", c, r.Result.PerClass[c])
 		}
 		b.WriteString("\n")
 	}

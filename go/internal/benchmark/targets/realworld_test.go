@@ -85,3 +85,23 @@ func TestRealWorldScoresTestdataMini(t *testing.T) {
 		t.Fatalf("mini score: tp=%d fp=%d unknown=%d fn=%d", r.TruePos, r.FalsePos, r.Unknown, r.FalseNeg)
 	}
 }
+
+func TestRealWorldTriageReportGolden(t *testing.T) {
+	ls := &benchmark.LabelSet{Labels: []benchmark.Label{
+		{Rule: "PY_SSRF", File: "app.py", Line: 7, Verdict: benchmark.VerdictTP},
+	}}
+	findings := []models.Finding{
+		{ID: "SEC-PY_SSRF", Endpoint: "app.py:7"},
+		{ID: "SEC-PY_PATH_TRAVERSAL", Endpoint: "other.py:3"},
+	}
+	rw := &RealWorld{entryName: "mini"}
+	rw.Result = benchmark.ScoreRealWorld("mini", ls, findings, 1000)
+	got := rw.TriageReport()
+	want, err := os.ReadFile(filepath.Join("testdata", "realworld", "mini", "triage.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		t.Errorf("triage report mismatch:\n got: %q\nwant: %q", got, string(want))
+	}
+}
