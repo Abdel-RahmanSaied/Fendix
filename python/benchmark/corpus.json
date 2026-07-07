@@ -320,5 +320,29 @@
     "known_gap": false,
     "expect": "SEC-PY_SECRET_IN_LOG",
     "code": "import logging\ndef h(user):\n    logging.info(f'user={user}')\n"
+  },
+  {
+    "id": "sqli-mod-const-safe",
+    "category": "sqli",
+    "label": "safe",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "def h(cur):\n    cur.execute('SELECT * FROM t WHERE a=%s AND b=%s' % ('x','y'))\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-join-const-safe",
+    "category": "sqli",
+    "label": "safe",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "def h(cur):\n    cur.execute('SELECT ' + ', '.join(['a','b']) + ' FROM t')\n",
+    "known_gap": false
+  },
+  {
+    "id": "sqli-ternary-const-safe",
+    "category": "sqli",
+    "label": "safe",
+    "expect": "SEC-PY_SQL_INJECTION",
+    "code": "def h(cur, asc):\n    order='ASC' if asc else 'DESC'\n    cur.execute(f'SELECT * FROM t ORDER BY id {order}')\n",
+    "known_gap": false
   }
 ]

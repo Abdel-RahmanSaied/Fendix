@@ -1896,9 +1896,25 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if isinstance(expr, ast.Constant):
             return True
         if isinstance(expr, ast.BinOp):
+            # `"<tmpl>" % (a, b)` — constant iff template + every value is const
+            # (B1: %-format with a const tuple/list, e.g. cursor.execute(
+            # '...%s...' % ('a','b'))).
+            if isinstance(expr.op, ast.Mod):
+                if not self._sql_expr_is_constant(expr.left, _depth + 1):
+                    return False
+                rhs = expr.right
+                values = (
+                    list(rhs.elts) if isinstance(rhs, (ast.Tuple, ast.List)) else [rhs]
+                )
+                return all(self._sql_expr_is_constant(v, _depth + 1) for v in values)
             return self._sql_expr_is_constant(
                 expr.left, _depth + 1
             ) and self._sql_expr_is_constant(expr.right, _depth + 1)
+        if isinstance(expr, ast.IfExp):
+            # `<c> if cond else <c>` — constant iff both branches fold (B1).
+            return self._sql_expr_is_constant(
+                expr.body, _depth + 1
+            ) and self._sql_expr_is_constant(expr.orelse, _depth + 1)
         if isinstance(expr, ast.JoinedStr):
             # Constant iff every FormattedValue interpolates a constant-folding expr.
             for v in expr.values:
@@ -1912,6 +1928,17 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 assigned, _depth + 1
             )
         if isinstance(expr, ast.Call):
+            # "<sep>".join([<const>, ...]) — constant iff sep + every element
+            # const (B1: 'SELECT ' + ', '.join(['a','b']) + ' FROM t').
+            if isinstance(expr.func, ast.Attribute) and expr.func.attr == "join":
+                if not self._sql_expr_is_constant(expr.func.value, _depth + 1):
+                    return False
+                if expr.args and isinstance(expr.args[0], (ast.List, ast.Tuple)):
+                    return all(
+                        self._sql_expr_is_constant(e, _depth + 1)
+                        for e in expr.args[0].elts
+                    )
+                return False
             # "<lit>".format(<lit>, ...) — constant iff receiver + all args constant.
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
                 if not self._sql_expr_is_constant(expr.func.value, _depth + 1):
