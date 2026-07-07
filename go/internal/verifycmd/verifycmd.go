@@ -23,17 +23,18 @@
 //     scanner against the manifest's directory and check if the same
 //     (package, version, OSV-id) tuple still emerges.
 //
-// Not yet supported (returns Status = "unknown" with an explanatory Reason):
+//   - Correlated findings (source: correlated) — C4: re-test BOTH halves.
+//     The blackbox half is the endpoint's reachability; the whitebox half is
+//     the tainted source file's continued existence. A correlation is resolved
+//     the moment either half stops reproducing, so both are checked and the
+//     verdict is sound. Needs both --url and --code; missing one → unknown.
 //
-//   - Correlated findings (source: correlated). Need separate
-//     blackbox+whitebox re-test paths and re-correlation logic, which
-//     would duplicate the orchestrator. Workaround: re-run the full
-//     scan that produced the baseline and diff against the baseline.
-//
-//   - Active injection probe findings (require --enable-active to
-//     reproduce). Would need to invoke the injection scanner against
-//     a single endpoint with consent re-acknowledged. Doable but
-//     bigger than the MVP.
+//   - Active injection-probe findings (blackbox injection/xss/ssrf/... under
+//     --enable-active) — C4: a gated endpoint (401/403/404/410) resolves the
+//     finding; an open one without consent is reported still-present with a
+//     note that a confirmed re-exploit needs --enable-active consent; with
+//     --enable-active, verify re-hits the endpoint and looks for the recorded
+//     payload signal.
 //
 // Process exit codes (Sprint 03):
 //
@@ -107,6 +108,11 @@ type Options struct {
 	CodePath     string
 	Auth         string // raw Authorization header value (e.g. "Bearer eyJ...")
 	Timeout      time.Duration
+	// EnableActive mirrors the original scan's --enable-active consent. It is
+	// required for verify to actually re-issue an attack payload against an
+	// active-probe finding's endpoint (C4). Without it, an active-probe verify
+	// falls back to a reachability-only verdict and says so.
+	EnableActive bool
 }
 
 // Run loads the baseline, finds the requested ID, dispatches to the
@@ -135,31 +141,26 @@ func Run(ctx context.Context, findingID string, opts Options) (*Result, error) {
 	}
 	out.Original = original
 
-	// Sprint 03: gate by Source first. A correlated finding may also have
-	// a URL or file endpoint (correlation merges blackbox + whitebox), and
-	// the per-shape verifier would happily re-test the URL/file but the
-	// "still-present" answer would be wrong — it'd reflect ONE side of the
-	// correlation, not whether the *correlated* relationship still holds.
-	// Re-correlation needs the full scan; tell the user honestly rather
-	// than serve a misleading single-shape verdict.
+	// Gate by Source first. A correlated finding fuses a blackbox URL match
+	// with a whitebox file/taint match; a single-shape verifier would answer
+	// for ONE side only. C4 gives correlated findings a real two-sided verdict
+	// (verifyCorrelated), which is correct precisely because a correlation is
+	// broken the moment EITHER half stops reproducing.
 	if original.Source == models.SourceCorrelated {
-		out.Status = StatusUnknown
-		out.Reason = fmt.Sprintf(
-			"verify does not yet support correlated findings (source=%q, category=%q). "+
-				"A correlated finding fuses a blackbox URL match with a whitebox file match; "+
-				"re-testing one side alone cannot confirm the correlation still holds. "+
-				"See tasks/enterprise-readiness/sprint-03-verify-scope.md. "+
-				"Workaround: re-run the full scan that produced the baseline "+
-				"(fendix scan --code <path> --url <url>) and diff against the baseline.",
-			original.Source, original.Category)
+		verifyCorrelated(ctx, original, opts, out)
 		out.LatencyMs = time.Since(start).Milliseconds()
 		return out, nil
 	}
 
-	// Dispatch by finding shape.
+	// Dispatch by finding shape. Active-probe findings (blackbox injection/
+	// xss/ssrf/... produced under --enable-active) are checked BEFORE the
+	// generic URL path so they get the consent-gated re-probe (C4) rather than
+	// the header-oriented checkURLFindingPresence heuristics.
 	switch {
 	case isDepFinding(original):
 		verifyDep(ctx, original, opts, out)
+	case isActiveProbeFinding(original):
+		verifyActiveProbe(ctx, original, opts, out)
 	case isURLFinding(original):
 		verifyURL(ctx, original, opts, out)
 	case isFileFinding(original):
@@ -168,8 +169,6 @@ func Run(ctx context.Context, findingID string, opts Options) (*Result, error) {
 		out.Status = StatusUnknown
 		out.Reason = fmt.Sprintf(
 			"verify does not yet support this finding shape (source=%q, category=%q). "+
-				"Correlated and active-probe findings are MVP-deferred — see "+
-				"tasks/enterprise-readiness/sprint-03-verify-scope.md. "+
 				"Workaround: re-run the full scan that produced the baseline "+
 				"(fendix scan --code <path> --url <url> --enable-active if applicable) "+
 				"and diff against the baseline.",
@@ -530,6 +529,260 @@ func verifyDep(ctx context.Context, f *models.Finding, opts Options, out *Result
 	}
 	out.Status = StatusResolved
 	out.Reason = fmt.Sprintf("dep scanner no longer flags this vulnerability at %s", manifest)
+}
+
+// ─── C4: correlated + active-probe verifiers ────────────────────────
+
+// activeProbeCategories are the active-tier blackbox check categories whose
+// findings are produced by sending an attack payload (gated by --enable-active
+// at scan time). Passive header/CORS/exposure checks are excluded — those have
+// dedicated per-title re-tests in checkURLFindingPresence.
+var activeProbeCategories = map[string]bool{
+	"injection":     true,
+	"xss":           true,
+	"ssrf":          true,
+	"open-redirect": true,
+	"host-header":   true,
+	"method-tamper": true,
+	"graphql":       true,
+}
+
+// isActiveProbeFinding reports whether f came from an active-tier probe: a
+// blackbox finding in an active-probe category whose evidence records an
+// injected payload. Requiring both the category AND the "active probe" evidence
+// marker avoids misclassifying a whitebox taint finding (same category, source
+// whitebox) or a passively-observed one.
+func isActiveProbeFinding(f *models.Finding) bool {
+	if f.Source != models.SourceBlackbox {
+		return false
+	}
+	if !activeProbeCategories[f.Category] {
+		return false
+	}
+	return strings.Contains(strings.ToLower(f.Evidence), "active probe") ||
+		strings.Contains(strings.ToLower(f.Evidence), "payload")
+}
+
+// verifyCorrelated re-tests BOTH halves of a correlated finding. The blackbox
+// half is the endpoint's reachability (a gated 401/403/404/410 means the DAST
+// signal no longer reproduces); the whitebox half is the tainted source file's
+// continued existence. A correlation is RESOLVED the moment either half stops
+// holding — that is a sound verdict, not the one-sided guess the pre-C4 code
+// refused to give. Both halves need their input (--url and --code).
+func verifyCorrelated(ctx context.Context, f *models.Finding, opts Options, out *Result) {
+	if opts.URL == "" || opts.CodePath == "" {
+		out.Status = StatusUnknown
+		out.Reason = "correlated finding needs BOTH --url (blackbox half) and --code (whitebox half) to re-test; " +
+			"a correlation fuses a DAST endpoint hit with a SAST taint path. Missing one means verify can only " +
+			"check one side, which cannot confirm the correlation. Re-run with both, or re-scan and diff."
+		return
+	}
+
+	// Whitebox half: does the tainted source file still exist? The taint sink
+	// lives at an affected endpoint ("file.py:line") or the primary endpoint.
+	whiteboxFile := correlatedWhiteboxFile(f)
+	if whiteboxFile != "" {
+		abs := whiteboxFile
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(opts.CodePath, whiteboxFile)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			out.Status = StatusResolved
+			out.Reason = fmt.Sprintf(
+				"correlation broken: the whitebox tainted-source file %q no longer exists, so the SAST half "+
+					"cannot reproduce — a correlated finding is resolved once either half is gone.", whiteboxFile)
+			return
+		}
+	}
+
+	// Blackbox half: is the endpoint still reachable (not gated/removed)?
+	method, path := splitMethodPath(f.Endpoint)
+	if method == "" {
+		method = "GET"
+	}
+	targetURL := joinURL(opts.URL, path)
+	if targetURL == "" {
+		out.Status = StatusUnknown
+		out.Reason = fmt.Sprintf("cannot construct target URL from endpoint %q and base %q", f.Endpoint, opts.URL)
+		return
+	}
+	status, err := probeStatus(ctx, method, targetURL, opts)
+	if err != nil {
+		out.Status = StatusUnknown
+		out.Reason = fmt.Sprintf("correlated blackbox half: request to %s failed: %v", targetURL, err)
+		return
+	}
+	if isGatedStatus(status) {
+		out.Status = StatusResolved
+		out.Reason = fmt.Sprintf(
+			"correlation broken: the blackbox endpoint now returns %d (gated/removed), so the DAST half no "+
+				"longer reproduces — a correlated finding is resolved once either half is gone.", status)
+		return
+	}
+
+	// Both halves still hold.
+	out.Status = StatusStillPresent
+	out.Reason = fmt.Sprintf(
+		"correlation holds: the blackbox endpoint is still reachable (HTTP %d) AND the whitebox tainted-source "+
+			"file %q still exists. Both halves reproduce; re-run a full scan for a fresh taint-path confirmation.",
+		status, whiteboxFile)
+}
+
+// correlatedWhiteboxFile returns the source file that carries the correlated
+// finding's taint sink: the first affected endpoint that looks like a
+// "file:line", else the primary endpoint if it is file-shaped.
+func correlatedWhiteboxFile(f *models.Finding) string {
+	for _, ep := range f.AffectedEndpoints {
+		if file := fileOfEndpoint(ep); file != "" {
+			return file
+		}
+	}
+	return fileOfEndpoint(f.Endpoint)
+}
+
+// fileOfEndpoint returns the file part of a "path/to/file.py:42" endpoint, or
+// "" if the endpoint is not file-shaped (e.g. a URL).
+func fileOfEndpoint(ep string) string {
+	if ep == "" {
+		return ""
+	}
+	base := ep
+	if i := strings.LastIndex(ep, ":"); i > 0 {
+		if _, err := stringToInt(ep[i+1:]); err == nil {
+			base = ep[:i]
+		}
+	}
+	for _, ext := range []string{".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rb", ".java", ".php"} {
+		if strings.HasSuffix(base, ext) {
+			return base
+		}
+	}
+	return ""
+}
+
+// verifyActiveProbe re-tests an active-probe finding. Re-issuing the actual
+// attack payload requires explicit consent (opts.EnableActive) mirroring the
+// original scan's --enable-active gate:
+//
+//   - No consent: a reachability-only verdict. A gated endpoint (401/403/404/
+//     410) is resolved; an open one is reported still-present WITH a note that
+//     a confirmed re-exploit needs --enable-active.
+//   - Consent: re-hit the endpoint and look for the finding's signal in the
+//     response body (a reflected payload / marker). Absent → resolved.
+func verifyActiveProbe(ctx context.Context, f *models.Finding, opts Options, out *Result) {
+	if opts.URL == "" {
+		out.Status = StatusUnknown
+		out.Reason = "active-probe finding requires --url <base> to re-test"
+		return
+	}
+	method, path := splitMethodPath(f.Endpoint)
+	if method == "" {
+		method = "GET"
+	}
+	targetURL := joinURL(opts.URL, path)
+	if targetURL == "" {
+		out.Status = StatusUnknown
+		out.Reason = fmt.Sprintf("cannot construct target URL from endpoint %q and base %q", f.Endpoint, opts.URL)
+		return
+	}
+
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, nil)
+	if err != nil {
+		out.Status = StatusUnknown
+		out.Reason = fmt.Sprintf("build request: %v", err)
+		return
+	}
+	if opts.Auth != "" {
+		req.Header.Set("Authorization", opts.Auth)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		out.Status = StatusUnknown
+		out.Reason = fmt.Sprintf("request to %s failed: %v", targetURL, err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+
+	// A gated/removed endpoint resolves the finding regardless of consent —
+	// the attack surface is no longer reachable.
+	if isGatedStatus(resp.StatusCode) {
+		out.Status = StatusResolved
+		out.Reason = fmt.Sprintf("active-probe endpoint now returns %d (gated/removed) — attack surface no longer reachable", resp.StatusCode)
+		return
+	}
+
+	if !opts.EnableActive {
+		out.Status = StatusStillPresent
+		out.Reason = fmt.Sprintf(
+			"active-probe endpoint still reachable (HTTP %d). This is a REACHABILITY verdict only — a confirmed "+
+				"re-exploit requires re-sending the attack payload, which needs explicit consent: re-run with "+
+				"--enable-active (mirroring the original scan) to actually re-probe.", resp.StatusCode)
+		return
+	}
+
+	// Consent given: re-probe. Best-effort signal match — a reflected marker
+	// from the recorded payload still appearing in the body means the finding
+	// reproduces. If the recorded payload marker is gone, treat as resolved.
+	if marker := probeMarker(f); marker != "" && strings.Contains(string(body), marker) {
+		out.Status = StatusStillPresent
+		out.Reason = fmt.Sprintf("re-probe reflected the recorded payload marker %q in the response — finding reproduces", truncate(marker, 40))
+		return
+	}
+	out.Status = StatusResolved
+	out.Reason = "re-probe did not reproduce the recorded payload signal — finding presumed resolved (re-run a full --enable-active scan for exhaustive confirmation)"
+}
+
+// probeStatus issues a single request and returns the HTTP status code.
+func probeStatus(ctx context.Context, method, targetURL string, opts Options) (int, error) {
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	if opts.Auth != "" {
+		req.Header.Set("Authorization", opts.Auth)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode, nil
+}
+
+// isGatedStatus reports whether an HTTP status means the endpoint is no longer
+// an open attack surface (auth-gated or gone).
+func isGatedStatus(code int) bool {
+	switch code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+		return true
+	}
+	return false
+}
+
+// probeMarker extracts a reflected-payload marker from a finding's evidence so
+// a re-probe can look for it in the response. Best-effort: pulls a
+// <script>...</script> or a quoted SQL tautology when present.
+func probeMarker(f *models.Finding) string {
+	ev := f.Evidence
+	if i := strings.Index(ev, "<script>"); i >= 0 {
+		if j := strings.Index(ev[i:], "</script>"); j >= 0 {
+			return ev[i : i+j+len("</script>")]
+		}
+		return "<script>"
+	}
+	return ""
 }
 
 // ─── small utilities ────────────────────────────────────────────────

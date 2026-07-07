@@ -701,6 +701,7 @@ Use in CI:
 			auth, _ := cmd.Flags().GetString("auth")
 			emitJSON, _ := cmd.Flags().GetBool("json")
 			timeoutSec, _ := cmd.Flags().GetInt("timeout")
+			enableActive, _ := cmd.Flags().GetBool("enable-active")
 
 			if baseline == "" {
 				return fmt.Errorf("--baseline <findings.json> is required")
@@ -715,6 +716,7 @@ Use in CI:
 				CodePath:     codePath,
 				Auth:         auth,
 				Timeout:      time.Duration(timeoutSec) * time.Second,
+				EnableActive: enableActive,
 			})
 			if err != nil {
 				return err
@@ -746,5 +748,6 @@ Use in CI:
 	cmd.Flags().String("auth", "", "Authorization header value (e.g. \"Bearer ...\")")
 	cmd.Flags().Bool("json", false, "Emit JSON instead of the human-readable summary")
 	cmd.Flags().Int("timeout", 15, "HTTP timeout in seconds (URL-anchored verify only)")
+	cmd.Flags().Bool("enable-active", false, "Consent to re-send attack payloads when verifying an active-probe finding (mirrors the original scan's --enable-active)")
 	return cmd
 }

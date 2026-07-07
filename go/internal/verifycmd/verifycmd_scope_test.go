@@ -9,12 +9,13 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
-// TestRunCorrelatedFindingReturnsUnknownWithExplanation asserts that
-// verify on a correlated-source finding emits status=unknown AND a
-// Reason that mentions correlated findings + the workaround. Sprint 03
-// trust fix: a user who got "unknown" without explanation thought the
-// tool was broken.
-func TestRunCorrelatedFindingReturnsUnknownWithExplanation(t *testing.T) {
+// TestRunCorrelatedFindingWithoutBothInputsIsUnknownWithExplanation asserts
+// that verify on a correlated finding given only --url (no --code) returns
+// status=unknown AND a Reason that names correlated findings and what's
+// missing. C4 gave correlated findings a real two-sided verify; the honest
+// unknown now fires only when an input for one half is absent (here --code),
+// not unconditionally. Sprint-03 trust intent preserved: never a bare unknown.
+func TestRunCorrelatedFindingWithoutBothInputsIsUnknownWithExplanation(t *testing.T) {
 	dir := t.TempDir()
 	baseline := writeBaseline(t, dir, []models.Finding{{
 		ID:       "SEC-CORR-001",
@@ -26,7 +27,7 @@ func TestRunCorrelatedFindingReturnsUnknownWithExplanation(t *testing.T) {
 
 	r, err := Run(context.Background(), "SEC-CORR-001", Options{
 		BaselinePath: baseline,
-		URL:          "http://localhost:1",
+		URL:          "http://localhost:1", // no --code → cannot re-test the whitebox half
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -34,11 +35,13 @@ func TestRunCorrelatedFindingReturnsUnknownWithExplanation(t *testing.T) {
 	if r.Status != StatusUnknown {
 		t.Errorf("want %v; got %v (reason=%q)", StatusUnknown, r.Status, r.Reason)
 	}
-	if !strings.Contains(strings.ToLower(r.Reason), "correlated") {
+	if !strings.Contains(strings.ToLower(r.Reason), "correlat") {
 		t.Errorf("Reason should mention 'correlated' findings: %q", r.Reason)
 	}
-	if !strings.Contains(strings.ToLower(r.Reason), "workaround") {
-		t.Errorf("Reason should mention the workaround so the user knows what to do: %q", r.Reason)
+	// The reason must tell the user what to do: supply both inputs, or re-scan.
+	if !strings.Contains(strings.ToLower(r.Reason), "--code") ||
+		!strings.Contains(strings.ToLower(r.Reason), "re-scan") {
+		t.Errorf("Reason should name the missing input and the re-scan path: %q", r.Reason)
 	}
 }
 
