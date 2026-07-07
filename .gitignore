@@ -54,6 +54,8 @@ fp-corpus-results/
 benchmarks/results/*
 !benchmarks/results/.gitkeep
 benchmarks/targets/owasp/
+# Real-world benchmark seed-tier local path map (private, author machine only)
+benchmarks/realworld/local.yaml
 
 # v0.20 metrics (internal/metrics). Opt-in, local-only telemetry — never
 # committed. Only the .gitkeep keeps the dir.
