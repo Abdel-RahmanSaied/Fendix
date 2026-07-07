@@ -169,12 +169,27 @@ func (r *RealWorld) Scan(ctx context.Context, fendixBin string) (*benchmark.Scan
 	return &benchmark.ScanResult{Findings: findings, ScanDuration: dur}, nil
 }
 
+// locSkipDirs mirrors the analyzers' skip list (python/analyzers/
+// ast_analyzer.py _SKIP_DIRS) so the KLOC denominator counts the same tree
+// the scanner actually walks — a checked-in .venv would otherwise inflate
+// the denominator ~8x and fake a low findings/KLOC.
+var locSkipDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true, "__pycache__": true,
+	".venv": true, "venv": true, "dist": true, "build": true, ".tox": true,
+}
+
 // countLOC counts non-blank lines across .py/.go files under root — a coarse
 // but deterministic KLOC denominator for noise density.
 func countLOC(root string) int {
 	total := 0
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if locSkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(p, ".py") && !strings.HasSuffix(p, ".go") {

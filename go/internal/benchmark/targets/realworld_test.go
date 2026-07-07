@@ -118,3 +118,20 @@ func TestDiscoverRealWorldEntries(t *testing.T) {
 		t.Fatalf("DiscoverRealWorld found %d, want 2", len(got))
 	}
 }
+
+func TestCountLOCSkipsNonScannedDirs(t *testing.T) {
+	// countLOC is the findings/KLOC denominator; it must count the same
+	// tree the scanner walks. The analyzers skip vendored/venv dirs
+	// (python/analyzers/ast_analyzer.py _SKIP_DIRS), so counting them here
+	// would deflate density ~8x on a real repo with a checked-in .venv.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "app.py"), []byte("a=1\nb=2\n"), 0o644)
+	for _, skip := range []string{".venv", "node_modules", ".git", "__pycache__"} {
+		sub := filepath.Join(dir, skip)
+		os.MkdirAll(sub, 0o755)
+		os.WriteFile(filepath.Join(sub, "big.py"), []byte("x=1\nx=2\nx=3\nx=4\n"), 0o644)
+	}
+	if got := countLOC(dir); got != 2 {
+		t.Errorf("countLOC = %d, want 2 (skip-dirs must be excluded)", got)
+	}
+}
