@@ -102,13 +102,55 @@ func LoadLabelSet(path string) (*LabelSet, error) {
 
 const lineTolerance = 3
 
-// MatchFinding reports whether f corresponds to label l: same rule (label.Rule
-// is the finding ID's suffix after "SEC-"), same normalized file, and line
-// within ±3 of the anchor.
+// ruleToCWE maps a label's rule id to the single CWE reference that rule
+// emits (verified against python/analyzers/ast_analyzer.py `_emit_finding`
+// call sites, 2026-07-07). This is the rule identity that SURVIVES the
+// orchestrator's positional ID renumbering (`SEC-%03d`,
+// internal/engine/orchestrator.go:581): the production JSON report carries
+// `references: ["CWE-…"]` verbatim while the ID is rewritten.
+//
+// Verification corrections vs. the design sketch:
+//   - PY_WEAK_CRYPTO_PASSWORD emits CWE-916 only (not CWE-327).
+//   - PY_AUTH_HEADER_TRUST emits CWE-290 (not CWE-287).
+//   - PY_LLM_PROMPT_INJECTION emits CWE-77 (both emit sites).
+var ruleToCWE = map[string]string{
+	"PY_SSRF":                 "CWE-918",
+	"PY_SQL_INJECTION":        "CWE-89",
+	"PY_OS_SYSTEM":            "CWE-78",
+	"PY_OS_POPEN":             "CWE-78",
+	"PY_SUBPROCESS_SHELL":     "CWE-78",
+	"PY_PATH_TRAVERSAL":       "CWE-22",
+	"PY_XSS_HTML_SINK":        "CWE-79",
+	"PY_EVAL":                 "CWE-95",
+	"PY_PICKLE_LOAD":          "CWE-502",
+	"PY_YAML_UNSAFE_LOAD":     "CWE-502",
+	"PY_OPEN_REDIRECT":        "CWE-601",
+	"PY_JWT_WEAK":             "CWE-347",
+	"PY_WEAK_CRYPTO_PASSWORD": "CWE-916",
+	"PY_SECRET_IN_LOG":        "CWE-532",
+	"PY_AUTH_HEADER_TRUST":    "CWE-290",
+	"PY_LLM_PROMPT_INJECTION": "CWE-77",
+	// JS heuristic rules (same emitter, `_JS_PATTERNS`).
+	"JS_EVAL":           "CWE-95",
+	"JS_INNER_HTML":     "CWE-79",
+	"JS_DOCUMENT_WRITE": "CWE-79",
+	"JS_SQL_TEMPLATE":   "CWE-89",
+}
+
+// ruleTitleKeywords is the FINAL fallback: when a positional-ID finding
+// carries no references (or the label's rule has no CWE mapping), the rule
+// matches iff every keyword appears (case-insensitively) in the finding's
+// title. Deterministic — a fixed table, substring containment, no scoring.
+var ruleTitleKeywords = map[string][]string{
+	// PY_LLM_PROMPT_INJECTION emits CWE-77 today; the title keyword keeps
+	// SANAD's recall anchors matchable if the reference ever goes away.
+	"PY_LLM_PROMPT_INJECTION": {"prompt injection"},
+}
+
+// MatchFinding reports whether f corresponds to label l: same rule identity
+// (see ruleMatches), same normalized file, and line within ±3 of the anchor.
+// The file+line anchor applies in ALL rule-matching paths.
 func MatchFinding(l Label, f models.Finding) bool {
-	if ruleOf(f.ID) != l.Rule {
-		return false
-	}
 	file, line, ok := splitEndpoint(f.Endpoint)
 	if !ok {
 		return false
@@ -120,7 +162,61 @@ func MatchFinding(l Label, f models.Finding) bool {
 	if d < 0 {
 		d = -d
 	}
-	return d <= lineTolerance
+	if d > lineTolerance {
+		return false
+	}
+	return ruleMatches(l.Rule, f)
+}
+
+// ruleMatches resolves a finding's rule identity against the label's rule.
+// Production reports do NOT carry the rule id in Finding.ID — the
+// orchestrator renumbers every finding positionally to "SEC-NNN"
+// (internal/engine/orchestrator.go:581) — so the matching chain is:
+//
+//  1. Rule-shaped ID (the raw analyzer shape "SEC-PY_SSRF" — the remainder
+//     after "SEC-" contains letters/underscores): match the label's rule
+//     directly. Preserves the Phase A contract and any engine that keeps
+//     rule ids in output.
+//  2. Positional ID ("SEC-001"): match via the static ruleToCWE map against
+//     the finding's references.
+//  3. Final fallback (rule absent from the CWE map, or the finding carries
+//     no references): the deterministic ruleTitleKeywords table.
+func ruleMatches(rule string, f models.Finding) bool {
+	id := ruleOf(f.ID)
+	if isRuleShaped(id) {
+		return id == rule
+	}
+	if cwe, ok := ruleToCWE[rule]; ok && len(f.References) > 0 {
+		for _, ref := range f.References {
+			if ref == cwe {
+				return true
+			}
+		}
+		return false
+	}
+	keywords, ok := ruleTitleKeywords[rule]
+	if !ok {
+		return false
+	}
+	title := strings.ToLower(f.Title)
+	for _, kw := range keywords {
+		if !strings.Contains(title, kw) {
+			return false
+		}
+	}
+	return true
+}
+
+// isRuleShaped reports whether an ID remainder (after "SEC-") carries a rule
+// identity like "PY_SSRF" (letters/underscores) rather than a positional
+// number like "001".
+func isRuleShaped(rest string) bool {
+	for _, r := range rest {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
 }
 
 // ruleOf strips the "SEC-" prefix so "SEC-PY_SSRF" → "PY_SSRF".

@@ -29,26 +29,34 @@ realworld entries would overwrite the committed dvwa/juiceshop baseline with an
 empty result set. Re-run with the private checkouts + `local.yaml` present to
 capture the real post-fix TWISCOPE precision number.
 
-### KNOWN DEFECT — the finding→label matcher does not match real scans
+### RESOLVED — matcher defect (findings with positional `SEC-NNN` IDs)
 
-`ScoreRealWorld` / `MatchFinding` (go/internal/benchmark/labels.go) keys a label
-to a finding by the finding's `ID` field, expecting the shape `SEC-PY_SSRF`
-(rule id embedded). **The production JSON report does not carry the rule id in
-`ID`.** The orchestrator re-numbers every finding to a positional `SEC-NNN`
-(`internal/engine/orchestrator.go:581` → `findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)`),
-so a real SSRF finding emits as `SEC-001`, and `ruleOf("SEC-001")` = `"001"` ≠
-`"PY_SSRF"`. Every real finding therefore scores as `unknown`, never `tp`/`fp`.
+**Was:** `MatchFinding` keyed labels on the finding `ID` expecting the raw
+analyzer shape `SEC-PY_SSRF`, but the orchestrator re-numbers every finding to
+a positional `SEC-NNN` (`internal/engine/orchestrator.go:581`) before output,
+so every real finding scored `unknown` (mini-fixture repro: `1 unknown`,
+`UNKNOWN SEC-001 app.py:7`).
 
-Reproduced end-to-end against the committed mini fixture (a real
-`fendix scan --python-engine` of testdata/realworld/mini):
+**Fix (harness-side only — no orchestrator/output change):** `MatchFinding`
+now resolves rule identity through a three-step chain
+(go/internal/benchmark/labels.go `ruleMatches`), with the file+line±3 anchor
+applying in all paths:
 
-    realworld/_minicheck: precision 0.0% over 0 labeled (0 tp, 0 fp), 1 unknown …
-      UNKNOWN  SEC-001  app.py:7
+1. **Rule-shaped ID** (remainder after `SEC-` contains letters/underscores,
+   e.g. `SEC-PY_SSRF`): direct match on the label's `rule:` — preserves the
+   Phase A contract and any engine that keeps rule ids in output.
+2. **Positional ID** (`SEC-001`): match via a static `ruleToCWE` map against
+   the finding's `references` — the rule identity that survives the
+   orchestrator (`CWE-918` for PY_SSRF, `CWE-89` for PY_SQL_INJECTION, …).
+   Each CWE was verified against the `_emit_finding` call sites in
+   `python/analyzers/ast_analyzer.py` (notably: PY_WEAK_CRYPTO_PASSWORD →
+   CWE-916, PY_AUTH_HEADER_TRUST → CWE-290, PY_LLM_PROMPT_INJECTION → CWE-77).
+3. **Final fallback** (rule not in the CWE map, or the finding carries no
+   references): a deterministic title-keyword table (`ruleTitleKeywords`).
 
-The rule identity that DOES survive to the report is the CWE reference
-(`references: ["CWE-918"]` for SSRF, `CWE-89` for SQLi, …) and the `title`;
-`category` is too coarse (SSRF/SQLi/path-traversal all → `injection`). The
-matcher key (and the `rule:` field in every labels.yaml) must be reworked onto a
-surviving signal (CWE, or a rule→title/CWE map) before any Phase B precision
-delta is meaningful. The plan's A1.3 premise — "the finding's rule id is
-`models.Finding.ID` with shape `SEC-PY_SSRF`" — is stale.
+Locked by `TestMatchFindingPositionalIDViaCWE` /
+`TestScoreRealWorldPositionalIDs` (unit, hand-built real-shaped findings) and
+`TestRealWorldMatcher_MiniFixtureRealScanScoresTP`
+(`go test -tags e2e ./internal/e2e/`), which runs a REAL
+`fendix scan --code … --python-engine` of the committed mini fixture and
+asserts the score flipped from `0 tp / 1 unknown` to `1 tp / 0 unknown`.

@@ -133,3 +133,69 @@ func TestScoreRealWorld(t *testing.T) {
 		t.Errorf("unknowns triage list wrong: %+v", r.Unknowns)
 	}
 }
+
+// --- Task 0 (v1.1): the matcher must match REAL production output ---
+//
+// The orchestrator renumbers every finding ID positionally to "SEC-NNN"
+// (internal/engine/orchestrator.go:581) before the JSON report is written,
+// so a real SSRF finding arrives as ID "SEC-001" — the rule identity
+// survives only in References (CWE) and Title. Phase A shipped a matcher
+// keyed on the raw analyzer shape "SEC-PY_SSRF" only, which scored every
+// real finding as `unknown` (defect writeup: benchmarks/realworld/README.md).
+
+func TestMatchFindingPositionalIDViaCWE(t *testing.T) {
+	label := Label{Rule: "PY_SSRF", File: "app/fetch.py", Line: 142, Verdict: VerdictTP}
+	tests := []struct {
+		name string
+		f    models.Finding
+		want bool
+	}{
+		{"positional id + matching CWE", models.Finding{
+			ID: "SEC-001", Endpoint: "app/fetch.py:142", References: []string{"CWE-918"}}, true},
+		{"positional id + matching CWE within +3", models.Finding{
+			ID: "SEC-007", Endpoint: "app/fetch.py:145", References: []string{"CWE-918"}}, true},
+		{"positional id + wrong CWE", models.Finding{
+			ID: "SEC-001", Endpoint: "app/fetch.py:142", References: []string{"CWE-89"}}, false},
+		{"positional id + CWE but wrong file", models.Finding{
+			ID: "SEC-001", Endpoint: "app/other.py:142", References: []string{"CWE-918"}}, false},
+		{"positional id + CWE but line outside +-3", models.Finding{
+			ID: "SEC-001", Endpoint: "app/fetch.py:150", References: []string{"CWE-918"}}, false},
+	}
+	for _, tt := range tests {
+		if got := MatchFinding(label, tt.f); got != tt.want {
+			t.Errorf("%s: MatchFinding = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestMatchFindingTitleFallbackWhenNoReferences(t *testing.T) {
+	// Final fallback: a positional-ID finding carrying NO references matches
+	// via the deterministic title-keyword table.
+	label := Label{Rule: "PY_LLM_PROMPT_INJECTION", File: "a.py", Line: 5, Verdict: VerdictTP}
+	hit := models.Finding{ID: "SEC-003", Endpoint: "a.py:5",
+		Title: "Prompt injection — untrusted input flows into an LLM prompt"}
+	if !MatchFinding(label, hit) {
+		t.Error("title-keyword fallback should match when references are absent")
+	}
+	miss := models.Finding{ID: "SEC-003", Endpoint: "a.py:5",
+		Title: "SQL query built from untrusted input"}
+	if MatchFinding(label, miss) {
+		t.Error("title-keyword fallback must not match an unrelated title")
+	}
+}
+
+func TestScoreRealWorldPositionalIDs(t *testing.T) {
+	// End-to-end scorer shape check with REAL-output-shaped findings:
+	// positional IDs, CWE references. Mirrors the A5.1 mini repro.
+	ls := &LabelSet{Labels: []Label{
+		{Rule: "PY_SSRF", File: "app.py", Line: 7, Verdict: VerdictTP},
+	}}
+	findings := []models.Finding{
+		{ID: "SEC-001", Endpoint: "app.py:7", References: []string{"CWE-918"},
+			Title: "Server-Side Request Forgery — user-controlled URL"},
+	}
+	r := ScoreRealWorld("mini", ls, findings, 12)
+	if r.TruePos != 1 || r.Unknown != 0 {
+		t.Fatalf("real-shaped finding scored tp=%d unknown=%d, want tp=1 unknown=0", r.TruePos, r.Unknown)
+	}
+}
