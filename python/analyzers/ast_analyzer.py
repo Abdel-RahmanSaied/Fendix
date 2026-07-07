@@ -666,28 +666,30 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 return isinstance(assigned, (ast.Dict, ast.Set, ast.List, ast.Tuple))
         return False
 
-    def _name_is_membership_guarded(self, name: str) -> bool:
-        """Return True if the innermost enclosing FunctionDef body
-        contains an early-return guard of the shape ``if <name> not in
-        <const_collection>: return/raise/abort`` BEFORE we're called.
+    def _name_is_membership_guarded(self, name: str, sink_line: int) -> bool:
+        """Return True if the innermost enclosing FunctionDef body contains an
+        early-return guard of the shape ``if <name> not in <const_collection>:
+        return/raise/abort`` that DOMINATES the sink at ``sink_line``.
 
-        Heuristic but precise: we walk the function body looking for
-        any `if X not in C` where C resolves to a literal collection in
-        scope, and where the `if` body's first statement is a Return,
-        Raise, or a call to abort()/sys.exit(). If found, we trust
-        that subsequent uses of X are constrained.
-
-        This doesn't check ORDERING — it assumes the guard runs before
-        the sink, which is true for the canonical idiom. A guard that
-        appears AFTER the sink would falsely sanitise; we accept that
-        precision loss because the false-suppression risk is bounded
-        (the developer wrote a guard that says "this is a whitelist").
+        B2 (guard-dominance, both directions): the guard must be a top-level
+        (function-body) statement whose ``lineno`` precedes the sink. The old
+        ``ast.walk(func)`` matched ANY such guard anywhere in the function —
+        including a guard AFTER the sink or inside a non-dominating branch
+        (``if strict:``) — which over-suppressed real vulns (FN). Iterating
+        only ``func.body`` and gating on ``stmt.lineno < sink_line`` fixes both:
+        a nested guard never appears in the body-only loop, and a later guard
+        is line-gated out.
         """
         if not self._func_stack:
             return False
         func = self._func_stack[-1]
-        for stmt in ast.walk(func):
+        for stmt in func.body:
             if not isinstance(stmt, ast.If):
+                continue
+            # Dominance: the guard must appear textually BEFORE the sink. A
+            # guard after the sink (or in a non-top-level branch, which never
+            # enters this body-only loop) cannot constrain it.
+            if stmt.lineno >= sink_line:
                 continue
             test = stmt.test
             # `if X not in C:` or `if not (X in C):` shape
@@ -774,12 +776,18 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     return self._is_escaped_call(scope[expr.id])
         return False
 
-    def _arg_is_sanitised(self, arg: ast.AST) -> bool:
+    def _arg_is_sanitised(self, arg: ast.AST, sink_line: int = 1_000_000) -> bool:
         """Composite check: dict-lookup whitelist OR membership-guarded Name.
 
         Called by the sink predicates (_is_ssrf / _is_open_redirect /
         path-traversal / XSS) to suppress findings where user input has
         been narrowed through a recognised sanitiser pattern.
+
+        ``sink_line`` is the line of the sink being evaluated; it is threaded
+        into the membership-guard check so a guard must DOMINATE the sink to
+        suppress it (B2). Callers that cannot supply a line default to a large
+        sentinel (behaviour unchanged for those), but every real sink predicate
+        passes ``node.lineno``.
 
         Handles three shapes:
           1. arg IS the dict-lookup or guarded Name itself
@@ -797,7 +805,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if self._is_safe_url_builder(arg):
             return True
         if isinstance(arg, ast.Name):
-            if self._name_is_membership_guarded(arg.id):
+            if self._name_is_membership_guarded(arg.id, sink_line):
                 return True
             # Resolve through scope and check the assigned expr is sanitised.
             # Recurse through the full sanitiser set (not just whitelist) so an
@@ -809,7 +817,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     bound = scope[arg.id]
                     if isinstance(bound, ast.Name) and bound.id == arg.id:
                         return False
-                    return self._arg_is_sanitised(bound)
+                    return self._arg_is_sanitised(bound, sink_line)
             return False
         if isinstance(arg, ast.BinOp):
             # printf-style `"<template>" % (a, b)`: safe iff the template is a
@@ -829,13 +837,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         else [rhs]
                     )
                     return all(
-                        isinstance(v, ast.Constant) or self._arg_is_sanitised(v)
+                        isinstance(v, ast.Constant) or self._arg_is_sanitised(v, sink_line)
                         for v in values
                     )
                 return False
             # Every non-Constant subexpression must itself be sanitised.
             return all(
-                isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub)
+                isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub, sink_line)
                 for sub in (arg.left, arg.right)
             )
         # audit #16: a fully-constant f-string or an os.path.* / known dunder
@@ -2218,7 +2226,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         return False
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
-        if self._arg_is_sanitised(first):
+        if self._arg_is_sanitised(first, node.lineno):
             return False
         # Framework URL builders produce safe internal URLs from a route NAME,
         # not user input: Flask url_for(...), Django reverse(...). A redirect to
@@ -2441,7 +2449,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     if isinstance(scope[first.id], ast.Constant):
                         return False
                     break  # innermost binding wins (audit #17)
-        if self._arg_is_sanitised(first):
+        if self._arg_is_sanitised(first, node.lineno):
             return False
         # TwiScope FP-1/FP-2: constant scheme+host with taint only in path/query
         # is not SSRF.
@@ -2649,7 +2657,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         return False
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
-        if self._arg_is_sanitised(first):
+        if self._arg_is_sanitised(first, node.lineno):
             return False
         return True
 
@@ -2707,7 +2715,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         return False
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
-        if self._arg_is_sanitised(target):
+        if self._arg_is_sanitised(target, node.lineno):
             return False
         # TwiScope FP-4: a path that provably comes from a NON-request source —
         # __file__-relative Path, os.getenv, tempfile.*.name, settings.*, a

@@ -344,5 +344,21 @@
     "expect": "SEC-PY_SQL_INJECTION",
     "code": "def h(cur, asc):\n    order='ASC' if asc else 'DESC'\n    cur.execute(f'SELECT * FROM t ORDER BY id {order}')\n",
     "known_gap": false
+  },
+  {
+    "id": "ssrf-guard-after-sink-vuln",
+    "category": "ssrf",
+    "label": "vulnerable",
+    "expect": "SEC-PY_SSRF",
+    "code": "import requests\nfrom flask import request\ndef h():\n    target = request.args['u']\n    requests.get(target)\n    if target not in ('a','b'):\n        return None\n",
+    "known_gap": false
+  },
+  {
+    "id": "ssrf-guard-before-sink-safe",
+    "category": "ssrf",
+    "label": "safe",
+    "expect": "SEC-PY_SSRF",
+    "code": "import requests\ndef h(target):\n    if target not in ('a','b'):\n        return None\n    requests.get(target)\n",
+    "known_gap": false
   }
 ]
