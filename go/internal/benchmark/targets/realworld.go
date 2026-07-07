@@ -44,6 +44,27 @@ func NewRealWorld(entryName string) *RealWorld {
 	return &RealWorld{entryName: entryName}
 }
 
+// DiscoverRealWorld returns a RealWorld target for every committed corpus entry
+// under <root>/benchmarks/realworld/*/manifest.yaml. root "" means cwd.
+func DiscoverRealWorld(root string) []*RealWorld {
+	base := filepath.Join(root, "benchmarks", "realworld")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var out []*RealWorld
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(base, e.Name(), "manifest.yaml")); err != nil {
+			continue
+		}
+		out = append(out, &RealWorld{root: root, entryName: e.Name()})
+	}
+	return out
+}
+
 // Name implements benchmark.BenchmarkTarget: "realworld/<entry>".
 func (r *RealWorld) Name() string { return "realworld/" + r.entryName }
 

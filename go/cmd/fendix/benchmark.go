@@ -107,6 +107,19 @@ func printResults(out io.Writer, results []benchmark.BenchmarkResult, base *benc
 	}
 }
 
+// printRealWorldTriage dumps each real-world target's per-class FP breakdown +
+// unlabeled-finding triage list after the scored results table, so labeling
+// stays incremental and the precision number stays defensible.
+func printRealWorldTriage(out io.Writer, ts []targets.Target) {
+	for _, t := range ts {
+		if rw, ok := t.(*targets.RealWorld); ok {
+			if report := rw.TriageReport(); report != "" {
+				fmt.Fprint(out, report)
+			}
+		}
+	}
+}
+
 func writeResults(path string, results []benchmark.BenchmarkResult) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating results dir: %w", err)
@@ -152,6 +165,7 @@ func newBenchmarkRunCmd() *cobra.Command {
 			}
 			base, _ := benchmark.Load(benchmark.DefaultBaselinePath) // best-effort for the vs column
 			printResults(cmd.OutOrStdout(), results, base)
+			printRealWorldTriage(cmd.OutOrStdout(), ts)
 			if output != "" {
 				if err := writeResults(output, results); err != nil {
 					return err
@@ -188,6 +202,7 @@ func newBenchmarkBaselineCmd() *cobra.Command {
 				return err
 			}
 			printResults(cmd.OutOrStdout(), results, nil)
+			printRealWorldTriage(cmd.OutOrStdout(), ts)
 
 			b := &benchmark.Baseline{
 				Version:   Version,

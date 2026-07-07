@@ -105,3 +105,16 @@ func TestRealWorldTriageReportGolden(t *testing.T) {
 		t.Errorf("triage report mismatch:\n got: %q\nwant: %q", got, string(want))
 	}
 }
+
+func TestDiscoverRealWorldEntries(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"twiscope", "sanad"} {
+		e := filepath.Join(dir, "benchmarks", "realworld", name)
+		os.MkdirAll(e, 0o755)
+		os.WriteFile(filepath.Join(e, "manifest.yaml"), []byte("name: "+name+"\nlocal: true\n"), 0o644)
+	}
+	got := DiscoverRealWorld(dir)
+	if len(got) != 2 {
+		t.Fatalf("DiscoverRealWorld found %d, want 2", len(got))
+	}
+}
