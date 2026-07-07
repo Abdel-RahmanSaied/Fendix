@@ -3131,14 +3131,31 @@ def _env_read_is_location(n: ast.AST) -> bool:
     return "credentials" in parts
 
 
+# Trailing tokens that mark an identifier as naming password *metadata* — the
+# label/field/prompt for a password input, not the credential value itself.
+# `password_field_label` holds the UI string "Password", not a secret; hashing
+# or logging it is not a weakness (B6 heuristic-overfire).
+_PASSWORD_METADATA_SUFFIXES: frozenset[str] = frozenset(
+    {"label", "name", "field", "prompt", "hint", "placeholder"}
+)
+
+
 def _looks_like_password_id(name: str) -> bool:
     """Return True if an identifier name suggests a password/secret value.
 
     Audit #23: match password-ish tokens as whole snake/camel/dotted parts
     rather than raw substrings, so `secretary`/`password_field_label` don't
     false-positive while `user_password`/`db_passwd`/`pw` still match.
+
+    B6: an identifier whose LAST part is password-metadata (`..._label`,
+    `..._field`, `..._prompt`, …) names the input's label/field, not the
+    credential value, so it does not qualify — `password_field_label` and
+    `secret_prompt` are not secret values.
     """
-    parts = set(_TOKEN_SPLIT_RE.split(name.lower()))
+    ordered = [p for p in _TOKEN_SPLIT_RE.split(name.lower()) if p]
+    if ordered and ordered[-1] in _PASSWORD_METADATA_SUFFIXES:
+        return False
+    parts = set(ordered)
     if parts & _PASSWORD_WORD_TOKENS:
         return True
     return any(tok in parts for tok in _PASSWORD_SUBSTR_TOKENS)

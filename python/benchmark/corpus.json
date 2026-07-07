@@ -376,5 +376,21 @@
     "expect": "SEC-PY_XSS_HTML_SINK",
     "code": "import html\nfrom markupsafe import Markup\nfrom flask import request\ndef h():\n    return Markup(html.escape(request.args['n']) + '<br>')\n",
     "known_gap": false
+  },
+  {
+    "id": "crypto-md5-label-safe",
+    "category": "crypto",
+    "label": "safe",
+    "expect": "SEC-PY_WEAK_CRYPTO_PASSWORD",
+    "code": "import hashlib\ndef h(password_field_label):\n    return hashlib.md5(password_field_label.encode()).hexdigest()\n",
+    "known_gap": false
+  },
+  {
+    "id": "crypto-md5-real-password-vuln",
+    "category": "crypto",
+    "label": "vulnerable",
+    "expect": "SEC-PY_WEAK_CRYPTO_PASSWORD",
+    "code": "import hashlib\ndef h(password):\n    return hashlib.md5(password.encode()).hexdigest()\n",
+    "known_gap": false
   }
 ]
