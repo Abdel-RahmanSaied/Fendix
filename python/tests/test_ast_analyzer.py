@@ -1443,3 +1443,80 @@ class TestSymlinkSkip:
             assert "SEC-PY_EVAL" in _ids(findings)
             # And nothing from the symlink.
             assert "SEC-PY_OS_SYSTEM" not in _ids(findings)
+
+
+class TestSecretInLogFanOutPerf:
+    """Regression lock for the O(fan-out) pathology in
+    ``_expr_references_secret`` (Product-Constitution Rule 6).
+
+    Before the memoized fix, ``_expr_references_secret`` restarted a full
+    ``ast.walk`` per resolved binding with no ``seen`` set, so a log call whose
+    interpolated names resolved to a deeply-nested synthesized ``BinOp`` tree
+    (the ``acc += acc`` accumulator DOUBLES the tree per rebind) re-walked the
+    same subtrees combinatorially. A single real 907-line file took ~45 s and a
+    whole-repo scan ~50 min. The fix threads a shared ``id(node)`` set so every
+    node is inspected at most once — the same nodes, never twice.
+    """
+
+    @staticmethod
+    def _scan(src: str) -> set[str]:
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            Path(d, "m.py").write_text(src)
+            findings: list[dict] = []
+            ASTAnalyzer(d).run(findings.append)
+        return {f["id"] for f in findings}
+
+    def test_secret_in_log_true_positive_preserved(self) -> None:
+        # os.getenv of a secret-named key flowing into a log call is still flagged.
+        ids = self._scan(
+            "import os, logging\n"
+            "def h():\n"
+            "    k = os.getenv('API_KEY')\n"
+            "    logging.info(f'key={k}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" in ids
+
+    def test_nonsecret_log_not_flagged(self) -> None:
+        # A plain user value logged is not a secret leak (no FP).
+        ids = self._scan(
+            "import logging\n"
+            "def h(user):\n"
+            "    logging.info(f'user={user}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" not in ids
+
+    def test_deep_accumulator_completes_fast(self) -> None:
+        # ``acc += acc`` builds a synthesized BinOp tree of 2**K nodes; the
+        # pre-fix code hung indefinitely for K>=12. The memoized walk finishes
+        # this in milliseconds — assert a generous ceiling the old code could
+        # never meet. No secret is present, so no finding is expected.
+        import time as _time
+        K = 30
+        src = (
+            "import logging\n"
+            "def build(user):\n"
+            "    acc = user\n"
+            + "".join("    acc += acc\n" for _ in range(K))
+            + "    logging.info(f'out {acc}')\n"
+        )
+        t0 = _time.perf_counter()
+        ids = self._scan(src)
+        elapsed = _time.perf_counter() - t0
+        assert "SEC-PY_SECRET_IN_LOG" not in ids
+        # 5 s is orders of magnitude above the ~2 ms real cost yet far below the
+        # unbounded pre-fix time — a clean, non-flaky regression fence.
+        assert elapsed < 5.0, f"secret-in-log fan-out regressed: {elapsed:.2f}s"
+
+    def test_deep_accumulator_with_secret_still_flagged(self) -> None:
+        # Same deep accumulator, but seeded from a real env secret: correctness
+        # (the TP) must survive the memoized traversal, not just the perf.
+        K = 25
+        src = (
+            "import os, logging\n"
+            "def build():\n"
+            "    acc = os.getenv('API_KEY')\n"
+            + "".join("    acc += acc\n" for _ in range(K))
+            + "    logging.info(f'out {acc}')\n"
+        )
+        assert "SEC-PY_SECRET_IN_LOG" in self._scan(src)

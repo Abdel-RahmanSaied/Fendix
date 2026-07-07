@@ -1501,12 +1501,35 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             )
         return self._expr_references_secret(arg)
 
-    def _expr_references_secret(self, expr: ast.AST, _depth: int = 0) -> bool:
+    def _expr_references_secret(
+        self, expr: ast.AST, _depth: int = 0, _seen: set[int] | None = None
+    ) -> bool:
         """True if `expr` resolves to a secret: os.getenv/os.environ.get of a
-        secret-named key, a password-y identifier, or a Name bound to one."""
+        secret-named key, a password-y identifier, or a Name bound to one.
+
+        Performance (Product-Constitution Rule 6): this used to restart a full
+        ``ast.walk`` per resolved binding with no memoization, so a large scope
+        whose log call interpolated names bound to deeply-nested expressions
+        (e.g. an ``acc += acc`` accumulator, whose synthesized ``BinOp`` tree
+        DOUBLES per rebind, or many names sharing bindings) re-walked the same
+        subtrees combinatorially — a single 907-line file (TwiScope
+        delivery_tasks.py) took ~45 s, blowing up a whole-repo scan to ~50 min.
+        A shared ``_seen`` set of ``id(node)`` collapses the exponential
+        shared-subtree re-walks into linear work: every AST node object is
+        visited at most once across the whole query. Correctness is unchanged —
+        the same set of nodes is inspected, just never twice."""
         if _depth >= _MAX_TAINT_HOPS:
             return False
+        if _seen is None:
+            _seen = set()
         for n in ast.walk(expr):
+            # Each unique AST node is inspected once per top-level query; a
+            # binding resolved from two sibling names, or a deep tree reached by
+            # two paths, is not re-walked (this is the O(fan-out) fix).
+            nid = id(n)
+            if nid in _seen:
+                continue
+            _seen.add(nid)
             # A path/file-location identifier holds a *location*, not the secret
             # value (TwiScope SEC-263): `GOOGLE_APPLICATION_CREDENTIALS` is a path
             # to a creds file, and logging that path leaks nothing. Skip both the
@@ -1533,7 +1556,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         ) and not _env_read_is_location(unwrapped):
                             return True
                         continue
-                    if self._expr_references_secret(bound, _depth + 1):
+                    if self._expr_references_secret(bound, _depth + 1, _seen):
                         return True
         return False
 
