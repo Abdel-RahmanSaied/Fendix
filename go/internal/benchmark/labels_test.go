@@ -102,3 +102,34 @@ func TestMatchFinding(t *testing.T) {
 		}
 	}
 }
+
+func TestScoreRealWorld(t *testing.T) {
+	ls := &LabelSet{Labels: []Label{
+		{Rule: "PY_SSRF", File: "a.py", Line: 10, Verdict: VerdictTP},
+		{Rule: "PY_SSRF", File: "b.py", Line: 20, Verdict: VerdictFP, FPClass: FPConstantAuthority},
+		{Rule: "PY_SQL_INJECTION", File: "c.py", Line: 30, Verdict: VerdictTP}, // no finding → FN
+	}}
+	findings := []models.Finding{
+		{ID: "SEC-PY_SSRF", Endpoint: "a.py:10"},          // matches tp
+		{ID: "SEC-PY_SSRF", Endpoint: "b.py:21"},          // matches fp (within ±3)
+		{ID: "SEC-PY_PATH_TRAVERSAL", Endpoint: "d.py:5"}, // no label → unknown
+	}
+	r := ScoreRealWorld("mini", ls, findings, 1000)
+	if r.TruePos != 1 || r.FalsePos != 1 || r.Unknown != 1 || r.FalseNeg != 1 {
+		t.Fatalf("counts: tp=%d fp=%d unknown=%d fn=%d", r.TruePos, r.FalsePos, r.Unknown, r.FalseNeg)
+	}
+	if r.PerClass[FPConstantAuthority] != 1 {
+		t.Errorf("per-class constant-authority = %d, want 1", r.PerClass[FPConstantAuthority])
+	}
+	// Precision over LABELED findings only: tp/(tp+fp) = 1/2.
+	if got := r.Precision(); got != 0.5 {
+		t.Errorf("Precision = %v, want 0.5", got)
+	}
+	// 1000 LOC → 2 real findings (tp+fp, unknowns excluded) per KLOC = 2.0.
+	if got := r.FindingsPerKLOC(); got != 2.0 {
+		t.Errorf("FindingsPerKLOC = %v, want 2.0", got)
+	}
+	if len(r.Unknowns) != 1 || r.Unknowns[0].Endpoint != "d.py:5" {
+		t.Errorf("unknowns triage list wrong: %+v", r.Unknowns)
+	}
+}

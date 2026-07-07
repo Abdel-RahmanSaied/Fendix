@@ -138,3 +138,72 @@ func splitEndpoint(ep string) (string, int, bool) {
 	}
 	return ep[:i], line, true
 }
+
+// RealWorldResult is the scored outcome of one real-world corpus entry. It is
+// richer than BenchmarkResult (which the baseline stores): it carries the
+// unknown bucket, the per-fp_class breakdown, and the noise-density metric.
+type RealWorldResult struct {
+	Entry    string
+	TruePos  int
+	FalsePos int
+	Unknown  int
+	FalseNeg int
+	PerClass map[FPClass]int
+	// Unknowns is the triage list: findings that matched no label.
+	Unknowns []models.Finding
+	LOC      int
+}
+
+// Precision is over LABELED findings only (tp/(tp+fp)); unknowns are excluded
+// until triaged, which is what makes the number defensible (design §4.3).
+func (r *RealWorldResult) Precision() float64 {
+	d := r.TruePos + r.FalsePos
+	if d == 0 {
+		return 0
+	}
+	return float64(r.TruePos) / float64(d)
+}
+
+// FindingsPerKLOC is noise density over emitted findings that carry a label
+// (tp+fp); unknowns are excluded so density tracks the same defensible set as
+// precision.
+func (r *RealWorldResult) FindingsPerKLOC() float64 {
+	if r.LOC == 0 {
+		return 0
+	}
+	return float64(r.TruePos+r.FalsePos) / (float64(r.LOC) / 1000.0)
+}
+
+// ScoreRealWorld matches each finding to at most one label and buckets it.
+func ScoreRealWorld(entry string, ls *LabelSet, findings []models.Finding, loc int) *RealWorldResult {
+	r := &RealWorldResult{Entry: entry, PerClass: map[FPClass]int{}, LOC: loc}
+	labelHit := make([]bool, len(ls.Labels))
+	for _, f := range findings {
+		matched := -1
+		for i, l := range ls.Labels {
+			if MatchFinding(l, f) {
+				matched = i
+				break
+			}
+		}
+		if matched < 0 {
+			r.Unknown++
+			r.Unknowns = append(r.Unknowns, f)
+			continue
+		}
+		labelHit[matched] = true
+		switch ls.Labels[matched].Verdict {
+		case VerdictTP:
+			r.TruePos++
+		case VerdictFP:
+			r.FalsePos++
+			r.PerClass[ls.Labels[matched].FPClass]++
+		}
+	}
+	for i, l := range ls.Labels {
+		if l.Verdict == VerdictTP && !labelHit[i] {
+			r.FalseNeg++
+		}
+	}
+	return r
+}
