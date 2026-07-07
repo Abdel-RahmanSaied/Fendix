@@ -1,0 +1,6 @@
+name: twiscope
+local: true
+license: private
+# Django 5.2 + DRF multi-service backend. Seed tier — private; path resolves
+# from benchmarks/realworld/local.yaml. Provenance narrative:
+# docs/TWISCOPE_SCAN_TRIAGE.md (130 findings, 1 TP, 128 FP).
