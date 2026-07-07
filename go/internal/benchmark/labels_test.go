@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 func TestFPClassValid(t *testing.T) {
@@ -74,5 +76,29 @@ func TestLoadLabelSetRejectsBadClass(t *testing.T) {
 	os.WriteFile(p, []byte("- rule: PY_SSRF\n  file: a.py\n  line: 1\n  verdict: fp\n  fp_class: nope\n"), 0o644)
 	if _, err := LoadLabelSet(p); err == nil {
 		t.Fatal("want error for unknown fp_class, got nil")
+	}
+}
+
+func fPtr(s string) *string { return &s }
+
+func TestMatchFinding(t *testing.T) {
+	label := Label{Rule: "PY_SSRF", File: "app/fetch.py", Line: 142, Verdict: VerdictFP, FPClass: FPConstantAuthority}
+	tests := []struct {
+		name string
+		f    models.Finding
+		want bool
+	}{
+		{"exact", models.Finding{ID: "SEC-PY_SSRF", Endpoint: "app/fetch.py:142"}, true},
+		{"within +3", models.Finding{ID: "SEC-PY_SSRF", Endpoint: "app/fetch.py:145"}, true},
+		{"within -3", models.Finding{ID: "SEC-PY_SSRF", Endpoint: "app/fetch.py:139"}, true},
+		{"outside +4", models.Finding{ID: "SEC-PY_SSRF", Endpoint: "app/fetch.py:146"}, false},
+		{"wrong file", models.Finding{ID: "SEC-PY_SSRF", Endpoint: "app/other.py:142"}, false},
+		{"wrong rule", models.Finding{ID: "SEC-PY_SQL_INJECTION", Endpoint: "app/fetch.py:142"}, false},
+		{"normalized endpoint", models.Finding{ID: "SEC-PY_SSRF", Endpoint: "./app/fetch.py:142"}, true},
+	}
+	for _, tt := range tests {
+		if got := MatchFinding(label, tt.f); got != tt.want {
+			t.Errorf("%s: MatchFinding = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

@@ -3,8 +3,10 @@ package benchmark
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"gopkg.in/yaml.v3"
 )
 
@@ -96,4 +98,43 @@ func LoadLabelSet(path string) (*LabelSet, error) {
 		}
 	}
 	return &LabelSet{Labels: labels}, nil
+}
+
+const lineTolerance = 3
+
+// MatchFinding reports whether f corresponds to label l: same rule (label.Rule
+// is the finding ID's suffix after "SEC-"), same normalized file, and line
+// within ±3 of the anchor.
+func MatchFinding(l Label, f models.Finding) bool {
+	if ruleOf(f.ID) != l.Rule {
+		return false
+	}
+	file, line, ok := splitEndpoint(f.Endpoint)
+	if !ok {
+		return false
+	}
+	if NormalizePath(file) != l.File {
+		return false
+	}
+	d := line - l.Line
+	if d < 0 {
+		d = -d
+	}
+	return d <= lineTolerance
+}
+
+// ruleOf strips the "SEC-" prefix so "SEC-PY_SSRF" → "PY_SSRF".
+func ruleOf(id string) string { return strings.TrimPrefix(id, "SEC-") }
+
+// splitEndpoint splits "path/to/file.py:42" into ("path/to/file.py", 42, true).
+func splitEndpoint(ep string) (string, int, bool) {
+	i := strings.LastIndex(ep, ":")
+	if i <= 0 {
+		return "", 0, false
+	}
+	line, err := strconv.Atoi(ep[i+1:])
+	if err != nil {
+		return "", 0, false
+	}
+	return ep[:i], line, true
 }
