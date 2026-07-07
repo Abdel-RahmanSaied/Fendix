@@ -1,0 +1,5 @@
+- rule: PY_SSRF
+  file: app.py
+  line: 7
+  verdict: tp
+  note: request.args['url'] flows into requests.get

@@ -72,3 +72,16 @@ func TestRealWorldPublicResolveUsesCache(t *testing.T) {
 		t.Errorf("resolveSourcePath = %q, want cached %q", got, cache)
 	}
 }
+
+func TestRealWorldScoresTestdataMini(t *testing.T) {
+	ls, err := benchmark.LoadLabelSet(filepath.Join("testdata", "realworld", "mini", "labels.yaml"))
+	if err != nil {
+		t.Fatalf("load testdata labels: %v", err)
+	}
+	// Synthetic scan result matching the committed fixture's real vuln.
+	findings := []models.Finding{{ID: "SEC-PY_SSRF", Endpoint: "app.py:7"}}
+	r := benchmark.ScoreRealWorld("mini", ls, findings, 12)
+	if r.TruePos != 1 || r.FalsePos != 0 || r.Unknown != 0 || r.FalseNeg != 0 {
+		t.Fatalf("mini score: tp=%d fp=%d unknown=%d fn=%d", r.TruePos, r.FalsePos, r.Unknown, r.FalseNeg)
+	}
+}
