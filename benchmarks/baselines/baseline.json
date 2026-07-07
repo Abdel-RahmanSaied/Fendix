@@ -21,6 +21,16 @@
       "scan_duration": 28629344917,
       "memory_peak_mb": 0,
       "timestamp": "2026-06-28T12:03:52.766392+03:00"
+    },
+    "realworld/twiscope": {
+      "target": "realworld/twiscope",
+      "true_pos": 1,
+      "false_pos": 2,
+      "true_neg": 0,
+      "false_neg": 0,
+      "scan_duration": 9014000000,
+      "memory_peak_mb": 0,
+      "timestamp": "2026-07-08T02:06:52.781000+03:00"
     }
   }
 }

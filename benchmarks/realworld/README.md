@@ -19,25 +19,61 @@ The TWISCOPE seed checkout is now wired via `local.yaml`
 label anchors were re-verified against the live checkout (commit `6224eab`;
 drift table below). SANAD (`/tmp/Sanad-AI-Agent`) is **absent**, so it loud-SKIPs.
 
-### Live TWISCOPE precision number — NOT captured this run (scan exceeds window)
+### Live TWISCOPE precision number — CAPTURED 2026-07-08 (Task P unblocked it)
 
-The full `fendix scan --code <twiscope> --python-engine` does not complete within
-the practical window on this machine: the TWISCOPE tree is ~1,188 Python files
-(9,592 incl. `.venv`), and the AST pass runs **~45–50 min**, dominated by an
-O(fan-out) pathology in `ASTAnalyzer._expr_references_secret` — it restarts
-`ast.walk(expr)` for every resolved binding, so a large logging call in a large
-scope (e.g. `Twiscope_Main_App/Alert_System/tasks/delivery_tasks.py`, ~45 s for
-that single file) blows up combinatorially. This is a **performance** issue in the
-secret-in-log path, unrelated to the Phase B precision fixes and out of scope for
-v1.1 (engine behavior/perf changes are a spec non-goal). No number is fabricated.
+After the Task P perf fix (`perf(sast): memoize _expr_references_secret`, commit
+`fb98444`), the full `fendix scan --code <twiscope> --python-engine` now completes
+in **9.0 s total** (Python engine pass **2.2 s**, was ~50 min). The
+`delivery_tasks.py` file that dominated the old runtime went from >150 s (killed,
+still running) to **0.004 s**. The baseline is now trivially reproducible.
 
-**How to capture it (reproducible):** scan once to a persistent JSON, then score
-offline with the committed scorer (`offlinescore_test.go`, commit `6224eab`) — no
-re-scan needed to re-score after label edits:
+**Measured baseline (report `/tmp/twiscope.json`, 72 findings, scored offline):**
+
+    realworld/twiscope: precision 33.3% over 3 labeled (1 tp, 2 fp), 69 unknown, 0.03 findings/KLOC
+    FP classes: constant-authority=1  safe-api-misread=1
+    tp=1  fp=2  fn=0  unknown=69
+
+**What the number means (read this before quoting 33.3%).** The 33.3% is over a
+*deliberately thin* denominator — the 3 labeled findings that STILL FIRE — and is a
+lower bound distorted by label coverage, not a true precision. The honest reading:
+
+- **Total 72 findings** = 45 SCA dep-CVEs + 10 hardcoded-secrets + 10 FastAPI
+  missing-authn + **5 SAST taint** + 2 Dockerfile. The SAST taint surface — the
+  only thing the labels cover — is just **5 findings** (down from ~90 in the June
+  triage, i.e. Phase B suppressed the noise).
+- **1 TP** — the confirmed Instagram-proxy SSRF (`views.py:602`), matched exactly.
+- **2 residual labeled FPs still emitted**: `dispatchers.py:108`
+  (`safe-api-misread` — validated webhook URL) and `connection_views.py:236`
+  (`constant-authority` open-redirect on a settings-constant base). These two are
+  the honest, quantified residual FP classes on this repo.
+- **8 of 11 labeled FPs no longer fire** — TwitterAPI.py, FileGenerator,
+  notificationApp, health_check, the two redis `.get/.delete`, `settings.py`
+  path-traversal, and the psycopg2 `sql.SQL(...).format` SQLi — all correctly
+  suppressed by Phase B. Because a suppressed FP simply produces no finding, it
+  drops OUT of the denominator, which is *why* the 33.3% looks low: precision is
+  computed over survivors, and most survivors that carry a label are the two
+  residual FPs. Suppressing FPs shrinks tp+fp, so the ratio understates the win.
+- **FN = 0** — the one `tp` label matched; no confirmed vuln was lost.
+- **2 unlabeled SAST unknowns to triage**: `SEC-010` path-traversal
+  (`TwiScope/EMM/data_handling.py:450`) and `SEC-017` open-redirect
+  (`connection_views.py:247`, the second redirect in the same handler as the
+  labeled `:236`). Both are candidates for the next label pass (constant-authority
+  vs. real, TBD).
+- **69 unknown** is dominated (67/69) by SCA + secrets + missing-authn + Dockerfile
+  — out of scope for the SAST FP-class labels; they are correctly EXCLUDED from
+  precision, not counted against it.
+
+**Label-drift note:** the labels were authored against the June (pre-Phase-B)
+triage, so most FP entries now describe findings the engine no longer emits. That
+is the intended trajectory (fixes remove FPs), but it means the labeled denominator
+is small; the defensible statement is "1 confirmed TP retained, 0 FN, 8/11 known
+FP classes eliminated, 2 residual FPs quantified, SAST taint noise cut ~90→5."
+
+**How to reproduce (scan once to JSON, score offline as many times as needed):**
 
     FENDIX_ENGINE=$PWD/python ./bin/fendix scan \
       --code /Users/asaied/WorkDir/Twiscope/TwiScope-backend \
-      --python-engine --format json --output /tmp/twiscope.json      # ~50 min
+      --python-engine --format json --output /tmp/twiscope.json      # ~9 s now
 
     cd go && FENDIX_SCORE_JSON=/tmp/twiscope.json \
       FENDIX_SCORE_LABELS=$PWD/../benchmarks/realworld/twiscope/labels.yaml \
@@ -53,11 +89,11 @@ have made ANY real number meaningless (positional `SEC-NNN` IDs scoring as
 `unknown`) is fixed and proven by the `-tags e2e` mini-fixture flip
 (`0 tp / 1 unknown → 1 tp / 0 unknown`).
 
-`baseline.json` keeps its dvwa/juiceshop entries unchanged (no `realworld/twiscope`
-entry added — a number is never fabricated). When the scan is captured, hand-merge
-a `realworld/twiscope` entry alongside dvwa/juiceshop (never `baseline --save
---target realworld/twiscope`, which rewrites the whole map and clobbers the DAST
-entries).
+`baseline.json` now carries a `realworld/twiscope` entry (`tp=1 fp=2 fn=0`,
+`scan_duration=9.014s`) hand-merged alongside the unchanged dvwa/juiceshop DAST
+entries — the measured number from 2026-07-08, not a fabricated one. It was
+hand-merged (NOT via `baseline --save --target realworld/twiscope`, which rewrites
+the whole map and would clobber the DAST entries).
 
 ### TWISCOPE label drift (June triage → live checkout, verified 2026-07-08)
 
