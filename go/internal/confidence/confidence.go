@@ -32,8 +32,9 @@ const (
 	reachableTaint     = 10 // AST proved a source→sink taint path
 	provenPathBonus    = 5  // confirmed route AND reachable taint chain
 	payloadValidated   = 10 // an active probe payload elicited a confirming response
-	tierTreeSitterBump = 5  // highest-trust analyzer tier
-	tierSemgrepPenalty = -5 // lowest-trust analyzer tier (regex breadth)
+	tierTreeSitterBump = 5   // highest-trust analyzer tier
+	tierSemgrepPenalty = -5  // lowest-trust analyzer tier (regex breadth)
+	httpContextPenalty = -15 // B4: finding fired on a 4xx / static-asset context
 
 	// Band thresholds on the 0–100 score.
 	bandHigh   = 70
@@ -93,6 +94,16 @@ func Score(ev evidence.Evidence) Result {
 		add(tierTreeSitterBump, "high-trust analyzer tier (tree-sitter taint)")
 	case models.TierSemgrepShim:
 		add(tierSemgrepPenalty, "lower-trust analyzer tier (semgrep regex breadth)")
+	}
+
+	// B4: de-escalate (not suppress) DAST findings that fired on a 4xx
+	// (auth-gated/client-error) response or a static-asset endpoint. Evidence
+	// is preserved (Rule 3); only the confidence score drops.
+	switch ev.ResponseContext {
+	case "4xx":
+		add(httpContextPenalty, "finding fired on a 4xx (auth-gated/client-error) response")
+	case "static-asset":
+		add(httpContextPenalty, "finding fired on a static-asset endpoint, not an API route")
 	}
 
 	// Evidence-chain tracing: a correlated score is only as trustworthy as

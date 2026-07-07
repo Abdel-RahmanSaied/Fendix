@@ -73,6 +73,13 @@ type Evidence struct {
 	Lineage []Evidence
 	// Metadata is free-form structural context (scanner version, etc.).
 	Metadata map[string]string
+	// ResponseContext tags DAST evidence with de-escalation context (B4):
+	// "4xx" (the finding fired on an auth-gated / client-error response) or
+	// "static-asset" (a static file, not an API route). The confidence
+	// scorer applies a penalty; evidence is preserved (Rule 3). INTERNAL —
+	// never projected onto Finding, so the public JSON/SARIF contract is
+	// unchanged.
+	ResponseContext string
 }
 
 // FromFinding lifts a models.Finding into Evidence, copying the render block
