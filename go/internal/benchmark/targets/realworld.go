@@ -31,6 +31,7 @@ type RealWorld struct {
 	root      string // repo root (holds benchmarks/realworld/…); "" = cwd
 	entryName string // corpus entry directory name under benchmarks/realworld/
 	src       string // resolved source tree (set by Scan); the KLOC denominator
+	cacheRoot string // public-tier clone cache; "" = ~/.fendix/cache/bench-realworld
 	// Result is the rich scored outcome attached by Run for the CLI's
 	// per-class + triage output. BenchmarkResult (Run's return) is the
 	// compact shape the baseline stores.
@@ -63,8 +64,9 @@ func (r *RealWorld) loadManifest() (*realWorldManifest, error) {
 }
 
 // resolveSourcePath returns the local source tree for the entry, or
-// ErrTargetSkipped when a local-only entry has no configured path.
-func (r *RealWorld) resolveSourcePath(m *realWorldManifest) (string, error) {
+// ErrTargetSkipped when a local-only entry has no configured path. Public
+// entries clone the pinned repo@sha into the bench cache (reused if present).
+func (r *RealWorld) resolveSourcePath(ctx context.Context, m *realWorldManifest) (string, error) {
 	if m.Local {
 		p, err := lookupLocalPath(r.root, m.Name)
 		if err != nil || p == "" {
@@ -75,7 +77,39 @@ func (r *RealWorld) resolveSourcePath(m *realWorldManifest) (string, error) {
 		}
 		return p, nil
 	}
-	return "", fmt.Errorf("realworld %s: public-tier clone not implemented in this task", r.entryName)
+	// Public tier: clone at pinned SHA into the bench cache (reuse if present).
+	if m.Repo == "" || m.SHA == "" {
+		return "", fmt.Errorf("realworld %s: public entry needs repo+sha in manifest.yaml", r.entryName)
+	}
+	cacheRoot := r.cacheRoot
+	if cacheRoot == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		cacheRoot = filepath.Join(home, ".fendix", "cache", "bench-realworld")
+	}
+	dest := filepath.Join(cacheRoot, m.Name+"@"+m.SHA)
+	if _, err := os.Stat(dest); err == nil {
+		return dest, nil // cache hit — pinned SHA is immutable
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return "", err
+	}
+	// Shallow init + fetch the exact SHA (depth 1) for reproducibility.
+	steps := [][]string{
+		{"-C", dest, "init", "-q"},
+		{"-C", dest, "remote", "add", "origin", m.Repo},
+		{"-C", dest, "fetch", "-q", "--depth", "1", "origin", m.SHA},
+		{"-C", dest, "checkout", "-q", "FETCH_HEAD"},
+	}
+	for _, args := range steps {
+		if err := runProcess(ctx, "git", args...); err != nil {
+			os.RemoveAll(dest)
+			return "", fmt.Errorf("realworld %s: git %v: %w", r.entryName, args, err)
+		}
+	}
+	return dest, nil
 }
 
 // lookupLocalPath reads benchmarks/realworld/local.yaml (name → abs path).
@@ -101,7 +135,7 @@ func (r *RealWorld) Scan(ctx context.Context, fendixBin string) (*benchmark.Scan
 	if err != nil {
 		return nil, err
 	}
-	src, err := r.resolveSourcePath(m)
+	src, err := r.resolveSourcePath(ctx, m)
 	if err != nil {
 		return nil, err
 	}

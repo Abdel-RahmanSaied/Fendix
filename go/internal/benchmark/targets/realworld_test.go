@@ -55,3 +55,20 @@ func TestRealWorldRunScoresAndCountsLOC(t *testing.T) {
 		t.Fatalf("RealWorldResult not attached or LOC=0: %+v", rw.Result)
 	}
 }
+
+func TestRealWorldPublicResolveUsesCache(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "cache", "app@abc123")
+	os.MkdirAll(cache, 0o755)
+	os.WriteFile(filepath.Join(cache, "x.py"), []byte("x=1\n"), 0o644)
+
+	rw := &RealWorld{root: dir, entryName: "app", cacheRoot: filepath.Join(dir, "cache")}
+	m := &realWorldManifest{Name: "app", Repo: "https://example.invalid/app.git", SHA: "abc123"}
+	got, err := rw.resolveSourcePath(context.Background(), m)
+	if err != nil {
+		t.Fatalf("resolveSourcePath (cache hit): %v", err)
+	}
+	if got != cache {
+		t.Errorf("resolveSourcePath = %q, want cached %q", got, cache)
+	}
+}
