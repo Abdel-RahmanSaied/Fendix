@@ -8,6 +8,18 @@ name: Baseline
 # keep working untouched; this adds the delta-vs-committed-baseline gate the
 # roadmap's exit criterion requires.
 #
+# v1.1 D2 -- real-world regression tier + synthetic corpus gate:
+#   * `fendix benchmark run --target all` now discovers every committed
+#     benchmarks/realworld/<name>/ entry (targets.DiscoverRealWorld) and scores
+#     it against its labels.yaml. Seed entries (twiscope, sanad) are LOCAL-only
+#     and loud-SKIP in CI -- their source path lives in a git-ignored local.yaml,
+#     so CI never sees them and never silently reports green. A committed PUBLIC
+#     entry (pinned repo+SHA) runs end-to-end and its tp/fp/fn feed the same
+#     >10%-regression gate as dvwa/juiceshop (compare vs baseline.json, which now
+#     carries a realworld/twiscope reference row).
+#   * A synthetic-corpus gate step asserts the Python taint corpus still scores
+#     HANDLED F1 == 1.000 on tag builds (the same gate ci.yml runs on push/PR).
+#
 # Not on push/PR — spinning up DVWA/Juice Shop containers and downloading the
 # OWASP corpus is minutes of runner time, most meaningful against release tags.
 #
@@ -46,12 +58,23 @@ jobs:
       - name: Build fendix
         run: make build
 
+      - name: Set up Python (synthetic corpus gate)
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Synthetic corpus gate (F1 == 1.000)
+        working-directory: python
+        run: PYTHONPATH=. python -m benchmark.run_benchmark --gate
+
       - name: Add fendix to PATH
         run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
 
-      - name: Run benchmark suite
+      - name: Run benchmark suite (incl. discovered realworld tier)
         run: |
           set -euo pipefail
+          # --target all discovers benchmarks/realworld/* entries; seed entries
+          # loud-SKIP (private local.yaml), committed public entries run + gate.
           fendix benchmark run --target all --output benchmarks/results/ci.json
 
       - name: Compare against committed baseline (gate)

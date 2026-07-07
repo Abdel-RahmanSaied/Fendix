@@ -308,6 +308,55 @@ Expect ~17 s wall-clock and ~147 findings on the v0.11.0 binary.
 
 ---
 
+## Track 5 — TWISCOPE real-world SAST precision (v1.1, 2026-07-08)
+
+> This is the current, canonical real-world precision track. See
+> **[BENCHMARKS.md §5](../BENCHMARKS.md)** for the reproduce command and the full
+> per-class delta table; this section is the narrative.
+
+Track 3 (PyGoat) proved **breadth** (every advertised class detected) but not
+**precision on real code** — it has no negative corpus. v1.1 added a labeled
+real-world track that scores a pinned source tree against a committed
+`labels.yaml` by a stable `(rule+file+line±3)` key, buckets unlabeled findings as
+`unknown` (excluded from precision until triaged), and reports a per-`fp_class`
+breakdown. The seed target is **TWISCOPE-backend** (~1,188 Python files); its
+labels are private, so the track **loud-SKIPs** without the checkout.
+
+### The perf prerequisite (Product-Constitution Rule 6)
+
+No real number existed before v1.1 because a full `--python-engine` scan took
+**~50 min**: `ASTAnalyzer._expr_references_secret` restarted `ast.walk` per
+resolved binding with no memoization, so a large logging call whose interpolated
+names resolved to a deeply-nested expression (an `acc += acc` accumulator whose
+synthesized `BinOp` tree doubles per rebind) re-walked the same subtrees
+combinatorially — one 907-line file took ~45 s. The v1.1 fix threads a shared
+`id(node)` set so every node is inspected once; that file went to **0.004 s** and
+the whole-repo scan to **9.0 s**. Correctness unchanged (locked by
+`TestSecretInLogFanOutPerf`).
+
+### Headline
+
+- **1 confirmed TP retained** (Instagram-proxy SSRF, `views.py:602`), **0 FN**.
+- **SAST taint noise cut ~90 → 5** findings; **8 of 11 labeled FP classes
+  eliminated** by B1–B8.
+- **2 residual labeled FPs** quantified (`safe-api-misread` at
+  `dispatchers.py:108`, `constant-authority` at `connection_views.py:236`).
+- Precision over the labeled surface is **33.3 %**, a **thin-denominator lower
+  bound**: suppressed FPs produce no finding and drop out of `tp+fp`, so the
+  ratio understates the win. The honest headline is the TP-retained / FN-zero /
+  8-of-11-eliminated statement, not the ratio.
+
+### Caveats
+
+- **Label coverage**: labels were authored pre-Phase-B, so most FP entries now
+  describe findings the engine no longer emits. Small labeled denominator.
+- **Out-of-scope unknowns**: 67 of 69 unknowns are SCA / secrets / missing-authn
+  / Dockerfile — correctly excluded from the SAST precision, not counted against
+  it. 2 unlabeled SAST unknowns are queued for the next label pass.
+- **Not CI-gated** (seed tier is private). The public pinned-SHA tier carries CI.
+
+---
+
 ## Cross-track summary
 
 | Track | What it measures | Result |
@@ -315,6 +364,7 @@ Expect ~17 s wall-clock and ~147 findings on the v0.11.0 binary.
 | **Synthetic corpus** (Track 1) | Precision / recall on canonical patterns we control | **F1 = 1.000** (38/38 TPs, 0 FPs, 0 FNs across 7 categories; current binary, CI-gated — v0.26's disclosed SSRF FN was fixed in v0.27) |
 | **Juice Shop** (Track 2) | DAST findings on a known-vulnerable web target | **+5 CRITICALs vs v0.6.1**; 35 % faster scan; every TASK-133 config-leak pattern fired correctly |
 | **PyGoat** (Track 3) | SAST findings on a real Django OWASP-Top-10 demo | **147 findings in 17 s** covering 12 distinct vulnerability classes; every category PyGoat advertises was detected |
+| **TWISCOPE** (Track 5, v1.1) | Labeled SAST precision on a real ~1,188-file production repo | **1 confirmed TP retained, 0 FN, 8/11 FP classes eliminated**, SAST taint noise ~90 → 5; 33.3 % over the (thin) labeled surface — a lower bound |
 
 **Three independent evidence streams pointing the same way:** the
 engine is doing what it claims, at the precision/recall the
