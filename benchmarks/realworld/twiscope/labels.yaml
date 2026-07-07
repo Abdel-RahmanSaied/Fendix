@@ -1,7 +1,7 @@
 # Confirmed TP (§2) — the SSRF that matters.
 - rule: PY_SSRF
   file: Twiscope_Main_App/Instagram_Apps/Instagram_User_App/views.py
-  line: 597
+  line: 602  # June doc cited 597; repo drifted — sink now at 602 (verified)
   verdict: tp
   note: "request.query_params['url'] → requests.get; allow-list commented out (views.py:584-586)"
 
@@ -16,27 +16,27 @@
 # FP-1 constant-host f-string URL, dynamic path (SSRF). ~71 in doc.
 - rule: PY_SSRF
   file: TwiScope/TwitterAPI.py
-  line: 1
+  line: 62  # get_user_byUserName: f"{self._base_url}users/by/username/{username}" (verified)
   verdict: fp
   fp_class: constant-authority
   note: "self.base_url='https://api.twitter.com/2/'; only path is dynamic"
 - rule: PY_SSRF
   file: Twiscope_Main_App/FileGenerator/controller.py
-  line: 1
+  line: 25  # get_report_data: base_url=f"{self.base_url}/{report_id}/", host literal http://django:8000 (verified)
   verdict: fp
   fp_class: constant-authority
   note: "host is literal http://django:8000"
 
 # FP-2 config/constant-host SSRF (settings.*). ~6 in doc.
 - rule: PY_SSRF
-  file: notificationApp/tasks.py
+  file: Twiscope_Main_App/notificationApp/tasks.py
   line: 86
   verdict: fp
   fp_class: constant-authority
   note: "requests.post(f'{settings.NOTIFICATION_SERVICE_URL}/notifications/send')"
 - rule: PY_SSRF
-  file: Twiscope_Main_App/health_check_views.py
-  line: 32
+  file: monitoring/views/health_check_views.py
+  line: 32  # doc path abbreviated; actual file is monitoring/views/health_check_views.py (verified)
   verdict: fp
   fp_class: constant-authority
   note: "FILE_GENERATOR_BASE_URL constant host"
@@ -58,15 +58,15 @@
 # FP-4 open(path) with no request-derived source (path-traversal). ~28 in doc.
 - rule: PY_PATH_TRAVERSAL
   file: Twiscope_Main_App/Core/settings.py
-  line: 1
+  line: 114  # BASE_DIR = Path(__file__).resolve().parent.parent (verified)
   verdict: fp
   fp_class: safe-api-misread
   note: "BASE_DIR = Path(__file__).resolve().parent.parent"
 
 # FP-5 open-redirect on constant base, tainted query. 7 in doc.
 - rule: PY_OPEN_REDIRECT
-  file: linkedInApps/linkedInUsersApp/views/connection_views.py
-  line: 1
+  file: Twiscope_Main_App/linkedInApps/linkedInUsersApp/views/connection_views.py
+  line: 236  # first HttpResponseRedirect(f"{error_url}?reason=oauth_error...") (verified)
   verdict: fp
   fp_class: constant-authority
   note: "HttpResponseRedirect(f'{settings.LINKEDIN_FRONTEND_REDIRECT_URI}/error?...')"
