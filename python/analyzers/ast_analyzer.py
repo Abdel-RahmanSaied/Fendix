@@ -2889,6 +2889,16 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         """
         if isinstance(node.func, ast.Name):
             if node.func.id in _PATH_TRAVERSAL_SINK_NAMES:
+                # B7 (fabricated-chain): a bare `open`/`Path` from-imported from
+                # a NON-filesystem module (webbrowser, selenium, …) is not the
+                # builtin path sink — it was fabricating CWE-22 chains on
+                # `from webbrowser import open; open(url)`.
+                resolved = self._from_imports.get(node.func.id)
+                if node.func.id in {"open", "Path"} and resolved is not None:
+                    mod = resolved[0]
+                    _FS_MODULES = {"io", "os", "codecs", "gzip", "bz2", "lzma", "pathlib"}
+                    if mod not in _FS_MODULES:
+                        return ""
                 return node.func.id
         elif isinstance(node.func, ast.Attribute):
             # Double-attribute form: os.path.join / os.path.abspath etc.

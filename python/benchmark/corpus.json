@@ -392,5 +392,13 @@
     "expect": "SEC-PY_WEAK_CRYPTO_PASSWORD",
     "code": "import hashlib\ndef h(password):\n    return hashlib.md5(password.encode()).hexdigest()\n",
     "known_gap": false
+  },
+  {
+    "id": "path-webbrowser-fromimport-safe",
+    "category": "path",
+    "label": "safe",
+    "expect": "SEC-PY_PATH_TRAVERSAL",
+    "code": "from webbrowser import open\ndef h(u):\n    open(u)\n",
+    "known_gap": false
   }
 ]
