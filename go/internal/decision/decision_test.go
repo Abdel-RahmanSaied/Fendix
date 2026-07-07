@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
@@ -113,5 +114,41 @@ func TestDecidePopulatesConfidenceScore(t *testing.T) {
 	}
 	if len(d.Score.Reasons) == 0 {
 		t.Error("decision score has no plain-text reasons (no black boxes)")
+	}
+}
+
+// TestDecideDeescalatesTestFixtureToInfo is the B3 (test-fixture) gate: a
+// finding in test/fixture code de-escalates to INFO (evidence preserved,
+// Rule 3), config-overridable so a team that DOES want to gate on test-code
+// findings can turn it off.
+func TestDecideDeescalatesTestFixtureToInfo(t *testing.T) {
+	ev := evidence.Evidence{
+		Severity: models.SeverityHigh,
+		Endpoint: "app/tests/test_views.py:42",
+		Category: "injection",
+	}
+	// Without a --fail-on threshold this HIGH finding is WARN; in a test path
+	// it drops to INFO with an explanatory reason (evidence preserved).
+	d := DecideWithOptions(ev, "", Options{DeescalateTests: true})
+	if d.Status != StatusInfo {
+		t.Errorf("test-fixture finding Status = %q, want INFO", d.Status)
+	}
+	if !strings.Contains(d.Reason, "test") {
+		t.Errorf("reason should explain the de-escalation: %q", d.Reason)
+	}
+	// Disabling the rule keeps it WARN.
+	d2 := DecideWithOptions(ev, "", Options{DeescalateTests: false})
+	if d2.Status != StatusWarn {
+		t.Errorf("with de-escalation off, Status = %q, want WARN", d2.Status)
+	}
+	// A non-test HIGH finding is unaffected even with de-escalation on.
+	prod := evidence.Evidence{Severity: models.SeverityHigh, Endpoint: "app/views.py:10", Category: "injection"}
+	if got := DecideWithOptions(prod, "", Options{DeescalateTests: true}); got.Status != StatusWarn {
+		t.Errorf("non-test finding Status = %q, want WARN (unaffected)", got.Status)
+	}
+	// A BLOCK finding (at/above --fail-on) is NOT silently downgraded by the
+	// test-path rule — de-escalation only touches WARN/INFO.
+	if got := DecideWithOptions(ev, "HIGH", Options{DeescalateTests: true}); got.Status != StatusBlock {
+		t.Errorf("test-fixture BLOCK finding Status = %q, want BLOCK (threshold wins)", got.Status)
 	}
 }

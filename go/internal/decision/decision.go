@@ -10,6 +10,9 @@
 package decision
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/Abdel-RahmanSaied/Fendix/internal/confidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -66,6 +69,43 @@ func Decide(ev evidence.Evidence, failOn string) Decision {
 	default:
 		d.Status = StatusInfo
 		d.Reason = "informational finding"
+	}
+	return d
+}
+
+// Options tunes Decide behavior. DeescalateTests drops findings in test /
+// fixture code to INFO (evidence preserved — Rule 3), overridable so a team
+// that DOES want to gate on test-code findings can turn it off. (B3.)
+type Options struct {
+	DeescalateTests bool
+}
+
+// testPathRe mirrors the Python analyzer's _is_test_path markers so the Go
+// decision layer and the Python emitter agree on what "test code" means:
+// a tests/ or testing/ dir, a conftest, a test_*.py / *_test.py file, or a
+// fixtures/ dir.
+var testPathRe = regexp.MustCompile(
+	`(^|/)(tests?|testing|conftest)([_/.]|$)|(^|/)test_[^/]*\.py$|_test\.py$|/fixtures?/`,
+)
+
+func isTestPath(endpoint string) bool {
+	ep := strings.ReplaceAll(endpoint, "\\", "/")
+	if i := strings.LastIndex(ep, ":"); i > 0 {
+		ep = ep[:i] // strip :line
+	}
+	return testPathRe.MatchString(ep)
+}
+
+// DecideWithOptions is Decide plus the v1.1 test-fixture de-escalation (B3).
+// A finding in test/fixture code drops to INFO — evidence preserved (Rule 3),
+// not suppressed — but only from WARN/INFO; a BLOCK (at/above --fail-on) is
+// never silently downgraded, so the gate a team explicitly asked for still
+// fires.
+func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decision {
+	d := Decide(ev, failOn)
+	if opts.DeescalateTests && d.Status == StatusWarn && isTestPath(ev.Endpoint) {
+		d.Status = StatusInfo
+		d.Reason = "de-escalated to INFO: finding is in test/fixture code (rule: test-fixture; evidence preserved)"
 	}
 	return d
 }
