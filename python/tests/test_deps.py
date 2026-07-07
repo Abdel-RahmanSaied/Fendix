@@ -629,3 +629,36 @@ class TestManifestSizeCap:
             with patch("shutil.which", return_value=None):
                 DepsAnalyzer(tmpdir).run(findings.append)
             assert any("CVE-2018-18074" in f.get("references", []) for f in findings)
+
+
+class TestNpmRangeFloor:
+    """B8: a non-exact npm spec (^/~/>=/<) must not be scored at its range
+    FLOOR — npm resolves ^4.17.20 to the latest 4.17.x (patched), so the
+    floor being vulnerable is only an advisory, not a confirmed HIGH."""
+
+    def test_npm_caret_range_downgraded_to_info(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "package.json").write_text(
+                '{"dependencies": {"lodash": "^4.17.20"}}'
+            )
+            findings: list[dict] = []
+            with patch("shutil.which", return_value=None):  # force local fallback
+                DepsAnalyzer(tmpdir).run(findings.append)
+            lodash = [f for f in findings if "lodash" in f.get("title", "").lower()]
+            assert lodash, "caret range should still surface as an advisory"
+            assert lodash[0]["severity"] in ("INFO", "LOW"), (
+                f"caret range must not assert the vulnerable floor: {lodash[0]['severity']}"
+            )
+
+    def test_npm_exact_pin_keeps_severity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "package.json").write_text(
+                '{"dependencies": {"lodash": "4.17.20"}}'
+            )
+            findings: list[dict] = []
+            with patch("shutil.which", return_value=None):
+                DepsAnalyzer(tmpdir).run(findings.append)
+            lodash = [f for f in findings if "lodash" in f.get("title", "").lower()]
+            assert lodash and lodash[0]["severity"] == "HIGH", (
+                "exact vulnerable pin stays HIGH"
+            )
