@@ -1,0 +1,6 @@
+name: sanad
+local: true
+license: private
+# FastAPI + RAG/LLM service (OpenRouter/Ollama + Elasticsearch). Seed tier —
+# private; path from benchmarks/realworld/local.yaml. Provenance:
+# docs/SANAD_SCAN_TRIAGE.md (0 confirmed FP, recall-gap target).
