@@ -776,6 +776,29 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     return self._is_escaped_call(scope[expr.id])
         return False
 
+    def _expr_is_fully_escaped(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if every dynamic sub-expression of ``expr`` is an escaped call —
+        so ``f"<b>{html.escape(x)}</b>"`` and ``escape(x) + '<br>'`` are safe XSS
+        args (B5 double-sanitize FP). Constants are inert; a JoinedStr is safe
+        iff every FormattedValue is escaped; a BinOp iff both sides are."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if self._is_escaped_call(expr):
+            return True
+        if isinstance(expr, ast.JoinedStr):
+            return all(
+                self._expr_is_fully_escaped(v.value, _depth + 1)
+                for v in expr.values
+                if isinstance(v, ast.FormattedValue)
+            )
+        if isinstance(expr, ast.BinOp):
+            return self._expr_is_fully_escaped(
+                expr.left, _depth + 1
+            ) and self._expr_is_fully_escaped(expr.right, _depth + 1)
+        return False
+
     def _arg_is_sanitised(self, arg: ast.AST, sink_line: int = 1_000_000) -> bool:
         """Composite check: dict-lookup whitelist OR membership-guarded Name.
 
@@ -1189,7 +1212,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # proven user-input dataflow into the call site implies a real
         # reachable XSS path — the correlator escalates severity per
         # TASK-114.
-        elif self._is_xss_html_sink(node):
+        elif self._is_xss_html_sink(node) and not (
+            node.args and self._expr_is_fully_escaped(node.args[0])
+        ):
+            # B5 (double-sanitize): an escaped value wrapped in Markup — bare,
+            # in an f-string, or concatenated (Markup(f"<b>{html.escape(x)}</b>"),
+            # Markup(escape(x) + '<br>')) — is already safe HTML. Only fall
+            # through to emit when the arg is NOT fully escaped.
             chain = None
             if node.args:
                 sink_name = self._xss_sink_name(node)

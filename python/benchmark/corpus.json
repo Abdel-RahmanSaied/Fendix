@@ -360,5 +360,21 @@
     "expect": "SEC-PY_SSRF",
     "code": "import requests\ndef h(target):\n    if target not in ('a','b'):\n        return None\n    requests.get(target)\n",
     "known_gap": false
+  },
+  {
+    "id": "xss-escaped-fstring-safe",
+    "category": "xss",
+    "label": "safe",
+    "expect": "SEC-PY_XSS_HTML_SINK",
+    "code": "import html\nfrom markupsafe import Markup\nfrom flask import request\ndef h():\n    return Markup(f\"<b>{html.escape(request.args['n'])}</b>\")\n",
+    "known_gap": false
+  },
+  {
+    "id": "xss-escaped-concat-safe",
+    "category": "xss",
+    "label": "safe",
+    "expect": "SEC-PY_XSS_HTML_SINK",
+    "code": "import html\nfrom markupsafe import Markup\nfrom flask import request\ndef h():\n    return Markup(html.escape(request.args['n']) + '<br>')\n",
+    "known_gap": false
   }
 ]
