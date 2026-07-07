@@ -1,10 +1,13 @@
 package targets
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/benchmark"
 	"gopkg.in/yaml.v3"
@@ -27,6 +30,11 @@ type realWorldManifest struct {
 type RealWorld struct {
 	root      string // repo root (holds benchmarks/realworld/…); "" = cwd
 	entryName string // corpus entry directory name under benchmarks/realworld/
+	src       string // resolved source tree (set by Scan); the KLOC denominator
+	// Result is the rich scored outcome attached by Run for the CLI's
+	// per-class + triage output. BenchmarkResult (Run's return) is the
+	// compact shape the baseline stores.
+	Result *benchmark.RealWorldResult
 }
 
 // NewRealWorld returns a RealWorld target for one corpus entry.
@@ -97,9 +105,86 @@ func (r *RealWorld) Scan(ctx context.Context, fendixBin string) (*benchmark.Scan
 	if err != nil {
 		return nil, err
 	}
+	r.src = src // scored LOC comes from the resolved source tree
 	findings, dur, err := runFendixScan(ctx, fendixBin, []string{"--code", src, "--python-engine"})
 	if err != nil {
 		return nil, fmt.Errorf("realworld %s: %w", r.entryName, err)
 	}
 	return &benchmark.ScanResult{Findings: findings, ScanDuration: dur}, nil
+}
+
+// countLOC counts non-blank lines across .py/.go files under root — a coarse
+// but deterministic KLOC denominator for noise density.
+func countLOC(root string) int {
+	total := 0
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(p, ".py") && !strings.HasSuffix(p, ".go") {
+			return nil
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		s := bufio.NewScanner(f)
+		s.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for s.Scan() {
+			if strings.TrimSpace(s.Text()) != "" {
+				total++
+			}
+		}
+		return nil
+	})
+	return total
+}
+
+// Run scores result against the entry's labels. It attaches the rich
+// RealWorldResult to the target (for the CLI's per-class + triage output) and
+// returns the compact BenchmarkResult the baseline stores.
+func (r *RealWorld) Run(ctx context.Context, result *benchmark.ScanResult) (*benchmark.BenchmarkResult, error) {
+	ls, err := benchmark.LoadLabelSet(filepath.Join(r.entryDir(), "labels.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("realworld %s: %w", r.entryName, err)
+	}
+	loc := 0
+	if r.src != "" {
+		loc = countLOC(r.src)
+	}
+	rw := benchmark.ScoreRealWorld(r.Name(), ls, result.Findings, loc)
+	r.Result = rw
+	return &benchmark.BenchmarkResult{
+		Target:       r.Name(),
+		TruePos:      rw.TruePos,
+		FalsePos:     rw.FalsePos,
+		TrueNeg:      0,
+		FalseNeg:     rw.FalseNeg,
+		ScanDuration: result.ScanDuration,
+		Timestamp:    time.Now(),
+	}, nil
+}
+
+// TriageReport renders the unknown findings + per-class FP breakdown for one
+// entry, so labeling is incremental and the number stays defensible.
+func (r *RealWorld) TriageReport() string {
+	if r.Result == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "realworld/%s: precision %.1f%% over %d labeled (%d tp, %d fp), %d unknown, %.2f findings/KLOC\n",
+		r.entryName, r.Result.Precision()*100, r.Result.TruePos+r.Result.FalsePos,
+		r.Result.TruePos, r.Result.FalsePos, r.Result.Unknown, r.Result.FindingsPerKLOC())
+	if len(r.Result.PerClass) > 0 {
+		b.WriteString("  FP classes: ")
+		for c, n := range r.Result.PerClass {
+			fmt.Fprintf(&b, "%s=%d ", c, n)
+		}
+		b.WriteString("\n")
+	}
+	for _, f := range r.Result.Unknowns {
+		fmt.Fprintf(&b, "  UNKNOWN  %s  %s\n", f.ID, f.Endpoint)
+	}
+	return b.String()
 }
