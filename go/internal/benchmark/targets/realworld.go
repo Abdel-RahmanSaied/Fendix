@@ -260,7 +260,16 @@ func (r *RealWorld) TriageReport() string {
 		b.WriteString("\n")
 	}
 	for _, f := range r.Result.Unknowns {
-		fmt.Fprintf(&b, "  UNKNOWN  %s  %s\n", f.ID, f.Endpoint)
+		// Production IDs are positional (SEC-NNN), so the triage line must be
+		// self-describing: CWE references + title carry the rule identity.
+		fmt.Fprintf(&b, "  UNKNOWN  %s  %s", f.ID, f.Endpoint)
+		if len(f.References) > 0 {
+			fmt.Fprintf(&b, "  [%s]", strings.Join(f.References, ","))
+		}
+		if f.Title != "" {
+			fmt.Fprintf(&b, "  %s", f.Title)
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }

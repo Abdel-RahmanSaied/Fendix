@@ -92,7 +92,11 @@ func TestRealWorldTriageReportGolden(t *testing.T) {
 	}}
 	findings := []models.Finding{
 		{ID: "SEC-PY_SSRF", Endpoint: "app.py:7"},
-		{ID: "SEC-PY_PATH_TRAVERSAL", Endpoint: "other.py:3"},
+		// Real production findings carry positional IDs; the UNKNOWN triage
+		// line must be self-describing (CWE refs + title) so unknowns are
+		// classifiable without re-running the scan.
+		{ID: "SEC-PY_PATH_TRAVERSAL", Endpoint: "other.py:3",
+			References: []string{"CWE-22"}, Title: "Potential path traversal"},
 	}
 	rw := &RealWorld{entryName: "mini"}
 	rw.Result = benchmark.ScoreRealWorld("mini", ls, findings, 1000)

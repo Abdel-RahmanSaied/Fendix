@@ -1,2 +1,2 @@
 realworld/mini: precision 100.0% over 1 labeled (1 tp, 0 fp), 1 unknown, 1.00 findings/KLOC
-  UNKNOWN  SEC-PY_PATH_TRAVERSAL  other.py:3
+  UNKNOWN  SEC-PY_PATH_TRAVERSAL  other.py:3  [CWE-22]  Potential path traversal
