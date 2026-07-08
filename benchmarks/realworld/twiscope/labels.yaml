@@ -1,0 +1,80 @@
+# Confirmed TP (§2) — the SSRF that matters.
+- rule: PY_SSRF
+  file: Twiscope_Main_App/Instagram_Apps/Instagram_User_App/views.py
+  line: 602  # June doc cited 597; repo drifted — sink now at 602 (verified)
+  verdict: tp
+  note: "request.query_params['url'] → requests.get; allow-list commented out (views.py:584-586)"
+
+# Needs-review (§3) — defended sink; treated as fp (validated before sink).
+- rule: PY_SSRF
+  file: Twiscope_Main_App/Alert_System/dispatchers.py
+  line: 108
+  verdict: fp
+  fp_class: safe-api-misread
+  note: "validate_public_https_webhook_url() runs at line 99 before the sink (NR-1)"
+
+# FP-1 constant-host f-string URL, dynamic path (SSRF). ~71 in doc.
+- rule: PY_SSRF
+  file: TwiScope/TwitterAPI.py
+  line: 62  # get_user_byUserName: f"{self._base_url}users/by/username/{username}" (verified)
+  verdict: fp
+  fp_class: constant-authority
+  note: "self.base_url='https://api.twitter.com/2/'; only path is dynamic"
+- rule: PY_SSRF
+  file: Twiscope_Main_App/FileGenerator/controller.py
+  line: 25  # get_report_data: base_url=f"{self.base_url}/{report_id}/", host literal http://django:8000 (verified)
+  verdict: fp
+  fp_class: constant-authority
+  note: "host is literal http://django:8000"
+
+# FP-2 config/constant-host SSRF (settings.*). ~6 in doc.
+- rule: PY_SSRF
+  file: Twiscope_Main_App/notificationApp/tasks.py
+  line: 86
+  verdict: fp
+  fp_class: constant-authority
+  note: "requests.post(f'{settings.NOTIFICATION_SERVICE_URL}/notifications/send')"
+- rule: PY_SSRF
+  file: monitoring/views/health_check_views.py
+  line: 32  # doc path abbreviated; actual file is monitoring/views/health_check_views.py (verified)
+  verdict: fp
+  fp_class: constant-authority
+  note: "FILE_GENERATOR_BASE_URL constant host"
+
+# FP-3 Redis/cache .get/.delete matched as HTTP client. 3 in doc.
+- rule: PY_SSRF
+  file: Twiscope_Main_App/backendServicesManagement/admin.py
+  line: 87
+  verdict: fp
+  fp_class: receiver-confusion
+  note: "client=_get_redis_client(); client.delete(*selected_keys)"
+- rule: PY_SSRF
+  file: Twiscope_Main_App/backendServicesManagement/admin.py
+  line: 221
+  verdict: fp
+  fp_class: receiver-confusion
+  note: "redis client.get(key)"
+
+# FP-4 open(path) with no request-derived source (path-traversal). ~28 in doc.
+- rule: PY_PATH_TRAVERSAL
+  file: Twiscope_Main_App/Core/settings.py
+  line: 114  # BASE_DIR = Path(__file__).resolve().parent.parent (verified)
+  verdict: fp
+  fp_class: safe-api-misread
+  note: "BASE_DIR = Path(__file__).resolve().parent.parent"
+
+# FP-5 open-redirect on constant base, tainted query. 7 in doc.
+- rule: PY_OPEN_REDIRECT
+  file: Twiscope_Main_App/linkedInApps/linkedInUsersApp/views/connection_views.py
+  line: 236  # first HttpResponseRedirect(f"{error_url}?reason=oauth_error...") (verified)
+  verdict: fp
+  fp_class: constant-authority
+  note: "HttpResponseRedirect(f'{settings.LINKEDIN_FRONTEND_REDIRECT_URI}/error?...')"
+
+# FP-6 psycopg2.sql composition mis-read as str.format SQLi. 5 CRITICAL in doc.
+- rule: PY_SQL_INJECTION
+  file: Twiscope_Main_App/logs/management/commands/fix_pg_id_sequences.py
+  line: 86
+  verdict: fp
+  fp_class: safe-api-misread
+  note: "sql.SQL('CREATE SEQUENCE ... {}').format(seq_ident) — safe parameterized identifier"

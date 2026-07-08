@@ -105,6 +105,11 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		sawNullCred      bool
 		acamSeen         string // first non-empty Access-Control-Allow-Methods (for non-standard-token detection)
 		sawWildcardMeth  bool   // ACAM: * (or '*' among tokens) on ANY probe
+		// B4: track whether the CORS misconfig was observed on a 4xx
+		// (auth-gated) response vs a non-4xx one. When EVERY positive signal
+		// came from a 4xx, the finding is lower-confidence context.
+		sig4xx    bool
+		sigNon4xx bool
 	)
 
 	// The probe set is method-independent (derived from the URL only), so build
@@ -161,15 +166,18 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 				}
 			}
 
+			positiveSignal := false
 			switch {
 			case acao == "*":
 				sawWildcard = true
 				sawWildcardCreds = sawWildcardCreds || credentialed
+				positiveSignal = true
 			case origin == nullOriginVal && strings.EqualFold(acao, nullOriginVal):
 				// null-origin acceptance (Phase 4a / 4.4). Sandboxed iframes
 				// and data-URIs send Origin: null; reflecting it is exploitable.
 				sawNull = true
 				sawNullCred = sawNullCred || credentialed
+				positiveSignal = true
 			case origin != nullOriginVal && strings.EqualFold(acao, origin):
 				// Reflected arbitrary origin (Phase 4a / 4.1, 4.2). Detection is
 				// EXACT case-insensitive equality to the probe origin, never a
@@ -179,6 +187,15 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 				sawReflectedCred = sawReflectedCred || credentialed
 				if reflectedEvid == "" {
 					reflectedEvid = acao
+				}
+				positiveSignal = true
+			}
+			// B4: record whether this misconfig-producing probe was a 4xx.
+			if positiveSignal {
+				if httpResponseContext(status) == "4xx" {
+					sig4xx = true
+				} else {
+					sigNon4xx = true
 				}
 			}
 		}
@@ -309,6 +326,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	// Method-policy findings are independent of the origin verdict: wildcard
 	// methods (Phase 4a / 4.6) and genuinely non-standard tokens.
 	findings = appendMethodFindings(findings, acamSeen, sawWildcardMeth, epLabel)
+
+	// B4: if the CORS misconfig was ONLY ever observed on a 4xx (auth-gated)
+	// response — never on a 2xx — de-escalate via the confidence scorer.
+	// Evidence preserved (Rule 3); a signal that also fired on a 2xx is real
+	// and left untagged.
+	if sig4xx && !sigNon4xx {
+		for i := range findings {
+			findings[i].ResponseContext = "4xx"
+		}
+	}
 
 	slog.Debug("CORS check complete", "endpoint", epLabel, "findings", len(findings))
 	return findings

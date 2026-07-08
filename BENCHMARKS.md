@@ -108,6 +108,80 @@ gated in `.github/workflows/heavy-eval.yml` at floor **F1 ≥ 0.95**. See that
 harness for its current bootstrapped number; it is enforced in CI rather than
 re-asserted here.
 
+## 5. Real-world SAST precision track — TWISCOPE seed corpus (v1.1)
+
+> Captured 2026-07-08 on the binary built from `feat/v1.1-real-world-precision`,
+> macOS/arm64. The full `--python-engine` scan of the seed target completes in
+> **9.0 s** (Python engine pass 2.2 s) after the v1.1 O(fan-out) perf fix
+> (`perf(sast): memoize _expr_references_secret`); before that fix a single
+> 907-line file took ~45 s and the whole-repo scan ~50 min, which is why no
+> real number existed before v1.1.
+
+The v1.1 initiative added a real-world SAST track: a source tree at a pinned
+revision scored against a committed `labels.yaml` by a stable `(rule+file+line±3)`
+key, with an `unknown` bucket for unlabeled findings that is **excluded from
+precision** until triaged (that exclusion is what makes the number defensible).
+The seed target is **TWISCOPE-backend** (~1,188 Python files); its labels are
+private (source path lives in a git-ignored `benchmarks/realworld/local.yaml`),
+so this track **loud-SKIPs** on any machine without the checkout — it never
+silently reports green.
+
+```
+FENDIX_ENGINE=$PWD/python ./bin/fendix scan --code <twiscope> \
+  --python-engine --format json --output /tmp/twiscope.json          # ~9 s
+cd go && FENDIX_SCORE_JSON=/tmp/twiscope.json \
+  FENDIX_SCORE_LABELS=$PWD/../benchmarks/realworld/twiscope/labels.yaml \
+  FENDIX_SCORE_SRC=<twiscope> FENDIX_SCORE_NAME=twiscope \
+  go test ./internal/benchmark/targets/ -run TestOfflineScore -v
+```
+
+| Metric | Value |
+|---|---:|
+| Total findings emitted | 72 |
+| SAST taint findings (the only labeled surface) | **5** (was ~90 pre-Phase-B) |
+| Labeled findings that still fire | 3 (1 tp, 2 fp) |
+| Precision over labeled | **33.3 %** (thin-denominator lower bound — see caveat) |
+| Confirmed TP retained | 1 (Instagram-proxy SSRF, `views.py:602`) |
+| False negatives | **0** |
+| Labeled FP classes eliminated | **8 of 11** |
+| Residual labeled FPs | 2 (`safe-api-misread`, `constant-authority`) |
+| findings/KLOC (labeled surface) | 0.03 |
+
+**Per-class deltas (B1–B8, each locked by a positive+negative corpus case):**
+
+| fp_class | Fix (commit) | Effect on TWISCOPE |
+|---|---|---|
+| `const-fold-miss` | SQL const-fold for %-format/join/ternary (`7157793`) | SQLi FP on folded-constant SQL removed |
+| `guard-dominance` | membership-guard must dominate the sink (`b34ed4a`) | guarded-then-sink SSRF FP removed |
+| `double-sanitize` | recognize `Markup`/escaped f-string wrap (`f5f2238`) | escaped-value XSS FP removed |
+| `heuristic-overfire` | weak-crypto skips metadata-named ids (`a8645fb`) | md5-of-non-password FP removed |
+| `version-range-floor` | npm caret/tilde ranges → INFO (`1d0fa6d`) | SCA over-assertion demoted |
+| `fabricated-chain` | from-imported non-fs `open()` ≠ traversal (`90fb9ad`) | 8 path-traversal `open()` FPs removed |
+| `test-fixture` | test-fixture findings → INFO (`cec1efe`) | fixture-file noise demoted |
+| `http-4xx-context` / `static-asset-context` | DAST 4xx + static-asset de-escalation (`a03ce63`) | DAST context noise demoted |
+| `constant-authority` | settings.\*-host SSRF suppressed (C2, corpus lock) | TwitterAPI / FileGenerator / notificationApp / health_check FPs removed |
+| `receiver-confusion` | redis `.get/.delete` ≠ HTTP client | 2 admin redis SSRF FPs removed |
+| `safe-api-misread` | psycopg2 `sql.SQL(...).format` ≠ str.format SQLi | SQLi FP removed |
+
+**Caveats (read before quoting 33.3 %):**
+
+- **Thin denominator / label coverage.** The labels were authored against the
+  June (pre-Phase-B) triage; most FP entries now describe findings the engine no
+  longer emits. A suppressed FP produces **no finding**, so it drops OUT of the
+  `tp+fp` denominator — which is precisely why the ratio looks low. The
+  defensible statement is not "33 % precision" but "**1 confirmed TP retained, 0
+  FN, 8/11 known FP classes eliminated, SAST taint noise cut ~90 → 5, 2 residual
+  FPs quantified.**"
+- **Out-of-scope unknowns.** 67 of the 69 `unknown` findings are SCA dep-CVEs,
+  hardcoded-secrets, FastAPI missing-authn, and Dockerfile findings — categories
+  the SAST FP-class labels don't cover. They are correctly **excluded** from
+  precision, not counted against it. 2 unlabeled SAST unknowns
+  (`data_handling.py:450` path-traversal, `connection_views.py:247` open-redirect)
+  are queued for the next label pass.
+- **Seed tier is private / not CI-gated.** This number is reproducible only on a
+  machine with the TWISCOPE checkout. The **public** real-world tier (committed,
+  pinned-SHA repos) is what carries CI — see §D2 / `.github/workflows`.
+
 ## Language coverage (capability, not an accuracy number)
 
 | Language | How | Tier |
@@ -131,7 +205,7 @@ Java taint analysis (what OWASP Benchmark needs) is a future phase.
 | **OWASP Benchmark** (recall/precision) | It is a **Java** application scored on deep, sanitizer-aware, interprocedural taint. v0.27 ships Java **regex** SAST (line-local) — real coverage, but a regex matcher scores ≈ 0 on the FP-penalized Youden metric (half the cases are sanitized FP twins). The target **loud-SKIPs in both `Scan()` and `Run()`** (`go/internal/benchmark/targets/owasp.go`). | v0.28+ (deep Java taint engine + labeled corpus) |
 | Competitor head-to-head (Semgrep/ZAP/Bandit) | No published shared-corpus methodology exists; implied superiority without one violates Rule 5. | post-v0.26 |
 | Correlation-specific FP reduction | No harness yet isolates the with/without-correlation effect; claims are stated as mechanism, not measured reduction. | post-v0.26 |
-| Real-code precision / FP-rate | No labeled negative corpus on real repos yet; DAST precision stays a lower bound. | v0.27 corpus work |
+| Real-code precision / FP-rate (**public CI tier**) | v1.1 shipped the seed tier (§5, TWISCOPE — private, not CI-gated). The public pinned-SHA tier is wired but the committed corpus is still seed-only; DAST precision stays a lower bound until public labels land. | v1.1+ public labels |
 
 ---
 

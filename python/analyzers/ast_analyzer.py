@@ -666,28 +666,30 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 return isinstance(assigned, (ast.Dict, ast.Set, ast.List, ast.Tuple))
         return False
 
-    def _name_is_membership_guarded(self, name: str) -> bool:
-        """Return True if the innermost enclosing FunctionDef body
-        contains an early-return guard of the shape ``if <name> not in
-        <const_collection>: return/raise/abort`` BEFORE we're called.
+    def _name_is_membership_guarded(self, name: str, sink_line: int) -> bool:
+        """Return True if the innermost enclosing FunctionDef body contains an
+        early-return guard of the shape ``if <name> not in <const_collection>:
+        return/raise/abort`` that DOMINATES the sink at ``sink_line``.
 
-        Heuristic but precise: we walk the function body looking for
-        any `if X not in C` where C resolves to a literal collection in
-        scope, and where the `if` body's first statement is a Return,
-        Raise, or a call to abort()/sys.exit(). If found, we trust
-        that subsequent uses of X are constrained.
-
-        This doesn't check ORDERING — it assumes the guard runs before
-        the sink, which is true for the canonical idiom. A guard that
-        appears AFTER the sink would falsely sanitise; we accept that
-        precision loss because the false-suppression risk is bounded
-        (the developer wrote a guard that says "this is a whitelist").
+        B2 (guard-dominance, both directions): the guard must be a top-level
+        (function-body) statement whose ``lineno`` precedes the sink. The old
+        ``ast.walk(func)`` matched ANY such guard anywhere in the function —
+        including a guard AFTER the sink or inside a non-dominating branch
+        (``if strict:``) — which over-suppressed real vulns (FN). Iterating
+        only ``func.body`` and gating on ``stmt.lineno < sink_line`` fixes both:
+        a nested guard never appears in the body-only loop, and a later guard
+        is line-gated out.
         """
         if not self._func_stack:
             return False
         func = self._func_stack[-1]
-        for stmt in ast.walk(func):
+        for stmt in func.body:
             if not isinstance(stmt, ast.If):
+                continue
+            # Dominance: the guard must appear textually BEFORE the sink. A
+            # guard after the sink (or in a non-top-level branch, which never
+            # enters this body-only loop) cannot constrain it.
+            if stmt.lineno >= sink_line:
                 continue
             test = stmt.test
             # `if X not in C:` or `if not (X in C):` shape
@@ -774,12 +776,41 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     return self._is_escaped_call(scope[expr.id])
         return False
 
-    def _arg_is_sanitised(self, arg: ast.AST) -> bool:
+    def _expr_is_fully_escaped(self, expr: ast.AST, _depth: int = 0) -> bool:
+        """True if every dynamic sub-expression of ``expr`` is an escaped call —
+        so ``f"<b>{html.escape(x)}</b>"`` and ``escape(x) + '<br>'`` are safe XSS
+        args (B5 double-sanitize FP). Constants are inert; a JoinedStr is safe
+        iff every FormattedValue is escaped; a BinOp iff both sides are."""
+        if _depth >= _MAX_TAINT_HOPS:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if self._is_escaped_call(expr):
+            return True
+        if isinstance(expr, ast.JoinedStr):
+            return all(
+                self._expr_is_fully_escaped(v.value, _depth + 1)
+                for v in expr.values
+                if isinstance(v, ast.FormattedValue)
+            )
+        if isinstance(expr, ast.BinOp):
+            return self._expr_is_fully_escaped(
+                expr.left, _depth + 1
+            ) and self._expr_is_fully_escaped(expr.right, _depth + 1)
+        return False
+
+    def _arg_is_sanitised(self, arg: ast.AST, sink_line: int = 1_000_000) -> bool:
         """Composite check: dict-lookup whitelist OR membership-guarded Name.
 
         Called by the sink predicates (_is_ssrf / _is_open_redirect /
         path-traversal / XSS) to suppress findings where user input has
         been narrowed through a recognised sanitiser pattern.
+
+        ``sink_line`` is the line of the sink being evaluated; it is threaded
+        into the membership-guard check so a guard must DOMINATE the sink to
+        suppress it (B2). Callers that cannot supply a line default to a large
+        sentinel (behaviour unchanged for those), but every real sink predicate
+        passes ``node.lineno``.
 
         Handles three shapes:
           1. arg IS the dict-lookup or guarded Name itself
@@ -797,7 +828,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if self._is_safe_url_builder(arg):
             return True
         if isinstance(arg, ast.Name):
-            if self._name_is_membership_guarded(arg.id):
+            if self._name_is_membership_guarded(arg.id, sink_line):
                 return True
             # Resolve through scope and check the assigned expr is sanitised.
             # Recurse through the full sanitiser set (not just whitelist) so an
@@ -809,7 +840,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     bound = scope[arg.id]
                     if isinstance(bound, ast.Name) and bound.id == arg.id:
                         return False
-                    return self._arg_is_sanitised(bound)
+                    return self._arg_is_sanitised(bound, sink_line)
             return False
         if isinstance(arg, ast.BinOp):
             # printf-style `"<template>" % (a, b)`: safe iff the template is a
@@ -829,13 +860,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         else [rhs]
                     )
                     return all(
-                        isinstance(v, ast.Constant) or self._arg_is_sanitised(v)
+                        isinstance(v, ast.Constant) or self._arg_is_sanitised(v, sink_line)
                         for v in values
                     )
                 return False
             # Every non-Constant subexpression must itself be sanitised.
             return all(
-                isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub)
+                isinstance(sub, ast.Constant) or self._arg_is_sanitised(sub, sink_line)
                 for sub in (arg.left, arg.right)
             )
         # audit #16: a fully-constant f-string or an os.path.* / known dunder
@@ -1181,7 +1212,13 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # proven user-input dataflow into the call site implies a real
         # reachable XSS path — the correlator escalates severity per
         # TASK-114.
-        elif self._is_xss_html_sink(node):
+        elif self._is_xss_html_sink(node) and not (
+            node.args and self._expr_is_fully_escaped(node.args[0])
+        ):
+            # B5 (double-sanitize): an escaped value wrapped in Markup — bare,
+            # in an f-string, or concatenated (Markup(f"<b>{html.escape(x)}</b>"),
+            # Markup(escape(x) + '<br>')) — is already safe HTML. Only fall
+            # through to emit when the arg is NOT fully escaped.
             chain = None
             if node.args:
                 sink_name = self._xss_sink_name(node)
@@ -1464,12 +1501,35 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             )
         return self._expr_references_secret(arg)
 
-    def _expr_references_secret(self, expr: ast.AST, _depth: int = 0) -> bool:
+    def _expr_references_secret(
+        self, expr: ast.AST, _depth: int = 0, _seen: set[int] | None = None
+    ) -> bool:
         """True if `expr` resolves to a secret: os.getenv/os.environ.get of a
-        secret-named key, a password-y identifier, or a Name bound to one."""
+        secret-named key, a password-y identifier, or a Name bound to one.
+
+        Performance (Product-Constitution Rule 6): this used to restart a full
+        ``ast.walk`` per resolved binding with no memoization, so a large scope
+        whose log call interpolated names bound to deeply-nested expressions
+        (e.g. an ``acc += acc`` accumulator, whose synthesized ``BinOp`` tree
+        DOUBLES per rebind, or many names sharing bindings) re-walked the same
+        subtrees combinatorially — a single 907-line file (TwiScope
+        delivery_tasks.py) took ~45 s, blowing up a whole-repo scan to ~50 min.
+        A shared ``_seen`` set of ``id(node)`` collapses the exponential
+        shared-subtree re-walks into linear work: every AST node object is
+        visited at most once across the whole query. Correctness is unchanged —
+        the same set of nodes is inspected, just never twice."""
         if _depth >= _MAX_TAINT_HOPS:
             return False
+        if _seen is None:
+            _seen = set()
         for n in ast.walk(expr):
+            # Each unique AST node is inspected once per top-level query; a
+            # binding resolved from two sibling names, or a deep tree reached by
+            # two paths, is not re-walked (this is the O(fan-out) fix).
+            nid = id(n)
+            if nid in _seen:
+                continue
+            _seen.add(nid)
             # A path/file-location identifier holds a *location*, not the secret
             # value (TwiScope SEC-263): `GOOGLE_APPLICATION_CREDENTIALS` is a path
             # to a creds file, and logging that path leaks nothing. Skip both the
@@ -1496,7 +1556,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         ) and not _env_read_is_location(unwrapped):
                             return True
                         continue
-                    if self._expr_references_secret(bound, _depth + 1):
+                    if self._expr_references_secret(bound, _depth + 1, _seen):
                         return True
         return False
 
@@ -1896,9 +1956,25 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if isinstance(expr, ast.Constant):
             return True
         if isinstance(expr, ast.BinOp):
+            # `"<tmpl>" % (a, b)` — constant iff template + every value is const
+            # (B1: %-format with a const tuple/list, e.g. cursor.execute(
+            # '...%s...' % ('a','b'))).
+            if isinstance(expr.op, ast.Mod):
+                if not self._sql_expr_is_constant(expr.left, _depth + 1):
+                    return False
+                rhs = expr.right
+                values = (
+                    list(rhs.elts) if isinstance(rhs, (ast.Tuple, ast.List)) else [rhs]
+                )
+                return all(self._sql_expr_is_constant(v, _depth + 1) for v in values)
             return self._sql_expr_is_constant(
                 expr.left, _depth + 1
             ) and self._sql_expr_is_constant(expr.right, _depth + 1)
+        if isinstance(expr, ast.IfExp):
+            # `<c> if cond else <c>` — constant iff both branches fold (B1).
+            return self._sql_expr_is_constant(
+                expr.body, _depth + 1
+            ) and self._sql_expr_is_constant(expr.orelse, _depth + 1)
         if isinstance(expr, ast.JoinedStr):
             # Constant iff every FormattedValue interpolates a constant-folding expr.
             for v in expr.values:
@@ -1912,6 +1988,17 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 assigned, _depth + 1
             )
         if isinstance(expr, ast.Call):
+            # "<sep>".join([<const>, ...]) — constant iff sep + every element
+            # const (B1: 'SELECT ' + ', '.join(['a','b']) + ' FROM t').
+            if isinstance(expr.func, ast.Attribute) and expr.func.attr == "join":
+                if not self._sql_expr_is_constant(expr.func.value, _depth + 1):
+                    return False
+                if expr.args and isinstance(expr.args[0], (ast.List, ast.Tuple)):
+                    return all(
+                        self._sql_expr_is_constant(e, _depth + 1)
+                        for e in expr.args[0].elts
+                    )
+                return False
             # "<lit>".format(<lit>, ...) — constant iff receiver + all args constant.
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
                 if not self._sql_expr_is_constant(expr.func.value, _depth + 1):
@@ -2191,7 +2278,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         return False
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
-        if self._arg_is_sanitised(first):
+        if self._arg_is_sanitised(first, node.lineno):
             return False
         # Framework URL builders produce safe internal URLs from a route NAME,
         # not user input: Flask url_for(...), Django reverse(...). A redirect to
@@ -2414,7 +2501,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     if isinstance(scope[first.id], ast.Constant):
                         return False
                     break  # innermost binding wins (audit #17)
-        if self._arg_is_sanitised(first):
+        if self._arg_is_sanitised(first, node.lineno):
             return False
         # TwiScope FP-1/FP-2: constant scheme+host with taint only in path/query
         # is not SSRF.
@@ -2622,7 +2709,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         return False
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
-        if self._arg_is_sanitised(first):
+        if self._arg_is_sanitised(first, node.lineno):
             return False
         return True
 
@@ -2680,7 +2767,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                         return False
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
-        if self._arg_is_sanitised(target):
+        if self._arg_is_sanitised(target, node.lineno):
             return False
         # TwiScope FP-4: a path that provably comes from a NON-request source —
         # __file__-relative Path, os.getenv, tempfile.*.name, settings.*, a
@@ -2825,6 +2912,16 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         """
         if isinstance(node.func, ast.Name):
             if node.func.id in _PATH_TRAVERSAL_SINK_NAMES:
+                # B7 (fabricated-chain): a bare `open`/`Path` from-imported from
+                # a NON-filesystem module (webbrowser, selenium, …) is not the
+                # builtin path sink — it was fabricating CWE-22 chains on
+                # `from webbrowser import open; open(url)`.
+                resolved = self._from_imports.get(node.func.id)
+                if node.func.id in {"open", "Path"} and resolved is not None:
+                    mod = resolved[0]
+                    _FS_MODULES = {"io", "os", "codecs", "gzip", "bz2", "lzma", "pathlib"}
+                    if mod not in _FS_MODULES:
+                        return ""
                 return node.func.id
         elif isinstance(node.func, ast.Attribute):
             # Double-attribute form: os.path.join / os.path.abspath etc.
@@ -3067,14 +3164,31 @@ def _env_read_is_location(n: ast.AST) -> bool:
     return "credentials" in parts
 
 
+# Trailing tokens that mark an identifier as naming password *metadata* — the
+# label/field/prompt for a password input, not the credential value itself.
+# `password_field_label` holds the UI string "Password", not a secret; hashing
+# or logging it is not a weakness (B6 heuristic-overfire).
+_PASSWORD_METADATA_SUFFIXES: frozenset[str] = frozenset(
+    {"label", "name", "field", "prompt", "hint", "placeholder"}
+)
+
+
 def _looks_like_password_id(name: str) -> bool:
     """Return True if an identifier name suggests a password/secret value.
 
     Audit #23: match password-ish tokens as whole snake/camel/dotted parts
     rather than raw substrings, so `secretary`/`password_field_label` don't
     false-positive while `user_password`/`db_passwd`/`pw` still match.
+
+    B6: an identifier whose LAST part is password-metadata (`..._label`,
+    `..._field`, `..._prompt`, …) names the input's label/field, not the
+    credential value, so it does not qualify — `password_field_label` and
+    `secret_prompt` are not secret values.
     """
-    parts = set(_TOKEN_SPLIT_RE.split(name.lower()))
+    ordered = [p for p in _TOKEN_SPLIT_RE.split(name.lower()) if p]
+    if ordered and ordered[-1] in _PASSWORD_METADATA_SUFFIXES:
+        return False
+    parts = set(ordered)
     if parts & _PASSWORD_WORD_TOKENS:
         return True
     return any(tok in parts for tok in _PASSWORD_SUBSTR_TOKENS)

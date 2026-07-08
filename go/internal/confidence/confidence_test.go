@@ -150,3 +150,34 @@ func TestReasonsSumToValue(t *testing.T) {
 		}
 	}
 }
+
+// TestScore4xxContextPenalty / TestScoreStaticAssetPenalty are the B4 gates:
+// a DAST finding that fired on a 4xx (auth-gated/client-error) response or a
+// static-asset endpoint gets a confidence PENALTY (de-escalation, evidence
+// preserved) rather than emit-time suppression.
+func TestScore4xxContextPenalty(t *testing.T) {
+	base := evidence.Evidence{Source: models.SourceBlackbox}
+	ctx4xx := evidence.Evidence{Source: models.SourceBlackbox, ResponseContext: "4xx"}
+	if Score(ctx4xx).Value >= Score(base).Value {
+		t.Errorf("4xx context should lower confidence: base=%d 4xx=%d",
+			Score(base).Value, Score(ctx4xx).Value)
+	}
+	found := false
+	for _, r := range Score(ctx4xx).Reasons {
+		if strings.Contains(r, "4xx") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a 4xx-context reason line")
+	}
+}
+
+func TestScoreStaticAssetPenalty(t *testing.T) {
+	base := evidence.Evidence{Source: models.SourceBlackbox}
+	stat := evidence.Evidence{Source: models.SourceBlackbox, ResponseContext: "static-asset"}
+	if Score(stat).Value >= Score(base).Value {
+		t.Errorf("static-asset context should lower confidence: base=%d static=%d",
+			Score(base).Value, Score(stat).Value)
+	}
+}

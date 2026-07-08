@@ -39,9 +39,14 @@ type Target interface {
 	Scan(ctx context.Context, fendixBin string) (*benchmark.ScanResult, error)
 }
 
-// All returns every registered benchmark target.
+// All returns every registered benchmark target, including any committed
+// real-world corpus entries discovered under benchmarks/realworld/.
 func All() []Target {
-	return []Target{NewOWASP(), NewDVWA(), NewJuiceShop()}
+	ts := []Target{NewOWASP(), NewDVWA(), NewJuiceShop()}
+	for _, rw := range DiscoverRealWorld("") {
+		ts = append(ts, rw)
+	}
+	return ts
 }
 
 // ByName returns the registered target with the given name, or an error
@@ -52,7 +57,7 @@ func ByName(name string) (Target, error) {
 			return t, nil
 		}
 	}
-	return nil, fmt.Errorf("unknown benchmark target %q (valid: owasp, dvwa, juiceshop, all)", name)
+	return nil, fmt.Errorf("unknown benchmark target %q (valid: owasp, dvwa, juiceshop, realworld/<name>, all)", name)
 }
 
 // ExpectedVuln is one ground-truth vulnerability the target is known to

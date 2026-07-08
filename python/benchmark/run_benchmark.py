@@ -180,6 +180,25 @@ def main() -> int:
         print(json.dumps(results, indent=2))
     else:
         _print_table(results)
+    # --gate: exit non-zero on any HANDLED regression so CI can call this
+    # script directly as the synthetic-corpus gate (F1 must stay 1.000; the
+    # in-scope FP/FN counts must stay 0; no unexpected mis-scores).
+    if "--gate" in sys.argv:
+        h = results["handled"]
+        failed = (
+            h["f1"] != 1.0
+            or h["fp"] != 0
+            or h["fn"] != 0
+            or bool(results["misses"])
+        )
+        if failed:
+            print(
+                f"\nGATE FAILED: HANDLED f1={h['f1']} fp={h['fp']} fn={h['fn']} "
+                f"misses={len(results['misses'])} (require f1==1.0, fp==0, fn==0, 0 misses)",
+                file=sys.stderr,
+            )
+            return 1
+        print("\nGATE OK: HANDLED F1 == 1.000, 0 FP / 0 FN / 0 unexpected misses")
     return 0
 
 

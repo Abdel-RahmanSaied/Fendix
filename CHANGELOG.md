@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-08
+
+**Headline:** Fendix v1.1 — real-world precision. v1.0 proved the engine on
+hand-authored corpora (P/R/F1 = 1.000); v1.1 proves it on real code. We built a
+real-repo benchmark instrument, measured our own false-positive rate honestly,
+and closed the dominant noise classes — while the synthetic accuracy gate held
+at 1.000 throughout. The scan-report JSON schema is unchanged (this release adds
+no output fields). Every accuracy claim below is backed by a reproducible
+measurement (Rule 5); no AI is in any scoring path (Rule 8).
+
+### Added
+- **Real-world precision benchmark** (`fendix benchmark run --target realworld`).
+  Scores a real source tree against a committed labels file and reports
+  precision, per-FP-class counts, false-negatives, and findings-per-KLOC — not
+  just a synthetic pass-rate. Three corpus tiers: **seed** (private repos,
+  loud-SKIP when absent — never silently green), **public** (pinned-SHA OSS,
+  CI-gated), **regression** (per-class negatives in the taint corpus). Ships an
+  offline scorer so a repo can be scanned once and re-scored without re-running,
+  and a triage report listing unlabeled findings for incremental labeling.
+- **`fendix verify` now covers correlated and active-probe findings** (previously
+  returned `unknown`). Correlated findings resolve two-sided (blackbox endpoint
+  gated OR whitebox sink gone → resolved); active-probe findings re-verify via a
+  consent-gated re-probe (`--enable-active`), reporting still-present without
+  consent rather than guessing.
+
+### Fixed — false positives (the noise-reduction pass)
+Measured on a real Django app: the SAST taint surface dropped from ~90 findings
+to 5, eliminating 8 of 11 labeled FP classes while retaining the one confirmed
+true positive.
+
+- **SQL constant-folding** — literal/constant SQL built with `%`-format, `.join`,
+  or a ternary is no longer flagged as injection (`const-fold-miss`).
+- **Membership-guard dominance** — a `if x not in (...)` guard only suppresses a
+  finding when it dominates the sink; fixed over-suppression (false negatives)
+  and spurious suppression alike (`guard-dominance`).
+- **Test-fixture de-escalation** — findings under `tests/`, `conftest.py`,
+  `*_test.go`, `spec/` de-escalate to INFO (evidence preserved, config-overridable)
+  instead of alerting as production issues (`test-fixture`).
+- **DAST response-context** — header/CORS findings on 4xx responses and
+  rate-limit findings on static assets are confidence-penalized rather than
+  reported at full weight (`http-4xx-context`, `static-asset-context`).
+- **Double-sanitize** — `Markup(html.escape(x))` (and the f-string/concat forms)
+  no longer flagged as XSS (`double-sanitize`).
+- **Weak-crypto over-fire** — `md5()`/`sha1()` on metadata-named identifiers no
+  longer misread as password hashing (`heuristic-overfire`).
+- **Fabricated path-traversal** — from-imported `webbrowser.open()` and other
+  non-filesystem `.open()` calls no longer synthesize a traversal chain
+  (`fabricated-chain`).
+- **npm version-range floor** — caret/tilde ranges report as INFO instead of
+  asserting a vuln at the range floor without lockfile resolution
+  (`version-range-floor`).
+
+### Fixed — performance (Rule 6)
+- **Secret-in-log analyzer O(fan-out) collapse.** `ASTAnalyzer._expr_references_secret`
+  re-walked the AST subtree per resolved binding; combined with augmented-assignment
+  tree synthesis (`acc += acc` doubles the tree per rebind), shared subtrees were
+  re-walked combinatorially. Threading a shared `id(node)` seen-set makes every
+  node visited at most once — exponential → linear. A full `--python-engine` scan
+  of a ~1,200-file real repo went from **~50 minutes to 9 seconds** (>37,000× on
+  the worst single file). This is what made real-world measurement feasible.
+
+### Changed
+- **Benchmark CI** gates on the synthetic taint corpus (F1 must stay 1.000; any
+  HANDLED regression fails the build) and discovers the real-world regression
+  tier; seed entries loud-SKIP in CI, public entries gate.
+- `docs/accuracy.md` and `BENCHMARKS.md` gain a real-world track (§5) with the
+  measured numbers, per-FP-class deltas, and honest lower-bound / label-coverage
+  caveats retained.
+
 ## [1.0.0] - 2026-07-01
 
 **Headline:** Fendix v1.0 — the production milestone (validated via v1.0.0-rc1:

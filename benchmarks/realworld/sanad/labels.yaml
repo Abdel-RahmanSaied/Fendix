@@ -1,0 +1,26 @@
+# A1 direct prompt injection (§2.1). Assembly is cross-module → documented
+# interproc limit; label the confirmed sink anchor.
+- rule: PY_LLM_PROMPT_INJECTION
+  file: services/RAG_Service/chat/chat_prompts.py
+  line: 160
+  verdict: tp
+  note: "f'User question: {query}' → LLM messages content (A1)"
+
+# A2 indirect / 2nd-order prompt injection (§2.1).
+- rule: PY_LLM_PROMPT_INJECTION
+  file: services/RAG_Service/chat/chat_prompts.py
+  line: 149
+  verdict: tp
+  note: "ES-retrieved content into prompt context (A2)"
+
+# A3 SSRF via configurable base_url into httpx.AsyncClient constructor (§2.1).
+- rule: PY_SSRF
+  file: services/RAG_Service/llm/openrouter.py
+  line: 98
+  verdict: tp
+  note: "self.base_url=config.get(...) → httpx.AsyncClient(base_url=...) (A3)"
+- rule: PY_SSRF
+  file: services/RAG_Service/llm/ollama.py
+  line: 39
+  verdict: tp
+  note: "os.getenv('OLLAMA_BASE_URL') → client base_url (A3)"

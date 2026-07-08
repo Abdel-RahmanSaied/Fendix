@@ -68,6 +68,14 @@ jobs:
       - name: Test
         run: python -m pytest tests/ -v
 
+      # v1.1 D2: run the synthetic taint corpus as an explicit named gate on
+      # every push/PR. `--gate` exits non-zero if HANDLED F1 != 1.000 or any
+      # in-scope FP/FN/mis-score appears (also covered by test_benchmark_gate.py
+      # in the pytest step above; this makes the regression obvious in the log).
+      # Static command, no ${{ }} interpolation — no injection surface.
+      - name: Synthetic corpus gate (F1 == 1.000)
+        run: PYTHONPATH=. python -m benchmark.run_benchmark --gate
+
   # actionlint catches workflow drift: malformed YAML, deprecated syntax,
   # shell-script bugs inside `run:` blocks, and — critically — actions
   # that have been un-pinned from a SHA back to a floating tag.

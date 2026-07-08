@@ -453,10 +453,29 @@ func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint
 	for _, hc := range checks {
 		value := resp.Header.Get(hc.Name)
 		if finding := hc.Check(value); finding != nil {
+			// B4: a header finding on an auth-gated / client-error (4xx)
+			// response is lower-confidence context (the response the browser
+			// sees for an unauthenticated probe). Tag it so the confidence
+			// scorer de-escalates — evidence preserved, not suppressed.
+			if respContext := httpResponseContext(resp.StatusCode); respContext != "" {
+				finding.ResponseContext = respContext
+			}
 			findings = append(findings, *finding)
 		}
 	}
 
 	slog.Debug("headers check complete", "endpoint", epLabel, "findings", len(findings))
 	return findings
+}
+
+// httpResponseContext maps a response status to a confidence de-escalation
+// context for B4. The 404/410/5xx codes are already skipped upstream; the
+// 4xx codes that still emit (401/403/405/406/429) are auth-gated / client
+// errors whose header findings are lower-signal.
+func httpResponseContext(status int) string {
+	switch status {
+	case 401, 403, 405, 406, 429:
+		return "4xx"
+	}
+	return ""
 }

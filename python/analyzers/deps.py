@@ -662,23 +662,35 @@ class DepsAnalyzer:
             spec = pkg_map.get(vuln.package)
             if spec is None:
                 continue
-            # Strip semver range prefixes for comparison
+            # B8 (version-range-floor): a non-exact spec (^/~/>=/<) declares a
+            # RANGE, and npm resolves it to the latest matching version — often
+            # a patched one. Without a lockfile on this path we can only see the
+            # range FLOOR, so a vulnerable floor is an ADVISORY (INFO/LOW), not a
+            # confirmed-installed HIGH. An exact pin keeps its real severity.
+            is_range = bool(re.match(r"^\s*[\^~><]", spec))
             pinned = re.sub(r"^[^0-9]*", "", spec)
             if pinned and _is_vulnerable(pinned, vuln.safe_from):
+                severity = "INFO" if is_range else vuln.severity
+                note = (
+                    f" (range floor {pinned}; resolve the lockfile for the "
+                    f"installed version)"
+                    if is_range
+                    else ""
+                )
                 emit_fn(
                     {
                         "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
                         "title": f"Vulnerable npm package: {vuln.package}@{pinned} ({vuln.cve})",
-                        "severity": vuln.severity,
+                        "severity": severity,
                         "source": "whitebox",
                         "category": "deps",
                         "endpoint": pkg_file.name,
                         "evidence": (
-                            f"{vuln.package}@{pinned} is vulnerable to {vuln.cve}: {vuln.title}"
+                            f"{vuln.package}@{pinned} is vulnerable to {vuln.cve}: {vuln.title}{note}"
                         ),
                         "fix": vuln.fix,
                         "references": [vuln.cve],
-                        "confidence": "HIGH",
+                        "confidence": "HIGH" if not is_range else "LOW",
                         "line": pkg_file.name,
                     }
                 )
