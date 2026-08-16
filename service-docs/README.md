@@ -1,6 +1,21 @@
 # Fendix — Service Documentation
 
 > **Fendix** is a hybrid API and code security scanner that combines black-box HTTP probing with white-box static analysis to find vulnerabilities before attackers do.
+>
+> ⚠️ **Partially superseded — verify before relying on it.** Large parts of this
+> document were written pre-v0.5 and describe an architecture that has since
+> moved. Corrected in this pass: the Semgrep rule catalog and its location, and
+> the Project Status table and the inline "Phase 4 — future" annotations (Phase 4
+> shipped long ago). **Still unreviewed:** the per-check descriptions and the
+> hardcoded CVE tables.
+>
+> Current sources of truth:
+> [`README.md`](../README.md) (user-facing behaviour + architecture),
+> [`docs/schema.md`](../docs/schema.md) (JSON output contract),
+> [`docs/MODULE_MAP.md`](../docs/MODULE_MAP.md) (what each package does),
+> [`CHANGELOG.md`](../CHANGELOG.md) (what shipped when),
+> [`tasks/PHASES.md`](../tasks/PHASES.md) (roadmap status).
+> Current release: **v1.1.0**.
 
 ---
 
@@ -63,7 +78,7 @@ One CLI, two engines, one unified report.
 │           └─────────┬───────────────┘                │
 │                     ▼                                │
 │           ┌──────────────────┐                       │
-│           │   Correlator      │  (Phase 4 — future)  │
+│           │   Correlator      │  (shipped — Phase 4) │
 │           │  Merge + dedupe   │                       │
 │           └────────┬─────────┘                       │
 │                    ▼                                 │
@@ -173,8 +188,12 @@ make test
 |---------|-------------|--------|
 | `fendix scan` | Run a security scan | Implemented |
 | `fendix version` | Print version and platform | Implemented |
-| `fendix report` | Re-render saved findings to HTML/SARIF | Phase 6 |
-| `fendix verify [id]` | Re-test a specific finding | Phase 4 |
+| `fendix report` | Re-render saved findings to HTML/SARIF | Implemented |
+| `fendix verify [id]` | Re-test a specific finding | Implemented (`go/cmd/fendix/main.go` — `verify [finding-id]`) |
+
+> This table is **not exhaustive** — it predates several command groups
+> (`demo`, `init`, `plugins`, `benchmark`, `db`, `engine`, `metrics`, `jira`,
+> `notify`). Run `fendix --help` for the authoritative list.
 
 ### Scan Flags
 
@@ -262,7 +281,7 @@ What happens:
 fendix scan --url https://api.example.com --spec openapi.yaml --code ./src
 ```
 
-Phase 4 (in development) will correlate findings from both engines. When both the HTTP scanner and static analysis agree on the same issue, the finding becomes `correlated` with elevated confidence.
+The correlator (shipped in Phase 4) correlates findings from both engines. When both the HTTP scanner and static analysis agree on the same issue, the finding becomes `correlated` with elevated confidence.
 
 ---
 
@@ -447,9 +466,19 @@ Scans `requirements.txt` (PyPI) and `package.json` (npm):
 
 ## Semgrep Rules
 
-Custom Semgrep rules in `python/rules/`. Requires `semgrep` installed (`pip install semgrep`). If semgrep is not available, the runner skips gracefully.
+The live rule pack is **`go/internal/scanner/semgrep/rules/`**, embedded into
+the Go binary with `//go:embed rules/*.yaml` and extracted to a temp dir on the
+first scan. Requires `semgrep` installed (`pip install semgrep`); if the binary
+is not on `$PATH` the scanner returns `ErrSemgrepUnavailable` and the
+orchestrator logs an install hint and continues.
 
-### auth.yaml (4 rules)
+> `python/rules/` is **dead** — no code reads it. The Python semgrep wrapper was
+> deleted in TASK-118. A rule added there never runs. See `CONTRIBUTING.md` →
+> "Adding a Semgrep rule".
+
+**23 rules** across four files.
+
+### auth.yaml (5 rules)
 
 | Rule ID | Severity | CWE | What It Catches |
 |---------|----------|-----|-----------------|
@@ -457,21 +486,40 @@ Custom Semgrep rules in `python/rules/`. Requires `semgrep` installed (`pip inst
 | `django-view-missing-login-required` | MEDIUM | CWE-306 | Django view class without `LoginRequiredMixin` |
 | `fastapi-route-missing-auth-dependency` | MEDIUM | CWE-306 | FastAPI route without `Depends(...)` |
 | `python-jwt-decode-no-verification` | CRITICAL | CWE-347 | `jwt.decode()` with `verify_signature=False` or `algorithms=["none"]` |
+| `flask-route-no-auth-decorator` | MEDIUM | CWE-306 | Flask route with no auth-style decorator at all (`@login_required`, `@requires_auth`, `@jwt_required`, …) |
 
-### injection.yaml (3 rules)
+### crypto.yaml (4 rules)
+
+| Rule ID | Severity | CWE | What It Catches |
+|---------|----------|-----|-----------------|
+| `python-md5-used-for-password` | HIGH | CWE-327 | `hashlib.md5()` on a password-shaped variable |
+| `python-sha1-used-for-password` | HIGH | CWE-327 | `hashlib.sha1()` on a password-shaped variable |
+| `python-legacy-cipher-import` | HIGH | CWE-327 | Legacy/broken symmetric cipher imported (DES, 3DES, RC4, ARC2, Blowfish) |
+| `python-random-for-token-generation` | HIGH | CWE-338 | `random` used inside a function whose name implies a security-sensitive value |
+
+### injection.yaml (8 rules)
 
 | Rule ID | Severity | CWE | What It Catches |
 |---------|----------|-----|-----------------|
 | `python-sql-injection-string-format` | CRITICAL | CWE-89 | `cursor.execute("..." % val)` or f-string SQL |
 | `python-command-injection-shell-true` | CRITICAL | CWE-78 | `subprocess.run(cmd, shell=True)`, `os.system()`, `os.popen()` |
 | `python-eval-injection` | CRITICAL | CWE-95 | `eval(x)` / `exec(x)` with dynamic arguments |
+| `django-orm-raw-sql` | HIGH | CWE-89 | Django ORM raw SQL with a non-literal argument |
+| `flask-render-template-string-injection` | HIGH | CWE-94 | `render_template_string()` with a non-literal template (SSTI) |
+| `python-subprocess-shell-true-with-variable` | CRITICAL | CWE-78 | `subprocess` with `shell=True` and a non-literal command |
+| `python-pickle-loads-untrusted` | HIGH | CWE-502 | `pickle.loads()` on a non-literal byte string |
+| `python-yaml-load-unsafe` | HIGH | CWE-502 | `yaml.load()` without `SafeLoader` |
 
-### secrets.yaml (2 rules)
+### secrets.yaml (6 rules)
 
 | Rule ID | Severity | CWE | What It Catches |
 |---------|----------|-----|-----------------|
 | `python-hardcoded-secret-assignment` | CRITICAL | CWE-798 | `password = "value"`, `api_key = "value"`, etc. |
 | `python-hardcoded-db-url` | HIGH | CWE-214 | `DB_URL = "postgresql://user:pass@host/db"` |
+| `python-gcp-service-account-inline` | CRITICAL | CWE-798 | Inline GCP service-account JSON |
+| `python-aws-access-key-id-literal` | CRITICAL | CWE-798 | AWS access-key ID literal |
+| `python-slack-webhook-url-literal` | HIGH | CWE-798 | Hardcoded Slack incoming-webhook URL |
+| `python-pem-private-key-literal` | CRITICAL | CWE-798 | PEM-encoded private key literal |
 
 ---
 
@@ -799,7 +847,7 @@ auth:
   header: "Authorization"
 ```
 
-### `.fendix-ignore` (Phase 4 — suppression file)
+### `.fendix-ignore` (suppression file — shipped in Phase 4)
 
 ```
 # Suppress by rule ID
@@ -828,28 +876,40 @@ GET /status
 
 ## Project Status
 
-| Phase | Name | Status | Tests |
-|-------|------|--------|-------|
-| 0 | Foundation | ✅ Complete | — |
-| 1 | Passive Scanner | ✅ Complete | — |
-| 2 | Auth Scanner | ✅ Complete | — |
-| 3 | Python Engine | ✅ Complete | 130 Python tests |
-| 4 | Orchestration & Correlation | Next | — |
-| 5 | Active Scanner | Planned | — |
-| 6 | Reporting (SARIF) | Planned | — |
-| 7 | Distribution | Planned | — |
-| 8 | Documentation | Planned | — |
-| 9 | Hardening | Planned | — |
+Phases 0–9 all shipped. Phase 4 — **Orchestration & Correlation** — is the
+product's wedge, not a future item: `go/internal/engine/orchestrator.go` and
+`correlator.go` / `correlator_v2.go` are the core of every hybrid scan.
 
-**Current totals:** 202 Go tests + 130 Python tests = **332 tests passing**
+| Phase | Name | Status |
+|-------|------|--------|
+| 0 | Foundation | ✅ Complete |
+| 1 | Passive Scanner | ✅ Complete |
+| 2 | Auth Scanner | ✅ Complete |
+| 3 | Python Engine | ✅ Complete |
+| 4 | Orchestration & Correlation | ✅ Complete — **the shipped wedge** |
+| 5 | Active Scanner | ✅ Complete |
+| 6 | Reporting (SARIF) | ✅ Complete |
+| 7 | Distribution | ✅ Complete |
+| 8 | Documentation | ✅ Complete |
+| 9 | Hardening | ✅ Complete |
 
-### What's Next (Phase 4)
+Phases 10–17 (post-v0.2 roadmap through v1.1) are tracked in
+[`tasks/PHASES.md`](../tasks/PHASES.md); shipped scope per release is in
+[`CHANGELOG.md`](../CHANGELOG.md).
 
-- Go spawns Python engine as subprocess
-- Stdin/stdout IPC wired end-to-end
+Test counts are not reproduced here — they drift on every commit. Run
+`make test` (or read the CI run for the tag you care about) for the live number.
+
+### What Phase 4 delivered
+
+All of the following shipped and are documented above:
+
+- Go spawns the Python engine as a subprocess (now opt-in via `--python-engine`
+  since TASK-118 — the default path is native Go)
+- Stdin/stdout NDJSON IPC wired end-to-end (ADR-002)
 - Correlator merges black-box + white-box findings
-- Correlated findings get elevated confidence (1.1x)
-- `.fendix-ignore` suppression file
+- Correlated findings get elevated confidence (1.1× source multiplier)
+- `.fendix-ignore` suppression file (`go/internal/engine/ignore.go`)
 - Baseline diff mode (`--baseline`, `--save-baseline`)
-- `--fail-on` exit code logic
-- End-to-end integration test with fixture project
+- `--fail-on` exit code logic (the 0/1/2 contract)
+- End-to-end integration tests with fixture projects

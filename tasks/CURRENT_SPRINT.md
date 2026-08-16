@@ -1,10 +1,30 @@
 # Fendix — Current Sprint
 
-> Updated every session. Shows exactly what is being worked on right now.
+> ## ⚠️ SUPERSEDED — this file stopped tracking the live sprint at v0.10.0
+>
+> The newest entry below is Phase 17c / **v0.10.0** (2026-05-13). The engine has
+> since shipped v0.11.0, v0.14.x, v0.15.0, v0.19.0, **v1.0.0** (2026-07-01) and
+> **v1.1.0** (2026-07-08) without this file being rolled forward. Nothing below
+> describes work in flight; treat the whole file as a **historical sprint log**
+> for phases 17a–17c.
+>
+> **Current sources of truth instead:**
+>
+> | For | Read |
+> |---|---|
+> | What shipped, per release | [`CHANGELOG.md`](../CHANGELOG.md) — current release **v1.1.0**, 2026-07-08 |
+> | What v1.1 delivered + what is queued for v1.2 | [`NEXT_v110.md`](../NEXT_v110.md) ("Mine-to-do next") |
+> | The v1.1 task breakdown | [`TASK_MANIFEST_v110.md`](../TASK_MANIFEST_v110.md) |
+> | Operator-gated blockers (re-verified 2026-08-05) | [`NEXT_v110.md`](../NEXT_v110.md) §"HARD operator-gated blockers" |
+> | Cross-session working state | `tasks/enterprise-readiness/.session-memory/MEMORY.md` |
+> | Roadmap phase status | [`tasks/PHASES.md`](PHASES.md) |
+>
+> Do not add new sprint entries here without first deciding whether this file is
+> being revived or retired — right now it is neither, which is how it drifted.
 
 ---
 
-## Active Phase: 17c — v0.10 Plugin ecosystem polish — ✅ Complete (4/4; v0.10.0 ready to tag)
+## Historical — Phase 17c: v0.10 Plugin ecosystem polish — ✅ Complete (4/4; shipped as v0.10.0 on 2026-05-13)
 
 **Sprint goal:** Take the plugin system shipped in TASK-113 (Phase 15 / v0.7.0) and polished by TASK-127's compatibility audit (Phase 17b / v0.9.0) and turn it into something an external author can actually pick up. Four tasks: rewrite `docs/plugins.md` for external authors (TASK-128), ship 2 reference plugins in non-Go languages to prove the wire contract is language-agnostic (TASK-129), add `fendix plugins list` / `fendix plugins install <git-url>` CLI subcommands (TASK-130; folds in the symlink-discovery fix surfaced in TASK-127), CI smoke test that runs each reference plugin against a fixture in `make test` (TASK-131).
 

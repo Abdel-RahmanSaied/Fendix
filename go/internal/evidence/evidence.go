@@ -58,6 +58,10 @@ type Evidence struct {
 	ConfidenceReasons []string
 
 	// --- v0.22 provenance: INTERNAL ONLY, never serialized into Finding ---
+	// ToFinding drops every field below. Anything here that confidence.Score
+	// reads must also be carried by ScoringProvenance (provenance.go),
+	// otherwise the rule that reads it is dead for any caller downstream of
+	// the projection — see the comment at the top of provenance.go.
 	// RuleID is the precise rule/check identity (e.g. a semgrep rule id or a
 	// DAST check name) — finer-grained than Category.
 	RuleID string

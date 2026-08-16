@@ -170,6 +170,14 @@ func TestCheckMyThing(t *testing.T) {
 
 ### Adding a white-box check (Python)
 
+> **First check whether it belongs in Python at all.** Secrets detection lives
+> in `go/internal/scanner/secrets/` (TASK-115), Semgrep in
+> `go/internal/scanner/semgrep/` (TASK-116), and dependency-CVE scanning in
+> `go/internal/scanner/deps/`. The Python wrappers for secrets and semgrep were
+> deleted in TASK-118. Python (`--python-engine`, opt-in) now carries only the
+> AST taint analyzer, the route extractor, the OpenAPI spec parser, and its own
+> deps analyzer.
+
 1. **Create the analyzer** in `python/analyzers/`:
 
 ```python
@@ -207,7 +215,18 @@ class MyAnalyzer:
 
 ### Adding a Semgrep rule
 
-Add a YAML rule to `python/rules/`:
+Add a YAML rule to **`go/internal/scanner/semgrep/rules/`** — the pack the Go
+scanner embeds with `//go:embed rules/*.yaml` (see
+`go/internal/scanner/semgrep/scanner.go`). Pick the file matching the rule's
+category (`auth.yaml`, `crypto.yaml`, `injection.yaml`, `secrets.yaml`), or add
+a new `.yaml` there — the embed glob picks up every file in the directory at
+build time.
+
+> ⚠️ **`python/rules/` is dead.** It is read by no code: the Python `semgrep`
+> wrapper (`python/analyzers/semgrep_runner.py`) was deleted in TASK-118 and
+> `python/engine.py` now treats a `semgrep` check request as a no-op. A rule
+> added under `python/rules/` will never run. The directory is kept only as
+> historical reference metadata (see `docs/MODULE_MAP.md`); do not add to it.
 
 ```yaml
 rules:
@@ -219,9 +238,23 @@ rules:
     metadata:
       cwe: CWE-XXX
       category: mycategory
+      confidence: MEDIUM        # HIGH | MEDIUM | LOW — required by the rulepack audit
+      fendix_severity: HIGH     # CRITICAL | HIGH | MEDIUM | LOW | INFO — required
 ```
 
-Semgrep rules are automatically picked up by the Semgrep runner — no registration needed.
+Rules are picked up automatically at build time — no registration needed. Two
+things you **must** do in the same commit:
+
+1. Every rule needs `metadata.category`, `metadata.cwe`, `metadata.confidence`
+   and `metadata.fendix_severity`. `scanner_rulepack_test.go` fails the build
+   otherwise. A rule with `confidence: LOW` may not exceed
+   `fendix_severity: MEDIUM` — the orchestrator would silently downgrade it.
+2. Bump `rulepackTotalCount` in
+   `go/internal/scanner/semgrep/scanner_rulepack_test.go` and the bundled-rule
+   count in `README.md` ("Semgrep Rules" row of the white-box table).
+
+If you add a whole new `.yaml` file, also add its name to `rulepackFiles` in
+that same test.
 
 ---
 

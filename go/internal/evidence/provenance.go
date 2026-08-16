@@ -1,0 +1,192 @@
+package evidence
+
+import "strings"
+
+// ── Carrying scoring provenance across the Evidence → Finding projection ────
+//
+// ToFinding is deliberately lossy: models.Finding is the FROZEN public shape,
+// so the Evidence-internal provenance (probe payload/response, the B4 HTTP
+// response context, correlation lineage) has nowhere to go. That is correct
+// for the report — but the confidence scorer reads exactly those fields, and
+// the orchestrator scores at the very END of finalization, long after the
+// projection. The result was three rules (payload-validated +10, HTTP-context
+// -15, the lineage reason line) that could never fire in production.
+//
+// ProvenanceIndex closes that gap WITHOUT touching the public shape: capture
+// the internal half keyed by the finding's render-stable identity before the
+// projection, then re-attach it to the Evidence the scorer sees. Nothing here
+// is ever serialized.
+
+// ScoringProvenance is the Evidence-internal half that confidence.Score reads
+// but models.Finding has no field for.
+//
+// INVARIANT: every Evidence-internal field the confidence scorer reads must
+// appear here. TestScoringProvenanceCoversEveryScoredField in the confidence
+// package is the drift guard — it scores a fully-populated Evidence, then
+// scores the same Evidence after a projection + restore round-trip, and fails
+// if the two disagree. Add a scored field to Evidence without adding it here
+// and that test goes red.
+type ScoringProvenance struct {
+	// Payload / Response are the active-probe request and its reply; the
+	// scorer awards payloadValidated only when BOTH are present.
+	Payload  string
+	Response string
+	// ResponseContext is the B4 de-escalation tag ("4xx" / "static-asset").
+	ResponseContext string
+	// Lineage is the constituent evidence a correlated result merged from;
+	// it renders the "evidence chain" reason line (0 points, but part of the
+	// explainability contract).
+	Lineage []Evidence
+}
+
+// ProvenanceIndex maps a render-stable finding identity to the scoring
+// provenance of the Evidence it was projected from. Build it immediately
+// before the projection; consume it with Restore immediately before scoring.
+type ProvenanceIndex map[string]ScoringProvenance
+
+// identityKey is the render-stable identity of a finding: the same
+// (Category, Endpoint, Title) triple models.Fingerprint hashes. It is stable
+// across every finalization step that runs between the projection and
+// scoring — escalation and consistency touch Severity only, dedup keeps one
+// group member verbatim, sort/ID-assignment/ignore/baseline reorder or drop
+// but never rewrite these three fields.
+//
+// NUL separators keep the encoding injective (no field may contain NUL).
+func identityKey(category, endpoint, title string) string {
+	return category + "\x00" + endpoint + "\x00" + title
+}
+
+// NewProvenanceIndex indexes the scoring provenance of evs.
+//
+// Two Evidence sharing one identity are merged with agreementOr — see
+// mergeScoringProvenance for why that is both deterministic and conservative.
+func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
+	ix := make(ProvenanceIndex, len(evs))
+	for _, e := range evs {
+		k := identityKey(e.Category, e.Endpoint, e.Title)
+		p := ScoringProvenance{
+			Payload:         e.Payload,
+			Response:        e.Response,
+			ResponseContext: e.ResponseContext,
+			Lineage:         e.Lineage,
+		}
+		if prev, ok := ix[k]; ok {
+			p = mergeScoringProvenance(prev, p)
+		}
+		ix[k] = p
+	}
+	return ix
+}
+
+// Restore returns a copy of evs with each element's scoring provenance
+// re-attached from the index. Fields already set on the input are never
+// overwritten, so restoring Evidence that never lost its provenance is a
+// no-op.
+//
+// A finding that dedup collapsed carries the whole group in
+// AffectedEndpoints; its provenance is the merge over every endpoint in the
+// group, so a de-escalation tag only survives when EVERY occurrence carried
+// it. That is the same "only ever observed on a 4xx" rule the CORS scanner
+// applies per-endpoint, extended across the dedup merge.
+//
+// An identity that is not in the index contributes the zero provenance, which
+// is exactly what an absent entry means — so a miss degrades to today's
+// behaviour (score off the projected fields alone) rather than guessing.
+func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
+	if evs == nil {
+		return nil
+	}
+	out := make([]Evidence, len(evs))
+	copy(out, evs)
+	if len(ix) == 0 {
+		return out
+	}
+	for i := range out {
+		p := ix.lookup(out[i])
+		if out[i].Payload == "" {
+			out[i].Payload = p.Payload
+		}
+		if out[i].Response == "" {
+			out[i].Response = p.Response
+		}
+		if out[i].ResponseContext == "" {
+			out[i].ResponseContext = p.ResponseContext
+		}
+		if len(out[i].Lineage) == 0 {
+			out[i].Lineage = p.Lineage
+		}
+	}
+	return out
+}
+
+// lookup resolves the provenance for one finding-shaped Evidence, merging
+// across its dedup group when it has one.
+func (ix ProvenanceIndex) lookup(e Evidence) ScoringProvenance {
+	if len(e.AffectedEndpoints) == 0 {
+		return ix[identityKey(e.Category, e.Endpoint, e.Title)]
+	}
+	// mergeScoringProvenance is commutative, associative and idempotent, so
+	// the fold is independent of the (already sorted) endpoint order — and of
+	// whether AffectedEndpoints repeats the primary Endpoint.
+	merged := ix[identityKey(e.Category, e.Endpoint, e.Title)]
+	for _, ep := range e.AffectedEndpoints {
+		if ep == e.Endpoint {
+			continue
+		}
+		merged = mergeScoringProvenance(merged, ix[identityKey(e.Category, ep, e.Title)])
+	}
+	return merged
+}
+
+// mergeScoringProvenance folds two provenances for the same finding identity.
+//
+// The rule is "agree or drop": a field survives only when both sides carry
+// the identical value, otherwise it collapses to zero. That makes the merge a
+// commutative/associative/idempotent meet — the result is a pure function of
+// the member SET, not of worker-pool arrival order (the same F-L6
+// determinism property dedup enforces) — and it is the conservative reading:
+// a bonus is awarded only when every occurrence earned it, and a
+// de-escalation applies only when every occurrence was de-escalated.
+func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
+	return ScoringProvenance{
+		Payload:         agreementOr(a.Payload, b.Payload),
+		Response:        agreementOr(a.Response, b.Response),
+		ResponseContext: agreementOr(a.ResponseContext, b.ResponseContext),
+		Lineage:         agreementOrLineage(a.Lineage, b.Lineage),
+	}
+}
+
+func agreementOr(a, b string) string {
+	if a == b {
+		return a
+	}
+	return ""
+}
+
+func agreementOrLineage(a, b []Evidence) []Evidence {
+	if lineageKey(a) == lineageKey(b) {
+		return a
+	}
+	return nil
+}
+
+// lineageKey renders a lineage into a comparable string using exactly the
+// fields lineageTrace reports plus the identity triple, so two lineages
+// compare equal iff they produce the same reason line for the same inputs.
+func lineageKey(l []Evidence) string {
+	if len(l) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, e := range l {
+		sb.WriteString(string(e.Source))
+		sb.WriteByte(0)
+		sb.WriteString(e.Category)
+		sb.WriteByte(0)
+		sb.WriteString(e.Endpoint)
+		sb.WriteByte(0)
+		sb.WriteString(e.Title)
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}

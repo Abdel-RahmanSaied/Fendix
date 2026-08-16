@@ -26,6 +26,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/pluginscmd"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/policy"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/semgrep"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/verifycmd"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -51,6 +52,14 @@ func main() {
 	// ExecuteC (not Execute) returns the command that actually ran, so the
 	// CLI-success-rate metric can record WHICH subcommand was invoked.
 	cmd, err := rootCmd.ExecuteC()
+
+	// Release the temp dir the semgrep scanner extracted its embedded rule
+	// pack into. Every command has finished by here, so nothing holds a
+	// reference. Not a defer: the error paths below call os.Exit, which
+	// skips defers — this must run on the failure paths too.
+	if cleanupErr := semgrep.Cleanup(); cleanupErr != nil {
+		slog.Warn("could not remove extracted semgrep rules", "error", cleanupErr)
+	}
 
 	// Record one phase="cli" event for every invocation — success OR failure
 	// — so the success rate reflects real first-try outcomes (v0.25). Opt-in:
@@ -298,9 +307,17 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("fendix version %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
+			fmt.Fprintf(cmd.OutOrStdout(), "fendix version %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
 		},
 	}
+}
+
+// runScan executes the scan pipeline. It is a package var purely as a test
+// seam: it lets a test observe the context `scan` hands to the orchestrator
+// (and assert it descends from cmd.Context()) without standing up a real
+// scan. Production behaviour is the orchestrator call it wraps.
+var runScan = func(ctx context.Context, cfg *models.ScanConfig, version string) int {
+	return engine.NewOrchestrator(cfg, version).Run(ctx)
 }
 
 func newScanCmd() *cobra.Command {
@@ -507,11 +524,13 @@ func newScanCmd() *cobra.Command {
 				})
 			}
 
-			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			// Derive from cmd.Context() — NOT context.Background() — so an
+			// embedder that drives the CLI via ExecuteContext can cancel the
+			// scan and carry values down. Matches `demo` and `benchmark`.
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer cancel()
 
-			orch := engine.NewOrchestrator(cfg, Version)
-			exitCode := orch.Run(ctx)
+			exitCode := runScan(ctx, cfg, Version)
 			if exitCode != 0 {
 				// Route through main() (instead of os.Exit here) so deferred
 				// cleanup runs and the CLI-success-rate metric is recorded for

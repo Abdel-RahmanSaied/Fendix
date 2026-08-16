@@ -18,6 +18,10 @@
 // and extracted to a per-process temp directory on first Scan call so
 // the user's host semgrep can read them as files (semgrep --config
 // requires a path on disk; it does not read stdin or in-memory rules).
+// That directory is owned by the process, not by any one Scan; call
+// Cleanup() on the way out (the CLI does, after the command tree
+// returns) to remove it. Cleanup is refcounted, so it will not delete
+// rules out from under a scan that is still running.
 //
 // Graceful absence: if semgrep is not on $PATH the package returns
 // ErrSemgrepUnavailable and the orchestrator logs an "install
@@ -32,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,13 +71,22 @@ const titleMaxLen = 120
 //go:embed rules/*.yaml
 var embeddedRules embed.FS
 
-// rulesOnce caches the extracted rules-dir path across Scan calls so
-// repeated scans within one process don't re-extract.
+// Extracted-rule-pack state. The directory is process-wide, not
+// per-Scan: extraction is memoized so repeated scans reuse one copy,
+// and semgrep reads --config off disk for the whole of its run. Removal
+// therefore cannot be tied to any single Scan, so it is refcounted —
+// every scan holds a reference for its duration, and Cleanup() either
+// removes the dir immediately (no scans in flight) or marks it pending
+// so the last scan to finish does the removal.
+//
+// All six fields are guarded by rulesMu.
 var (
-	rulesOnce  sync.Once
-	rulesDir   string
-	rulesErr   error
-	rulesClean func() // optional cleanup for test override
+	rulesMu      sync.Mutex
+	rulesOnce    sync.Once
+	rulesDir     string
+	rulesErr     error
+	rulesRefs    int  // in-flight scans currently reading rulesDir
+	rulesPending bool // Cleanup() was called while rulesRefs > 0
 )
 
 // LookPath wraps exec.LookPath and is var-not-func so tests can
@@ -132,10 +146,13 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 		return nil, ErrSemgrepUnavailable
 	}
 
-	rules, err := ensureRules()
+	// Hold a reference for the whole run: a concurrent Cleanup (process
+	// shutdown) must not remove the --config dir while semgrep reads it.
+	rules, release, err := acquireRules()
 	if err != nil {
 		return nil, fmt.Errorf("semgrep: extract rules: %w", err)
 	}
+	defer release()
 
 	runCtx, cancel := contextWithDefaultTimeout(ctx, defaultTimeout)
 	defer cancel()
@@ -416,11 +433,16 @@ func resolveCWE(r *semgrepResult) []string {
 // of Scan within one process reuse the same directory — the rules are
 // compiled into the binary so re-extraction would be wasted work.
 //
-// The temp dir is intentionally not cleaned up: it lives for the
-// process lifetime; the OS reclaims /tmp/* on reboot. Cleanup on
-// signal would race with in-flight semgrep subprocesses and is
-// strictly worse than the no-op.
+// Callers that will hand the path to a subprocess must use acquireRules
+// instead, so Cleanup can't remove the directory mid-run.
 func ensureRules() (string, error) {
+	rulesMu.Lock()
+	defer rulesMu.Unlock()
+	return ensureRulesLocked()
+}
+
+// ensureRulesLocked is ensureRules with rulesMu already held.
+func ensureRulesLocked() (string, error) {
 	rulesOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "fendix-semgrep-rules-")
 		if err != nil {
@@ -442,6 +464,10 @@ func ensureRules() (string, error) {
 			return os.WriteFile(out, data, 0o644)
 		})
 		if err != nil {
+			// Don't strand a half-populated dir on a failed extraction.
+			if rmErr := os.RemoveAll(dir); rmErr != nil {
+				slog.Warn("semgrep: could not remove partially extracted rules dir", "dir", dir, "error", rmErr)
+			}
 			rulesErr = err
 			return
 		}
@@ -450,15 +476,95 @@ func ensureRules() (string, error) {
 	return rulesDir, rulesErr
 }
 
-// resetRulesCacheForTesting wipes the once-cached rules dir so a new
-// extraction can happen in the next Scan call. Used by tests that need
-// to assert extraction behaviour deterministically.
-func resetRulesCacheForTesting() {
-	if rulesClean != nil {
-		rulesClean()
+// acquireRules extracts the rule pack (once per process) and registers
+// the caller as an in-flight user of the directory. The returned release
+// func must be called — via defer — when the caller no longer needs the
+// path; it is idempotent, so a double release can't drive the refcount
+// negative and let Cleanup delete rules another scan is still reading.
+//
+// Holding a reference defers Cleanup's removal, which is what makes
+// shutdown safe while a semgrep subprocess still has the dir open as
+// its --config.
+func acquireRules() (string, func(), error) {
+	rulesMu.Lock()
+	defer rulesMu.Unlock()
+
+	dir, err := ensureRulesLocked()
+	if err != nil {
+		return "", func() {}, err
 	}
+	rulesRefs++
+	var once sync.Once
+	return dir, func() { once.Do(releaseRules) }, nil
+}
+
+// releaseRules drops one in-flight reference and, if that was the last
+// one and a Cleanup is pending, performs the deferred removal.
+func releaseRules() {
+	rulesMu.Lock()
+	defer rulesMu.Unlock()
+
+	if rulesRefs > 0 {
+		rulesRefs--
+	}
+	if rulesRefs == 0 && rulesPending {
+		if err := removeRulesLocked(); err != nil {
+			// Nothing to return an error to on this path (the last scan
+			// is unwinding), but never swallow it silently — a stale
+			// temp dir is exactly the leak Cleanup exists to prevent.
+			slog.Warn("semgrep: deferred rules cleanup failed", "error", err)
+		}
+	}
+}
+
+// Cleanup removes the temp directory holding the extracted rule pack.
+//
+// Call it once on the way out of a process that may have scanned: the
+// fendix CLI does so after its command tree returns, and long-lived
+// embedders (e.g. a webhook server) should call it on their shutdown
+// path. Without it the extracted directory outlives the process and
+// accumulates in $TMPDIR.
+//
+// Safe in every state: a no-op when nothing was extracted, and when
+// scans are still in flight the removal is deferred until the last one
+// finishes rather than yanking --config away from a running semgrep. A
+// scan after a Cleanup re-extracts.
+func Cleanup() error {
+	rulesMu.Lock()
+	defer rulesMu.Unlock()
+
+	if rulesRefs > 0 {
+		rulesPending = true
+		return nil
+	}
+	return removeRulesLocked()
+}
+
+// removeRulesLocked deletes the extracted dir and re-arms the once so a
+// later scan extracts a fresh copy. Caller must hold rulesMu.
+func removeRulesLocked() error {
+	rulesPending = false
+	dir := rulesDir
 	rulesOnce = sync.Once{}
 	rulesDir = ""
 	rulesErr = nil
-	rulesClean = nil
+	if dir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("semgrep: remove rules dir %q: %w", dir, err)
+	}
+	return nil
+}
+
+// resetRulesCacheForTesting removes the extracted rules dir and wipes
+// the once-cache so a new extraction happens on the next call. Used by
+// tests that need to assert extraction behaviour deterministically.
+func resetRulesCacheForTesting() {
+	rulesMu.Lock()
+	defer rulesMu.Unlock()
+	rulesRefs = 0
+	if err := removeRulesLocked(); err != nil {
+		slog.Warn("semgrep: test rules cleanup failed", "error", err)
+	}
 }

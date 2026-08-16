@@ -48,6 +48,12 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			o.DetectedAt = src.DetectedAt
 			o.Metadata = src.Metadata
 			o.Lineage = src.Lineage
+			// ResponseContext is provenance too (the B4 de-escalation tag).
+			// Omitting it here silently discarded the tag for every finding
+			// that merely passed THROUGH correlation, which is most of them
+			// on a hybrid scan — the 4xx/static-asset penalty then couldn't
+			// fire even once the scorer was given the Evidence.
+			o.ResponseContext = src.ResponseContext
 			continue
 		}
 		// Merged/transformed (typically Source=correlated): record the inputs

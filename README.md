@@ -566,27 +566,36 @@ User CLI Command
 |   Go Binary      |
 |  - CLI (cobra)   |
 |  - HTTP Scanner  |  <-- Black-box: sends real HTTP requests
+|  - Secrets       |  <-- White-box, native Go (TASK-115)
+|  - Semgrep       |  <-- White-box, native Go: shells out to the
+|  - Deps (CVE)    |      host `semgrep` with the embedded rule pack
 |  - Orchestrator  |
 |  - Correlator    |
 |  - Reporters     |
 +--------+---------+
          |
-         | JSON over stdin/stdout
+         | JSON over stdin/stdout (opt-in: --python-engine)
          |
 +--------+---------+
 |  Python Engine   |
-|  - Secrets       |  <-- White-box: analyzes source code
-|  - Semgrep       |
-|  - Spec Parser   |
+|  - Spec Parser   |  <-- White-box: analyzes specs and source code
 |  - AST Analyzer  |
 |  - Deps Checker  |
 +------------------+
 ```
 
+Secrets and Semgrep were rewritten in native Go (TASK-115 / TASK-116) and their
+Python wrappers were deleted in TASK-118. They now run from the Go binary
+whenever `--code` is set — secrets fully in-process, Semgrep by shelling out to
+the host's `semgrep` binary with a rule pack embedded via `//go:embed` (skipped
+with an install hint if `semgrep` isn't on `$PATH`). Neither goes through the
+Fendix Python engine, which is opt-in behind `--python-engine` and carries only
+the spec parser, the AST taint analyzer, and its dependency checker.
+
 **Why two languages?**
 
-- **Go** excels at concurrent HTTP scanning, compiles to a single binary, and provides fast CLI startup.
-- **Python** has the best security analysis ecosystem: Semgrep, Bandit, detect-secrets, and mature AST libraries.
+- **Go** excels at concurrent HTTP scanning, compiles to a single binary, and provides fast CLI startup. It now also owns the secrets scan and the Semgrep shell-out, which is what removed the Python boot tax from the default path.
+- **Python** still has the strongest AST/dataflow tooling for the taint analyzer and OpenAPI spec parsing, so those analyzers stayed there.
 
 The **correlator** is the core differentiator. When the black-box scanner confirms a vulnerability that the static analyzer also flagged, the finding is elevated to `correlated` source with `HIGH` confidence — so you can gate the build on findings both engines independently confirm. (We describe this as a mechanism, not a measured false-positive reduction: no benchmark yet isolates the correlation effect — see [BENCHMARKS.md](BENCHMARKS.md).)
 
@@ -632,7 +641,7 @@ Injection checks (last 3 rows) require `--enable-active`.
 | Check | What It Detects |
 |---|---|
 | **Secrets** | AWS keys, private keys, hardcoded passwords, API keys, JWT secrets, DB URLs, bearer tokens |
-| **Semgrep Rules** | 24 bundled rules across auth (Flask/Django/FastAPI missing decorators, JWT verification disabled), injection (SQL, command, eval/exec, Django ORM raw, SSTI, pickle.loads, yaml.load), secrets (hardcoded credentials/DB URLs, AWS keys, GCP service accounts, Slack webhooks, PEM private keys), and crypto (MD5/SHA1 for passwords, legacy ciphers, `random` used for token generation) |
+| **Semgrep Rules** | 23 bundled rules across auth (Flask/Django/FastAPI missing decorators, JWT verification disabled), injection (SQL, command, eval/exec, Django ORM raw, SSTI, pickle.loads, yaml.load), secrets (hardcoded credentials/DB URLs, AWS keys, GCP service accounts, Slack webhooks, PEM private keys), and crypto (MD5/SHA1 for passwords, legacy ciphers, `random` used for token generation) |
 | **Spec Parser** | Missing security schemes in OpenAPI spec, API keys in query params, unauthenticated endpoints |
 | **AST Analysis** | Python and JavaScript security-relevant patterns via AST parsing |
 | **Dependencies** | Known CVEs in PyPI and npm packages |
@@ -721,7 +730,22 @@ func CheckMyThing(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoint
 4. Register the check in the orchestrator (`go/internal/engine/orchestrator.go`)
 5. Document the check in `docs/checks/mycheck.md`
 
-### Adding a white-box check (Python)
+### Adding a white-box check
+
+**Pick the layer first.** Not every white-box check belongs in Python:
+
+| Kind of check | Where it goes |
+|---|---|
+| Secret / credential patterns | Go — `go/internal/scanner/secrets/` (native since TASK-115) |
+| A Semgrep rule | Go — `go/internal/scanner/semgrep/rules/` (embedded pack; see below) |
+| Dependency CVEs | Go — `go/internal/scanner/deps/` |
+| AST / taint analysis, OpenAPI spec analysis | Python — `python/analyzers/` (runs only under `--python-engine`) |
+
+`python/analyzers/secrets.py` and `python/analyzers/semgrep_runner.py` were
+deleted in TASK-118; asking the Python engine for `secrets` or `semgrep` is a
+no-op that logs a notice. Do not add either kind of check there.
+
+#### Python analyzer (AST / spec)
 
 1. Create a new analyzer in `python/analyzers/` (e.g., `myanalyzer.py`)
 2. Implement the analyzer class:
@@ -780,16 +804,20 @@ fendix/
 ├── go/                          # Go layer — CLI, HTTP scanner, orchestrator
 │   ├── cmd/fendix/main.go       # CLI entrypoint (cobra)
 │   ├── internal/
-│   │   ├── scanner/             # Black-box check implementations
+│   │   ├── scanner/             # Black-box checks + native white-box scanners
+│   │   │   ├── secrets/         # Native Go secrets scan (TASK-115)
+│   │   │   ├── semgrep/         # Semgrep shell-out (TASK-116)
+│   │   │   │   └── rules/       # Bundled Semgrep YAML pack (//go:embed) — THE live pack
+│   │   │   └── deps/            # Dependency CVE scanners
 │   │   ├── engine/              # Orchestrator + correlator
 │   │   ├── models/              # Finding, ScanConfig, severity scoring
 │   │   └── reporters/           # JSON, HTML, SARIF renderers
 │   ├── go.mod
 │   └── go.sum
-├── python/                      # Python layer — static analysis engine
+├── python/                      # Python layer — opt-in via --python-engine
 │   ├── engine.py                # Entrypoint: reads stdin, streams findings
-│   ├── analyzers/               # Secrets, Semgrep, spec parser, AST, deps
-│   ├── rules/                   # Custom Semgrep YAML rules
+│   ├── analyzers/               # Spec parser, AST taint analyzer, deps
+│   ├── rules/                   # Legacy YAML rules — read by NO code; see CONTRIBUTING.md
 │   └── tests/                   # pytest test suite
 ├── docs/
 │   ├── adr/                     # Architecture Decision Records

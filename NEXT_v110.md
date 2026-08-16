@@ -56,12 +56,28 @@ docs.
 - **SANAD seed entry**: absent this run (`/tmp/Sanad-AI-Agent` not present) →
   loud-SKIPs. Restore the checkout + re-verify its labels to add a second seed.
 
-## HARD operator-gated blockers (unchanged from v0.30 — cannot be agent-done)
+## HARD operator-gated blockers (cannot be agent-done)
+
+> **Re-checked 2026-08-05.** This list had been copied forward verbatim since
+> v0.29 without re-verification; two of the three entries were already closed.
+> Re-verify against live state before carrying it forward again.
+
 1. **Java-parser architecture decision** → unblocks the deep Java taint engine +
    any real OWASP Benchmark number. OWASP stays two-layer SKIP until chosen.
-2. **Release secrets + DNS** (`COSIGN_ENABLED`, `get.fendix.dev`) → validate the
-   signed-release pipeline against a real tag.
-3. **Open-source license + announcement** — a business/legal call.
+   **STILL OPEN.** CGo tree-sitter would break the single-static-binary
+   invariant; WASM-via-wazero and javalang-on-Python are the non-breaking
+   options. Java today is 11 line-local regex rules (`TierNativeGo`), never
+   branded as taint.
+2. ~~**Release secrets + DNS** (`COSIGN_ENABLED`, `get.fendix.dev`)~~ —
+   **CLOSED.** Verified 2026-08-05: repo variable `COSIGN_ENABLED=true` (set
+   2026-04-30); `https://get.fendix.dev/install.sh` serves HTTP 200; the
+   `Release` workflow succeeded on both real tags (`v1.0.0`, run
+   `28477488565`; `v1.1.0`, run `28933432097`), each publishing **92 assets**
+   including 28 signature/SBOM/attestation files.
+3. **Open-source license + announcement** — *partially closed.* The **license
+   decision is made**: MIT (`LICENSE`, repo root) with the posture ratified in
+   `docs/adr/ADR-007-open-source.md` (Status: Accepted, 2026-05-01). Only the
+   **public announcement/launch post** remains a business call.
 
 ## Rules that bind
 Rule 1 (build on existing mechanisms — C1–C4 reused the AST/verify machinery),

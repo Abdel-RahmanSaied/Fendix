@@ -1,7 +1,19 @@
 # Fendix — Task Planning Master
 
-> This directory is the **source of truth** for all project work.
-> Update it after every work session. Never let it go stale.
+> This file is the **roadmap-status** source of truth: which numbered phase is
+> done and what its exit criteria were. It is **not** the sprint log — that is
+> `CURRENT_SPRINT.md`, which stopped tracking live work at v0.10.0 and now
+> carries a stale-marker.
+>
+> **Reconciled against the code and `CHANGELOG.md` on 2026-08-05** (current
+> release **v1.1.0**, 2026-07-08). The overview table below had drifted: phases
+> 14 and 15 were still marked "Not Started" long after both shipped in v0.7.0.
+> For per-release detail read [`CHANGELOG.md`](../CHANGELOG.md); for what is
+> queued next read [`NEXT_v110.md`](../NEXT_v110.md) §"Mine-to-do next".
+>
+> The v0.12–v1.1 arc (v0.14.x → v1.1.0) was executed from the `NEXT_vNNN.md` /
+> `TASK_MANIFEST_vNNN.md` handoff files at the repo root rather than through new
+> phase numbers, so the numbered phases stop at 17.
 
 ---
 
@@ -23,15 +35,28 @@
 | 11 | P1 — Coverage parity | ✅ Complete | Reach industry-baseline detection coverage (secrets, static, active, deps, correlator) — shipped as v0.4.0 on 2026-04-29 (folds the planned v0.3 batch into v0.4) |
 | 12 | P2 — Quality & ops | ✅ Complete (7/7 — TASK-092..098; v0.5.0 shipped 2026-04-29) | Schema cleanup, dedup, scan budgets, auth profiles, CI recipes (v0.5) |
 | 13 | P3 — External release | ✅ Complete (v0.6.0 shipped 2026-04-30 — first stable signed release) | Reproducible builds, signed artifacts, docs pass, benchmarks (v1.0) |
-| 14 | P4 — External wedge | 🔲 Not Started | Reposition, prove coverage, lower CI-onramp friction, ship GH App (v1.1) |
-| 15 | P5 — Open & extensible | 🔲 Not Started | Open-source the engine, plugin system, reachability correlation (v1.2) |
-| 16 | P6 — Architecture v2 | 🔲 Not Started | Drop Python boot tax: native-Go simple checks, optional shelled-out Semgrep (v2.0) |
+| 14 | P4 — External wedge | ✅ Complete (shipped as part of v0.7.0 on 2026-05-01 — TASK-106/107/107b/108/109; TASK-105/110/111 landed earlier, in v0.6.1) | Reposition, prove coverage, lower CI-onramp friction, ship GH App |
+| 15 | P5 — Open & extensible | ✅ Complete (shipped as part of v0.7.0 on 2026-05-01 — TASK-112 ADR-007 MIT, TASK-113 plugin system, TASK-114 reachability correlation) | Open-source the engine, plugin system, reachability correlation |
+| 16 | P6 — Architecture v2 | 🔄 Mostly shipped — TASK-115/116/118 pulled forward into Phase 17b (v0.9.0); only TASK-117 (AST analyzer migration) remains, deliberately deferred. See the status note in the Phase 16 section below. | Drop Python boot tax: native-Go simple checks, optional shelled-out Semgrep |
+| 17a | P7 — Detection quality + FP reduction | ✅ Complete (v0.8.0, 2026-05-12) | Native dep-CVE scanners, XSS + command-injection reachability, FP-corpus-tuned correlator |
+| 17b | P7 — Cold-start pulled forward | ✅ Complete (v0.9.0 / v0.9.1, 2026-05-13) | Secrets + Semgrep native in Go; embedded Python distribution dropped |
+| 17c | P7 — Plugin ecosystem polish | ✅ Complete (v0.10.0, 2026-05-13) | External-author plugin docs, non-Go reference plugins, `fendix plugins` CLI, CI smoke test |
+| 17d | P7 — Real-world FP round 2 | ✅ Complete (v0.11.0, 2026-05-13) | FP re-triage, exposed-config detector, path-traversal reachability, `fendix ignore` subcommands, benchmark refresh |
+
+**The numbered phases stop here.** Everything from v0.14.0 (2026-05-16) through
+**v1.1.0** (2026-07-08) — including the v1.0 stability contract and v1.1's
+real-world precision work — was planned and executed from the `NEXT_vNNN.md` /
+`TASK_MANIFEST_vNNN.md` handoff pairs at the repo root, not by extending this
+table. Read [`CHANGELOG.md`](../CHANGELOG.md) for that arc.
 
 Status values: 🔲 Not Started | 🔄 In Progress | ✅ Complete | ⏸ Blocked
 
 Phases 10-13 grew out of the 2026-04-28 real-world test pass — see `tasks/MEMORY.md` "Last Session Summary" for the bug evidence that informed each task.
 
-Phases 14-16 grew out of the 2026-04-30 strategic-advisor session — see `tasks/MEMORY.md` "Strategic Session 2026-04-30" for the analysis that informed each phase. Sequencing rationale: Phase 14 wedges a credible external-evaluation story (numbers + onramp + GH App) on top of v1.0; Phase 15 opens the source + extensibility surface (the high-leverage growth multiplier); Phase 16 retires Python embedding once plugin system + native-Go checks make it optional.
+Phases 14-16 grew out of the 2026-04-30 strategic-advisor session — note that the
+`(v1.1)` / `(v1.2)` / `(v2.0)` labels attached to them at that time were
+*aspirational targets*, and are not the versions the work actually shipped under
+(14 and 15 both landed in v0.7.0; most of 16 landed in v0.9.0). See `tasks/MEMORY.md` "Strategic Session 2026-04-30" for the analysis that informed each phase. Sequencing rationale: Phase 14 wedges a credible external-evaluation story (numbers + onramp + GH App) on top of v1.0; Phase 15 opens the source + extensibility surface (the high-leverage growth multiplier); Phase 16 retires Python embedding once plugin system + native-Go checks make it optional.
 
 ---
 
@@ -503,7 +528,16 @@ TASK-104  Performance benchmark suite: scan time vs endpoint count, memory peak,
 
 ---
 
-## Phase 14 — P4: External wedge (v1.1)
+## Phase 14 — P4: External wedge
+
+**Status (verified 2026-08-05): ✅ Complete.** All seven tasks shipped —
+TASK-105 / TASK-110 / TASK-111 in **v0.6.1** (2026-05-01), and
+TASK-106 / TASK-107 / TASK-107b (GitHub App business logic) / TASK-108 /
+TASK-109 in **v0.7.0** (2026-05-01). The unchecked boxes below are the original
+plan text, kept for the record; they are not open work. *(The "(v1.1)" in this
+heading was the **planned** version label from the 2026-04-30 planning session —
+it is unrelated to the shipped v1.1.0 release, which was the Real-World
+Precision arc. Version labels on phases 14–16 are aspirational, not historical.)*
 
 **Goal:** Turn v1.0 from "credible engineering" into "credible external evaluation." Reposition around the actual wedge (DAST + SAST in one PR check, only fails on confirmed findings); ship the proof (vulnerable-app benchmark numbers); lower the CI onramp (`fendix init`); occupy the GitHub Marketplace channel.
 
@@ -535,7 +569,20 @@ TASK-111  Telemetry statement at top of README ("What Fendix sends to the networ
 
 ---
 
-## Phase 15 — P5: Open & extensible (v1.2)
+## Phase 15 — P5: Open & extensible
+
+**Status (verified 2026-08-05): ✅ Complete on the engineering tasks.** All three
+shipped in **v0.7.0** (2026-05-01): TASK-112 (ADR-007 ratifies MIT, single repo,
+no open-core split), TASK-113 (plugin system over the NDJSON IPC contract, three
+reference plugins — later five, see Phase 17c), TASK-114 (reachability/dataflow
+correlation).
+
+Two non-task exit criteria in the list below are **not** closed and are business
+calls, not engineering: the **open-source launch post** (still open per
+[`NEXT_v110.md`](../NEXT_v110.md) §"HARD operator-gated blockers" item 3) and
+"first 5 community-contributed Semgrep rules merged". *(The "(v1.2)" label in the
+original heading was the planned version, not the shipped one — see the note on
+Phase 14.)*
 
 **Goal:** Open-source the engine + ship the plugin system + build the reachability/dataflow correlation that becomes the long-term moat.
 

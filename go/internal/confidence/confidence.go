@@ -24,14 +24,14 @@ import (
 // Rule deltas. Exposed as consts so the scoring policy is auditable at a
 // glance and a future release can tune it without spelunking the logic.
 const (
-	base               = 35 // a scanner flagged this at all
-	staticEvidence     = 10 // SAST (whitebox/correlated) saw it in source
-	runtimeEvidence    = 10 // DAST (blackbox/correlated) observed it live
-	crossEngineAgree   = 25 // DAST and SAST independently flagged the same issue
-	routeConfirmed     = 10 // a live request confirmed the vulnerable route
-	reachableTaint     = 10 // AST proved a source→sink taint path
-	provenPathBonus    = 5  // confirmed route AND reachable taint chain
-	payloadValidated   = 10 // an active probe payload elicited a confirming response
+	base               = 35  // a scanner flagged this at all
+	staticEvidence     = 10  // SAST (whitebox/correlated) saw it in source
+	runtimeEvidence    = 10  // DAST (blackbox/correlated) observed it live
+	crossEngineAgree   = 25  // DAST and SAST independently flagged the same issue
+	routeConfirmed     = 10  // a live request confirmed the vulnerable route
+	reachableTaint     = 10  // AST proved a source→sink taint path
+	provenPathBonus    = 5   // confirmed route AND reachable taint chain
+	payloadValidated   = 10  // an active probe payload elicited a confirming response
 	tierTreeSitterBump = 5   // highest-trust analyzer tier
 	tierSemgrepPenalty = -5  // lowest-trust analyzer tier (regex breadth)
 	httpContextPenalty = -15 // B4: finding fired on a 4xx / static-asset context
@@ -53,6 +53,15 @@ type Result struct {
 }
 
 // Score computes the confidence Result for ev. Pure and deterministic.
+//
+// CALLER CONTRACT: several rules here (payload-validated, the B4
+// ResponseContext de-escalation, the lineage reason line) read fields that
+// exist ONLY on evidence.Evidence — models.Finding has no home for them. So
+// scoring an Evidence rebuilt from a projected Finding silently skips those
+// rules. Anything downstream of the Evidence→Finding projection must run its
+// input through evidence.ProvenanceIndex.Restore first; the orchestrator does
+// this in stampDecisions, and
+// TestScoringProvenanceSurvivesTheFindingProjection guards it.
 func Score(ev evidence.Evidence) Result {
 	score := base
 	reasons := []string{fmt.Sprintf("+%d base: a scanner produced this finding", base)}

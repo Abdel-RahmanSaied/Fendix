@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/cli"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/metrics"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/spf13/cobra"
 )
 
@@ -130,6 +133,78 @@ func TestBadFlagIsUsageError(t *testing.T) {
 	err := root.Execute()
 	if err == nil || !isUsageError(err) {
 		t.Fatalf("bad flag should be a usage error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Context propagation.
+//
+// `scan` built its signal context from context.Background(), so a
+// caller-supplied context (cmd.Context() / root.ExecuteContext) was silently
+// dropped for the single most important command — an embedder could neither
+// carry values down nor cancel the scan. `demo` and `benchmark` already
+// derive from cmd.Context(); scan must match.
+// ---------------------------------------------------------------------------
+
+type testCtxKey string
+
+func TestScanDerivesContextFromCommand(t *testing.T) {
+	orig := runScan
+	t.Cleanup(func() { runScan = orig })
+
+	var got context.Context
+	runScan = func(ctx context.Context, cfg *models.ScanConfig, version string) int {
+		got = ctx
+		return 0
+	}
+
+	key := testCtxKey("fendix-parent")
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), key, "carried"))
+	defer cancel()
+
+	root := newRootCmd()
+	root.SetArgs([]string{"scan", "--code", t.TempDir()})
+	root.SetOut(new(strings.Builder))
+	root.SetErr(new(strings.Builder))
+	if err := root.ExecuteContext(parent); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if got == nil {
+		t.Fatal("scan never reached the orchestrator")
+	}
+	if v, _ := got.Value(key).(string); v != "carried" {
+		t.Errorf("scan context is not derived from cmd.Context(): value = %q, want %q", v, "carried")
+	}
+
+	// And cancelling the caller's context must cancel the scan's.
+	cancel()
+	select {
+	case <-got.Done():
+	case <-time.After(5 * time.Second):
+		t.Error("cancelling the caller's context did not cancel the scan context")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Command output plumbing.
+// ---------------------------------------------------------------------------
+
+// `version` printed via fmt.Printf straight to os.Stdout, so SetOut had no
+// effect and the command was untestable through the normal cobra pattern.
+func TestVersionWritesToCommandOut(t *testing.T) {
+	cmd := newVersionCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(new(strings.Builder))
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"fendix version", Version, runtime.GOOS, runtime.GOARCH} {
+		if !strings.Contains(got, want) {
+			t.Errorf("version output missing %q; got %q", want, got)
+		}
 	}
 }
 

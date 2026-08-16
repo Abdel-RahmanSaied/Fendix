@@ -14,18 +14,21 @@ This document covers two things:
 
 ## Supported versions
 
-Security fixes are backported only to the most recent minor release.
+Current release: **v1.1.0** (2026-07-08 — see [`CHANGELOG.md`](CHANGELOG.md)).
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.5.x   | ✅ active           |
-| 0.4.x   | ✅ critical only    |
-| < 0.4   | ❌ end of life      |
+| 1.1.x   | ✅ active           |
+| 1.0.x   | ✅ critical only    |
+| < 1.0   | ❌ end of life      |
 
-Pre-1.0 releases follow SemVer at the minor level: `0.5.x` → `0.6.x` is
-considered a minor version bump, and only the latest minor receives
-non-critical fixes. Once Fendix reaches `1.0.0`, this policy will move to
-"latest two minor versions, security fixes only on the previous one."
+The post-1.0 policy announced pre-1.0 is now in force: **the latest two minor
+versions are supported — full security fixes on the current minor, critical
+fixes only on the previous one.** Everything below `1.0.0` (the whole `0.x`
+line) is end of life and will not receive backports; upgrade to `1.1.x`.
+
+A patch release on the supported branch is the delivery vehicle for a fix
+(e.g. `1.1.1` for a `1.1.x` issue).
 
 ## Reporting a vulnerability
 
@@ -206,7 +209,7 @@ Once a fix is ready, we publish it via **all** of:
 
 - A GitHub Security Advisory, with CVE assignment (we are a CNA-eligible
   open-source project under GitHub's CNA umbrella).
-- A patched release on the supported branch (e.g. `0.5.1` for a `0.5.x`
+- A patched release on the supported branch (e.g. `1.1.1` for a `1.1.x`
   fix), with the security advisory linked from the release notes.
 - A `### Security` block in `CHANGELOG.md` summarising the issue and the
   fix.

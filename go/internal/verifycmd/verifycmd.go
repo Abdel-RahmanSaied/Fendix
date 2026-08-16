@@ -181,6 +181,25 @@ func Run(ctx context.Context, findingID string, opts Options) (*Result, error) {
 
 // ─── baseline / dispatch helpers ────────────────────────────────────
 
+// loadBaseline reads a verify baseline. Two on-disk shapes are accepted,
+// mirroring the engine's own baseline loader (engine.loadBaseline):
+//
+//   - the full report envelope — {"metadata":…,"findings":[…]} — written by
+//     `fendix scan --format json --output scan.json`;
+//   - a bare JSON array of findings — [{…},{…}] — written by
+//     `fendix scan --save-baseline <path>` (engine.SaveBaseline).
+//
+// Verify previously handed everything to reporters.ParseJSONReport, which
+// unmarshals into a map[string]any and therefore rejects the array outright:
+// the scanner's own --save-baseline output was not valid input to its own
+// verify command. Accepting the array here fixes that without changing what
+// SaveBaseline writes, so every baseline file already on disk keeps loading.
+//
+// Dispatch is on the first non-whitespace byte rather than "try one, fall
+// back to the other", so a malformed array reports the array parse error
+// instead of the confusing map-shaped one. Anything that is not an array
+// still goes through ParseJSONReport and keeps its SARIF / not-a-report
+// rejections — this widens the accepted shapes, it does not accept any JSON.
 func loadBaseline(path string) (*reporters.JSONReport, error) {
 	if path == "" {
 		return nil, errors.New("baseline path required (pass --baseline <findings.json>)")
@@ -189,7 +208,51 @@ func loadBaseline(path string) (*reporters.JSONReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+
+	switch firstJSONToken(data) {
+	case '[':
+		var findings []models.Finding
+		if err := json.Unmarshal(data, &findings); err != nil {
+			return nil, fmt.Errorf(
+				"parsing %s as a bare findings array (the shape `fendix scan --save-baseline` writes): %w",
+				path, err)
+		}
+		return &reporters.JSONReport{Total: len(findings), Findings: findings}, nil
+
+	case 'n':
+		// engine.SaveBaseline marshals an empty/nil findings slice to the
+		// JSON literal `null` — a clean scan run with --save-baseline. Treat
+		// it as an empty baseline so verify answers not-found-in-baseline
+		// (exit 2, "verify couldn't tell") instead of failing the load.
+		// Anything else starting with 'n' is not valid JSON and falls
+		// through to ParseJSONReport's error.
+		if isJSONNull(data) {
+			return &reporters.JSONReport{}, nil
+		}
+	}
+
 	return reporters.ParseJSONReport(data)
+}
+
+// firstJSONToken returns the first non-whitespace byte of data, or 0 when
+// data is empty or all whitespace. Used only to pick a parse strategy — the
+// chosen parser still validates the document.
+func firstJSONToken(data []byte) byte {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return b
+		}
+	}
+	return 0
+}
+
+// isJSONNull reports whether data is exactly the JSON literal `null`
+// (modulo surrounding whitespace).
+func isJSONNull(data []byte) bool {
+	return strings.TrimSpace(string(data)) == "null"
 }
 
 func findByID(r *reporters.JSONReport, id string) *models.Finding {

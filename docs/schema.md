@@ -5,9 +5,14 @@ A machine-readable JSON Schema (draft-07) lives alongside this file at
 [`schema.json`](./schema.json) and is used by Fendix's own test suite to
 validate every report produced.
 
-The schema is **stable** for the v0.x line within minor versions. Additive
-changes (new optional fields) are allowed in any release. Removals or type
-changes are reserved for major versions.
+The schema is **stable** for the 1.x line: within `1.x`, additive changes (new
+optional fields) are allowed in any release, and removals or type changes are
+reserved for a `2.0.0` major bump. v1.1.0 added no output fields.
+
+Reports produced by `0.x` builds validate against this schema too — every
+change across the `0.x` line was additive — but `0.x` is end of life (see
+[`SECURITY.md`](../SECURITY.md)) and the version-gated notes below (`v0.24`,
+etc.) record when a field first appeared, not a support commitment.
 
 ---
 
@@ -19,6 +24,7 @@ changes are reserved for major versions.
   "summary":   { "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0 },
   "sources":   { "blackbox": 0, "whitebox": 0, "correlated": 0 },
   "total":     0,
+  "decisions": { "total": 0, "confirmed": 0, "blocking": 0, "warning": 0, "informational": 0 },
   "findings":  [ { ... Finding ... }, ... ]
 }
 ```
@@ -29,7 +35,7 @@ changes are reserved for major versions.
 | `summary` | object | yes | Severity counts. Sums to `total`. |
 | `sources` | object | yes | Source counts (blackbox / whitebox / correlated). Sums to `total`. |
 | `total` | integer | yes | Total findings in `findings`. |
-| `decisions` | object | no | **v0.24** decision summary (`StatusCounts`): `total`, `confirmed` (HIGH-confidence), `blocking` (status BLOCK), `warning` (WARN), `informational` (INFO). Additive; absent on pre-v0.24 output. |
+| `decisions` | object | effectively yes | **v0.24+** decision summary (`StatusCounts`): `total`, `confirmed` (HIGH-confidence), `blocking` (status BLOCK), `warning` (WARN), `informational` (INFO). The reporter serialises it **unconditionally** (`JSONReport.Decisions` has no `omitempty`), so every report a current build produces carries it. It stays out of `schema.json`'s root `required` set purely so pre-v0.24 archived reports still validate — a consumer reading current output can rely on it being present. |
 | `findings` | array of `Finding` | yes | Each finding produced by the scan, sorted deterministically. May be empty. |
 
 ---
@@ -41,11 +47,18 @@ changes are reserved for major versions.
   "target":            "https://api.example.com",
   "started_at":        "2026-04-29T10:00:00Z",
   "duration":          "12.5s",
-  "version":           "0.4.0",
-  "mode":              "hybrid",
-  "endpoints_scanned": 21,
-  "active_probes":     false,
-  "checks_run":        ["headers", "cors", "exposure", "ratelimit", "secrets", "semgrep", "deps"]
+  "version":              "1.1.0",
+  "mode":                 "hybrid",
+  "endpoints_scanned":    21,
+  "endpoints_discovered": 34,
+  "endpoints_truncated":  true,
+  "active_probes":        false,
+  "checks_run":           ["headers", "cors", "exposure", "ratelimit", "secrets", "semgrep", "deps"],
+  "scanner_status": [
+    {"name": "secrets",  "state": "ok"},
+    {"name": "semgrep",  "state": "skipped", "detail": "semgrep binary not installed"},
+    {"name": "npm",      "state": "failed",  "detail": "npm audit: exit status 1"}
+  ]
 }
 ```
 
@@ -54,11 +67,35 @@ changes are reserved for major versions.
 | `target` | string | yes | The `--url` value, or empty string for `--code`-only scans. |
 | `started_at` | string (RFC 3339 timestamp) | yes | When the scan started. |
 | `duration` | string (Go-formatted duration, e.g. `"12.5s"`) | yes | Wall-clock duration of the scan. |
-| `version` | string | yes | Fendix version, e.g. `"0.4.0"` or `"dev"`. |
+| `version` | string | yes | Fendix version, e.g. `"1.1.0"` or `"dev"`. |
 | `mode` | string enum | yes | One of `blackbox`, `whitebox`, `hybrid`. |
-| `endpoints_scanned` | integer | yes | Number of endpoints discovered and scanned. May be 0 for `--code`-only. |
+| `endpoints_scanned` | integer | yes | Number of endpoints actually scanned — i.e. *after* the `--max-endpoints` cap was applied. May be 0 for `--code`-only. |
+| `endpoints_discovered` | integer | no | Number of endpoints found **before** `--max-endpoints` truncated the list. Omitted when zero. Without it, `endpoints_scanned: 500` cannot be distinguished from "found exactly 500" vs "found 801, capped to 500". When no cap fires, this equals `endpoints_scanned`. |
+| `endpoints_truncated` | boolean | no | `true` when the `--max-endpoints` cap actually dropped endpoints. Omitted when false. Pair with `endpoints_discovered` to detect a silent coverage gap from a CI gate. |
 | `active_probes` | boolean | yes | Whether `--enable-active` was set. |
 | `checks_run` | array of string | no | Names of checks executed. Omitted when empty. |
+| `scanner_status` | array of `ScannerStatus` | no | Per-scanner outcome for the dependency-CVE, secrets, semgrep and textscan passes. Omitted (empty) for pure black-box scans that run no code scanners. See below. |
+
+### ScannerStatus
+
+```json
+{"name": "govulncheck", "state": "skipped", "detail": "offline mode"}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Scanner identity: `govulncheck`, `pip`, `npm`, `secrets`, `semgrep`, `textscan`. |
+| `state` | string enum | yes | One of `ok`, `skipped`, `failed`. |
+| `detail` | string | no | Short human-readable reason — the skip cause or an error excerpt. Omitted when empty. |
+
+`scanner_status` ends the historical fail-open behaviour where a scanner crash
+was logged at WARN and silently dropped. A `skipped` state is **not** a failure
+— it means the precondition was absent (no manifest, tool not installed) or the
+scanner cannot run in the current mode (e.g. `govulncheck` under `--offline`,
+which needs `vuln.go.dev`). Only `failed` counts as a failure: it feeds
+`--fail-on-scanner-error` and SARIF's `invocations[].executionSuccessful`. A
+consumer that wants "was this scan complete?" should check for any `failed`
+entry rather than inferring coverage from `total`.
 
 ---
 
@@ -177,17 +214,22 @@ receive the suffix because a live scan cannot observe source files.
 | Value | Meaning |
 |---|---|
 | `blackbox` | Produced by the Go HTTP scanner against a live target. |
-| `whitebox` | Produced by the Python static analyser against source / spec. |
+| `whitebox` | Produced by a static analyser against source / spec. Since TASK-115/116 this covers the native-Go secrets scanner and the Go Semgrep shell-out as well as the (opt-in `--python-engine`) Python AST and spec analysers — `source` does not distinguish which; use `source_tier` for that. |
 | `correlated` | Produced by the correlator when both engines agree on the same endpoint + related category. Severity is escalated by one level; confidence is `HIGH`. |
 
 ---
 
 ## Stability guarantees
 
-- New optional fields may be added in minor releases.
+- New optional fields may be added in minor releases (`1.1.0` added none).
 - Existing field types and enum values do **not** change in minor releases.
 - A field marked optional may become required only in a major release.
-- Removing a field is reserved for major releases.
+- Removing a field is reserved for major releases (next: `2.0.0`).
+- "Optional" in `schema.json` means *this schema will validate a report that
+  omits it*, not *current builds may omit it*. Fields whose Go struct tag
+  carries no `omitempty` — `decisions` today — are always emitted by a current
+  build; the optional marking exists so archived reports from older releases
+  still validate.
 
 If you build tooling that consumes Fendix JSON, validate against
 [`schema.json`](./schema.json) and pin the schema version through your CI.

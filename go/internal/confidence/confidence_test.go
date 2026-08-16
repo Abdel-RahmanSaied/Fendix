@@ -134,6 +134,11 @@ func TestReasonsSumToValue(t *testing.T) {
 		{Source: models.SourceBlackbox},
 		{Source: models.SourceWhitebox, SourceTier: models.TierSemgrepShim},
 		{Source: models.SourceCorrelated, RouteConfirmed: true, Reachable: true, ProvenPath: true, SourceTier: models.TierTreeSitter, Payload: "p", Response: "r"},
+		// The B4 de-escalation deltas are negative — the sum must still land
+		// exactly on Value.
+		{Source: models.SourceBlackbox, ResponseContext: "4xx"},
+		{Source: models.SourceBlackbox, Payload: "p", Response: "r", ResponseContext: "static-asset",
+			Lineage: []evidence.Evidence{{Source: models.SourceBlackbox, Category: "headers"}}},
 	}
 	for _, ev := range cases {
 		r := Score(ev)
@@ -170,6 +175,48 @@ func TestScore4xxContextPenalty(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected a 4xx-context reason line")
+	}
+}
+
+// TestScoringProvenanceSurvivesTheFindingProjection is the DRIFT GUARD for the
+// wiring fix. Score is a pure function of Evidence, but the orchestrator can
+// only hand it Evidence rebuilt from the projected models.Finding — a lossy
+// shape — plus whatever evidence.ProvenanceIndex carries across that boundary.
+//
+// So: score the real Evidence, then score the same Evidence after a
+// project → restore round trip, and require an identical Result. Every rule
+// that reads an Evidence-internal field is covered by construction. Add a new
+// scored internal field to evidence.Evidence without adding it to
+// ScoringProvenance and this test goes red — which is exactly how the
+// payload-validated / HTTP-context / lineage rules became dead code.
+func TestScoringProvenanceSurvivesTheFindingProjection(t *testing.T) {
+	ev := evidence.Evidence{
+		Title:    "Missing Content-Security-Policy header",
+		Category: "headers",
+		Endpoint: "GET /assets/app.js",
+		Severity: models.SeverityMedium,
+		Source:   models.SourceBlackbox,
+		// every Evidence-internal field the scorer reads:
+		Payload:         "GET /assets/app.js",
+		Response:        "HTTP/1.1 200 OK",
+		ResponseContext: "static-asset",
+		Lineage:         []evidence.Evidence{{Source: models.SourceBlackbox, Category: "headers"}},
+	}
+
+	want := Score(ev)
+	// Pinned so the guard fails loudly if the deltas are retuned without
+	// revisiting this contract: 35 base + 10 runtime + 10 payload - 15 context.
+	if want.Value != base+runtimeEvidence+payloadValidated+httpContextPenalty {
+		t.Fatalf("unexpected baseline Value %d — retune this test with the rule deltas", want.Value)
+	}
+
+	ix := evidence.NewProvenanceIndex([]evidence.Evidence{ev})
+	restored := ix.Restore(evidence.FromFindings(evidence.ToFindings([]evidence.Evidence{ev})))
+	got := Score(restored[0])
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("score differs across the Finding projection — an Evidence-internal\n"+
+			"field the scorer reads is missing from evidence.ScoringProvenance.\n got=%+v\nwant=%+v", got, want)
 	}
 }
 

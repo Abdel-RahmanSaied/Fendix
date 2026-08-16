@@ -22,8 +22,10 @@ Agents work in parallel where tasks are independent; they synchronize at defined
 
 ### 2. Planner Agent
 
-**Scope:** Read-only. Reads `MEMORY.md`, `PHASES.md`, `CURRENT_SPRINT.md`,
-`FENDIX_CLAUDE_CODE.md` — produces a structured task plan with dependencies mapped.
+**Scope:** Read-only. Reads the bootstrap set in Phase 0 below —
+`tasks/enterprise-readiness/.session-memory/MEMORY.md`, `CHANGELOG.md`,
+`NEXT_v110.md`, `PHASES.md`, `FENDIX_CLAUDE_CODE.md` — and produces a structured
+task plan with dependencies mapped.
 
 **Output contract:**
 
@@ -46,7 +48,9 @@ Agents work in parallel where tasks are independent; they synchronize at defined
 ### 3. Go Engineer Agent
 
 **Scope:** All files under `go/`. Uses `/opt/homebrew/bin/go`.
-**Module path:** `github.com/abdel-rahmanSaied/fendix`
+**Module path:** `github.com/Abdel-RahmanSaied/Fendix` (case-sensitive — this is
+the literal `module` line in `go/go.mod`, and imports look like
+`github.com/Abdel-RahmanSaied/Fendix/internal/models`)
 
 **Responsibilities:**
 - Implement Go tasks from the sprint plan
@@ -133,12 +137,15 @@ to the responsible agent for a fix before proceeding.
 
 | Variable | Value |
 |----------|-------|
-| Working directory | `/Users/asaied/WorkDir/Fendix/fendix-engine` |
+| Working directory | `/Users/saied/WorkDir/Fendix/fendix-services/Fendix` |
 | Go binary | `/opt/homebrew/bin/go` |
 | Python binary | `/opt/homebrew/bin/python3.13` |
-| Go module | `github.com/fendix/fendix` |
+| Go module | `github.com/Abdel-RahmanSaied/Fendix` (per `go/go.mod`) |
 | Go source | `go/` |
 | Python source | `python/` |
+
+Sibling repos in the same workspace (`/Users/saied/WorkDir/Fendix/fendix-services/`):
+`fendix-backend/`, `fendix_frontend/`.
 
 ---
 
@@ -147,10 +154,16 @@ to the responsible agent for a fix before proceeding.
 ### Phase 0 — Bootstrap (Orchestrator + Planner, sequential)
 
 1. Orchestrator reads in order:
-   - `tasks/MEMORY.md`
-   - `tasks/PHASES.md`
-   - `tasks/CURRENT_SPRINT.md`
+   - `tasks/enterprise-readiness/.session-memory/MEMORY.md` — **the canonical,
+     git-synced session memory. Read this first.**
+   - `CHANGELOG.md` — what actually shipped (current release **v1.1.0**)
+   - `NEXT_v110.md` + `TASK_MANIFEST_v110.md` — the live handoff pair; work since
+     v0.12 has been planned here, not in `CURRENT_SPRINT.md`
+   - `tasks/PHASES.md` — roadmap phase status
    - `FENDIX_CLAUDE_CODE.md`
+   - `tasks/MEMORY.md` and `tasks/CURRENT_SPRINT.md` — **both superseded**
+     (see the stale-marker at the top of each). Historical reference only; do
+     not derive "what to do next" from them.
 2. Orchestrator invokes **Planner Agent** → receives the task plan JSON
 3. Orchestrator prints:
    - Current phase + completion %

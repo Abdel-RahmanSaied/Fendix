@@ -1,6 +1,6 @@
 # Secrets Detection Check
 
-**Engine:** Python (white-box)
+**Engine:** Go (white-box) — `go/internal/scanner/secrets/`, native since TASK-115
 **Category:** `secrets`
 **Default severity:** CRITICAL – MEDIUM
 **Active probing:** No (static analysis)

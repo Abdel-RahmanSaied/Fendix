@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/cli"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/engine"
 )
 
@@ -225,10 +226,14 @@ func newValidateCmd() *cobra.Command {
 			return err
 		}
 		if errs > 0 {
-			// Use a sentinel error so cobra returns non-zero without
-			// printing its own "Error: ..." since we already wrote
-			// per-error lines.
-			return fmt.Errorf("%d validation error(s)", errs)
+			// Exit 1, as the Long text above documents. A plain
+			// fmt.Errorf would fall through main.go's generic error
+			// path, which prints "Error: ..." on top of the per-error
+			// lines runValidate already wrote and exits 2 — the code
+			// reserved for "the tool could not produce a usable
+			// result". *cli.ExitError carries the code explicitly and
+			// main.go prints Message verbatim, with no prefix.
+			return cli.ExitWithCode(1, fmt.Sprintf("%d validation error(s)", errs))
 		}
 		return nil
 	}

@@ -541,6 +541,16 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		findings = evidence.ToFindings(evid)
 	}
 
+	// The projection above is lossy BY DESIGN (models.Finding is the frozen
+	// public shape), but three confidence rules — payload-validated (+10),
+	// the B4 HTTP-response-context de-escalation (-15), and the lineage
+	// "evidence chain" reason — read fields that live only on Evidence.
+	// Scoring the projected Finding made all three dead code. Capture the
+	// internal half here, keyed by the render-stable finding identity, so
+	// step 10.5 can score the FULL evidence. Nothing in this index is ever
+	// serialized, so the public JSON/SARIF contract is untouched.
+	prov := evidence.NewProvenanceIndex(evid)
+
 	// 5.4. Escalate non-correlated reachable findings (TASK-125).
 	// The correlator already bumps correlated-reachable findings via
 	// mergeFindings's second escalateSeverity call. This step catches
@@ -668,29 +678,26 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		}
 	}
 
-	// 11. Sanitize credentials from findings before rendering
-	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
-
-	// 11.5. v0.24 Decision Reports: derive a decision + deterministic
+	// 10.5. v0.24 Decision Reports: derive a decision + deterministic
 	// confidence score for every FINAL finding (post escalate/dedup/
-	// consistency/sort/IDs/ignore/baseline/sanitize), and stamp them onto the
-	// findings so all reporters + the exit code read one source of truth.
-	// Confidence is scored from the Finding-projected Evidence; Payload/
-	// Response/Lineage (Evidence-internal) aren't on Finding, so a score may
-	// be a few points lower than on the pre-projection Evidence — deterministic
-	// and correct for the projected provenance (documented in confidence.go).
+	// consistency/sort/IDs/ignore/baseline), and stamp them onto the findings
+	// so all reporters + the exit code read one source of truth.
+	//
+	// This runs BEFORE sanitization, not after: the provenance index is keyed
+	// on the finding's (Category, Endpoint, Title) identity and sanitization
+	// can redact a credential out of Title, which would silently break the
+	// lookup. Scoring off the pre-redaction projection cannot leak anything —
+	// the Evidence it scores is internal and never serialized, only the
+	// status/score/band/reasons are stamped back, and SanitizeFindings copies
+	// those four fields through unchanged.
 	if o.cfg.FailOn != "" && models.SeverityRank(models.Severity(o.cfg.FailOn)) == 0 {
 		// Preserve the legacy invalid-threshold WARN (was in checkFailOn).
 		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
 	}
-	decisions := decision.DecideAll(evidence.FromFindings(findings), o.cfg.FailOn)
-	for i := range decisions {
-		d := decisions[i]
-		findings[i].Status = string(d.Status)
-		findings[i].ConfidenceScore = d.Score.Value
-		findings[i].ConfidenceBand = string(d.Score.Band)
-		findings[i].ConfidenceReasons = d.Score.Reasons
-	}
+	decisions := stampDecisions(findings, prov, o.cfg.FailOn)
+
+	// 11. Sanitize credentials from findings before rendering
+	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
 
 	// 12. Render report
 	if err := o.renderReport(findings, meta); err != nil {
@@ -996,6 +1003,35 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []evidence.Evidence 
 
 	slog.Info("whitebox scan complete", "findings", len(result.Findings))
 	return evidence.FromFindings(result.Findings)
+}
+
+// stampDecisions scores every FINAL finding and stamps the verdict (status,
+// confidence score, band, reason breakdown) onto it in place, returning the
+// decisions so the caller can derive the exit code from the same objects.
+//
+// The scored Evidence is the finding projection with its internal provenance
+// re-attached from prov. That is the whole point of the index: confidence.Score
+// reads Payload/Response/ResponseContext/Lineage, none of which survive
+// Evidence→Finding, so scoring the bare projection left the payload-validated
+// bonus, the B4 HTTP-response-context penalty and the lineage reason line
+// permanently dead. Restoring them here fires the rules without adding a
+// single field to the frozen public Finding shape.
+//
+// A finding whose identity is not in the index simply scores off the projected
+// fields (the pre-fix behaviour) — a miss degrades, it never invents evidence.
+func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, failOn string) []decision.Decision {
+	if len(findings) == 0 {
+		return nil
+	}
+	decisions := decision.DecideAll(prov.Restore(evidence.FromFindings(findings)), failOn)
+	for i := range decisions {
+		d := decisions[i]
+		findings[i].Status = string(d.Status)
+		findings[i].ConfidenceScore = d.Score.Value
+		findings[i].ConfidenceBand = string(d.Score.Band)
+		findings[i].ConfidenceReasons = d.Score.Reasons
+	}
+	return decisions
 }
 
 // escalateNonCorrelatedReachable bumps severity by one level on findings

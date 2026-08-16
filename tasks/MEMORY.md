@@ -1,8 +1,23 @@
 # Fendix — Project Memory
 
-> **Read this file first at the start of every new session.**
-> This is the single source of truth for project state.
-> Update the "Current State" and "Last Session" sections at the end of every session.
+> ## ⚠️ Historical session log — NOT the current session-memory file
+>
+> This file is an append-only log of past work sessions. Its identity table had
+> gone stale for a long time (it claimed version `0.1.0` and a placeholder
+> `github.com/yourusername/fendix` repo against a shipped v1.1.0 engine); the
+> table below was corrected on 2026-08-05, but the **session narrative further
+> down has not been re-verified** and stops well short of the current release.
+>
+> **Read these instead when starting a session:**
+>
+> | For | Read |
+> |---|---|
+> | Cross-session working memory | `tasks/enterprise-readiness/.session-memory/MEMORY.md` (the canonical, git-synced session memory) |
+> | What shipped, per release | [`CHANGELOG.md`](../CHANGELOG.md) |
+> | Roadmap phase status | [`PHASES.md`](PHASES.md) |
+> | What v1.1 did and what's queued for v1.2 | [`NEXT_v110.md`](../NEXT_v110.md) |
+>
+> `CURRENT_SPRINT.md` is also superseded — see its own stale-marker.
 
 ---
 
@@ -13,10 +28,11 @@
 | **Project name** | Fendix |
 | **Type** | Hybrid API & code security scanner |
 | **Tagline** | Find vulnerabilities before attackers do |
-| **Repository** | github.com/yourusername/fendix |
-| **Current version** | 0.1.0 |
-| **License** | MIT |
-| **Started** | [DATE] |
+| **Repository** | github.com/Abdel-RahmanSaied/Fendix |
+| **Go module** | `github.com/Abdel-RahmanSaied/Fendix` (see `go/go.mod`) |
+| **Current version** | 1.1.0 — released 2026-07-08 (`CHANGELOG.md`) |
+| **License** | MIT (`LICENSE`; posture ratified in `docs/adr/ADR-007-open-source.md`) |
+| **First release** | 0.1.0 — 2026-04-11 (`CHANGELOG.md`) |
 
 ---
 

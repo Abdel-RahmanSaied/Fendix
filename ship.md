@@ -1,6 +1,10 @@
 # Shipping Fendix — Release Runbook
 
-> Use this every time you cut a new version. Last updated: 2026-04-29 (after v0.4.1 ship).
+> Use this every time you cut a new version. Last updated: 2026-08-05
+> (reconciled against `.github/workflows/release.yml` at v1.1.0).
+>
+> Operator-only prerequisites that an agent cannot perform (cosign repo
+> variable, DNS, license posture) live in [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md).
 
 ---
 
@@ -43,7 +47,8 @@ The pipeline at `.github/workflows/release.yml` runs end-to-end on every `v*` ta
 
 | Job | What it does | Output |
 |---|---|---|
-| `release` (×3 matrix) | Cross-compiles for linux/amd64, darwin/amd64, darwin/arm64 with embedded Python engine; computes sha256 | Workflow artifacts `fendix-{linux,darwin}-{amd64,arm64}` |
+| `enforce-signing` | Gate: fails the tag unless `vars.COSIGN_ENABLED=true` (or the explicit `allow-unsigned` escape hatch). Runs first; everything else `needs` it | Pass/fail — an unsigned official release cannot happen by accident |
+| `release` (×4 matrix) | Cross-compiles for linux/amd64, **linux/arm64**, darwin/amd64, darwin/arm64 (no embedded Python engine since TASK-118 — `make embed-engine` resets the embed dir to a placeholder); builds `.deb` + `.rpm` via nfpm on the linux targets; cosign-signs binaries + packages + SBOMs; emits CycloneDX + SPDX SBOMs and SLSA v1.0 provenance; computes sha256 | Workflow artifacts `fendix-{linux,darwin}-{amd64,arm64}` plus `.deb`/`.rpm`/`.sig`/`.crt`/`.cdx.json`/`.spdx.json`/`.intoto.jsonl` sidecars |
 | `publish` | Downloads matrix artifacts, creates engine-repo GitHub Release | <https://github.com/Abdel-RahmanSaied/Fendix/releases/tag/vX.Y.Z> |
 | `docker` | Builds + pushes multi-arch container image to GHCR (linux/amd64 + linux/arm64) | `ghcr.io/abdel-rahmansaied/fendix:vX.Y.Z` and `:latest` |
 | `mirror` | Creates mirror release with binaries+sha256, auto-rewrites `Formula/fendix.rb` in mirror's main with fresh SHA256s | <https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/tag/vX.Y.Z> |
@@ -69,11 +74,14 @@ No README update needed for normal patch/minor releases — the install commands
 
 ## Versioning rules of thumb
 
+Fendix is post-1.0 (current release **v1.1.0**, 2026-07-08), so SemVer applies
+at full strength — the pre-1.0 "minor bump = breaking is fine" latitude is gone.
+
 | Bump | When | Examples from history |
 |---|---|---|
-| Major (`vX.0.0`) | Breaking change to anything users depend on (CLI flag removal/rename, JSON schema break, finding ID format change). Avoid until v1.0. | (not yet) |
-| Minor (`v0.X.0`) | New features, backward-compatible. New CLI flag, new check type, new output format, new analyzer. | v0.4.0 = Phase 11 coverage parity |
-| Patch (`v0.X.Y`) | Bug fixes, build/CI/distribution fixes, doc-only changes. No new user-visible features. | v0.4.1 = build infra fixes |
+| Major (`vX.0.0`) | Breaking change to anything users depend on (CLI flag removal/rename, JSON schema break, finding ID format change). The public output shape is frozen and additive-only: `.fendix.yaml` keys, CLI flag names, `models.Finding` JSON field names, SARIF structure, the 0/1/2 exit-code contract. | v1.0.0 = first stable contract |
+| Minor (`v1.X.0`) | New features, backward-compatible. New CLI flag, new check type, new output format, new analyzer, new optional JSON field. | v1.1.0 = real-world precision + FP reduction |
+| Patch (`v1.X.Y`) | Bug fixes, build/CI/distribution fixes, doc-only changes. No new user-visible features. | v0.4.1 = build infra fixes |
 
 When unsure, prefer the larger bump. Cheap.
 
@@ -138,13 +146,20 @@ git push origin vX.Y.Z
 
 These are non-blocking but worth knowing:
 
-- **Docker `version` string is hardcoded as `docker`** — `docker run fendix version` shows `fendix version docker` instead of the real `vX.Y.Z`. Cosmetic; fix is a 1-line change in the Dockerfile to read the real version. Worth folding into the next patch.
-- **linux/arm64 binary missing** — only linux/amd64, darwin/amd64, darwin/arm64 are built today. Cloud runners + Apple Silicon Mac users with Docker Desktop need `--platform linux/amd64` to pull the Docker image. Add to the matrix in Phase 13 / TASK-099.
-- **No signed binaries** — Phase 13 / TASK-099 plans cosign signatures.
-- **`get.fendix.dev` short-URL installer** — not set up yet. Phase 13 / TASK-100.
-- **`.deb` / `.rpm` packages** — Phase 13 / TASK-100.
+- **Docker `version` string is hardcoded as `docker`** — `docker run fendix version` shows `fendix version docker` instead of the real `vX.Y.Z`. Cosmetic; fix is a 1-line change in the Dockerfile (`-X main.Version=docker` at `Dockerfile:35`) to read the real version. Worth folding into the next patch. **Still open.**
 
-When any of these land, update the corresponding section of `README.md` install instructions.
+### Shipped — no longer limitations
+
+Everything below landed in Phase 13 and is live in the pipeline today. Verify
+any of it against `.github/workflows/release.yml` before re-listing it as a gap.
+
+- **linux/arm64 binary** — shipped. The `release` job matrix builds four targets: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64. The Docker `buildx` step publishes a `linux/amd64,linux/arm64` multi-arch manifest, so Apple Silicon + arm64 cloud runners no longer need `--platform linux/amd64`.
+- **Signed binaries** — shipped. Cosign keyless (Sigstore Fulcio + GitHub Actions OIDC) signs each binary, the `.deb`/`.rpm`, the SBOMs and the Docker image, plus SLSA v1.0 build provenance. The `enforce-signing` job **fails any `v*` tag** unless `vars.COSIGN_ENABLED=true` (or the explicit `allow-unsigned` escape hatch), so an unsigned official release cannot happen by accident. Verification recipes: [`SECURITY.md`](SECURITY.md) → "Verifying release artifacts".
+- **`get.fendix.dev` short-URL installer** — shipped (TASK-100). `curl -fsSL https://get.fendix.dev/install.sh | sh` is live; the domain is a CNAME to the public `homebrew-fendix` mirror served via GitHub Pages, with `raw.githubusercontent.com` as the documented fallback. `README.md` install section already leads with it.
+- **`.deb` / `.rpm` packages** — shipped (TASK-100). `nfpm` (pinned `v2.40.0`) builds both from every linux binary in the matrix using `nfpm.yaml`; both are cosign-signed and attached to the release.
+
+`README.md`'s install section and `docs/install.md` already document all four —
+they only need touching when a **new** install path is added.
 
 ---
 

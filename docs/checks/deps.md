@@ -1,6 +1,6 @@
 # Dependency CVE Check
 
-**Engine:** Python (white-box)
+**Engine:** Go (white-box) — `go/internal/scanner/deps/{govulncheck,npm,pip}`, native since TASK-119 (orchestrator step 3.5, disable with `--no-native-deps`). The Python `analyzers/deps.py` path still exists but only runs under the opt-in `--python-engine`; its findings collapse into the native output via dedup.
 **Category:** `deps`
 **Default severity:** CRITICAL – MEDIUM
 **Active probing:** No (static analysis)
