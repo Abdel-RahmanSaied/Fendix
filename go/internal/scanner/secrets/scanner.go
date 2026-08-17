@@ -187,6 +187,33 @@ var patterns = []pattern{
 		cwe:      "CWE-798",
 	},
 	{
+		// A JWT split across lines by implicit string concatenation —
+		//
+		//   JWT_TOKEN = (
+		//       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+		//       "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+		//       "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+		//   )
+		//
+		// is invisible to the three-segment pattern above, because this
+		// scanner is line-based and no single line holds all three segments.
+		// That was a real miss: the accuracy corpus has exactly this shape and
+		// scored it as detected only because a DUPLICATE emission from another
+		// pattern happened to fall inside the scorer's ±6-line tolerance
+		// window. Collapsing those duplicates removed the accident and exposed
+		// the false negative.
+		//
+		// `eyJhbGciOi` is the base64 of `{"alg":"` — the opening of every JOSE
+		// header. Anchoring on it (rather than on a generic `eyJ` prefix)
+		// keeps this specific: it matches a JWT header segment and essentially
+		// nothing else that appears in source.
+		id:       "JWT_TOKEN_HEADER",
+		title:    "Hardcoded JWT token",
+		regex:    regexp.MustCompile(`\beyJhbGciOi[A-Za-z0-9\-_]{4,}`),
+		severity: models.SeverityHigh,
+		cwe:      "CWE-798",
+	},
+	{
 		id:       "DB_CONNECTION_STRING",
 		title:    "Database connection string with credentials",
 		regex:    regexp.MustCompile(`(?i)(?:mongodb|postgresql|postgres|mysql|mssql|redis|sqlite)://[^:@\s]+:[^@\s]+@[^\s"']+`),

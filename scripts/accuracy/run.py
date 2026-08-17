@@ -168,6 +168,33 @@ def score_category(
     fps: list[tuple[int, dict]] = []
     extras: list[tuple[int, dict]] = []
 
+    # One emission per LINE. This harness scores CASES, not findings: a case is
+    # detected or it isn't, and two engines flagging the same line is one
+    # detection, not two.
+    #
+    # Without this the greedy matcher below miscounts in a way that is easy to
+    # miss. Each spare duplicate claims the next unclaimed case within
+    # LINE_TOLERANCE, shifting every later emission one case along, until the
+    # last real emission runs out of cases and lands within tolerance of a
+    # TN line — reported as a false positive on a line that was never flagged.
+    # It cuts the other way too: a duplicate can silently satisfy a case the
+    # scanner never actually detected. Both were live here. The cmdi corpus
+    # scored a phantom FP at line 36, and `secrets` scored 13/13 while the
+    # multi-line JWT on line 24 was not detected at all — a duplicate emission
+    # eleven lines away was filling its slot.
+    #
+    # Deduplicating by line makes the score a function of which lines were
+    # flagged, which is what the corpus actually asserts.
+    seen_lines: set[int] = set()
+    deduped: list[tuple[int, dict]] = []
+    for ep_line, f in sorted(category_findings, key=lambda x: (x[0] or 0, x[1].get("id", ""))):
+        if ep_line is not None:
+            if ep_line in seen_lines:
+                continue
+            seen_lines.add(ep_line)
+        deduped.append((ep_line, f))
+    category_findings = deduped
+
     # Sort emissions by line so we match in source order — gives the
     # CLOSEST unclaimed TP, which is the intuitive pairing.
     for ep_line, f in sorted(category_findings, key=lambda x: x[0] or 0):

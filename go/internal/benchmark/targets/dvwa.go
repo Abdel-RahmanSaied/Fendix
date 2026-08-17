@@ -16,6 +16,7 @@ const (
 	// Juice Shop's v17.1.1 tag pin (v0.28 deferred item, closed).
 	dvwaImage         = "vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7"
 	dvwaHostPort      = 8080
+	dvwaPortEnv       = "FENDIX_BENCH_DVWA_PORT"
 	dvwaContainerPort = 80
 )
 
@@ -36,7 +37,7 @@ type DVWA struct {
 // NewDVWA returns a DVWA target reading ground truth from
 // benchmarks/targets/dvwa-known.json.
 func NewDVWA() *DVWA {
-	return &DVWA{knownPath: knownFilePath("dvwa-known.json"), hostPort: dvwaHostPort}
+	return &DVWA{knownPath: knownFilePath("dvwa-known.json"), hostPort: portFromEnv(dvwaPortEnv, dvwaHostPort)}
 }
 
 // Name implements benchmark.BenchmarkTarget.
@@ -50,6 +51,7 @@ func (d *DVWA) Scan(ctx context.Context, fendixBin string) (*benchmark.ScanResul
 		image:         dvwaImage,
 		hostPort:      d.hostPort,
 		containerPort: dvwaContainerPort,
+		portEnv:       dvwaPortEnv,
 	}
 	if err := c.start(ctx); err != nil {
 		return nil, fmt.Errorf("dvwa: %w", err)

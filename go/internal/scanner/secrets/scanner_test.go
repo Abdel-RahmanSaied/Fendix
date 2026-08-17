@@ -776,3 +776,57 @@ func TestScanWithAllowlist_RefusesSymlinkedParent(t *testing.T) {
 		t.Errorf("fast path read a file outside the repo via a symlinked parent: %d findings", len(got))
 	}
 }
+
+// A JWT split across lines by implicit string concatenation was invisible to
+// the three-segment pattern, because this scanner is line-based and no single
+// line holds all three segments. The accuracy corpus contains exactly this
+// shape and scored it as DETECTED only because a duplicate emission from
+// another pattern fell inside the scorer's tolerance window — the miss was
+// masked, not absent.
+func TestScanDetectsMultiLineJWT(t *testing.T) {
+	dir := t.TempDir()
+	src := "JWT_TOKEN = (\n" +
+		"    \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\"\n" +
+		"    \"eyJzdWIiOiIxMjM0NTY3ODkwIn0.\"\n" +
+		"    \"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\"\n" +
+		")\n"
+	if err := os.WriteFile(filepath.Join(dir, "cfg.py"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	found, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	var jwt int
+	for _, f := range found {
+		if strings.Contains(f.Title, "JWT") {
+			jwt++
+		}
+	}
+	if jwt == 0 {
+		t.Error("multi-line (implicitly concatenated) JWT not detected")
+	}
+}
+
+// The header-anchored pattern must not fire on ordinary base64 or on env-var
+// reads — `eyJhbGciOi` is the base64 of `{\"alg\":\"`, which is what keeps it
+// specific.
+func TestScanMultiLineJWTPatternDoesNotOverfire(t *testing.T) {
+	dir := t.TempDir()
+	src := "import os\n" +
+		"SAFE = os.environ.get(\"API_KEY\")\n" +
+		"BLOB = \"eyJvdGhlciI6ICJqc29uIn0=\"\n" + // base64 JSON, not a JOSE header
+		"TEXT = \"eyes on the prize\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "safe.py"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	found, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range found {
+		if strings.Contains(f.Title, "JWT") {
+			t.Errorf("JWT pattern over-fired on %q: %s", f.Endpoint, f.Evidence)
+		}
+	}
+}

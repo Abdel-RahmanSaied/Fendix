@@ -560,6 +560,13 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// ~one level up. Saturates at CRITICAL.
 	findings = escalateNonCorrelatedReachable(findings)
 
+	// 5.45. Collapse cross-analyzer duplicates at a shared source location.
+	// Several static engines cover the same constructs, and Deduplicate groups
+	// on Title — so two engines describing one sink in different words never
+	// merged and the user saw the same vulnerability two or three times. Runs
+	// before Deduplicate, while each finding is still one (endpoint, title).
+	findings = CollapseDuplicateLocations(findings)
+
 	// 5.5. Deduplicate identical findings across endpoints (TASK-088).
 	// Runs after correlation so correlated findings are grouped too.
 	// "Missing CSP × 21 endpoints" → 1 finding with AffectedEndpoints[21].

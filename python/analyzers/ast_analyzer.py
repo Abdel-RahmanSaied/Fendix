@@ -778,9 +778,22 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
 
     def _expr_is_fully_escaped(self, expr: ast.AST, _depth: int = 0) -> bool:
         """True if every dynamic sub-expression of ``expr`` is an escaped call —
-        so ``f"<b>{html.escape(x)}</b>"`` and ``escape(x) + '<br>'`` are safe XSS
-        args (B5 double-sanitize FP). Constants are inert; a JoinedStr is safe
-        iff every FormattedValue is escaped; a BinOp iff both sides are."""
+        so ``f"<b>{html.escape(x)}</b>"``, ``escape(x) + '<br>'`` and
+        ``"%s%s" % (indent, escape(x))`` are safe XSS args (B5 double-sanitize
+        FP). Constants are inert; a JoinedStr is safe iff every FormattedValue
+        is escaped; a BinOp iff both sides are; a Tuple iff every element is.
+
+        The Tuple arm is what makes ``%``-formatting work. Its right operand is
+        an ast.Tuple, and without a case for it the BinOp arm fell through to
+        ``return False`` — so the B5 fix covered f-strings and ``+`` concat but
+        silently never recognised ``%``-format, the single most common way
+        Django/Jinja code assembles a label. Measured on django-cms 3.11.0:
+        ``mark_safe("%s%s" % (indent, escape(title)))`` was reported as
+        reflected XSS despite the explicit ``escape()``.
+
+        A Constant repeated with ``*`` (``"&nbsp;" * depth``) is also inert: the
+        result can only ever contain characters from the constant, whatever the
+        multiplier evaluates to."""
         if _depth >= _MAX_TAINT_HOPS:
             return False
         if isinstance(expr, ast.Constant):
@@ -793,10 +806,25 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 for v in expr.values
                 if isinstance(v, ast.FormattedValue)
             )
+        if isinstance(expr, ast.Tuple):
+            return all(
+                self._expr_is_fully_escaped(e, _depth + 1) for e in expr.elts
+            )
         if isinstance(expr, ast.BinOp):
+            # `<const> * <anything>` yields only the constant's own characters.
+            if isinstance(expr.op, ast.Mult) and (
+                isinstance(expr.left, ast.Constant) or isinstance(expr.right, ast.Constant)
+            ):
+                return True
             return self._expr_is_fully_escaped(
                 expr.left, _depth + 1
             ) and self._expr_is_fully_escaped(expr.right, _depth + 1)
+        if isinstance(expr, ast.Name):
+            # A Name bound to an inert/escaped expression is itself inert
+            # (`indent = "&nbsp;" * n` then `... % (indent, escape(x))`).
+            for scope in reversed(self._scopes):
+                if expr.id in scope:
+                    return self._expr_is_fully_escaped(scope[expr.id], _depth + 1)
         return False
 
     def _arg_is_sanitised(self, arg: ast.AST, sink_line: int = 1_000_000) -> bool:

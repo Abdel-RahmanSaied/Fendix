@@ -66,6 +66,26 @@ python3 scripts/accuracy/run.py --python-engine bin/fendix
   (trips on the first real regression, e.g. re-introducing the SSRF FN → 0.987).
 - **Caveat:** canonical-pattern corpus we author; it measures whether the full
   `fendix scan` binary flags these shapes, not real-world detection rate.
+- **Run it with `semgrep` installed.** Without semgrep on `$PATH` the scan emits
+  ~4 fewer findings and the score is not comparable to CI's.
+
+> **Scoring correction (2026-08-17).** This 1.000 was previously *partly an
+> artifact*, in both directions, and the harness has been fixed.
+>
+> The scorer matched emitted findings to expected cases within a ±6-line window
+> and let each finding claim the nearest unclaimed case. Two engines flagging the
+> same sink therefore produced a spare emission that claimed the *next* case,
+> shifting every later emission one case along. That manufactured a false
+> positive on `cmdi.py:36` (overall F1 0.987, under the CI floor) and, in the
+> other direction, credited `secrets` with 13/13 while the multi-line JWT on
+> line 24 was **never detected** — a duplicate eleven lines away was filling its
+> slot.
+>
+> Two fixes: the engine now collapses cross-analyzer duplicates at a shared
+> location, and the scorer deduplicates emissions by line (the corpus asserts
+> which *lines* are vulnerable, not how many findings land on one). The missing
+> multi-line JWT detection was then implemented for real. The 1.000 above is the
+> post-fix number and is now earned rather than accidental.
 
 ---
 

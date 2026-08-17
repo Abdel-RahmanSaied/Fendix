@@ -56,6 +56,32 @@ const (
 	TierSemgrepShim SourceTier = "semgrep_shim"
 )
 
+// TrustRank orders the analysis tiers by how much the engine trusts them.
+// Higher wins. Used to pick the representative when two engines report the
+// SAME sink at the same location, so the surviving finding is the one from the
+// most trustworthy analyzer rather than whichever happened to run first.
+//
+// The ordering mirrors the correlator's escalation gate (TASK-125): the
+// tree-sitter taint analyzer proves a dataflow path, native Go rules are
+// in-binary and line-exact, and the semgrep shim buys breadth at the cost of
+// precision until its rule pack clears the F1 gate. An empty tier ("unknown",
+// e.g. the SCA scanners) sorts above only semgrep — it is not a low-precision
+// regex pass, it simply predates the field.
+func (t SourceTier) TrustRank() int {
+	switch t {
+	case TierTreeSitter:
+		return 3
+	case TierNativeGo:
+		return 2
+	case "": // unknown / pre-field (SCA and legacy emitters)
+		return 1
+	case TierSemgrepShim:
+		return 0
+	default:
+		return 1
+	}
+}
+
 // Route binds a finding to the HTTP route that reaches its sink (Proven
 // Path v1). Populated by the Python route extractor for whitebox findings
 // whose enclosing function is a registered Django/Flask/FastAPI handler;

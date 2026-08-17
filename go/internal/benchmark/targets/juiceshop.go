@@ -14,6 +14,10 @@ const (
 	juiceShopImage         = "bkimminich/juice-shop:v17.1.1"
 	juiceShopHostPort      = 3000
 	juiceShopContainerPort = 3000
+	// juiceShopPortEnv moves the host port when 3000 is taken — which on a
+	// developer machine it very often is (it is the default for every Node
+	// dev server, including Juice Shop's own).
+	juiceShopPortEnv = "FENDIX_BENCH_JUICESHOP_PORT"
 )
 
 // JuiceShop is the OWASP Juice Shop DAST benchmark target (Node app —
@@ -26,7 +30,7 @@ type JuiceShop struct {
 // NewJuiceShop returns a Juice Shop target reading ground truth from
 // benchmarks/targets/juiceshop-known.json.
 func NewJuiceShop() *JuiceShop {
-	return &JuiceShop{knownPath: knownFilePath("juiceshop-known.json"), hostPort: juiceShopHostPort}
+	return &JuiceShop{knownPath: knownFilePath("juiceshop-known.json"), hostPort: portFromEnv(juiceShopPortEnv, juiceShopHostPort)}
 }
 
 // Name implements benchmark.BenchmarkTarget.
@@ -40,6 +44,7 @@ func (j *JuiceShop) Scan(ctx context.Context, fendixBin string) (*benchmark.Scan
 		image:         juiceShopImage,
 		hostPort:      j.hostPort,
 		containerPort: juiceShopContainerPort,
+		portEnv:       juiceShopPortEnv,
 	}
 	if err := c.start(ctx); err != nil {
 		return nil, fmt.Errorf("juiceshop: %w", err)

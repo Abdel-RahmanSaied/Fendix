@@ -1520,3 +1520,43 @@ class TestSecretInLogFanOutPerf:
             + "    logging.info(f'out {acc}')\n"
         )
         assert "SEC-PY_SECRET_IN_LOG" in self._scan(src)
+
+
+def _collect_src(src: str) -> list[dict]:
+    """Run the analyzer over a one-file temp tree and return its findings."""
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "mod.py").write_text(src)
+        return _collect(d)
+
+
+class TestDoubleSanitizePercentFormat:
+    """B5 double-sanitize: `%`-format with an escaped value is safe.
+
+    The original fix recognised f-strings and `+` concat but not `%`-format,
+    whose right operand is an ``ast.Tuple`` with no handler — so it fell
+    through to "not escaped". Measured on django-cms 3.11.0,
+    ``mark_safe("%s%s" % (indent, escape(title)))`` was reported as reflected
+    XSS despite the explicit ``escape()``.
+    """
+
+    def test_escaped_percent_format_not_flagged(self) -> None:
+        findings = _collect_src(
+            "from django.utils.html import escape, mark_safe\n"
+            "def render(title, depth):\n"
+            "    indent = '&nbsp;' * depth\n"
+            "    return mark_safe('%s%s' % (indent, escape(title)))\n"
+        )
+        xss = [f for f in findings if "XSS" in f["title"]]
+        assert not xss, f"escaped %-format flagged as XSS: {[f['title'] for f in findings]}"
+
+    def test_unescaped_percent_format_still_flagged(self) -> None:
+        """The Tuple arm must not become a blanket exemption."""
+        findings = _collect_src(
+            "from django.utils.html import mark_safe\n"
+            "def render(request):\n"
+            "    title = request.GET.get('t')\n"
+            "    return mark_safe('<b>%s</b>' % (title,))\n"
+        )
+        assert [f for f in findings if "XSS" in f["title"]], (
+            "unescaped %-format into mark_safe must still be reported"
+        )
