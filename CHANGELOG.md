@@ -7,62 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — cross-analyzer duplicates, and an accuracy number that was partly an artifact
-
-Running the engine over 216K LOC of real OSS (flask, requests, httpx, fastapi,
-django-cms at pinned SHAs) surfaced a cluster of related defects.
-
-- **One vulnerability was reported up to three times.** Several static engines
-  cover the same constructs, and `Deduplicate` groups on
-  `(Title, Category, Severity)` — so two engines describing one sink in
-  different words never merged. On fastapi 0.110.0 a single `SECRET_KEY = "..."`
-  produced three findings at two different severities. New
-  `engine.CollapseDuplicateLocations` keeps the finding from the most-trusted
-  analyzer tier per `(Category, Endpoint)`. It is **cross-tier only**: two
-  findings from the *same* engine at one location are two distinct rules (a
-  Dockerfile legitimately earns both "no USER directive" and "pins to :latest"),
-  and severity is never raised to the group maximum, so the lowest-trust engine
-  cannot escalate through the back door.
-- **The synthetic-corpus F1 was inflated by duplicate emissions.** The accuracy
-  scorer matched *findings* to cases within a ±6-line window, so a spare
-  duplicate claimed the next unclaimed case and shifted every later emission one
-  case along. This cut both ways: it manufactured a false positive on cmdi line
-  36 (holding overall F1 at 0.987, under the 0.990 CI floor) **and** it credited
-  `secrets` with 13/13 while the multi-line JWT on line 24 was never detected at
-  all — a duplicate eleven lines away was filling its slot. The scorer now
-  deduplicates emissions by line, because the corpus asserts which *lines* are
-  vulnerable, not how many findings land on them.
-- **Multi-line JWTs were not detected.** A token split by implicit string
-  concatenation is invisible to a line-based three-segment pattern. Added a
-  header-anchored pattern (`eyJhbGciOi` is the base64 of `{"alg":"`), which
-  closes the real false negative the scorer fix exposed.
-- **`double-sanitize` (B5) only covered half the shapes.** `_expr_is_fully_escaped`
-  handled f-strings and `+` concat but not `%`-format, whose right operand is an
-  `ast.Tuple` with no handler. `mark_safe("%s%s" % (indent, escape(title)))` —
-  the django-cms shape — was reported as reflected XSS despite the explicit
-  `escape()`. Added `Tuple`, `Name`-binding and constant-repetition arms.
-- **The DAST benchmark could not run on a busy machine.** `benchmark run`
-  hardcoded ports 3000/8080 and failed with a raw `exit status 125`, leaving a
-  stale container behind. Port 3000 is the single most commonly occupied port on
-  a developer machine. Added a preflight that names the port and the override
-  (`FENDIX_BENCH_JUICESHOP_PORT` / `FENDIX_BENCH_DVWA_PORT`), plus cleanup on
-  failure.
-
-Verified after the change: synthetic accuracy corpus **F1 1.000** (38 TP / 0 FP /
-0 FN, semgrep installed — the CI configuration); Python taint corpus F1 1.000;
-DVWA and Juice Shop both 100% recall, F1 1.000, +0.0% vs the committed baseline.
-
-## [1.2.0-rc1] - 2026-08-17
+## [1.2.0] - 2026-08-17
 
 **Headline:** the wiring release. v1.1 shipped several real-world-precision
 features whose logic was written and unit-tested but never reached the
 production pipeline — so `BENCHMARKS.md` described behaviour the binary did not
 have. This release connects them, removes two pieces of dead code that were
 actively dangerous to leave in place, and closes four silent-failure paths an
-adversarial audit surfaced. **No output-schema change**: `models.Finding`'s
-serialized shape is byte-identical, and both CI accuracy gates still score
-F1 = 1.000. Every fix is mutation-tested — the defect was reintroduced and the
-test confirmed to fail (14/14).
+adversarial audit surfaced. It also collapses cross-analyzer duplicates — one
+vulnerability was being reported up to three times — and corrects a synthetic
+accuracy score that was partly an artifact of those duplicates in both
+directions.
+
+**No output-schema change**: `models.Finding`'s serialized shape is
+byte-identical. Both CI accuracy gates score F1 = 1.000 (the SAST corpus number
+is now earned rather than accidental — see below), and DVWA and Juice Shop both
+hold 100% recall at +0.0% against the committed baseline. Every fix is
+mutation-tested: the defect was reintroduced and the test confirmed to fail.
 
 Behaviour changes worth reading before upgrading:
 
@@ -163,6 +124,51 @@ real pipeline, so `BENCHMARKS.md` described behaviour the binary did not have.
   name the shipped code that enforces it, guarded by
   `TestEveryFPClassNamesItsMechanism`. This is the drift guard that makes the
   `test-fixture` / `static-asset-context` failure mode unrepeatable.
+
+### Fixed — cross-analyzer duplicates, and an accuracy number that was partly an artifact
+
+Running the engine over 216K LOC of real OSS (flask, requests, httpx, fastapi,
+django-cms at pinned SHAs) surfaced a cluster of related defects.
+
+- **One vulnerability was reported up to three times.** Several static engines
+  cover the same constructs, and `Deduplicate` groups on
+  `(Title, Category, Severity)` — so two engines describing one sink in
+  different words never merged. On fastapi 0.110.0 a single `SECRET_KEY = "..."`
+  produced three findings at two different severities. New
+  `engine.CollapseDuplicateLocations` keeps the finding from the most-trusted
+  analyzer tier per `(Category, Endpoint)`. It is **cross-tier only**: two
+  findings from the *same* engine at one location are two distinct rules (a
+  Dockerfile legitimately earns both "no USER directive" and "pins to :latest"),
+  and severity is never raised to the group maximum, so the lowest-trust engine
+  cannot escalate through the back door.
+- **The synthetic-corpus F1 was inflated by duplicate emissions.** The accuracy
+  scorer matched *findings* to cases within a ±6-line window, so a spare
+  duplicate claimed the next unclaimed case and shifted every later emission one
+  case along. This cut both ways: it manufactured a false positive on cmdi line
+  36 (holding overall F1 at 0.987, under the 0.990 CI floor) **and** it credited
+  `secrets` with 13/13 while the multi-line JWT on line 24 was never detected at
+  all — a duplicate eleven lines away was filling its slot. The scorer now
+  deduplicates emissions by line, because the corpus asserts which *lines* are
+  vulnerable, not how many findings land on them.
+- **Multi-line JWTs were not detected.** A token split by implicit string
+  concatenation is invisible to a line-based three-segment pattern. Added a
+  header-anchored pattern (`eyJhbGciOi` is the base64 of `{"alg":"`), which
+  closes the real false negative the scorer fix exposed.
+- **`double-sanitize` (B5) only covered half the shapes.** `_expr_is_fully_escaped`
+  handled f-strings and `+` concat but not `%`-format, whose right operand is an
+  `ast.Tuple` with no handler. `mark_safe("%s%s" % (indent, escape(title)))` —
+  the django-cms shape — was reported as reflected XSS despite the explicit
+  `escape()`. Added `Tuple`, `Name`-binding and constant-repetition arms.
+- **The DAST benchmark could not run on a busy machine.** `benchmark run`
+  hardcoded ports 3000/8080 and failed with a raw `exit status 125`, leaving a
+  stale container behind. Port 3000 is the single most commonly occupied port on
+  a developer machine. Added a preflight that names the port and the override
+  (`FENDIX_BENCH_JUICESHOP_PORT` / `FENDIX_BENCH_DVWA_PORT`), plus cleanup on
+  failure.
+
+Verified after the change: synthetic accuracy corpus **F1 1.000** (38 TP / 0 FP /
+0 FN, semgrep installed — the CI configuration); Python taint corpus F1 1.000;
+DVWA and Juice Shop both 100% recall, F1 1.000, +0.0% vs the committed baseline.
 
 ## [1.1.0] - 2026-07-08
 
