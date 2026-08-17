@@ -84,6 +84,17 @@ type Evidence struct {
 	// never projected onto Finding, so the public JSON/SARIF contract is
 	// unchanged.
 	ResponseContext string
+	// InTest marks evidence whose sink lives in test / fixture code (B3).
+	// The decision layer de-escalates such a finding from WARN to INFO when
+	// the scan policy asks for it (ScanConfig.DeescalateTests) — evidence is
+	// preserved, never suppressed (Rule 3), and a BLOCK at/above --fail-on is
+	// never downgraded.
+	//
+	// Producers may set this directly; NewProvenanceIndex otherwise derives it
+	// from the endpoint via models.IsTestPath, so every engine (native Go and
+	// the Python bridge alike) gets the same classification without an IPC
+	// change. INTERNAL — never projected onto Finding.
+	InTest bool
 }
 
 // FromFinding lifts a models.Finding into Evidence, copying the render block

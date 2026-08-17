@@ -132,12 +132,14 @@ func WrapTransport(rt http.RoundTripper) http.RoundTripper {
 	return &budgetTransport{inner: rt}
 }
 
-// Transport returns the package-level wrapped http.DefaultTransport.
-// Convenience for scanners that don't customise the transport (every
-// black-box check except the crawler).
-func Transport() http.RoundTripper {
-	return WrapTransport(http.DefaultTransport)
-}
+// NOTE: an unguarded `Transport()` convenience constructor used to live here.
+// It was removed deliberately rather than left unreferenced: it returned a
+// budget-counted transport with NO netguard SSRF policy, so any future check
+// that reached for the obvious-looking helper would have silently opted out of
+// egress filtering. That is the exact bypass scanner.CheckContext was built to
+// close structurally. Checks must obtain their client from
+// scanner.CheckContext (Client / NoFollow); everything else should call
+// WrapTransportGuarded explicitly and state its allowPrivate policy.
 
 // WrapTransportGuarded composes the SSRF egress guard (internal/netguard)
 // UNDERNEATH the budget counter. The returned RoundTripper is:

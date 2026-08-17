@@ -10,9 +10,6 @@
 package decision
 
 import (
-	"regexp"
-	"strings"
-
 	"github.com/Abdel-RahmanSaied/Fendix/internal/confidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -80,44 +77,59 @@ type Options struct {
 	DeescalateTests bool
 }
 
-// testPathRe mirrors the Python analyzer's _is_test_path markers so the Go
-// decision layer and the Python emitter agree on what "test code" means:
-// a tests/ or testing/ dir, a conftest, a test_*.py / *_test.py file, or a
-// fixtures/ dir.
-var testPathRe = regexp.MustCompile(
-	`(^|/)(tests?|testing|conftest)([_/.]|$)|(^|/)test_[^/]*\.py$|_test\.py$|/fixtures?/`,
-)
-
-func isTestPath(endpoint string) bool {
-	ep := strings.ReplaceAll(endpoint, "\\", "/")
-	if i := strings.LastIndex(ep, ":"); i > 0 {
-		ep = ep[:i] // strip :line
-	}
-	return testPathRe.MatchString(ep)
-}
+// testFixtureReason is the 0-point explainability line appended to the score
+// breakdown when the test-fixture de-escalation fires. It carries an explicit
+// "+0" so the published reasons still sum to ConfidenceScore — the
+// de-escalation changes the decision STATUS, never the score (the same
+// zero-delta convention confidence.lineageTrace uses).
+const testFixtureReason = "+0 de-escalated to INFO: finding is in test/fixture code " +
+	"(rule: test-fixture; evidence preserved)"
 
 // DecideWithOptions is Decide plus the v1.1 test-fixture de-escalation (B3).
 // A finding in test/fixture code drops to INFO — evidence preserved (Rule 3),
 // not suppressed — but only from WARN/INFO; a BLOCK (at/above --fail-on) is
 // never silently downgraded, so the gate a team explicitly asked for still
 // fires.
+//
+// CALLER CONTRACT: the de-escalation keys off ev.InTest, which is
+// Evidence-internal and therefore does NOT survive the Evidence→Finding
+// projection. Callers downstream of that projection MUST run their input
+// through evidence.ProvenanceIndex.Restore first; the orchestrator does this in
+// stampDecisions. Deliberately there is no fall back to re-deriving the flag
+// from ev.Endpoint here: for a deduplicated finding the primary endpoint is
+// only one member of the group, so path-matching it directly would let a single
+// test occurrence de-escalate a group that also contains production
+// occurrences. The index's "agree or drop" fold is the only correct source.
 func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decision {
 	d := Decide(ev, failOn)
-	if opts.DeescalateTests && d.Status == StatusWarn && isTestPath(ev.Endpoint) {
+	if opts.DeescalateTests && d.Status == StatusWarn && ev.InTest {
 		d.Status = StatusInfo
 		d.Reason = "de-escalated to INFO: finding is in test/fixture code (rule: test-fixture; evidence preserved)"
+		// Surface the de-escalation in the published breakdown too. Without
+		// this the report shows a finding silently demoted to INFO with
+		// nothing in confidence_reasons explaining why.
+		d.Score.Reasons = append(append([]string(nil), d.Score.Reasons...), testFixtureReason)
 	}
 	return d
 }
 
-// DecideAll maps a slice of evidence to decisions under one threshold.
+// DecideAll maps a slice of evidence to decisions under one threshold, with
+// default Options (no test-fixture de-escalation).
 func DecideAll(evs []evidence.Evidence, failOn string) []Decision {
+	return DecideAllWithOptions(evs, failOn, Options{})
+}
+
+// DecideAllWithOptions maps a slice of evidence to decisions under one
+// threshold and one policy. This is the production entry point the
+// orchestrator uses; DecideAll is the zero-Options convenience wrapper kept
+// for callers that predate the policy.
+func DecideAllWithOptions(evs []evidence.Evidence, failOn string, opts Options) []Decision {
 	if evs == nil {
 		return nil
 	}
 	out := make([]Decision, len(evs))
 	for i, ev := range evs {
-		out[i] = Decide(ev, failOn)
+		out[i] = DecideWithOptions(ev, failOn, opts)
 	}
 	return out
 }

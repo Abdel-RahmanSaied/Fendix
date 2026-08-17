@@ -40,6 +40,26 @@ Missing or misconfigured HTTP security headers that leave the application vulner
 }
 ```
 
+## Confidence context (de-escalation, not suppression)
+
+Two response contexts lower a header finding's **confidence score** by 15 points
+without removing the finding — the header genuinely is absent, so the evidence is
+preserved (Product Constitution Rule 3) and the reason appears in the finding's
+`confidence_reasons`:
+
+| Context | When | Why it lowers confidence |
+|---|---|---|
+| `4xx` | Response was 401 / 403 / 405 / 406 / 429 | This is the auth-gated response an unauthenticated probe sees, not the app's real response surface |
+| `static-asset` | Path is a static file (`.js`, `.css`, images, fonts, `.map`, `favicon.ico`, `robots.txt`, `sitemap.xml`) | Served by a CDN or static-file middleware, so an app-layer header expectation is a weaker signal than on an API route |
+
+`4xx` takes precedence when both apply. Separately, responses with **404 / 410 /
+5xx** are skipped outright — those headers are framework-controlled noise, not a
+finding at reduced confidence.
+
+When a finding is deduplicated across several endpoints, the context survives only
+if **every** occurrence in the group carried it, so one static asset cannot
+de-escalate a group that also covers real API routes.
+
 ## References
 
 - [CWE-693: Protection Mechanism Failure](https://cwe.mitre.org/data/definitions/693.html)

@@ -161,6 +161,8 @@ func captureSetters(captured map[string]any) ApplyTo {
 		SetMaxDuration:   func(v time.Duration) { captured["max-duration"] = v },
 		SetIgnorePath:    func(v string) { captured["ignore"] = v },
 		SetAuthProfile:   func(v string) { captured["profile"] = v },
+
+		SetDeescalateTests: func(v bool) { captured["deescalate-tests"] = v },
 	}
 }
 

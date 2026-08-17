@@ -40,6 +40,48 @@ var validFPClasses = map[FPClass]bool{
 // Valid reports whether c is a recognized FP class.
 func (c FPClass) Valid() bool { return validFPClasses[c] }
 
+// fpClassMechanism names, for every FP class, the shipped code that actually
+// enforces it. The taxonomy is a claim about the engine's behaviour — a class
+// that no code implements makes BENCHMARKS.md's per-class table a promise the
+// binary does not keep, which is exactly what happened to `test-fixture` and
+// `static-asset-context` before v1.1's wiring pass (both were scored/labelled
+// but had no reachable producer).
+//
+// TestEveryFPClassNamesItsMechanism is the drift guard: add a class here
+// without an implementation, or delete an implementation without retiring its
+// class, and the build goes red. Keep the strings short and greppable — they
+// are the pointer a reader follows from a label to the code.
+var fpClassMechanism = map[FPClass]string{
+	FPConstantAuthority: "python/analyzers/ast_analyzer.py:_url_authority_is_constant " +
+		"(settings.* / UPPER_CASE / literal scheme+host fixes the SSRF authority)",
+	FPReceiverConfusion: "python/analyzers/ast_analyzer.py:_receiver_is_http_client " +
+		"(redis .get/.delete is not an HTTP client)",
+	FPSafeAPIMisread: "python/analyzers/ast_analyzer.py:_is_psycopg_sql_composable " +
+		"(psycopg2 sql.SQL(...).format is not str.format)",
+	FPConstFoldMiss: "python/analyzers/ast_analyzer.py:_sql_expr_is_constant " +
+		"(const-folds %-format / join / ternary SQL)",
+	FPGuardDominance: "python/analyzers/ast_analyzer.py:_name_is_membership_guarded " +
+		"(the membership guard must dominate the sink)",
+	FPTestFixture: "internal/decision.DecideWithOptions + models.ScanConfig.DeescalateTests " +
+		"(test/fixture findings demote WARN→INFO; evidence preserved, --fail-on still blocks)",
+	FPHTTP4xxContext: "internal/scanner.responseContextFor → \"4xx\" + " +
+		"internal/confidence httpContextPenalty",
+	FPStaticAssetCtx: "internal/scanner.responseContextFor → \"static-asset\" + " +
+		"internal/confidence httpContextPenalty",
+	FPDoubleSanitize: "python/analyzers/ast_analyzer.py:_expr_is_fully_escaped " +
+		"(Markup / escaped f-string wrap)",
+	FPHeuristicOverfire: "python/analyzers/ast_analyzer.py:_looks_like_password_id " +
+		"(weak-crypto skips metadata-named identifiers)",
+	FPVersionRangeFloor: "internal/scanner/deps/npm.ErrLockfileMissingButPackageJsonPresent → " +
+		"engine.recordNpmScanResult INFO advisory (never assert CVEs from caret/tilde ranges)",
+	FPFabricatedChain: "python/analyzers/ast_analyzer.py:_is_path_traversal_sink " +
+		"(a from-imported non-filesystem open() is not traversal)",
+}
+
+// Mechanism returns the shipped code that enforces class c, or "" when c is not
+// a recognized class.
+func (c FPClass) Mechanism() string { return fpClassMechanism[c] }
+
 // Verdict is a label's ground-truth call for a matched finding.
 type Verdict string
 
@@ -247,7 +289,12 @@ type RealWorldResult struct {
 	PerClass map[FPClass]int
 	// Unknowns is the triage list: findings that matched no label.
 	Unknowns []models.Finding
-	LOC      int
+	// LabelNotes are the matched labels that carry a reviewer `note:` — the
+	// recorded justification for a tp/fp verdict. Collected so the triage
+	// report can show WHY a finding was classed the way it was; without it the
+	// note field is written by humans and read by nobody.
+	LabelNotes []Label
+	LOC        int
 }
 
 // Precision is over LABELED findings only (tp/(tp+fp)); unknowns are excluded
@@ -288,6 +335,9 @@ func ScoreRealWorld(entry string, ls *LabelSet, findings []models.Finding, loc i
 			continue
 		}
 		labelHit[matched] = true
+		if n := ls.Labels[matched].Note; n != "" {
+			r.LabelNotes = append(r.LabelNotes, ls.Labels[matched])
+		}
 		switch ls.Labels[matched].Verdict {
 		case VerdictTP:
 			r.TruePos++

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Abdel-RahmanSaied/Fendix/internal/decision"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
@@ -43,10 +44,10 @@ func TestStampDecisionsAppliesHTTPContextPenalty(t *testing.T) {
 	untagged[0].ResponseContext = ""
 
 	taggedF := evidence.ToFindings(tagged)
-	stampDecisions(taggedF, evidence.NewProvenanceIndex(tagged), "")
+	stampDecisions(taggedF, evidence.NewProvenanceIndex(tagged), "", decision.Options{})
 
 	untaggedF := evidence.ToFindings(untagged)
-	stampDecisions(untaggedF, evidence.NewProvenanceIndex(untagged), "")
+	stampDecisions(untaggedF, evidence.NewProvenanceIndex(untagged), "", decision.Options{})
 
 	if taggedF[0].ConfidenceScore >= untaggedF[0].ConfidenceScore {
 		t.Errorf("4xx-context finding scored %d, want lower than the untagged %d — the B4 penalty did not reach the finding",
@@ -79,7 +80,7 @@ func TestStampDecisionsAwardsPayloadValidation(t *testing.T) {
 		Response:   "HTTP 500 — SQL syntax error near \"'\"",
 	}}
 	findings := evidence.ToFindings(evid)
-	stampDecisions(findings, evidence.NewProvenanceIndex(evid), "")
+	stampDecisions(findings, evidence.NewProvenanceIndex(evid), "", decision.Options{})
 
 	// base 35 + static 10 + reachable 10 + tree-sitter 5 + payload 10 = 70.
 	if findings[0].ConfidenceScore != 70 {
@@ -113,7 +114,7 @@ func TestStampDecisionsRecordsLineage(t *testing.T) {
 		},
 	}}
 	findings := evidence.ToFindings(evid)
-	stampDecisions(findings, evidence.NewProvenanceIndex(evid), "")
+	stampDecisions(findings, evidence.NewProvenanceIndex(evid), "", decision.Options{})
 
 	joined := strings.Join(findings[0].ConfidenceReasons, "\n")
 	if !strings.Contains(joined, "evidence chain") ||
@@ -153,7 +154,7 @@ func TestProvenanceSurvivesFinalizationPipeline(t *testing.T) {
 	for i := range findings {
 		findings[i].Fingerprint = models.Fingerprint(findings[i])
 	}
-	stampDecisions(findings, prov, "")
+	stampDecisions(findings, prov, "", decision.Options{})
 
 	byTitle := map[string]models.Finding{}
 	for _, f := range findings {
@@ -189,7 +190,7 @@ func TestDedupGroupOnlyPenalizedWhenEveryOccurrenceWas(t *testing.T) {
 		if len(findings) != 1 {
 			t.Fatalf("expected the group to dedup to 1 finding, got %d", len(findings))
 		}
-		stampDecisions(findings, prov, "")
+		stampDecisions(findings, prov, "", decision.Options{})
 		return findings[0]
 	}
 
@@ -250,7 +251,7 @@ func TestStampDecisionsKeepsStatusAndExitContract(t *testing.T) {
 		{Title: "B", Category: "headers", Endpoint: "GET /b", Severity: models.SeverityLow, Source: models.SourceBlackbox},
 	}
 	findings := evidence.ToFindings(evid)
-	decisions := stampDecisions(findings, evidence.NewProvenanceIndex(evid), "HIGH")
+	decisions := stampDecisions(findings, evidence.NewProvenanceIndex(evid), "HIGH", decision.Options{})
 
 	if len(decisions) != len(findings) {
 		t.Fatalf("decisions/findings length mismatch: %d vs %d", len(decisions), len(findings))
@@ -274,10 +275,10 @@ func TestStampDecisionsKeepsStatusAndExitContract(t *testing.T) {
 // TestStampDecisionsEmptyInput — a scan with zero findings must not panic and
 // must produce no decisions (exit 0).
 func TestStampDecisionsEmptyInput(t *testing.T) {
-	if got := stampDecisions(nil, nil, "HIGH"); len(got) != 0 {
+	if got := stampDecisions(nil, nil, "HIGH", decision.Options{}); len(got) != 0 {
 		t.Errorf("stampDecisions(nil) = %v, want none", got)
 	}
-	if got := stampDecisions([]models.Finding{}, evidence.ProvenanceIndex{}, ""); len(got) != 0 {
+	if got := stampDecisions([]models.Finding{}, evidence.ProvenanceIndex{}, "", decision.Options{}); len(got) != 0 {
 		t.Errorf("stampDecisions(empty) = %v, want none", got)
 	}
 }

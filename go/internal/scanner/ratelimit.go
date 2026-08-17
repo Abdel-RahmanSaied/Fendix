@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
 	ev "github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
@@ -23,21 +22,8 @@ const rateLimitProbeCount = 20
 // (inconclusive). Half the probe count, but never fewer than 5.
 const rateLimitMinProbes = rateLimitProbeCount / 2
 
-// staticFilePathRe matches endpoints that serve a static file rather
-// than an API route. Rate-limiting these is not a meaningful security
-// control — they're served by CDNs / static-file middleware, not the
-// app's API layer. TASK-123 / FP corpus pattern P3: juice-shop
-// /.DS_Store produced a noise "no rate limiting" finding.
-//
-// Conservative match: only common static-asset extensions and a handful
-// of well-known dotfiles. Misses are fine — the finding emits as
-// before; FPs are not silently introduced by an overly-permissive regex.
-var staticFilePathRe = regexp.MustCompile(
-	`(?i)(?:` +
-		`\.(?:DS_Store|map|ico|woff2?|ttf|otf|css|js|mjs|png|jpe?g|gif|svg|webp|avif|bmp|pdf|zip|gz|tar|wasm)$` +
-		`|/(?:robots|humans|security|favicon|sitemap)\.(?:txt|xml)$` +
-		`)`,
-)
+// staticFilePathRe / isStaticAssetPath now live in responsecontext.go, shared
+// with the header and CORS checks' B4 de-escalation tagging.
 
 // rateLimitHeaders are headers that indicate rate limiting is in place.
 var rateLimitHeaders = []string{
@@ -74,12 +60,23 @@ func CheckRateLimit(ctx context.Context, cfg *models.ScanConfig, endpoint Endpoi
 // the per-job deadline comes from ctx (runCheck).
 func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
-	// TASK-123: skip rate-limit check on static-file endpoints. The
-	// check costs N requests per endpoint and the finding it produces
-	// ("no rate limiting on /favicon.ico") is noise that doesn't
-	// describe a real attack surface.
-	if staticFilePathRe.MatchString(endpoint.Path) {
-		slog.Debug("rate-limit check skipped (static-file path)",
+	// TASK-123: skip the rate-limit check entirely on static-file endpoints.
+	//
+	// This is a SKIP, not a B4 de-escalation, and the distinction is
+	// deliberate. The header/CORS checks tag static-asset findings
+	// (responseContextFor) because the underlying observation — "this response
+	// carries no CSP", "this response reflects any Origin" — is a real
+	// security fact that context merely makes less important. Here there is no
+	// comparable fact: rate limiting on a CDN/static-middleware-served file is
+	// not an app-layer control at all, so "no 429 within 20 requests on
+	// /favicon.ico" was never a security signal to preserve. Per Rule 3 we
+	// de-escalate evidence; we do not manufacture evidence in order to
+	// de-escalate it.
+	//
+	// Skipping also avoids spending 20 requests of the scan budget per static
+	// endpoint to produce that non-signal.
+	if isStaticAssetPath(endpoint.Path) {
+		slog.Debug("rate-limit check skipped (static-file path — no app-layer signal)",
 			"endpoint", fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path))
 		return nil
 	}

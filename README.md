@@ -333,7 +333,20 @@ fendix report --input findings.json --format html --output report.html
 | `fendix scan` | Run a security scan against an API, source code, or both |
 | `fendix report` | Re-render a saved JSON findings file to another format |
 | `fendix verify <id>` | Re-run a single finding by ID to verify it still exists |
+| `fendix demo` | Spin up OWASP Juice Shop in Docker and scan it — a real report in <60s |
+| `fendix init` | Generate CI workflow + `.fendix.yaml` + `.fendix-ignore` starters |
+| `fendix hook` | Manage the git pre-commit hook (`install` / `status` / `uninstall`) |
+| `fendix ignore` | Inspect and maintain `.fendix-ignore` (`list` / `validate` / `prune`) |
+| `fendix plugins` | List and install out-of-tree plugins (`list` / `install <git-url>`) |
+| `fendix db` | Manage the offline CVE snapshot for air-gapped scans (`update` / `list` / `verify`) |
+| `fendix engine` | Inspect or pin the Python whitebox engine (`info` / `sync`) |
+| `fendix benchmark` | Run the vulnerable-app benchmark targets and score against baselines |
+| `fendix notify` | Post findings above a severity floor to Slack / Teams (CI step) |
+| `fendix jira` | Idempotently sync findings to Jira issues (CI step) |
+| `fendix metrics` | Show locally-recorded scan metrics (opt-in via `FENDIX_METRICS`) |
 | `fendix version` | Print version, OS, and architecture information |
+
+Run `fendix <command> --help` for the flags of any subcommand.
 
 ### Scan Flags
 
@@ -346,12 +359,14 @@ fendix report --input findings.json --format html --output report.html
 | `--auth-type` | string | auto-detect | Auth type: `bearer`, `apikey`, `basic`, `cookie` |
 | `--auth-header` | string | `Authorization` | Custom auth header name |
 | `-o, --output` | string | stdout | Output file path |
-| `-f, --format` | string | `json` | Output format: `json`, `html`, `sarif` |
+| `-f, --format` | string | `json` | Output format: `json`, `html`, `sarif`, `pdf` |
 | `--fail-on` | string | | Exit 1 if findings at this severity: `CRITICAL`, `HIGH`, `MEDIUM` |
 | `--fail-on-scanner-error` | bool | `false` | Exit 2 if any scanner (`govulncheck`/`pip`/`npm`/`secrets`/`semgrep`/`textscan`) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners don't count. |
+| `--deescalate-tests` | bool | `true` | Report findings in test/fixture code (`tests/`, `test_*.py`, `*_test.py`, `conftest`, `fixtures/`) as `INFO` instead of `WARN`. The finding and its evidence are still emitted — this changes triage status, not visibility. A finding at or above `--fail-on` still blocks. Pass `--deescalate-tests=false` to treat test-code findings like production ones. |
 | `--baseline` | string | | Path to previous findings JSON for diff mode |
 | `--save-baseline` | string | | Save current findings to this path |
 | `--enable-active` | bool | `false` | Enable active injection probes |
+| `--checks` | list | `auth,injection,deps` | Override which checks the Python whitebox engine runs. Only effective with `--python-engine`; the native Go scanners always run when `--code` is set. |
 | `--offline` | bool | `false` | Air-gapped mode: read dep CVEs from a local snapshot instead of `api.osv.dev`/`vuln.go.dev`. Makes zero outbound calls; the Go dep scanner is recorded `SKIPPED`. |
 | `--offline-db` | string | `~/.fendix/offline-db.json` | Path to the offline-db snapshot (build it with `fendix db update`). Only effective with `--offline`. |
 | `-w, --workers` | int | `10` | Concurrent HTTP workers |
@@ -599,7 +614,37 @@ the spec parser, the AST taint analyzer, and its dependency checker.
 
 The **correlator** is the core differentiator. When the black-box scanner confirms a vulnerability that the static analyzer also flagged, the finding is elevated to `correlated` source with `HIGH` confidence — so you can gate the build on findings both engines independently confirm. (We describe this as a mechanism, not a measured false-positive reduction: no benchmark yet isolates the correlation effect — see [BENCHMARKS.md](BENCHMARKS.md).)
 
-**Severity scoring model:**
+**How severity is determined:**
+
+Severity is assigned discretely, then escalated and capped — not computed from
+a formula at report time:
+
+1. **The check assigns it.** Each check emits its own severity (e.g. wildcard
+   CORS origin *with credentials* → CRITICAL).
+2. **Correlation escalates it.** A correlated finding goes up one level; up a
+   second level when the white-box half proved a reachable taint chain; and
+   straight to CRITICAL for a [Proven Path](#architecture) (route-confirmed +
+   reachable). Semgrep-tier findings are excluded from both escalations until
+   their rule pack clears the F1 gate.
+3. **Reachability escalates the pure-SAST case** one level when an AST taint
+   chain is proven but nothing correlated.
+4. **Confidence caps it.** `LOW` confidence caps severity at MEDIUM, `MEDIUM`
+   caps at HIGH; only `HIGH` confidence may carry CRITICAL. Enforced on every
+   finding before any report is written.
+
+Separately, every finding carries a **deterministic 0–100 confidence score**
+(`confidence_score`) with a per-rule plain-text breakdown in
+`confidence_reasons` — base 35, cross-engine agreement +25, reachable taint
++10, route confirmed +10, validated probe payload +10, analyzer tier ±5,
+low-trust HTTP context −15. There is no AI anywhere in that path; the same
+evidence always yields the same score.
+
+<details>
+<summary>Reference scoring model (spec, not the runtime path)</summary>
+
+`go/internal/models/scoring.go` also carries the multiplicative model the
+confidence cap in step 4 is derived from. It is the published spec and is
+unit-tested, but **no scanner calls it** — severity comes from steps 1–4 above.
 
 ```
 Score = ImpactBase[category] x ConfidenceMult[confidence] x SourceMult[source]
@@ -614,6 +659,8 @@ INFO      <  1.0    |    idor:         8.5
                     |    headers:       4.0
                     |    info_disclosure: 2.0
 ```
+
+</details>
 
 For full architectural rationale, see [ADR-001](docs/adr/ADR-001-go-python-hybrid.md) and [ADR-002](docs/adr/ADR-002-ndjson-ipc.md).
 

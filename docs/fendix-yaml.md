@@ -72,7 +72,11 @@ scan:
   workers: 10            # --workers
   timeout: 10            # --timeout (seconds)
   delay_ms: 100          # --delay (ms)
-  format: json           # --format (json | html | sarif)
+  format: json           # --format (json | html | sarif | pdf)
+  deescalate_tests: true # --deescalate-tests (findings in test/fixture code
+                         #   report as INFO instead of WARN; the evidence is
+                         #   preserved, and anything at or above `fail_on`
+                         #   still blocks)
 
 # Crawler discovery knobs.
 crawler:
@@ -143,9 +147,14 @@ ignore:
 `~/.fendix/profiles/ci.yaml` (NOT committed; user-local):
 
 ```yaml
-type: bearer
-value: ${FENDIX_CI_TOKEN}  # resolved at scan time from env
+auth:
+  type: bearer
+  value: ${FENDIX_CI_TOKEN}  # resolved at scan time from env
 ```
+
+The credential **must** be nested under `auth:`. A flat `type:` / `value:` at
+the top level is not the profile schema; Fendix detects that specific mistake
+and fails with the correction rather than silently scanning unauthenticated.
 
 CI workflow:
 
@@ -191,6 +200,7 @@ flag in that invocation is a candidate for `.fendix.yaml`:
 | `--timeout 15` | `scan.timeout: 15` |
 | `--delay 50` | `scan.delay_ms: 50` |
 | `--format sarif` | `scan.format: sarif` |
+| `--deescalate-tests=false` | `scan.deescalate_tests: false` |
 | `--crawl-depth 2` | `crawler.crawl_depth: 2` |
 | `--max-endpoints 1000` | `crawler.max_endpoints: 1000` |
 | `--wordlist ./words.txt` | `crawler.wordlist_path: ./words.txt` |

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -380,7 +381,6 @@ func TestScanRequest_JSONSerialization(t *testing.T) {
 		Mode:     "whitebox",
 		Spec:     "./openapi.yaml",
 		CodePath: "./src",
-		Language: "python",
 		Checks:   []string{"secrets", "auth", "semgrep"},
 		Verbose:  true,
 	}
@@ -415,5 +415,25 @@ func TestScanRequest_OmitEmpty(t *testing.T) {
 	}
 	if strings.Contains(jsonStr, `"code_path"`) {
 		t.Errorf("expected code_path to be omitted when empty, got: %s", jsonStr)
+	}
+}
+
+// TestScanRequest_HasNoLanguageField guards a removal.
+//
+// `language` was dropped from ScanRequest: nothing in production ever set it,
+// so the key was never emitted, and the AST analyzer routes by file extension
+// anyway — strictly more accurate than one whole-scan hint. Asserting on
+// marshalled JSON cannot catch its return (an unset `omitempty` field is
+// invisible), so this inspects the struct type directly.
+func TestScanRequest_HasNoLanguageField(t *testing.T) {
+	rt := reflect.TypeOf(ScanRequest{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if strings.EqualFold(f.Name, "language") || tag == "language" {
+			t.Errorf("ScanRequest.%s reintroduces the removed `language` field. If a language\n"+
+				"hint is genuinely needed, WIRE it from a flag — do not add another field\n"+
+				"nothing populates.", f.Name)
+		}
 	}
 }

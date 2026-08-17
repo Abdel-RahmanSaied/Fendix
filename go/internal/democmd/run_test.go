@@ -27,7 +27,15 @@ type fakeDocker struct {
 	calls  [][]string
 	failOn map[string]error // first arg → error to return
 	stdout map[string]string
+	// unavailable, when non-nil, is returned from Available() so a test can
+	// simulate a host without docker. The zero value means "docker is
+	// available", which is what every execution-path test wants — and, crucially,
+	// it does NOT consult the host's PATH, so these tests pass on a machine with
+	// no docker installed.
+	unavailable error
 }
+
+func (f *fakeDocker) Available() error { return f.unavailable }
 
 func (f *fakeDocker) record(args []string) {
 	f.mu.Lock()

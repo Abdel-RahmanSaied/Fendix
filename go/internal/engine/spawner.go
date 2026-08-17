@@ -17,11 +17,18 @@ import (
 )
 
 // ScanRequest is the JSON payload sent to the Python engine via stdin.
+//
+// A `language` field used to sit here. Nothing in production ever set it, so
+// the key was never emitted and the Python side always fell through to its
+// default; the AST analyzer routes by file extension during the walk anyway,
+// which is strictly more accurate than one whole-scan language hint. It was
+// removed rather than left as an unset field pretending to be a knob. Omitting
+// the key is wire-compatible: engine.py reads it with `request.get("language")`
+// and defaults to "python".
 type ScanRequest struct {
 	Mode     string   `json:"mode"`
 	Spec     string   `json:"spec,omitempty"`
 	CodePath string   `json:"code_path,omitempty"`
-	Language string   `json:"language,omitempty"`
 	Checks   []string `json:"checks"`
 	Verbose  bool     `json:"verbose"`
 }

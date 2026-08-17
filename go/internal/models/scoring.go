@@ -1,7 +1,39 @@
+// Severity model.
+//
+// ─── WHAT ACTUALLY SETS A FINDING'S SEVERITY ────────────────────────────────
+//
+// Read this before assuming the multiplicative model below runs on every
+// finding — it does not, and mistaking the spec for the implementation has
+// already produced inaccurate docs.
+//
+// The LIVE path is discrete, not arithmetic:
+//
+//  1. The check/analyzer that emits the finding assigns Severity directly
+//     (e.g. scanner/cors.go emits CRITICAL for wildcard-origin + credentials).
+//  2. engine.mergeFindings escalates a correlated finding one level, plus a
+//     second level when the whitebox half proved a reachable taint chain, and
+//     forces CRITICAL on a Proven Path.
+//  3. engine.escalateNonCorrelatedReachable escalates the pure-whitebox
+//     reachable case one level.
+//  4. EnforceSeverityConsistency caps the result at MaxSeverityForConfidence.
+//
+// Only step 4 lives in this file and runs in production.
+//
+// CalculateSeverity / CalculateSeverityReachable and the three multiplier
+// tables are the REFERENCE MODEL: the published formula
+// (docs/example_plan.md §3.5) that MaxSeverityForConfidence's cap is derived
+// from, exercised by scoring_test.go. No scanner calls them. They are kept
+// deliberately — deleting them would strand the cap's derivation, which cites
+// these exact constants — but they must not be described anywhere as the thing
+// that computes a scan's severities.
+
 package models
 
 // ImpactBase maps finding categories to their base impact scores.
-// These are used in severity calculation: Score = Base × ConfidenceMult × SourceMult.
+//
+// Part of the REFERENCE MODEL (see the file header): Score = Base ×
+// ConfidenceMult × SourceMult. Consumed only by CalculateSeverity* and the
+// derivation of MaxSeverityForConfidence — not by any scanner.
 var ImpactBase = map[string]float64{
 	"auth_bypass":     10.0,
 	"injection":       9.5,
@@ -51,6 +83,10 @@ const ReachableMult = 1.5
 
 // CalculateSeverity computes the severity level for a finding based on
 // its category, confidence, and source using the scoring model.
+//
+// REFERENCE MODEL — see the file header. Not called by any scanner; the live
+// severity path is scanner-assigned → correlator escalation →
+// EnforceSeverityConsistency.
 func CalculateSeverity(category string, confidence Confidence, source Source) Severity {
 	return CalculateSeverityReachable(category, confidence, source, false)
 }

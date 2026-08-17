@@ -60,7 +60,7 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 		if !ok {
 			g = &groupState{
 				primary:   f,
-				endpoints: map[string]bool{f.Endpoint: true},
+				endpoints: endpointSet(f),
 				refs:      stringSet(f.References),
 				firstIdx:  i,
 			}
@@ -71,6 +71,18 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 		// Merge endpoint and references.
 		if f.Endpoint != "" {
 			g.endpoints[f.Endpoint] = true
+		}
+		// Fold in any endpoints the member ALREADY carried. Without this the
+		// group's endpoint set depended on arrival order: only the first
+		// member's AffectedEndpoints was seeded, and a later member's list was
+		// dropped — so two runs over the same finding SET could publish
+		// different affected_endpoints, and (since the scoring-provenance fold
+		// walks that list) different confidence scores and decision statuses.
+		// F-L6 requires the output be a function of the set, not the sequence.
+		for _, ep := range f.AffectedEndpoints {
+			if ep != "" {
+				g.endpoints[ep] = true
+			}
 		}
 		for _, r := range f.References {
 			g.refs[r] = true
@@ -183,6 +195,24 @@ func mergeSource(a, b models.Source) models.Source {
 		return models.SourceBlackbox
 	}
 	return a
+}
+
+// endpointSet seeds a group's endpoint set from one finding: its primary
+// Endpoint plus any AffectedEndpoints it already carries (an out-of-tree
+// plugin or a re-ingested report may supply them). Empty strings are dropped
+// so a finding with no endpoint cannot inject "" into a group's
+// AffectedEndpoints list.
+func endpointSet(f models.Finding) map[string]bool {
+	out := make(map[string]bool, len(f.AffectedEndpoints)+1)
+	if f.Endpoint != "" {
+		out[f.Endpoint] = true
+	}
+	for _, ep := range f.AffectedEndpoints {
+		if ep != "" {
+			out[ep] = true
+		}
+	}
+	return out
 }
 
 // stringSet builds a presence-only set from a slice. Nil input returns an

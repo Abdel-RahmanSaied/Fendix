@@ -180,6 +180,19 @@ type ScanConfig struct {
 	// Diff is true.
 	DiffStaged bool
 
+	// DeescalateTests drops findings whose sink lives in test / fixture code
+	// from WARN to INFO in the decision layer (v1.1 B3, fp_class
+	// "test-fixture"). Evidence is preserved, never suppressed (Rule 3), and a
+	// finding at or above --fail-on still BLOCKs — the gate a team explicitly
+	// asked for is never silently downgraded.
+	//
+	// Default TRUE (the CLI flag defaults to true; a zero-valued ScanConfig
+	// built directly in a test opts out). Real-world corpora showed 98-100% of
+	// clean-library SAST noise lives in tests/, so demoting it is the
+	// right default; teams that DO want to gate on test-code findings pass
+	// --deescalate-tests=false or set scan.deescalate_tests in .fendix.yaml.
+	DeescalateTests bool
+
 	// Fast runs only the instant native scanners (secrets + textscan),
 	// skipping semgrep (whose process startup is ~1.5s) and the dep-CVE
 	// scanners (which make network calls). This is the <1s budget the

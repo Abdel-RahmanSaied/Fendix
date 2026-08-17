@@ -69,12 +69,31 @@ type Options struct {
 
 // dockerCmd lets tests substitute a fake. Production wires to the
 // host's docker CLI.
+//
+// Available is part of the interface — not a package-level exec.LookPath in
+// Run — so the seam covers docker DETECTION as well as docker EXECUTION. With
+// the probe outside the seam, a test that injected a fake still consulted the
+// host's PATH, so `go test ./...` passed on a CI runner with Docker installed
+// and failed on a developer machine without it. Availability is a property of
+// the runtime, so it belongs on the runtime.
 type dockerCmd interface {
+	// Available reports whether this docker runtime can be used. Returns nil
+	// when usable, or an error wrapping ErrDockerMissing when not.
+	Available() error
 	Run(ctx context.Context, args ...string) error
 	Output(ctx context.Context, args ...string) (string, error)
 }
 
 type realDocker struct{}
+
+// Available resolves the docker binary on PATH. This is the production probe
+// that Run used to perform inline.
+func (realDocker) Available() error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("%w: install Docker Desktop, OrbStack, or Colima and try again", ErrDockerMissing)
+	}
+	return nil
+}
 
 func (realDocker) Run(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -129,8 +148,12 @@ func (o Options) resolve() Options {
 func Run(ctx context.Context, opts Options) (reportPath string, err error) {
 	opts = opts.resolve()
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		return "", fmt.Errorf("%w: install Docker Desktop, OrbStack, or Colima and try again", ErrDockerMissing)
+	// Availability goes through the same seam as execution, so a test with an
+	// injected runtime never touches the host's PATH. resolve() has already
+	// defaulted opts.docker to realDocker{}, which performs the real
+	// exec.LookPath probe — production behaviour is unchanged.
+	if err := opts.docker.Available(); err != nil {
+		return "", err
 	}
 
 	fendixBin := opts.FendixBin

@@ -271,5 +271,13 @@ func (r *RealWorld) TriageReport() string {
 		}
 		b.WriteString("\n")
 	}
+	// Surface the human triage rationale recorded against each matched label.
+	// The `note:` field is the reviewer's justification for a tp/fp verdict —
+	// the reason a class was ruled a false positive — and it had no reader at
+	// all, so the one place a maintainer re-reading a score would want it
+	// (this report) silently omitted it.
+	for _, l := range r.Result.LabelNotes {
+		fmt.Fprintf(&b, "  NOTE     %s  %s:%d  %s\n", l.Verdict, l.File, l.Line, l.Note)
+	}
 	return b.String()
 }

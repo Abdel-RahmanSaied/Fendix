@@ -64,14 +64,25 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 	}
 	defer resp.Body.Close()
 
-	// Set-Cookie on a 4xx/5xx error page isn't a feature surface — skip, same
-	// rationale as the headers check (FP corpus pattern P2).
-	if resp.StatusCode >= 400 {
+	// Skip only where there is no signal: a missing resource (404/410) or a
+	// server fault (5xx) sets cookies from framework/error-page paths, not from
+	// a feature surface (FP corpus pattern P2).
+	//
+	// A 4xx AUTH response is different, and blanket-skipping it was a false
+	// negative: a login endpoint answering 401 while issuing a session cookie
+	// without HttpOnly is a real, exploitable finding — arguably the single
+	// most security-relevant Set-Cookie a scan can observe. Per Rule 3 the
+	// evidence is preserved and the confidence scorer de-escalates it via the
+	// shared B4 context, exactly like the header and CORS checks.
+	if resp.StatusCode == http.StatusNotFound ||
+		resp.StatusCode == http.StatusGone ||
+		resp.StatusCode >= 500 {
 		return nil
 	}
 
 	isHTTPS := strings.HasPrefix(strings.ToLower(endpoint.FullURL), "https://")
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
+	respContext := responseContextFor(resp.StatusCode, endpoint.Path)
 
 	var findings []ev.Evidence
 	// Dedup per (cookie-name, flag) so repeated Set-Cookie for the same name
@@ -83,6 +94,10 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 			return
 		}
 		seen[key] = true
+		// B4: stamp the de-escalation context ("4xx" on an auth-gated response,
+		// "static-asset" on a CDN path). Empty on a normal 2xx/3xx API route,
+		// which leaves the finding at full confidence.
+		f.ResponseContext = respContext
 		findings = append(findings, f)
 	}
 

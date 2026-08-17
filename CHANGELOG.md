@@ -7,6 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0-rc1] - 2026-08-17
+
+**Headline:** the wiring release. v1.1 shipped several real-world-precision
+features whose logic was written and unit-tested but never reached the
+production pipeline — so `BENCHMARKS.md` described behaviour the binary did not
+have. This release connects them, removes two pieces of dead code that were
+actively dangerous to leave in place, and closes four silent-failure paths an
+adversarial audit surfaced. **No output-schema change**: `models.Finding`'s
+serialized shape is byte-identical, and both CI accuracy gates still score
+F1 = 1.000. Every fix is mutation-tested — the defect was reintroduced and the
+test confirmed to fail (14/14).
+
+Behaviour changes worth reading before upgrading:
+
+- Findings in test/fixture code now report `status: INFO` instead of `WARN` by
+  default (`--deescalate-tests=false` restores the old behaviour). Exit codes
+  are unaffected — a finding at or above `--fail-on` still `BLOCK`s.
+- The rate-limit check now probes generated-content routes
+  (`/api/reports/export.pdf`, `/api/invoices/2024.zip`) it previously skipped.
+- The cookie-flags check now reports on 4xx responses it previously discarded.
+
+### Fixed — v1.1 wiring pass (documented behaviour that never reached production)
+
+Three v1.1 features were implemented and unit-tested but unreachable through the
+real pipeline, so `BENCHMARKS.md` described behaviour the binary did not have.
+**No output-schema change** — `models.Finding`'s serialized shape is untouched.
+
+- **`test-fixture` de-escalation (B3) is now wired.** `decision.DecideWithOptions`
+  and `Options.DeescalateTests` existed, but `stampDecisions` called the
+  option-less `decision.DecideAll` and no config field could enable the rule.
+  Added `ScanConfig.DeescalateTests`, the `--deescalate-tests` flag (**default
+  on**) and the `scan.deescalate_tests` policy key, and routed the orchestrator
+  through `decision.DecideAllWithOptions`. Findings in test/fixture code now
+  report `INFO` instead of `WARN`; evidence is preserved (Rule 3) and anything at
+  or above `--fail-on` still `BLOCK`s.
+- **`static-asset` confidence context (B4) is now produced.** The confidence
+  scorer penalised `ResponseContext == "static-asset"`, but the only producer
+  returned `"4xx"` or `""`, so the branch was dead. The header and CORS checks now
+  tag static-asset findings via a shared `scanner.responseContextFor`; the
+  rate-limit check keeps its hard skip, which is correct — rate limiting a
+  CDN-served file is not an app-layer control, so there is no observation to
+  preserve.
+- **`models.IsTestPath` no longer classifies live HTTP routes as test code.**
+  The marker regex matches a `tests?` / `testing` / `fixtures` path segment
+  anywhere, so a deployed route named `GET /tests`, `GET /api/test` or
+  `GET /api/testing/run` was treated as test code and its DAST findings
+  de-escalated to `INFO`. Only source-file endpoints are eligible now; a route
+  is attack surface regardless of its name.
+- **Static-asset classification no longer matches generated-content routes.**
+  `pdf`, `zip`, `gz`, `tar` and `wasm` were dropped from `staticFilePathRe`.
+  Those extensions overwhelmingly appear on generated endpoints
+  (`/api/v1/reports/export.pdf`, `/api/invoices/2024.zip`), where the previous
+  behaviour both skipped the rate-limit check — suppressing exactly the CWE-770
+  evidence it exists to find — and would have de-escalated their header
+  findings. **Behaviour change:** such routes are now probed and reported like
+  any other API route.
+- **Docker availability is now behind the `democmd` DI seam.** `Run` called
+  `exec.LookPath("docker")` before dispatching through the injectable runtime, so
+  the suite passed on CI (Docker present) and failed on developer machines
+  without it. `Available()` moved onto the `dockerCmd` interface.
+
+### Fixed — dead paths and silent failures found by an adversarial audit
+
+- **Auth profiles failed silently on the documented-but-wrong shape.**
+  `docs/fendix-yaml.md` showed a flat `type:` / `value:`; the parser only reads
+  a nested `auth:` block. The flat file unmarshalled to a zero value,
+  `LoadProfileFrom` returned `(nil, nil)`, and the scan ran **completely
+  unauthenticated with no diagnostic**. The parser now detects that exact
+  mistake and returns the correction, `ProfileLoader` logs load failures
+  instead of discarding them, and the doc is fixed.
+- **Cookie-flags discarded auth-gated evidence.** The check returned nil for
+  any status `>= 400`, so a login endpoint answering 401 while issuing a
+  session cookie without `HttpOnly` produced no finding at all. Now only
+  404/410/5xx are skipped; 4xx findings are preserved and de-escalated through
+  the shared B4 context.
+- **`Deduplicate` was arrival-order dependent.** It seeded a group's endpoint
+  set from the first member only, so two members tying on every ordering key
+  but carrying different `affected_endpoints` produced different published
+  output — including `confidence_score` and `status` — depending on which
+  arrived first. Every member's `AffectedEndpoints` is now folded in (F-L6).
+- **Python engine died on a missing optional dependency.** `spec_parser`'s
+  top-level `import yaml` sat outside the per-check guard, so an environment
+  without PyYAML aborted the engine with exit 1 and **zero** findings —
+  including from the AST taint analyzer, which needs no third-party package.
+  Analyzer imports moved inside their guarded callables; one missing dep now
+  skips one analyzer with a stderr notice.
+- **`--checks` had no flag.** The orchestrator read `ScanConfig.Checks` and its
+  own comment told users to "pass `--checks secrets,semgrep`", but nothing ever
+  set the field. The flag now exists and is documented.
+
+### Removed
+
+- `budget.Transport()` — an unreferenced constructor returning a budget-counted
+  transport with **no netguard SSRF policy**. Left in place it was a footgun:
+  any future check reaching for the obvious-looking helper would have silently
+  opted out of egress filtering.
+- `ScanRequest.Language` — never set by production, so the key was never
+  emitted; the AST analyzer routes by file extension anyway.
+
+### Added
+
+- `models.IsTestPath` — one deterministic test/fixture-path classifier shared by
+  the decision layer, mirroring the Python analyzer's `_is_test_path` markers
+  (locked by a parity table test).
+- `evidence.Evidence.InTest` + `ScoringProvenance.InTest` — internal-only, merged
+  across a dedup group with the existing "agree or drop" rule, so a group earns
+  the test-fixture de-escalation only when **every** occurrence is test code.
+- `benchmark.FPClass.Mechanism()` — every false-positive taxonomy class must now
+  name the shipped code that enforces it, guarded by
+  `TestEveryFPClassNamesItsMechanism`. This is the drift guard that makes the
+  `test-fixture` / `static-asset-context` failure mode unrepeatable.
+
 ## [1.1.0] - 2026-07-08
 
 **Headline:** Fendix v1.1 — real-world precision. v1.0 proved the engine on

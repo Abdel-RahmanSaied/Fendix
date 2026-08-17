@@ -327,13 +327,26 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	// methods (Phase 4a / 4.6) and genuinely non-standard tokens.
 	findings = appendMethodFindings(findings, acamSeen, sawWildcardMeth, epLabel)
 
-	// B4: if the CORS misconfig was ONLY ever observed on a 4xx (auth-gated)
-	// response — never on a 2xx — de-escalate via the confidence scorer.
-	// Evidence preserved (Rule 3); a signal that also fired on a 2xx is real
-	// and left untagged.
-	if sig4xx && !sigNon4xx {
+	// B4: de-escalate via the confidence scorer when the context makes the
+	// misconfig lower-trust. Evidence preserved (Rule 3) — the finding stays,
+	// only its confidence drops.
+	//
+	//   "4xx"          the misconfig was ONLY ever observed on an auth-gated
+	//                  response, never on a 2xx. A signal that also fired on a
+	//                  2xx is real and left untagged.
+	//   "static-asset" the endpoint serves a static file. A permissive CORS
+	//                  policy on a CDN-served asset is a real observation but a
+	//                  weaker one than the same policy on an API route.
+	//
+	// 4xx wins when both apply, matching responseContextFor's precedence.
+	switch {
+	case sig4xx && !sigNon4xx:
 		for i := range findings {
 			findings[i].ResponseContext = "4xx"
+		}
+	case isStaticAssetPath(endpoint.Path):
+		for i := range findings {
+			findings[i].ResponseContext = "static-asset"
 		}
 	}
 

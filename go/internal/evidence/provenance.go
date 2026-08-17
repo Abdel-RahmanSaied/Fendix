@@ -1,6 +1,10 @@
 package evidence
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+)
 
 // ── Carrying scoring provenance across the Evidence → Finding projection ────
 //
@@ -17,15 +21,16 @@ import "strings"
 // projection, then re-attach it to the Evidence the scorer sees. Nothing here
 // is ever serialized.
 
-// ScoringProvenance is the Evidence-internal half that confidence.Score reads
-// but models.Finding has no field for.
+// ScoringProvenance is the Evidence-internal half that the scoring layer
+// (confidence.Score and decision.Decide*) reads but models.Finding has no
+// field for.
 //
-// INVARIANT: every Evidence-internal field the confidence scorer reads must
-// appear here. TestScoringProvenanceCoversEveryScoredField in the confidence
-// package is the drift guard — it scores a fully-populated Evidence, then
-// scores the same Evidence after a projection + restore round-trip, and fails
-// if the two disagree. Add a scored field to Evidence without adding it here
-// and that test goes red.
+// INVARIANT: every Evidence-internal field the confidence scorer or the
+// decision layer reads must appear here. TestScoringProvenanceCoversEveryScoredField
+// in the confidence package is the drift guard — it scores a fully-populated
+// Evidence, then scores the same Evidence after a projection + restore
+// round-trip, and fails if the two disagree. Add a scored field to Evidence
+// without adding it here and that test goes red.
 type ScoringProvenance struct {
 	// Payload / Response are the active-probe request and its reply; the
 	// scorer awards payloadValidated only when BOTH are present.
@@ -37,6 +42,11 @@ type ScoringProvenance struct {
 	// it renders the "evidence chain" reason line (0 points, but part of the
 	// explainability contract).
 	Lineage []Evidence
+	// InTest is the B3 test/fixture-code flag the decision layer reads to
+	// de-escalate WARN → INFO. It merges with the same "agree or drop"
+	// rule as the rest, which is what stops one test occurrence in a dedup
+	// group from de-escalating a production occurrence.
+	InTest bool
 }
 
 // ProvenanceIndex maps a render-stable finding identity to the scoring
@@ -69,6 +79,13 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			Response:        e.Response,
 			ResponseContext: e.ResponseContext,
 			Lineage:         e.Lineage,
+			// Derive the test-context flag from the endpoint when the producer
+			// did not set it. Deriving HERE (rather than in each scanner) gives
+			// one classification point for every engine — including the Python
+			// bridge, whose `in_test` wire field is dropped by the
+			// models.Finding unmarshal — and keeps the rule a pure function of
+			// the endpoint, so it stays reproducible.
+			InTest: e.InTest || models.IsTestPath(e.Endpoint),
 		}
 		if prev, ok := ix[k]; ok {
 			p = mergeScoringProvenance(prev, p)
@@ -115,6 +132,9 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		if len(out[i].Lineage) == 0 {
 			out[i].Lineage = p.Lineage
 		}
+		if !out[i].InTest {
+			out[i].InTest = p.InTest
+		}
 	}
 	return out
 }
@@ -153,6 +173,7 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		Response:        agreementOr(a.Response, b.Response),
 		ResponseContext: agreementOr(a.ResponseContext, b.ResponseContext),
 		Lineage:         agreementOrLineage(a.Lineage, b.Lineage),
+		InTest:          agreementOrBool(a.InTest, b.InTest),
 	}
 }
 
@@ -161,6 +182,16 @@ func agreementOr(a, b string) string {
 		return a
 	}
 	return ""
+}
+
+// agreementOrBool is agreementOr for a flag: the value survives only when both
+// sides agree, which for a bool is exactly logical AND (true+true→true;
+// false+false→false; a disagreement collapses to false). Commutative,
+// associative and idempotent, so folding it over a dedup group is independent
+// of member order — and it is the conservative reading: a group earns the
+// test-fixture de-escalation only when EVERY occurrence in it is test code.
+func agreementOrBool(a, b bool) bool {
+	return a && b
 }
 
 func agreementOrLineage(a, b []Evidence) []Evidence {

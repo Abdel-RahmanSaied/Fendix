@@ -25,13 +25,29 @@ def emit(finding: dict) -> None:
 
 
 def _run_check(name: str, fn: Callable[[], None], verbose: bool) -> None:
-    """Run a single check function, catching and logging any exceptions."""
+    """Run a single check function, catching and logging any exceptions.
+
+    The callable is expected to perform its own analyzer IMPORT as well as the
+    analysis. Importing at the call site instead of here is what previously
+    turned one missing optional dependency into a total engine failure: the
+    spec parser's top-level ``import yaml`` raised ImportError outside this
+    guard, so an environment without PyYAML aborted ``main()`` with exit 1 and
+    reported ZERO findings — including from the AST taint analyzer, which needs
+    no third-party package at all. Now a missing dependency degrades to one
+    skipped analyzer with a stderr notice, matching the Go side's per-scanner
+    status model (fail loudly, recover gracefully).
+    """
     try:
         if verbose:
             _log(f"starting check: {name}")
         fn()
         if verbose:
             _log(f"finished check: {name}")
+    except ImportError as exc:
+        _log(
+            f"check '{name}' skipped: missing dependency ({exc}). "
+            "Install python/requirements.txt to enable it."
+        )
     except Exception as exc:  # noqa: BLE001
         _log(f"check '{name}' failed: {exc}")
 
@@ -93,28 +109,32 @@ def main() -> None:
             flush=True,
         )
 
-    if "auth" in checks and spec_path:
+    # Each analyzer is imported INSIDE its _run_check callable so a missing
+    # optional dependency (e.g. PyYAML for the spec parser) skips just that
+    # analyzer instead of killing the whole engine. See _run_check's docstring.
+    def _run_spec_auth() -> None:
         from analyzers.spec_parser import SpecParser
 
-        _run_check(
-            "auth (spec)",
-            lambda: SpecParser(spec_path).check_auth(emit_finding),
-            verbose,
-        )
+        SpecParser(spec_path).check_auth(emit_finding)
 
-    if "injection" in checks and code_path:
+    def _run_injection() -> None:
         from analyzers.ast_analyzer import ASTAnalyzer
 
-        _run_check(
-            "injection (ast)",
-            lambda: ASTAnalyzer(code_path, language or "python").run(emit_finding),
-            verbose,
-        )
+        ASTAnalyzer(code_path, language or "python").run(emit_finding)
 
-    if "deps" in checks and code_path:
+    def _run_deps() -> None:
         from analyzers.deps import DepsAnalyzer
 
-        _run_check("deps", lambda: DepsAnalyzer(code_path).run(emit_finding), verbose)
+        DepsAnalyzer(code_path).run(emit_finding)
+
+    if "auth" in checks and spec_path:
+        _run_check("auth (spec)", _run_spec_auth, verbose)
+
+    if "injection" in checks and code_path:
+        _run_check("injection (ast)", _run_injection, verbose)
+
+    if "deps" in checks and code_path:
+        _run_check("deps", _run_deps, verbose)
 
     if verbose:
         _log(f"engine completed {counter} findings")

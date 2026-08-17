@@ -694,7 +694,7 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		// Preserve the legacy invalid-threshold WARN (was in checkFailOn).
 		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
 	}
-	decisions := stampDecisions(findings, prov, o.cfg.FailOn)
+	decisions := stampDecisions(findings, prov, o.cfg.FailOn, o.decisionOptions())
 
 	// 11. Sanitize credentials from findings before rendering
 	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
@@ -810,6 +810,19 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// legacy checkFailOn (locked by decision.TestExitCodeMatchesLegacyCheckFailOn)
 	// because `decisions` were built from the same finalized findings + FailOn.
 	return decision.ExitCode(decisions)
+}
+
+// decisionOptions projects the scan config onto the decision layer's policy.
+//
+// It exists as a named seam rather than an inline struct literal at the call
+// site so the config→decision wiring is a testable unit. A mutation audit
+// showed an inline literal could be rewritten to a constant without any
+// engine-package test noticing: every test built decision.Options itself, so
+// nothing observed the two being connected.
+func (o *Orchestrator) decisionOptions() decision.Options {
+	return decision.Options{
+		DeescalateTests: o.cfg.DeescalateTests,
+	}
 }
 
 // recordScanMetric emits one structural MetricEvent for the completed scan.
@@ -1017,13 +1030,18 @@ func (o *Orchestrator) runWhiteboxScan(ctx context.Context) []evidence.Evidence 
 // permanently dead. Restoring them here fires the rules without adding a
 // single field to the frozen public Finding shape.
 //
+// The same Restore call is what makes the B3 test-fixture de-escalation
+// reachable: decision.DecideWithOptions reads Evidence.InTest, which the index
+// carries (and merges conservatively across a dedup group) because
+// models.Finding has no field for it either.
+//
 // A finding whose identity is not in the index simply scores off the projected
 // fields (the pre-fix behaviour) — a miss degrades, it never invents evidence.
-func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, failOn string) []decision.Decision {
+func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, failOn string, opts decision.Options) []decision.Decision {
 	if len(findings) == 0 {
 		return nil
 	}
-	decisions := decision.DecideAll(prov.Restore(evidence.FromFindings(findings)), failOn)
+	decisions := decision.DecideAllWithOptions(prov.Restore(evidence.FromFindings(findings)), failOn, opts)
 	for i := range decisions {
 		d := decisions[i]
 		findings[i].Status = string(d.Status)

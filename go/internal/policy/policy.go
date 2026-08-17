@@ -72,6 +72,11 @@ type ScanSection struct {
 	TimeoutSec   *int    `yaml:"timeout,omitempty"`
 	DelayMs      *int    `yaml:"delay_ms,omitempty"`
 	Format       *string `yaml:"format,omitempty"`
+	// DeescalateTests reports findings in test/fixture code as INFO rather
+	// than WARN (v1.1 B3). Committable because "do we gate on test-code
+	// findings?" is a team triage policy, not a per-invocation knob. Defaults
+	// to the CLI default (true) when absent.
+	DeescalateTests *bool `yaml:"deescalate_tests,omitempty"`
 }
 
 // CrawlerSection covers endpoint discovery knobs that affect the scan
@@ -188,6 +193,8 @@ type ApplyTo struct {
 	SetMaxDuration   func(time.Duration)
 	SetIgnorePath    func(string)
 	SetAuthProfile   func(string)
+
+	SetDeescalateTests func(bool)
 }
 
 // Run applies p onto target via the setter callbacks, respecting
@@ -227,6 +234,9 @@ func (a ApplyTo) Run(p *Policy, cli CLISet) int {
 		}
 		if s.Format != nil && a.SetFormat != nil {
 			apply("format", func() { a.SetFormat(*s.Format) })
+		}
+		if s.DeescalateTests != nil && a.SetDeescalateTests != nil {
+			apply("deescalate-tests", func() { a.SetDeescalateTests(*s.DeescalateTests) })
 		}
 	}
 	if p.Crawler != nil {

@@ -38,6 +38,20 @@ Cross-Origin Resource Sharing (CORS) misconfigurations that could allow unauthor
 }
 ```
 
+## Confidence context (de-escalation, not suppression)
+
+A CORS misconfiguration is reported at reduced **confidence score** (−15) in two
+contexts. The finding itself is preserved — the origin genuinely is reflected —
+and the reason is printed in `confidence_reasons`:
+
+| Context | When | Why it lowers confidence |
+|---|---|---|
+| `4xx` | The misconfiguration was observed **only** on auth-gated responses (401/403/…), never on a 2xx | A policy seen only behind a gate is a weaker signal; if it also fired on a 2xx the finding stays at full confidence |
+| `static-asset` | Path is a static file (`.js`, `.css`, images, fonts, `.map`, `favicon.ico`, `robots.txt`, `sitemap.xml`) | A permissive policy on a CDN-served asset is real but lower-impact than the same policy on an API route |
+
+`4xx` takes precedence when both apply. Across a deduplicated group the context
+survives only if every occurrence carried it.
+
 ## References
 
 - [CWE-942: Overly Permissive Cross-domain Whitelist](https://cwe.mitre.org/data/definitions/942.html)

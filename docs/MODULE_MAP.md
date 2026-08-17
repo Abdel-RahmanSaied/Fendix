@@ -2,8 +2,13 @@
 
 > Generated from a deep source read of the codebase. Categorizes every Go package and
 > Python analyzer into coherent modules, traces the scan data flow, and documents the
-> dependency graph. Scale at time of writing: ~22.6K Go LOC (25 internal packages + 2
-> `cmd` binaries) + ~3.2K Python LOC (4 analyzers + rule packs).
+> dependency graph.
+>
+> **Staleness note.** The bulk of this map was written against a ~22.6K-LOC / 25-package
+> tree. The current tree is ~31K non-test Go LOC across 38 internal packages plus ~10K
+> Python LOC. §2.1 (the v0.22–v0.24 Evidence → Confidence → Decision scoring pipeline) has
+> been added; the `benchmark`, `metrics` and `e2e` clusters are still undocumented here.
+> Read a section as accurate for what it covers, not as a complete inventory.
 
 ## Architecture Overview
 
@@ -67,6 +72,30 @@ into focused sub-files (`correlator.go`, `dedup.go`, `baseline.go`, `ignore.go`)
 
 ---
 
+## 2.1 Scoring Pipeline — Evidence → Confidence → Decision
+
+The v0.22–v0.24 layers the orchestrator runs *between* correlation and reporting. Together
+they are why Fendix can defend a confidence claim rather than merely print one.
+
+| Path | Purpose | Key Types | Key Responsibilities |
+|---|---|---|---|
+| `go/internal/evidence` | Domain object + provenance carrier | `Evidence`, `ScoringProvenance`, `ProvenanceIndex` | `Evidence` is a SUPERSET of `models.Finding`: a "render block" that projects 1:1 onto the public Finding, plus internal-only provenance (`RuleID`, `Payload`, `Response`, `DetectedAt`, `Lineage`, `ResponseContext`, `InTest`) that is never serialized. `ProvenanceIndex` captures that internal half keyed on the render-stable `(Category, Endpoint, Title)` identity **before** the projection and re-attaches it **before** scoring, so scoring rules that read internal fields are not silently dead. Merges across a dedup group with an "agree or drop" meet (`agreementOr` / `agreementOrBool`) — commutative, associative, idempotent, hence order-independent (F-L6) and conservative |
+| `go/internal/confidence` | Deterministic 0–100 confidence scorer | `Result` | Fixed, documented rule deltas (base 35, cross-engine agreement +25, reachable taint +10, payload validated +10, tier bump/penalty ±5, HTTP/static context −15); bands at 70/40; one plain-text reason line per rule that fired, and an explicit cap line when corroboration exceeds 100 so the reasons always reconcile with the value. **No AI in this path** (Constitution Rule 8) |
+| `go/internal/decision` | BLOCK / WARN / INFO verdict | `Decision`, `Status`, `Options` | `Decide` maps severity + `--fail-on` to a status, byte-compatible with the legacy `checkFailOn`; `DecideWithOptions` adds the B3 test-fixture de-escalation (WARN→INFO for `Evidence.InTest`, never BLOCK), appending a 0-delta reason line so the demotion is explainable. `ExitCode` derives the process exit code from the same objects the report is stamped from |
+
+Orchestrator wiring: `stampDecisions` (orchestrator.go) is the single junction — it restores
+provenance onto the projected findings, decides, and stamps `status` / `confidence_score` /
+`confidence_band` / `confidence_reasons` back onto each finding. It runs **before**
+sanitization on purpose: redaction can rewrite `Title`, which would break the provenance
+identity key.
+
+Classification helpers are shared, not duplicated: `models.IsTestPath` (mirrors the Python
+analyzer's `_is_test_path` markers) and `scanner.responseContextFor` /
+`scanner.isStaticAssetPath` (one regex behind the `"4xx"` and `"static-asset"` contexts,
+used by the header, CORS and rate-limit checks alike).
+
+---
+
 ## 3. Scanning — Web / DAST
 
 Black-box HTTP scanning: discover endpoints, then run passive + active probes against the
@@ -77,9 +106,20 @@ live target.
 | `go/internal/scanner` | Black-box web vuln scanning: discovery + 8 check functions | `Endpoint`, `CheckFn`, `Crawler`, `ProbeAuditLog`, `ProbeRecord`, `AuthContext`, `ScanConfig`, `Finding` | **Discovery** (6 layered strategies: OpenAPI spec → robots → sitemap → JS → HTML crawl → wordlist brute-force, with dedup/cap/path-template substitution); **8 checks**: `CheckAuth` (unauth/malformed/expired/alg:none JWT with FP-dedup), `CheckHeaders` (HSTS/XCTO/XFO/CSP/XXSS/server-version), `CheckCORS` (wildcard+creds, reflected origin), `CheckInjection` (time/error/boolean SQLi across 6 engines + CMDi canary + CRLF, per-endpoint probe budget), `CheckIDOR` (two-user response compare), `CheckExposure` (regex secret/PII/stack-trace), `CheckConfigLeak` (.env/.git/.aws/… with redacted evidence), `CheckRateLimit` (rapid-request 429 probe); uniform SSRF + budget via `guardedClient`; scan-wide probe audit log |
 
 **Notable:** all outbound requests go through a `guardedClient` (netguard SSRF policy +
-budget counter); `MaxIdleConnsPerHost=32` avoids port exhaustion on brute-force; CORS/
-headers/rate-limit checks skip non-2xx/3xx and static paths to cut FPs; `TargetIsPrivate`
-auto-allows localhost/staging targets.
+budget counter); `MaxIdleConnsPerHost=32` avoids port exhaustion on brute-force;
+`TargetIsPrivate` auto-allows localhost/staging targets.
+
+**FP context vs. skip (`responsecontext.go`).** The checks draw a deliberate line between
+"there is no security signal here" and "the signal is real but the context lowers trust":
+
+- **Skip** — headers skips 404/410/5xx (framework-controlled noise); rate-limit skips
+  static assets, because rate limiting a CDN-served file is not an app-layer control, so
+  there is no observation to preserve.
+- **De-escalate** — header and CORS findings carry `ResponseContext` `"4xx"` (auth-gated
+  response) or `"static-asset"`, and the confidence scorer applies a −15 penalty with a
+  reason line. The header genuinely IS absent / the origin genuinely IS reflected, so the
+  finding survives (Rule 3); only its confidence drops. `responseContextFor` resolves both
+  from one shared classifier, with 4xx taking precedence.
 
 ---
 

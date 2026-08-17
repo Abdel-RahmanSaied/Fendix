@@ -59,14 +59,14 @@ func TestVerifyCorrelated_BothHalvesHold_StillPresent(t *testing.T) {
 	writeFile(t, code, "app/views.py", "import requests\ndef f(u):\n    return requests.get(u)\n")
 
 	baseline := writeBaseline(t, dir, []models.Finding{{
-		ID:       "SEC-CORR-1",
-		Title:    "Correlated SSRF — DAST hit + SAST taint path",
-		Source:   models.SourceCorrelated,
-		Category: "ssrf",
-		Endpoint: "GET /api/fetch",
-		Reachable: true,
-		Route:    &models.Route{Pattern: "/api/fetch"},
-		TaintChain: []models.TaintLink{{Line: 3, Expr: "requests.get(u)"}},
+		ID:                "SEC-CORR-1",
+		Title:             "Correlated SSRF — DAST hit + SAST taint path",
+		Source:            models.SourceCorrelated,
+		Category:          "ssrf",
+		Endpoint:          "GET /api/fetch",
+		Reachable:         true,
+		Route:             &models.Route{Pattern: "/api/fetch"},
+		TaintChain:        []models.TaintLink{{Line: 3, Expr: "requests.get(u)"}},
 		AffectedEndpoints: []string{"app/views.py:3"},
 	}})
 
@@ -95,12 +95,12 @@ func TestVerifyCorrelated_WhiteboxFileGone_Resolved(t *testing.T) {
 	code := t.TempDir() // empty — app/views.py does not exist
 
 	baseline := writeBaseline(t, dir, []models.Finding{{
-		ID:       "SEC-CORR-2",
-		Title:    "Correlated SSRF — DAST hit + SAST taint path",
-		Source:   models.SourceCorrelated,
-		Category: "ssrf",
-		Endpoint: "GET /api/fetch",
-		Route:    &models.Route{Pattern: "/api/fetch"},
+		ID:                "SEC-CORR-2",
+		Title:             "Correlated SSRF — DAST hit + SAST taint path",
+		Source:            models.SourceCorrelated,
+		Category:          "ssrf",
+		Endpoint:          "GET /api/fetch",
+		Route:             &models.Route{Pattern: "/api/fetch"},
 		AffectedEndpoints: []string{"app/views.py:3"},
 	}})
 
@@ -127,11 +127,11 @@ func TestVerifyCorrelated_BlackboxGated_Resolved(t *testing.T) {
 	writeFile(t, code, "app/views.py", "x=1\n")
 
 	baseline := writeBaseline(t, dir, []models.Finding{{
-		ID:       "SEC-CORR-3",
-		Title:    "Correlated SSRF — DAST hit + SAST taint path",
-		Source:   models.SourceCorrelated,
-		Category: "ssrf",
-		Endpoint: "GET /api/fetch",
+		ID:                "SEC-CORR-3",
+		Title:             "Correlated SSRF — DAST hit + SAST taint path",
+		Source:            models.SourceCorrelated,
+		Category:          "ssrf",
+		Endpoint:          "GET /api/fetch",
 		AffectedEndpoints: []string{"app/views.py:3"},
 	}})
 

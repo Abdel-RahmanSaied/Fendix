@@ -121,11 +121,17 @@ func TestDecidePopulatesConfidenceScore(t *testing.T) {
 // finding in test/fixture code de-escalates to INFO (evidence preserved,
 // Rule 3), config-overridable so a team that DOES want to gate on test-code
 // findings can turn it off.
+// InTest is set explicitly here, not derived from Endpoint: the flag is the
+// conservatively-merged output of evidence.ProvenanceIndex (which folds a
+// dedup group with "agree or drop"), and re-deriving it from the primary
+// endpoint inside Decide would defeat that merge. See the CALLER CONTRACT on
+// DecideWithOptions.
 func TestDecideDeescalatesTestFixtureToInfo(t *testing.T) {
 	ev := evidence.Evidence{
 		Severity: models.SeverityHigh,
 		Endpoint: "app/tests/test_views.py:42",
 		Category: "injection",
+		InTest:   true,
 	}
 	// Without a --fail-on threshold this HIGH finding is WARN; in a test path
 	// it drops to INFO with an explanatory reason (evidence preserved).

@@ -408,6 +408,8 @@ func newScanCmd() *cobra.Command {
 				diffRefFlag = ""
 			}
 			fastFlag, _ := flags.GetBool("fast")
+			deescalateTestsFlag, _ := flags.GetBool("deescalate-tests")
+			checksFlag, _ := flags.GetStringSlice("checks")
 
 			// Resolve --config: explicit path takes precedence; if
 			// absent and a .fendix.yaml exists in the cwd, pick it up
@@ -475,6 +477,8 @@ func newScanCmd() *cobra.Command {
 				DiffRef:               diffRefFlag,
 				DiffStaged:            diffStagedFlag,
 				Fast:                  fastFlag,
+				DeescalateTests:       deescalateTestsFlag,
+				Checks:                checksFlag,
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -500,6 +504,8 @@ func newScanCmd() *cobra.Command {
 					SetMaxDuration:   func(v time.Duration) { cfg.MaxDuration = v },
 					SetIgnorePath:    func(v string) { cfg.IgnorePath = v },
 					SetAuthProfile:   func(v string) { appliedProfile = v },
+
+					SetDeescalateTests: func(v bool) { cfg.DeescalateTests = v },
 				}.Run(pol, cli)
 				if applied > 0 {
 					slog.Info("policy applied", "path", policyPath, "fields", applied)
@@ -580,6 +586,8 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("offline", false, "Air-gapped mode: consult the local offline-db snapshot for dep CVEs instead of osv.dev/vuln.go.dev. The pip and npm scanners run against the snapshot (create it with `fendix db update`); govulncheck needs vuln.go.dev and is recorded SKIPPED. No outbound network call is made.")
 	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
 	flags.Bool("fail-on-scanner-error", false, "Exit non-zero (2) if any scanner (govulncheck/pip/npm/secrets/semgrep/textscan) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners do not count.")
+	flags.Bool("deescalate-tests", true, "Report findings in test/fixture code as INFO instead of WARN (evidence is preserved, never suppressed). A finding at or above --fail-on still blocks. Pass --deescalate-tests=false to treat test-code findings like production ones.")
+	flags.StringSlice("checks", nil, "Override which checks the Python whitebox engine runs (default: auth,injection,deps). Only effective with --python-engine; the native Go scanners (secrets/semgrep/textscan/deps) always run when --code is set.")
 	// Diff-aware scanning (90-day cut, item 1). `--diff` alone diffs the
 	// working tree against HEAD; `--diff=origin/main` against that ref;
 	// `--staged` scopes to the index (what a pre-commit hook scans) and

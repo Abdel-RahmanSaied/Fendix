@@ -157,11 +157,26 @@ cd go && FENDIX_SCORE_JSON=/tmp/twiscope.json \
 | `heuristic-overfire` | weak-crypto skips metadata-named ids (`a8645fb`) | md5-of-non-password FP removed |
 | `version-range-floor` | npm caret/tilde ranges → INFO (`1d0fa6d`) | SCA over-assertion demoted |
 | `fabricated-chain` | from-imported non-fs `open()` ≠ traversal (`90fb9ad`) | 8 path-traversal `open()` FPs removed |
-| `test-fixture` | test-fixture findings → INFO (`cec1efe`) | fixture-file noise demoted |
-| `http-4xx-context` / `static-asset-context` | DAST 4xx + static-asset de-escalation (`a03ce63`) | DAST context noise demoted |
+| `test-fixture` | test-fixture findings → INFO, via `--deescalate-tests` / `scan.deescalate_tests` (`cec1efe`, wired end-to-end in the v1.1 wiring pass) | fixture-file noise demoted |
+| `http-4xx-context` | DAST 4xx de-escalation (`a03ce63`) | DAST context noise demoted |
+| `static-asset-context` | header/CORS findings on static assets de-escalated (`a03ce63`, producer added in the v1.1 wiring pass) | DAST context noise demoted |
 | `constant-authority` | settings.\*-host SSRF suppressed (C2, corpus lock) | TwitterAPI / FileGenerator / notificationApp / health_check FPs removed |
 | `receiver-confusion` | redis `.get/.delete` ≠ HTTP client | 2 admin redis SSRF FPs removed |
 | `safe-api-misread` | psycopg2 `sql.SQL(...).format` ≠ str.format SQLi | SQLi FP removed |
+
+> **Wiring correction (post-capture).** Two rows above described behaviour that
+> was implemented and unit-tested but not reachable through the production
+> pipeline at the time this baseline was captured: `test-fixture` (the decision
+> layer's `DecideWithOptions` was never called by the orchestrator, and no
+> config field could enable it) and `static-asset-context` (no scanner ever
+> produced the tag the confidence scorer penalises; static assets were instead
+> hard-skipped in the rate-limit check). Both are now wired end-to-end and
+> gated by pipeline-level tests. The **TWISCOPE numbers in the table above
+> predate that fix and have not been recaptured** — the seed corpus is private,
+> so a re-run is only possible on a machine with the checkout. Treat the
+> per-class effects for those two rows as *now-shipped mechanisms*, not as
+> contributors to the captured measurement. Every other row was already live
+> when the baseline was taken.
 
 **Caveats (read before quoting 33.3 %):**
 

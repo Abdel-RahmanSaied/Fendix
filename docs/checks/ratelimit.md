@@ -1,7 +1,7 @@
 # Rate Limiting Check
 
 **Engine:** Go (black-box)
-**Category:** `headers`
+**Category:** `rate_limiting`
 **Default severity:** MEDIUM
 **Active probing:** No (passive only)
 
@@ -19,18 +19,41 @@ Endpoints that lack rate limiting, making them vulnerable to brute-force attacks
    - `X-Rate-Limit-*` headers
 3. If all 20 requests succeed without any throttling response, reports the finding
 
+The title and evidence deliberately scope the claim to the burst size: a bounded
+burst can only show the ABSENCE of limiting within N requests, never prove that
+a per-minute or per-hour limiter is missing. Confidence stays MEDIUM for the
+same reason.
+
 ## Example Finding
 
 ```json
 {
-  "title": "No rate limiting detected",
+  "title": "No rate limiting observed within 20 requests",
   "severity": "MEDIUM",
-  "category": "headers",
+  "category": "rate_limiting",
   "endpoint": "POST /api/login",
-  "evidence": "20 identical requests succeeded without rate limiting (no 429, no X-RateLimit headers)",
+  "evidence": "Sent 20 rapid requests with no 429 response and no rate-limit headers (X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset). Scope note: this bounded burst cannot prove the absence of slower per-minute/per-hour limiters — it only shows no limiting within 20 requests.",
   "fix": "Implement rate limiting. Return 429 with Retry-After header when threshold exceeded."
 }
 ```
+
+## Skipped endpoints
+
+This check is **skipped entirely** on static-asset paths (`.js`, `.css`, images,
+fonts, `.map`, `favicon.ico`, `robots.txt`, `sitemap.xml`, `.DS_Store` — see
+`isStaticAssetPath` in `go/internal/scanner/responsecontext.go`).
+
+This is a skip, not a de-escalation, and the distinction is deliberate. Fendix's
+posture is to preserve evidence and lower its confidence when context makes a
+finding less trustworthy (that is what the header and CORS checks do for the
+same paths). Here there is nothing to preserve: rate limiting on a file served
+by a CDN or static-file middleware is not an app-layer control, so "no 429
+within 20 requests on `/favicon.ico`" was never a security observation. Skipping
+also avoids spending 20 requests of the scan budget per static endpoint.
+
+The check also returns nothing when fewer than 10 probes actually completed
+(budget exhaustion or transport errors) — too few requests reached the target to
+distinguish "unprotected" from "never really tested".
 
 ## References
 
