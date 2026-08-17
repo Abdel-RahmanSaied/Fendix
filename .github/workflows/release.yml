@@ -372,6 +372,19 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/*
+          # Mark any pre-release tag (vX.Y.Z-rc1, -beta.2, -alpha…) as a
+          # GitHub pre-release. Without this the action defaults to
+          # prerelease:false, so an rc published as a FULL release and became
+          # the repo's "latest" — which is what `releases/latest`, the
+          # get.fendix.dev install script, and the Homebrew formula all
+          # resolve against. A release candidate would have been served to
+          # every new user as the current version. (v1.0.0-rc1 avoided this
+          # only because an operator flipped the flag by hand afterwards;
+          # v1.2.0-rc1 did not, and had to be corrected post-publish.)
+          #
+          # A hyphen after the version is exactly the SemVer pre-release
+          # marker, so this needs no per-tag maintenance.
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
