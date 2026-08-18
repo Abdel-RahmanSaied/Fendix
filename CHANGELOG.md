@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unproven dataflow no longer claims a proven finding's confidence.** The AST
+  analyzer emits findings for dangerous *shapes* (`cursor.execute(x)`,
+  `os.system(x)`) as well as for proven source→sink paths, but both carried the
+  same HIGH/CRITICAL. Measured over 216K LOC of real OSS (flask, requests,
+  httpx, fastapi, django-cms at pinned SHAs), **every one of the 19 findings the
+  taint analyzer produced was chainless**, and most outside test code were false
+  positives on developer-controlled input — `config.from_pyfile`, `setup.py`
+  reading its own version file, a PYTHONSTARTUP hook, docs examples, CI scripts.
+  A reachability-dependent sink with no proven path now drops HIGH→MEDIUM
+  confidence, which feeds the existing severity cap so an *unproven* SQLi lands
+  at HIGH while a *proven* one keeps CRITICAL. Evidence is preserved (Rule 3);
+  only the strength of the claim changes. Sinks that are dangerous regardless of
+  input (`pickle.loads`, `yaml.load`, `eval`, weak crypto, JWT) never attempt a
+  chain and are untouched.
+- **The benchmark regression gate judged scan duration on the accuracy band.**
+  `duration_ms` sat under the same ±10% threshold as precision/recall, so a busy
+  CI runner failed release tags for a cost the code never incurred: one
+  unchanged commit measured 25.6s locally, 33.0s and 35.5s on two runners (a 39%
+  spread, the slowest logging an HTTP `context deadline exceeded`). Duration
+  still gates — Rule 6 treats performance regressions as bugs — but against its
+  own `DurationRegressionThreshold` (100%), above observed jitter and still
+  catching anything that doubles the scan's cost.
+
 ## [1.2.0] - 2026-08-17
 
 **Headline:** the wiring release. v1.1 shipped several real-world-precision

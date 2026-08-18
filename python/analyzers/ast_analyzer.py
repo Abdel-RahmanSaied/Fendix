@@ -42,6 +42,13 @@ _MAX_FILE_BYTES = 1_048_576  # 1 MB
 # comfortably above any real-world dataflow depth.
 _MAX_TAINT_HOPS = 50
 
+# Sentinel distinguishing "this sink never depends on dataflow" from "this sink
+# tried to prove dataflow and failed". _emit_finding cannot tell those apart
+# from `taint_chain=None` alone, and they warrant very different confidence:
+# `pickle.loads` is dangerous whatever reaches it, whereas `cursor.execute(x)`
+# is only a vulnerability if `x` carries user input.
+_CHAIN_NOT_ATTEMPTED = object()
+
 # ---------------------------------------------------------------------------
 # JavaScript heuristic patterns (regex-based; no JS AST required)
 # ---------------------------------------------------------------------------
@@ -338,7 +345,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         fix: str,
         lineno: int,
         category: str = "injection",
-        taint_chain: list[dict] | None = None,
+        taint_chain=_CHAIN_NOT_ATTEMPTED,
     ) -> None:
         finding: dict = {
             "id": f"SEC-{pat_id}",
@@ -367,14 +374,36 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         if _is_test_path(self._rel):
             finding["confidence"] = "LOW"
             finding["in_test"] = True
-        if taint_chain:
+        # Reachability-dependent sink with NO proven source->sink path: this is
+        # a SHAPE match, not a proof, and it must not claim the confidence of
+        # one. Measured over 216K LOC of real OSS (flask, requests, httpx,
+        # fastapi, django-cms), every one of the 19 findings the taint analyzer
+        # produced was chainless — and roughly 13 of the 14 outside test code
+        # were false positives on developer-controlled input: `config.from_pyfile`,
+        # `setup.py` reading its own version file, a PYTHONSTARTUP hook, docs
+        # examples, CI scripts. They were reported at the same HIGH/CRITICAL as
+        # a proven exploit path.
+        #
+        # Dropping HIGH to MEDIUM here feeds the existing severity cap
+        # (models.MaxSeverityForConfidence: MEDIUM caps at HIGH), so an
+        # unproven SQLi lands at HIGH instead of CRITICAL while a proven one
+        # keeps CRITICAL. Evidence is preserved and nothing is suppressed
+        # (Rule 3) — only the strength of the claim changes.
+        #
+        # A test-path finding is already forced to LOW above; never raise it.
+        attempted_chain = taint_chain is not _CHAIN_NOT_ATTEMPTED
+        chain = None if not attempted_chain else taint_chain
+        if attempted_chain and not chain and finding["confidence"] == "HIGH":
+            finding["confidence"] = "MEDIUM"
+
+        if chain:
             # TASK-114: when the visitor proves user input flows from a
             # source (request.args/POST/form/etc.) through one or more
             # intra-function assignments to this sink, attach the chain
             # so the correlator can escalate severity and the report
             # surfaces *why* this is a real exploit path. Each entry is
             # {file, line, expr}; the engine treats this as opaque metadata.
-            finding["taint_chain"] = taint_chain
+            finding["taint_chain"] = chain
             finding["reachable"] = True
             # Proven Path v1: bind the route that reaches this sink, when the
             # enclosing function is a registered handler. route → handler →

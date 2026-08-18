@@ -1560,3 +1560,53 @@ class TestDoubleSanitizePercentFormat:
         assert [f for f in findings if "XSS" in f["title"]], (
             "unescaped %-format into mark_safe must still be reported"
         )
+
+
+class TestUnprovenDataflowConfidence:
+    """A reachability-dependent sink with no proven source->sink path is a
+    SHAPE match, not a proof, and must not claim the confidence of one.
+
+    Measured over 216K LOC of real OSS, every finding the taint analyzer
+    produced was chainless, and most outside test code were false positives on
+    developer-controlled input (config.from_pyfile, setup.py, PYTHONSTARTUP,
+    docs examples, CI scripts) — reported at the same HIGH/CRITICAL as a proven
+    exploit path.
+    """
+
+    def test_unproven_sqli_is_downgraded(self) -> None:
+        # No request source anywhere: the sink shape matches, the dataflow does not.
+        findings = _collect_src(
+            "import sqlite3\n"
+            "def load(conn, path):\n"
+            "    sql = 'SELECT * FROM t WHERE a=' + path\n"
+            "    conn.cursor().execute(sql)\n"
+        )
+        sqli = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+        assert sqli, "the sink shape should still be reported (evidence preserved)"
+        for f in sqli:
+            assert f["confidence"] == "MEDIUM", f"unproven SQLi confidence={f['confidence']}"
+            assert not f.get("reachable"), "no chain was proven"
+
+    def test_proven_sqli_keeps_high_confidence(self) -> None:
+        findings = _collect_src(
+            "from flask import request\n"
+            "def view(conn):\n"
+            "    name = request.args.get('n')\n"
+            "    conn.cursor().execute('SELECT * FROM t WHERE a=' + name)\n"
+        )
+        sqli = [f for f in findings if f["id"] == "SEC-PY_SQL_INJECTION"]
+        assert sqli, "proven SQLi must still be detected"
+        assert any(f["confidence"] == "HIGH" and f.get("reachable") for f in sqli), (
+            f"a proven taint path must keep HIGH confidence: "
+            f"{[(f['confidence'], f.get('reachable')) for f in sqli]}"
+        )
+
+    def test_unconditional_sink_is_not_downgraded(self) -> None:
+        """pickle.loads is dangerous whatever reaches it — it never attempts a
+        chain, so the downgrade must not touch it."""
+        findings = _collect_src("import pickle\ndef f(blob):\n    return pickle.loads(blob)\n")
+        pk = [f for f in findings if f["id"] == "SEC-PY_PICKLE_LOAD"]
+        assert pk, "pickle.loads must still be reported"
+        assert pk[0]["confidence"] == "HIGH", (
+            f"unconditional sink downgraded to {pk[0]['confidence']}"
+        )
