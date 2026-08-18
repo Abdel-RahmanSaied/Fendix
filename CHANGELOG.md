@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-18
+
+**Headline:** two precision corrections found by running the engine over 216K LOC
+of real OSS, plus a release gate that was measuring CI runner load instead of
+the scanner. No new flags, no output-schema change.
+
+> **Gating note.** The first fix lowers severity on *unproven* findings. If you
+> gate on `--fail-on CRITICAL`, a build that previously failed on a chainless
+> SQLi shape-match will now pass — the finding is still reported, at HIGH. This
+> is a correction of over-severity, not a loss of coverage: recall is unchanged
+> and both accuracy corpora still score F1 = 1.000.
+
 ### Fixed
 
 - **Unproven dataflow no longer claims a proven finding's confidence.** The AST
