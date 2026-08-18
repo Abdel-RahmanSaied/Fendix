@@ -22,6 +22,34 @@ const DefaultBaselinePath = "benchmarks/baselines/baseline.json"
 // tighten the gate without touching the comparator.
 var RegressionThreshold = 0.10
 
+// DurationRegressionThreshold is the separate, much wider band for wall-clock
+// metrics. Accuracy is deterministic — the same binary on the same corpus
+// yields the same precision every time, so 10% there is a real signal. Scan
+// duration is not: the DAST targets time a Docker container answering HTTP on
+// a shared CI runner, and that measurement carries the runner's load, not just
+// the scanner's cost.
+//
+// Measured on ONE unchanged commit (v1.2.0): 25.6s locally, 33.0s on the rc1
+// runner, 35.5s on the v1.2.0 runner — a 39% spread, with the slowest run
+// logging an HTTP `context deadline exceeded` mid-scan. Under the shared 10%
+// band that failed two consecutive release tags for a cost the code never
+// incurred.
+//
+// Duration still gates, because Rule 6 treats performance regressions as bugs
+// (the v1.1 work took a scan from ~50 min to 9 s, and losing that silently
+// would be a real failure). 100% is chosen to sit far above observed runner
+// jitter (~25%) while still catching anything that genuinely doubles the
+// scan's cost.
+var DurationRegressionThreshold = 1.00
+
+// thresholdFor returns the band a metric is judged against.
+func thresholdFor(metric string) float64 {
+	if metric == "duration_ms" {
+		return DurationRegressionThreshold
+	}
+	return RegressionThreshold
+}
+
 // Baseline is the committed snapshot of benchmark numbers that every
 // future run is compared against. Results is keyed by target name so
 // adding a new target never disturbs existing baselines.
@@ -139,12 +167,13 @@ func isRegression(metric string, base, cur float64) (pct float64, regressed bool
 	} else if cur != 0 {
 		pct = 1 // treat any move off a zero baseline as a full-unit change
 	}
+	limit := thresholdFor(metric)
 	worseUp := !higherIsBetter[metric] // lower-is-better → up is worse
 	if worseUp {
-		return pct, pct > RegressionThreshold
+		return pct, pct > limit
 	}
 	// higher-is-better → a drop past the threshold regresses
-	return pct, pct < -RegressionThreshold
+	return pct, pct < -limit
 }
 
 // Compare scores current results against the baseline and returns a
