@@ -979,3 +979,50 @@ func TestScanMultiLineJWTPatternDoesNotOverfire(t *testing.T) {
 		}
 	}
 }
+
+// TestScan_PlaceholderIsAnnotationNotSuppression is the Rule 3 gate on the
+// placeholder classifier. A fixture-shaped credential must still be REPORTED —
+// same ID, same severity, same endpoint, non-empty evidence — and merely
+// carry the annotation the confidence scorer reads. It fails loudly if anyone
+// "optimises" the classifier into isReferenceOrPlaceholder, which drops
+// matches.
+func TestScan_PlaceholderIsAnnotationNotSuppression(t *testing.T) {
+	const value = "08bf2e526a1f4c8db3b91e7d0f2a5c6e"
+	cases := []struct {
+		name            string
+		line            string
+		wantPlaceholder bool
+	}{
+		{"fixture-named key", `FAKE_API_KEY = "` + value + `"`, true},
+		{"same value, plain key", `API_KEY = "` + value + `"`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "cfg.py", c.line+"\n")
+			fs, err := Scan(context.Background(), dir)
+			if err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			for _, f := range fs {
+				if f.ID != "SEC-GENERIC_API_KEY" {
+					continue
+				}
+				if f.Severity != models.SeverityHigh {
+					t.Errorf("severity = %q; want HIGH — placeholder must not change it", f.Severity)
+				}
+				if f.Evidence == "" {
+					t.Error("evidence is empty — placeholder must not strip it")
+				}
+				if !strings.HasSuffix(f.Endpoint, "cfg.py:1") {
+					t.Errorf("endpoint = %q; want cfg.py:1", f.Endpoint)
+				}
+				if f.Placeholder != c.wantPlaceholder {
+					t.Errorf("Placeholder = %v; want %v (line %q)", f.Placeholder, c.wantPlaceholder, c.line)
+				}
+				return
+			}
+			t.Fatalf("SEC-GENERIC_API_KEY was SUPPRESSED, not de-escalated; got %v", idsFound(fs))
+		})
+	}
+}

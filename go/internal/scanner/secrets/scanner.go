@@ -602,7 +602,11 @@ func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 				if isReferenceOrPlaceholder(line, match) {
 					continue
 				}
-				vStart, _, hasValue := secretValueSpan(pat, line, sub)
+				vStart, vEnd, hasValue := secretValueSpan(pat, line, sub)
+				value := ""
+				if hasValue {
+					value = line[vStart:vEnd]
+				}
 				aStart, aEnd := evidenceAnchor(sub[0], vStart, hasValue, spans, newSpans)
 				safeEvidence := truncateEvidenceAround(redacted, aStart, aEnd)
 				lineRef := fmt.Sprintf("%s:%d", rel, lineno)
@@ -620,6 +624,14 @@ func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 					References: []string{pat.cwe},
 					Confidence: models.ConfidenceHigh,
 					Line:       &lineCopy,
+					// Deterministic fixture-credential classification. An
+					// EVIDENCE ANNOTATION, not a filter — the finding is
+					// emitted either way, at the same ID, severity and
+					// endpoint, with full (redacted) evidence. The confidence
+					// scorer turns it into one named negative delta. See
+					// placeholder.go for why this is not folded into
+					// isReferenceOrPlaceholder.
+					Placeholder: classifyPlaceholder(line, vStart, value).isPlaceholder(),
 				})
 			}
 		}
@@ -697,6 +709,12 @@ var referencePrefixes = []string{
 // "ExampleFakeKeyForTesting" via the secrets module — "EXAMPLE" appears inside
 // real leaked keys too, and over-suppressing on it produces false negatives.
 // The two AWS example keys are handled separately by the textscan NegPattern.
+//
+// Those values ARE now de-escalated, just not here: classifyPlaceholder
+// (placeholder.go) recognises them and sets Evidence.Placeholder, which costs
+// the finding confidence while leaving it reported with full evidence. That is
+// the treatment this comment says suppression could not give them — so keep
+// this regex narrow and add nothing to it.
 var placeholderRE = regexp.MustCompile(`(?i)^(?:your[_-][a-z0-9_-]*here|<[^>]+>|\$\{[^}]+\}|changeme|placeholder|redacted|x{6,})$`)
 
 // quotedValueRE extracts the first single- or double-quoted string from a

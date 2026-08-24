@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fixture-shaped credentials scored the same as real ones.**
+  `FAKE_API_KEY = "08bf2e526…"`, `ghp_` followed by 36 `A`s and AWS's own
+  documented `AKIAIOSFODNN7EXAMPLE` were reported at exactly the confidence of
+  a live production credential, because nothing downstream of the regex looked
+  at the value or the name it was bound to.
+
+  The secrets scanner now classifies each captured value against four
+  deterministic rules — a `FAKE_`/`TEST_`/`DUMMY_`/`MOCK_`/`EXAMPLE_`/
+  `PLACEHOLDER_`/`SAMPLE_` assignment key (snake, kebab or camelCase), a
+  placeholder word inside the value, a long identical run or a single dominant
+  byte, and a value too short to be a credential — and records the verdict on
+  the evidence. The confidence scorer turns it into a named `-20` delta, and a
+  classified value no longer earns the deterministic-detection bonus, so a
+  fixture-shaped secret lands in the LOW band where a real one lands HIGH.
+
+  Per Rule 3 this is de-escalation, never suppression: the finding is still
+  emitted, at the same id, severity, endpoint and evidence. It is deliberately
+  NOT folded into the existing placeholder suppression — that path DROPS
+  matches, and "EXAMPLE" appears inside real leaked keys too.
+
+  The classifier is pure and rule-based (Rule 8): no model, no randomness, and
+  every point it costs is a reason line that reconciles with the score. The
+  boundary cases are pinned — `latest_token`, `testament`, `testing_key` and
+  `TESTING_KEY` do NOT classify as fixtures, and neither do Stripe's
+  documentation key, a 48-char OpenAI key or a database password.
+
+  > **`confidence_score` and `confidence_band` change for affected findings.**
+  > Both are serialized into JSON and SARIF. Severity, `Status` and the
+  > `confidence` enum are untouched — the decision layer keys status off
+  > severity rank alone.
+
 - **Secrets findings leaked the first 20 characters of every credential into
   their own evidence.** `truncateSecret` kept a 20-char raw prefix of the
   matched value, and `truncateEvidence` then framed it in a 120-char window

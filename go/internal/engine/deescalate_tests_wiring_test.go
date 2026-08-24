@@ -26,8 +26,15 @@ import (
 // sort → IDs/fingerprint → stamp), including the provenance index captured
 // BEFORE the projection.
 func finalize(evid []evidence.Evidence, failOn string, opts decision.Options) []models.Finding {
-	prov := evidence.NewProvenanceIndex(evid)
+	return finalizeIndexed(evid, evidence.NewProvenanceIndex(evid), failOn, opts)
+}
 
+// finalizeIndexed is finalize with the provenance index supplied by the
+// caller. A HYBRID scan runs CorrelateEvidence BEFORE building the index
+// (orchestrator.go:539 then :552), and that ordering is exactly what the
+// correlator's provenance restore has to survive — so a test covering it must
+// be able to interpose. finalize is the code-only shorthand.
+func finalizeIndexed(evid []evidence.Evidence, prov evidence.ProvenanceIndex, failOn string, opts decision.Options) []models.Finding {
 	findings := evidence.ToFindings(evid)
 	findings = escalateNonCorrelatedReachable(findings)
 	findings = Deduplicate(findings)
