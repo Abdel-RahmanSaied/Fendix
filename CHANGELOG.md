@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SARIF results now carry a stable identity, a GitHub ranking score, and an
+  analysis category.** Three separate gaps that each cost something concrete on
+  the `fendix report --format sarif` → GitHub code-scanning path the GitHub App
+  already uses:
+
+  - `result.partialFingerprints["fendix/v1"]` (SARIF §3.27.16), sourced from
+    `Finding.Fingerprint` — the same `sha1(Category|Endpoint|Title)` token that
+    `.fendix-ignore` fingerprint rules pin to. Without it a consumer identifies
+    an alert by file and line, so a re-ordered scan closes and reopens every
+    alert. Per DECISIONS.md D4 the key is emitted ONLY when a real
+    engine-scheme fingerprint is present: one producer, one meaning. A finding
+    without one gets no key rather than an invented value, and a pre-fingerprint
+    report stays byte-identical.
+
+  - `rule.properties["security-severity"]` — the CVSS-style score GitHub ranks
+    alerts by, as a string: CRITICAL 9.5, HIGH 8.0, MEDIUM 5.5, LOW 3.0,
+    INFO 1.0, one per GitHub bucket. Without it GitHub files every Fendix alert
+    as "medium" no matter what level it carries. Working rule 8: it is a pure
+    function of SEVERITY and never of confidence.
+
+  - `run.automationDetails.id` = `"fendix/scan"` (SARIF §3.14.3 → §3.17), on the
+    RUN object. GitHub reads the id as the analysis "category"; two tools
+    uploading SARIF for the same commit without distinct ids overwrite each
+    other's alerts. Emitted on zero-findings runs too, otherwise a clean upload
+    cannot clear the previous run's alerts for the category. Treat the value as
+    a one-way door — changing it re-partitions existing alerts.
+
 - **`IAC_DOCKER_FLOATING_TAG` — a Dockerfile base image that is not pinned to
   a digest.** A tag is a mutable pointer: `python:3.14-slim`, `ubuntu:24.04`,
   `node:20-alpine` and `alpine:3.19` all look specific and all silently change
@@ -30,6 +57,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   > no change to exit codes at the default `--fail-on`.
 
 ### Fixed
+
+- **A SARIF result's message was the raw evidence — for a SAST finding, a line
+  of source code.** `result.message.text` is what GitHub renders as the PR
+  annotation, and it read `with open(path, 'w', ...) as f:` — the code, with no
+  statement of what was wrong with it. An evidence-less finding produced an
+  EMPTY message, which GitHub rejects outright.
+
+  The message is now a description: the rule name plus the location it fired
+  at — `Hardcoded secret at src/config.py:14`, `Missing CSP at GET /api/users
+  (+2 more)`. It is composed from the same branch that built `result.locations`,
+  so the two can never disagree about where the finding is, and it falls back to
+  the rule key when a finding has no title, so it is never empty.
+
+  The code line moves to `region.snippet.text` (SARIF §3.30.13), where it
+  belongs — reusing `Finding.Evidence` rather than re-reading the source file,
+  because Evidence is already the redacted/truncated string and re-reading would
+  put raw credentials into a blob the GitHub App uploads. Working rule 3: the
+  evidence is DE-ESCALATED, not deleted — it is also kept verbatim in
+  `result.properties.evidence` for every finding, including the blackbox ones
+  that have no snippet to hold it.
 
 - **A URL in a finding's `line` field became a SARIF file called `https`.**
   `parseLine` split the value on EVERY `:` and read the last segment as the
@@ -311,6 +358,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   > There is no cache-bust flag — delete the directory to force a refresh.
 
 ### Changed
+
+- **A deduplicated SARIF rule now takes the MAXIMUM severity of the findings
+  under it, not the first one seen.** A rule is keyed on (category, title) while
+  the engine's `dedupKey` is severity|category|title, so `Deduplicate`
+  deliberately keeps a same-check pair at two severities as two findings — and
+  `enforceConsistency` (LOW confidence caps severity at MEDIUM, MEDIUM at HIGH)
+  actively creates that split. First-wins was not deterministic in any useful
+  sense: the orchestrator sorts by Endpoint → Category → Title and never by
+  severity, so the rule's level was whichever finding had the lexicographically
+  smallest endpoint, and `fendix report --input` accepts an arbitrarily ordered
+  array anyway.
+
+  This changes `defaultConfiguration.level` for a rule that spans severities.
+  It is also required for correctness: `security-severity` has no per-result
+  equivalent, so one value serves every alert under the rule, and a rule reading
+  level "note" beside security-severity "9.5" is a defect. Per-result `level` is
+  unaffected — each result still carries its own, from the decision verdict.
+
+  Out of scope, and still first-wins: the rule's Name, Help, HelpURI, and
+  `properties.category`/`tags`/`confidence`. `properties.confidence` in
+  particular remains order-dependent on a deduplicated rule — an independent
+  reason `security-severity` must not be derived from it.
 
 - **`--fail-on` now requires the confidence band to support the claim.**
   `decision.Decide` computed a full confidence `Result`, attached it to every

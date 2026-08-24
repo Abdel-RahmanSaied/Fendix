@@ -390,7 +390,16 @@ func TestRenderSARIF_WhiteboxLocation(t *testing.T) {
 		t.Errorf("expected URI src/config.py, got %s", loc.PhysicalLocation.ArtifactLocation.URI)
 	}
 	if loc.PhysicalLocation.Region == nil || loc.PhysicalLocation.Region.StartLine != 14 {
-		t.Error("expected start line 14")
+		t.Fatal("expected start line 14")
+	}
+	// FIX-13.4: the code line lives in the region snippet, and the message is
+	// a description of the finding rather than a copy of the source.
+	if loc.PhysicalLocation.Region.Snippet == nil ||
+		loc.PhysicalLocation.Region.Snippet.Text != "API_KEY = 'sk-live-...'" {
+		t.Errorf("expected the evidence as region.snippet.text, got %+v", loc.PhysicalLocation.Region.Snippet)
+	}
+	if want := "Hardcoded secret at src/config.py:14"; result.Message.Text != want {
+		t.Errorf("message.text = %q, want %q", result.Message.Text, want)
 	}
 }
 
@@ -1174,5 +1183,342 @@ func TestSARIF_NoDecisionFallsBackToSeverity(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &log)
 	if log.Runs[0].Results[0].Level != "error" {
 		t.Errorf("unstamped HIGH should stay error, got %q", log.Runs[0].Results[0].Level)
+	}
+}
+
+// TestRenderSARIF_PartialFingerprints covers FIX-13.1 under DECISIONS.md D4:
+// the "fendix/v1" key is published ONLY for a finding that already carries a
+// real engine-scheme fingerprint. A finding without one gets no key at all —
+// never an invented or empty value — because two producers hashing differently
+// under one key would flip a finding's identity depending on which path
+// rendered the SARIF.
+func TestRenderSARIF_PartialFingerprints(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Fingerprint: "a1b2c3d4", Title: "Missing auth",
+			Severity: models.SeverityHigh, Source: models.SourceBlackbox,
+			Category: "auth", Endpoint: "GET /api/users", Confidence: models.ConfidenceHigh,
+		},
+		{
+			ID: "SEC-002", Fingerprint: "", Title: "Missing CSP",
+			Severity: models.SeverityMedium, Source: models.SourceBlackbox,
+			Category: "headers", Endpoint: "GET /api/posts", Confidence: models.ConfidenceHigh,
+		},
+	}
+	if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	results := log.Runs[0].Results
+	if got := results[0].PartialFingerprints[sarifFingerprintKey]; got != "a1b2c3d4" {
+		t.Errorf("partialFingerprints[%q] = %q, want a1b2c3d4", sarifFingerprintKey, got)
+	}
+	if results[1].PartialFingerprints != nil {
+		t.Errorf("a finding without a fingerprint must get no key, got %v", results[1].PartialFingerprints)
+	}
+
+	// Backward compat: a pre-fingerprint report must stay byte-identical, so
+	// the key has to be absent from the raw JSON, not present-and-empty.
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	rawResults := raw["runs"].([]any)[0].(map[string]any)["results"].([]any)
+	if _, ok := rawResults[1].(map[string]any)["partialFingerprints"]; ok {
+		t.Error("result without a fingerprint still emitted a partialFingerprints key")
+	}
+}
+
+// TestSARIFSecuritySeverity_FromSeverityOnly locks the exact strings against
+// GitHub's bucket thresholds (>=9.0 critical, >=7.0 high, >=4.0 medium,
+// >0.0 low). Changing one of these re-ranks every alert already ingested.
+func TestSARIFSecuritySeverity_FromSeverityOnly(t *testing.T) {
+	tests := []struct {
+		sev  models.Severity
+		want string
+	}{
+		{models.SeverityCritical, "9.5"},
+		{models.SeverityHigh, "8.0"},
+		{models.SeverityMedium, "5.5"},
+		{models.SeverityLow, "3.0"},
+		{models.SeverityInfo, "1.0"},
+		{models.Severity(""), "1.0"},
+		{models.Severity("BOGUS"), "1.0"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.sev), func(t *testing.T) {
+			if got := sarifSecuritySeverity(tt.sev); got != tt.want {
+				t.Errorf("sarifSecuritySeverity(%q) = %q, want %q", tt.sev, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRenderSARIF_SecuritySeverityIgnoresConfidence is the working-rule-8
+// guard. Two findings of the SAME check at the same severity but opposite
+// confidence share one rule; the score must come from severity alone.
+func TestRenderSARIF_SecuritySeverityIgnoresConfidence(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Reflected XSS", Category: "injection",
+			Severity: models.SeverityHigh, Source: models.SourceBlackbox,
+			Endpoint: "GET /a", Confidence: models.ConfidenceHigh,
+			ConfidenceScore: 95, ConfidenceBand: "HIGH",
+		},
+		{
+			ID: "SEC-002", Title: "Reflected XSS", Category: "injection",
+			Severity: models.SeverityHigh, Source: models.SourceBlackbox,
+			Endpoint: "GET /b", Confidence: models.ConfidenceLow,
+			ConfidenceScore: 5, ConfidenceBand: "LOW",
+		},
+	}
+	var buf bytes.Buffer
+	if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	rules := log.Runs[0].Tool.Driver.Rules
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 deduped rule, got %d", len(rules))
+	}
+	if got := rules[0].Properties.SecuritySeverity; got != "8.0" {
+		t.Errorf("security-severity = %q, want 8.0 (HIGH) regardless of confidence", got)
+	}
+}
+
+// TestRenderSARIF_DedupedRuleTakesMaxSeverity is the determinism test for
+// FIX-13.2. A rule spans severities for a real reason: the engine's dedupKey
+// includes severity, so Deduplicate keeps a same-check pair at two severities
+// as two findings, and enforceConsistency caps one occurrence but not another.
+// First-wins made the rule's level depend on the input ORDER; max does not.
+func TestRenderSARIF_DedupedRuleTakesMaxSeverity(t *testing.T) {
+	low := models.Finding{
+		ID: "SEC-001", Title: "Reflected XSS", Category: "injection",
+		Severity: models.SeverityLow, Source: models.SourceBlackbox,
+		Endpoint: "GET /a", Confidence: models.ConfidenceLow,
+	}
+	crit := models.Finding{
+		ID: "SEC-002", Title: "Reflected XSS", Category: "injection",
+		Severity: models.SeverityCritical, Source: models.SourceBlackbox,
+		Endpoint: "GET /b", Confidence: models.ConfidenceHigh,
+	}
+
+	// The two severity-derived rule fields, which are what FIX-13.2 makes a
+	// function of the finding SET rather than of its order. Deliberately NOT
+	// the whole rule: Name, Help, HelpURI, Properties.Category/Tags/Confidence
+	// stay on the pre-existing first-wins path, so `confidence` really does
+	// still flip between "LOW" and "HIGH" here depending on input order. That
+	// is out of this fix's scope — and an independent reason security-severity
+	// must never be derived from confidence, since the value it would read is
+	// itself order-dependent.
+	severityFields := func(t *testing.T, findings []models.Finding) [2]string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+			t.Fatalf("RenderSARIF: %v", err)
+		}
+		var log SARIFLog
+		if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		rules := log.Runs[0].Tool.Driver.Rules
+		if len(rules) != 1 {
+			t.Fatalf("expected 1 deduped rule, got %d", len(rules))
+		}
+		if got := rules[0].Properties.SecuritySeverity; got != "9.5" {
+			t.Errorf("security-severity = %q, want 9.5 (the max severity in the set)", got)
+		}
+		// The two must never contradict each other: level "note" alongside
+		// security-severity "9.5" is a defect, not a nuance.
+		if got := rules[0].DefaultConfig.Level; got != "error" {
+			t.Errorf("defaultConfiguration.level = %q, want error (the max severity in the set)", got)
+		}
+		return [2]string{rules[0].DefaultConfig.Level, rules[0].Properties.SecuritySeverity}
+	}
+
+	lowFirst := severityFields(t, []models.Finding{low, crit})
+	critFirst := severityFields(t, []models.Finding{crit, low})
+	if lowFirst != critFirst {
+		t.Errorf("rule severity depends on finding order: [LOW,CRITICAL]=%v [CRITICAL,LOW]=%v",
+			lowFirst, critFirst)
+	}
+}
+
+// TestRenderSARIF_AutomationDetails covers FIX-13.3. It asserts on the RAW
+// map rather than the typed struct on purpose: that is what proves the key
+// sits on the RUN object (SARIF §3.14.3) and not on tool/driver/result.
+func TestRenderSARIF_AutomationDetails(t *testing.T) {
+	cases := map[string][]models.Finding{
+		"with findings": sampleFindings(),
+		// A clean run needs the category too — without it the "no alerts"
+		// upload cannot clear the previous run's alerts for that category.
+		"zero findings": nil,
+	}
+	for name, findings := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+				t.Fatalf("RenderSARIF: %v", err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			run := raw["runs"].([]any)[0].(map[string]any)
+			ad, ok := run["automationDetails"].(map[string]any)
+			if !ok {
+				t.Fatalf("runs[0].automationDetails missing or not an object: %v", run["automationDetails"])
+			}
+			if ad["id"] != "fendix/scan" {
+				t.Errorf("automationDetails.id = %v, want fendix/scan", ad["id"])
+			}
+			// Negative control: it must not have been hung off the tool.
+			tool := run["tool"].(map[string]any)
+			if _, ok := tool["automationDetails"]; ok {
+				t.Error("automationDetails must live on the run, not on tool")
+			}
+			if _, ok := tool["driver"].(map[string]any)["automationDetails"]; ok {
+				t.Error("automationDetails must live on the run, not on driver")
+			}
+		})
+	}
+}
+
+// TestRenderSARIF_MessageIsDescriptionNotEvidence covers FIX-13.4 for a SAST
+// finding: message.text is prose, the source line moves to region.snippet.text,
+// and the evidence is ALSO kept verbatim in properties (working rule 3 —
+// de-escalated, never deleted).
+func TestRenderSARIF_MessageIsDescriptionNotEvidence(t *testing.T) {
+	const code = "API_KEY = 'sk-live-abc'"
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Hardcoded secret", Severity: models.SeverityCritical,
+			Source: models.SourceWhitebox, Category: "secrets",
+			Line: strPtr("src/config.py:14"), Evidence: code,
+			Confidence: models.ConfidenceHigh,
+		},
+	}
+	r := renderAndDecode(t, findings)[0]
+	if want := "Hardcoded secret at src/config.py:14"; r.Message.Text != want {
+		t.Errorf("message.text = %q, want %q", r.Message.Text, want)
+	}
+	if strings.Contains(r.Message.Text, "sk-live-abc") {
+		t.Errorf("message.text still carries the raw code line: %q", r.Message.Text)
+	}
+	snip := r.Locations[0].PhysicalLocation.Region.Snippet
+	if snip == nil || snip.Text != code {
+		t.Errorf("region.snippet.text = %+v, want %q", snip, code)
+	}
+	if r.Properties == nil || r.Properties.Evidence != code {
+		t.Errorf("properties.evidence = %+v, want %q", r.Properties, code)
+	}
+}
+
+// TestRenderSARIF_EvidencePreservedForBlackboxFinding is the working-rule-3
+// guard for the branch with no physicalLocation: there is no snippet to hold
+// the evidence, so properties is its only surviving home.
+func TestRenderSARIF_EvidencePreservedForBlackboxFinding(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Missing auth", Severity: models.SeverityCritical,
+			Source: models.SourceBlackbox, Category: "auth", Endpoint: "GET /api/users",
+			Evidence: "200 without auth", Confidence: models.ConfidenceHigh,
+		},
+	}
+	r := renderAndDecode(t, findings)[0]
+	if r.Locations[0].PhysicalLocation != nil {
+		t.Fatalf("blackbox finding should have no physicalLocation, got %+v", r.Locations[0].PhysicalLocation)
+	}
+	if r.Properties == nil || r.Properties.Evidence != "200 without auth" {
+		t.Errorf("properties.evidence = %+v, want the evidence verbatim", r.Properties)
+	}
+	if want := "Missing auth at GET /api/users"; r.Message.Text != want {
+		t.Errorf("message.text = %q, want %q", r.Message.Text, want)
+	}
+}
+
+// TestRenderSARIF_NoSnippetWithoutLineNumber covers the deps-scanner shape:
+// govulncheck/pip/npm set Line to a bare manifest name, so there is a real
+// file but no line. SARIF requires region.startLine >= 1, so no region may be
+// emitted — and therefore no snippet — while the evidence still survives.
+func TestRenderSARIF_NoSnippetWithoutLineNumber(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Vulnerable dependency", Severity: models.SeverityMedium,
+			Source: models.SourceWhitebox, Category: "deps",
+			Line: strPtr("requirements.txt"), Evidence: "CVE-2024-1234: description",
+			Confidence: models.ConfidenceHigh,
+		},
+	}
+	if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	if strings.Contains(buf.String(), `"startLine": 0`) {
+		t.Errorf("emitted an invalid startLine 0:\n%s", buf.String())
+	}
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	r := log.Runs[0].Results[0]
+	pl := r.Locations[0].PhysicalLocation
+	if pl == nil || pl.ArtifactLocation.URI != "requirements.txt" {
+		t.Fatalf("expected physicalLocation on requirements.txt, got %+v", pl)
+	}
+	if pl.Region != nil {
+		t.Errorf("expected no region without a line number, got %+v", pl.Region)
+	}
+	if r.Properties == nil || r.Properties.Evidence != "CVE-2024-1234: description" {
+		t.Errorf("properties.evidence = %+v, want the evidence verbatim", r.Properties)
+	}
+	if want := "Vulnerable dependency at requirements.txt"; r.Message.Text != want {
+		t.Errorf("message.text = %q, want %q", r.Message.Text, want)
+	}
+}
+
+// TestRenderSARIF_MultiEndpointMessageNamesCount proves the message and the
+// locations are derived from the SAME branch and cannot disagree: the TASK-088
+// deduped fixture yields 3 locations and a message that says so.
+func TestRenderSARIF_MultiEndpointMessageNamesCount(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Missing CSP", Severity: models.SeverityMedium,
+			Source: models.SourceBlackbox, Category: "headers",
+			Endpoint:          "GET /api/users",
+			AffectedEndpoints: []string{"GET /api/users", "GET /api/posts", "POST /api/login"},
+			Evidence:          "no CSP header observed", Confidence: models.ConfidenceHigh,
+		},
+	}
+	r := renderAndDecode(t, findings)[0]
+	if len(r.Locations) != 3 {
+		t.Fatalf("expected 3 locations, got %d", len(r.Locations))
+	}
+	if want := "Missing CSP at GET /api/users (+2 more)"; r.Message.Text != want {
+		t.Errorf("message.text = %q, want %q", r.Message.Text, want)
+	}
+}
+
+// TestRenderSARIF_MessageNeverEmpty guards a real pre-fix defect: an
+// evidence-less finding produced message.text "", and GitHub rejects an empty
+// result message. ruleKeyFor's own fallback is the backstop.
+func TestRenderSARIF_MessageNeverEmpty(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "SEC-001", Title: "", Category: "", Endpoint: "", Evidence: "", Line: nil},
+	}
+	r := renderAndDecode(t, findings)[0]
+	if r.Message.Text == "" {
+		t.Fatal("message.text must never be empty")
+	}
+	if want := "fendix.uncategorized.unnamed"; r.Message.Text != want {
+		t.Errorf("message.text = %q, want the ruleKeyFor fallback %q", r.Message.Text, want)
 	}
 }

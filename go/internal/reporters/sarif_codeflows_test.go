@@ -112,12 +112,17 @@ func TestRenderSARIF_StampsProvenanceProperties(t *testing.T) {
 
 func TestRenderSARIF_NoCodeFlowWithoutChain(t *testing.T) {
 	f := models.Finding{
-		ID:         "SEC-003",
-		Title:      "Missing header",
-		Severity:   models.SeverityLow,
-		Source:     models.SourceBlackbox,
-		Category:   "headers",
-		Endpoint:   "GET /",
+		ID:       "SEC-003",
+		Title:    "Missing header",
+		Severity: models.SeverityLow,
+		Source:   models.SourceBlackbox,
+		Category: "headers",
+		Endpoint: "GET /",
+		// The absent Evidence is LOAD-BEARING as of FIX-13.4: evidence is now
+		// one of the things sarifResultProperties records, so a fixture with an
+		// Evidence value would legitimately produce a non-nil properties object
+		// and fail the assertion below. See
+		// TestRenderSARIF_EvidenceAloneCreatesProperties for the complement.
 		Confidence: models.ConfidenceMedium,
 	}
 	r := renderAndDecode(t, []models.Finding{f})[0]
@@ -126,5 +131,32 @@ func TestRenderSARIF_NoCodeFlowWithoutChain(t *testing.T) {
 	}
 	if r.Properties != nil {
 		t.Errorf("finding with no tier/route/reachable should have nil properties, got %+v", r.Properties)
+	}
+}
+
+// TestRenderSARIF_EvidenceAloneCreatesProperties is the complement to
+// TestRenderSARIF_NoCodeFlowWithoutChain, and the trip-wire for the one slip
+// in FIX-13.4 that would silently DELETE evidence: forgetting `evidence == ""`
+// in the widened sarifResultProperties nil-guard. Without it every plain
+// blackbox finding — no tier, no route, no decision stamp — loses its evidence
+// entirely once message.text stops carrying it, which is a working-rule-3
+// violation rather than a formatting change.
+func TestRenderSARIF_EvidenceAloneCreatesProperties(t *testing.T) {
+	f := models.Finding{
+		ID:         "SEC-004",
+		Title:      "Missing header",
+		Severity:   models.SeverityLow,
+		Source:     models.SourceBlackbox,
+		Category:   "headers",
+		Endpoint:   "GET /",
+		Evidence:   "x",
+		Confidence: models.ConfidenceMedium,
+	}
+	r := renderAndDecode(t, []models.Finding{f})[0]
+	if r.Properties == nil {
+		t.Fatal("a finding carrying only evidence must still produce properties")
+	}
+	if r.Properties.Evidence != "x" {
+		t.Errorf("properties.evidence = %q, want x", r.Properties.Evidence)
 	}
 }
