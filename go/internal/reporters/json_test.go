@@ -239,3 +239,71 @@ func TestRenderJSON_NoDecisionFieldsByDefault(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderJSON_StampsSchemaVersion covers both halves of the contract
+// marker on a freshly written report: the key is physically in the bytes
+// (a typed decode cannot tell an absent key from a zero, so the raw map is
+// checked first), and it round-trips back through ParseJSONReport as 1.
+//
+// The expected value is pinned to the literal 1 rather than to the
+// SchemaVersion const on purpose — bumping the const is a contract change
+// consumers have to be told about, so it should fail here first.
+func TestRenderJSON_StampsSchemaVersion(t *testing.T) {
+	var buf bytes.Buffer
+	// SchemaVersion deliberately left unset by the caller: RenderJSON is
+	// the stamper, so nothing upstream has to remember to set it.
+	meta := ScanMetadata{Target: "https://api.example.com", Version: "dev", Mode: "blackbox"}
+
+	if err := RenderJSON(&buf, sampleFindings(), meta); err != nil {
+		t.Fatalf("RenderJSON failed: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	rawMeta, ok := raw["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata is not an object, got %T", raw["metadata"])
+	}
+	got, present := rawMeta["schema_version"]
+	if !present {
+		t.Fatalf("metadata.schema_version missing from rendered report: %v", rawMeta)
+	}
+	if got != float64(1) {
+		t.Errorf("metadata.schema_version = %v, want 1", got)
+	}
+
+	report, err := ParseJSONReport(buf.Bytes())
+	if err != nil {
+		t.Fatalf("a freshly written report must parse: %v", err)
+	}
+	if report.Metadata.SchemaVersion != 1 {
+		t.Errorf("round-tripped Metadata.SchemaVersion = %d, want 1", report.Metadata.SchemaVersion)
+	}
+}
+
+// TestRenderJSON_RestampsSchemaVersionOnRerender is the `fendix report
+// --input old.json --format json` path. The input predates the field and
+// decodes to 0, but THIS build writes the output bytes, so the output
+// carries THIS build's version rather than propagating the 0.
+func TestRenderJSON_RestampsSchemaVersionOnRerender(t *testing.T) {
+	stale := ScanMetadata{Target: "https://api.example.com", Version: "v0.4.1", Mode: "blackbox", SchemaVersion: 0}
+
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, nil, stale); err != nil {
+		t.Fatalf("RenderJSON failed: %v", err)
+	}
+
+	report, err := ParseJSONReport(buf.Bytes())
+	if err != nil {
+		t.Fatalf("re-rendered report must parse: %v", err)
+	}
+	if report.Metadata.SchemaVersion != 1 {
+		t.Errorf("Metadata.SchemaVersion = %d, want 1 — the writer stamps, it does not propagate", report.Metadata.SchemaVersion)
+	}
+	// The caller's copy must not be mutated: meta is passed by value.
+	if stale.SchemaVersion != 0 {
+		t.Errorf("caller's ScanMetadata was mutated: SchemaVersion = %d, want 0", stale.SchemaVersion)
+	}
+}

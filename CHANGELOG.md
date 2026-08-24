@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`metadata.schema_version` — the JSON report now says which contract it is.**
+  `fendix scan --format json` and `fendix report --format json` stamp
+  `"schema_version": 1` into the metadata block of every report they write.
+  Until now a consumer had to infer the shape from which optional keys
+  happened to be present, which cannot distinguish "this build does not emit
+  `decisions`" from "this scan produced none" — and gave a downstream
+  integration nothing to warn on when it is handed a report from a newer
+  engine than it was written against.
+
+  Additive and backward compatible, in both directions:
+
+  - **Older reports keep parsing.** `reporters.ParseJSONReport` rejects a
+    document only when `metadata.version` AND `metadata.mode` are both empty.
+    `schema_version` is deliberately NOT part of that check: an archived
+    report omits the key, decodes to `0`, and is still accepted. `0` means
+    "pre-versioned", never "invalid".
+  - **Newer reports keep parsing too.** An unrecognised value is not a parse
+    error — the reader stays permissive and leaves "I don't know this
+    contract" to the consumer that has to act on it.
+  - `docs/schema.json` lists the key under `properties` (it must —
+    `additionalProperties` is `false`) but deliberately NOT under `required`,
+    the same treatment `decisions` gets, so pre-v1.2.2 archived reports still
+    validate.
+
+  The writer stamps the value rather than propagating it, so
+  `fendix report --input old.json --format json` labels its output with the
+  build that actually wrote the bytes. Version `1` describes today's shape;
+  it is bumped only for a change a consumer must react to — a purely
+  additive key does not bump it, because a reader that ignores an unknown
+  key still reads a v1 report correctly.
+
 - **SARIF results now carry a stable identity, a GitHub ranking score, and an
   analysis category.** Three separate gaps that each cost something concrete on
   the `fendix report --format sarif` → GitHub code-scanning path the GitHub App

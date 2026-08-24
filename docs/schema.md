@@ -44,6 +44,7 @@ etc.) record when a field first appeared, not a support commitment.
 
 ```json
 {
+  "schema_version":    1,
   "target":            "https://api.example.com",
   "started_at":        "2026-04-29T10:00:00Z",
   "duration":          "12.5s",
@@ -64,6 +65,7 @@ etc.) record when a field first appeared, not a support commitment.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `schema_version` | integer | effectively yes | Version of this report contract. `RenderJSON` stamps it on **every** report it writes (overwriting whatever the caller set), so any report a current build produces carries it. It stays out of `schema.json`'s `required` set so pre-v1.2.2 archived reports still validate: those omit the key, and an absent key means "pre-versioned", **not** invalid. A consumer that does not recognise the value should warn, not fail — `ParseJSONReport` accepts any value, including 0 and unknown future ones. Bumped only for a change consumers must react to; purely additive keys do not bump it. |
 | `target` | string | yes | The `--url` value, or empty string for `--code`-only scans. |
 | `started_at` | string (RFC 3339 timestamp) | yes | When the scan started. |
 | `duration` | string (Go-formatted duration, e.g. `"12.5s"`) | yes | Wall-clock duration of the scan. |

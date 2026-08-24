@@ -9,8 +9,26 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
+// SchemaVersion is the version of the JSON report contract this build
+// writes. RenderJSON stamps it into every report's metadata, so a consumer
+// can read the shape it is holding off one field instead of inferring it
+// from which optional keys happen to be present.
+//
+// Bump it only for a change a consumer must react to. Purely additive keys
+// — the way `decisions`, `scanner_status` and `endpoints_discovered` all
+// landed — do NOT bump it: a reader that ignores an unknown key still reads
+// a v1 report correctly.
+const SchemaVersion = 1
+
 // ScanMetadata contains metadata about the scan run for report output.
 type ScanMetadata struct {
+	// SchemaVersion is the report-contract version (see SchemaVersion).
+	// RenderJSON overwrites whatever the caller set, so it always reflects
+	// the build that wrote the bytes. Every report produced BEFORE this
+	// field existed omits the key entirely and decodes to 0 — consumers
+	// must read 0 as "pre-versioned", never as invalid, and
+	// ParseJSONReport deliberately does not gate on it.
+	SchemaVersion  int       `json:"schema_version"`
 	Target         string    `json:"target"`
 	StartedAt      time.Time `json:"started_at"`
 	Duration       string    `json:"duration"`
@@ -173,6 +191,12 @@ func RenderJSON(w io.Writer, findings []models.Finding, meta ScanMetadata) error
 	if findings == nil {
 		findings = []models.Finding{}
 	}
+	// Stamp the contract version over whatever the caller passed: this
+	// build wrote these bytes, so this build's version is the honest
+	// answer — including on the `fendix report --input old.json --format
+	// json` re-render path, where meta was decoded from a report that
+	// predates the field and carries 0.
+	meta.SchemaVersion = SchemaVersion
 	report := JSONReport{
 		Metadata:  meta,
 		Summary:   CountSeverities(findings),
