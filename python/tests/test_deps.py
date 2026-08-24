@@ -295,8 +295,28 @@ class TestPipAuditPrimaryPath:
         def fake_run(*_args, **_kwargs):
             return MagicMock(returncode=1, stdout=_PIP_AUDIT_OUTPUT, stderr="")
         findings = self._run(fake_run)
-        # pip-audit should produce the GHSA finding; local fallback NOT run
-        assert any("GHSA-xxxx-yyyy-zzzz" in f["title"] for f in findings)
+        # pip-audit should produce the finding; local fallback NOT run.
+        #
+        # The title names the CANONICAL advisory id, not pip-audit's own
+        # record id: the fixture's vuln is filed as GHSA-xxxx-yyyy-zzzz with
+        # CVE-2023-31047 as an alias, and the CVE wins. This mirrors the Go
+        # pip scanner exactly, and that byte-identity is load-bearing —
+        # engine.Deduplicate collapses the Go/Python overlap on
+        # Severity|Category|Title, so a one-sided rename would report every
+        # dependency vulnerability twice under --python-engine.
+        assert any("CVE-2023-31047" in f["title"] for f in findings), (
+            f"expected the canonical CVE in the title; got {[f['title'] for f in findings]}"
+        )
+        # The id it was filed under is preserved as a reference — the rename
+        # de-emphasises an id, it never drops one.
+        pip_audit_finding = next(f for f in findings if "CVE-2023-31047" in f["title"])
+        assert "GHSA-xxxx-yyyy-zzzz" in pip_audit_finding["references"], (
+            f"the GHSA id was dropped by the rename: {pip_audit_finding['references']}"
+        )
+        assert pip_audit_finding["references"][0] == "CVE-2023-31047", (
+            f"canonical id must come first: {pip_audit_finding['references']}"
+        )
+        assert pip_audit_finding["id"] == "SEC-DEPS-CVE_2023_31047", pip_audit_finding["id"]
         # If the local fallback had also fired we'd see the DJANGO CVE-2023-31047
         # AS WELL — there'd be 2 findings on django==1.11.0 in that case.
         django_findings = [f for f in findings if "django" in f["title"].lower()]

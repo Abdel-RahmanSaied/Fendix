@@ -90,7 +90,18 @@ func newFakeOSVBatchServer(t *testing.T, vulns vulnsByKey, failBatch bool, batch
 			ids := vulns[q.Package.Name+"@"+q.Version]
 			vs := make([]osvVuln, len(ids))
 			for i, id := range ids {
-				vs[i] = osvVuln{ID: id}
+				// /v1/query is the RICH endpoint: it is what the batch
+				// path hydrates against, so the canned records carry the
+				// summary and the fixed range /v1/querybatch omits.
+				// Deliberately NO aliases here — several tests in this
+				// file pin the finding ID, and an alias would rename it.
+				vs[i] = osvVuln{
+					ID:      id,
+					Summary: "hydrated summary for " + id,
+					Affected: []osvAffected{{
+						Ranges: []osvRange{{Type: "ECOSYSTEM", Events: []osvEvent{{Fixed: "99.0.0"}}}},
+					}},
+				}
 			}
 			_ = json.NewEncoder(w).Encode(osvQueryResponse{Vulns: vs})
 		default:
@@ -111,8 +122,15 @@ func writeReqs(t *testing.T, dir, path string, lines ...string) {
 	}
 }
 
-// TestScanViaOSV_BatchUsedWhenManyPackages asserts the new path uses
-// /v1/querybatch (not /v1/query) when cache-miss packages are present.
+// TestScanViaOSV_BatchUsedWhenManyPackages asserts the batch path is used
+// for cache-miss packages — one /v1/querybatch covering the whole chunk —
+// and that each VULNERABLE package is then hydrated through /v1/query.
+//
+// The hydration half is FIX-05/FIX-06 wiring, not an optimisation regret:
+// /v1/querybatch returns bare ids, so before it every batch-path finding
+// had an empty description AND printed "no fix listed in OSV" even when
+// OSV listed one. The request count stays proportional to VULNERABLE
+// packages, not to total packages — clean-pkg costs nothing.
 func TestScanViaOSV_BatchUsedWhenManyPackages(t *testing.T) {
 	var batchHits, queryHits atomic.Int32
 	srv := newFakeOSVBatchServer(t,
@@ -145,8 +163,19 @@ func TestScanViaOSV_BatchUsedWhenManyPackages(t *testing.T) {
 	if batchHits.Load() != 1 {
 		t.Errorf("expected exactly 1 /v1/querybatch hit, got %d", batchHits.Load())
 	}
-	if queryHits.Load() != 0 {
-		t.Errorf("expected 0 per-package /v1/query hits on happy path, got %d", queryHits.Load())
+	// One hydration per VULNERABLE package (flask, requests) — NOT one per
+	// vuln and NOT one per package. clean-pkg came back empty and is never
+	// re-queried.
+	if queryHits.Load() != 2 {
+		t.Errorf("expected 1 /v1/query hydration per vulnerable package (2), got %d", queryHits.Load())
+	}
+	for _, f := range findings {
+		if !strings.Contains(f.Evidence, "hydrated summary for") {
+			t.Errorf("batch finding has no hydrated description: %q", f.Evidence)
+		}
+		if !strings.Contains(f.Fix, "99.0.0") {
+			t.Errorf("batch finding lost its fix version: %q", f.Fix)
+		}
 	}
 }
 

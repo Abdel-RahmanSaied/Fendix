@@ -40,8 +40,22 @@ func TestScanOffline_MatchesSnapshot(t *testing.T) {
 		t.Fatalf("got %d findings; want 1 (flask only)", len(findings))
 	}
 	f := findings[0]
-	if f.ID != "SEC-DEPS-GHSA_flask_ssrf" {
-		t.Errorf("ID = %q; want SEC-DEPS-GHSA_flask_ssrf", f.ID)
+	// FIX-05: the snapshot advisory carries CVE-2026-1111 as an alias, and
+	// the canonical-id rule prefers a CVE over the GHSA it was filed
+	// under. The offline path deliberately shares the online path's
+	// finding constructor, so it renames in lockstep.
+	if f.ID != "SEC-DEPS-CVE_2026_1111" {
+		t.Errorf("ID = %q; want SEC-DEPS-CVE_2026_1111", f.ID)
+	}
+	// The id it was filed under is preserved as a reference (Rule 3).
+	foundGHSA := false
+	for _, r := range f.References {
+		if r == "GHSA-flask-ssrf" {
+			foundGHSA = true
+		}
+	}
+	if !foundGHSA {
+		t.Errorf("References %v dropped the snapshot's own advisory id", f.References)
 	}
 	if f.Category != "deps" {
 		t.Errorf("Category = %q; want deps", f.Category)

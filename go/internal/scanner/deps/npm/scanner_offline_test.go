@@ -42,8 +42,12 @@ func TestScanOffline_MatchesSnapshot(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings; want 1 (lodash only)", len(findings))
 	}
-	if findings[0].ID != "SEC-DEPS-GHSA_lodash_pp" {
-		t.Errorf("ID = %q; want SEC-DEPS-GHSA_lodash_pp", findings[0].ID)
+	// FIX-05: the snapshot advisory carries CVE-2026-2222 as an alias, and
+	// the canonical-id rule prefers the CVE over the GHSA it was filed
+	// under. The offline path shares the online finding constructor, so it
+	// renames in lockstep.
+	if findings[0].ID != "SEC-DEPS-CVE_2026_2222" {
+		t.Errorf("ID = %q; want SEC-DEPS-CVE_2026_2222", findings[0].ID)
 	}
 	if want := "Upgrade to lodash@4.17.21 or later."; findings[0].Fix != want {
 		t.Errorf("Fix = %q; want %q", findings[0].Fix, want)

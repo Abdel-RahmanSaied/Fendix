@@ -100,11 +100,11 @@ const osvMaxConcurrentBatches = 4
 // batch-level failure so a transient batch-only outage cannot hide
 // CVE coverage.
 //
-// Sprint-02 trade-off (carried into npm): /v1/querybatch responses
-// include vuln IDs but NOT aliases. Findings via the batch path carry
-// only an OSV-id reference; the serial fallback preserves the alias
-// behaviour for any chunk that hits it. CVE-* alias hydration via
-// GET /v1/vulns/{id} is deferred to Sprint 02.6.
+// /v1/querybatch answers with bare vuln IDs — no aliases, summary or
+// affected ranges. Since FIX-05, runBatchOrFallback hydrates any package
+// the batch reported as vulnerable through the per-package /v1/query, so
+// the batch is a throughput optimisation over the package SET rather than
+// a downgrade of the records themselves.
 func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 	abs, err := filepath.Abs(codePath)
 	if err != nil {
@@ -155,9 +155,7 @@ func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 	var misses []pkgWithManifest
 	for _, p := range allPairs {
 		if vulns, ok := readCache(cache, p.pkg.name, p.pkg.version); ok {
-			for _, v := range vulns {
-				findings = append(findings, buildFinding(p.pkg, v, p.manifest))
-			}
+			findings = append(findings, buildFindings(p.pkg, vulns, p.manifest)...)
 			continue
 		}
 		misses = append(misses, p)
@@ -249,9 +247,19 @@ func ScanOffline(codePath string, snap *offline.Snapshot) ([]evidence.Evidence, 
 	const manifestName = "package-lock.json"
 	var findings []evidence.Evidence
 	for _, p := range pkgs {
-		for _, a := range snap.LookupVulnerable("npm", p.name, p.version) {
-			findings = append(findings, buildFinding(p, advisoryToOSV(a), manifestName))
+		advisories := snap.LookupVulnerable("npm", p.name, p.version)
+		if len(advisories) == 0 {
+			continue
 		}
+		// Collect the package's whole advisory set BEFORE building, so
+		// alias-connected snapshot advisories merge exactly the way the
+		// online path's do — otherwise the air-gapped path would report a
+		// different finding COUNT for identical data.
+		vulns := make([]osvVuln, 0, len(advisories))
+		for _, a := range advisories {
+			vulns = append(vulns, advisoryToOSV(a))
+		}
+		findings = append(findings, buildFindings(p, vulns, manifestName)...)
 	}
 	sortFindingsByID(findings)
 	return findings, nil
@@ -303,12 +311,38 @@ func runBatchOrFallback(ctx context.Context, client *http.Client, cache string, 
 	for _, p := range chunk {
 		key := p.pkg.name + "@" + p.pkg.version
 		vulns := results[key]
-		// Cache the batch result even when empty — that's a valid
-		// "no known vulns" answer worth caching for 24h.
-		writeCache(cache, p.pkg.name, p.pkg.version, vulns)
-		for _, v := range vulns {
-			findings = append(findings, buildFinding(p.pkg, v, p.manifest))
+		if len(vulns) == 0 {
+			// Cache the batch result even when empty — that's a valid
+			// "no known vulns" answer worth caching for 24h.
+			writeCache(cache, p.pkg.name, p.pkg.version, vulns)
+			findings = append(findings, buildFindings(p.pkg, vulns, p.manifest)...)
+			continue
 		}
+		// /v1/querybatch answers with bare {id}s — no Summary, no Details,
+		// no Aliases, no Affected — and this is the DEFAULT path. Without
+		// hydration, alias merging (FIX-05) and fix-version ranking
+		// (FIX-06) would both be dead code on the route that actually
+		// runs, and every batch finding would keep rendering an empty
+		// description plus "no fix listed in OSV".
+		//
+		// Hydrate per PACKAGE: one /v1/query returns every record for this
+		// (package, version) fully populated, so the cost is one extra
+		// request per VULNERABLE package. Runs inside the per-chunk
+		// goroutine under the osvMaxConcurrentBatches semaphore — do not
+		// parallelise it within a chunk, that breaks the rate-limit
+		// reasoning TestScan_ConcurrencyCapRespected protects.
+		full, err := queryOSV(ctx, client, cache, p.pkg.name, p.pkg.version)
+		if err != nil {
+			// Rule 3: never drop the finding. Emit the degraded batch
+			// record, and deliberately do NOT cache it — a poisoned entry
+			// would serve alias-less records to every path for 24h.
+			fmt.Fprintf(os.Stderr,
+				"[fendix] npm: alias/fix hydration for %s@%s failed (%v); emitting the degraded batch record\n",
+				p.pkg.name, p.pkg.version, err)
+		} else {
+			vulns = full
+		}
+		findings = append(findings, buildFindings(p.pkg, vulns, p.manifest)...)
 	}
 	return findings
 }
@@ -324,9 +358,7 @@ func runSerialFallback(ctx context.Context, client *http.Client, cache string, c
 			fmt.Fprintf(os.Stderr, "[fendix] npm: query %s@%s failed: %v\n", p.pkg.name, p.pkg.version, err)
 			continue
 		}
-		for _, v := range vulns {
-			findings = append(findings, buildFinding(p.pkg, v, p.manifest))
-		}
+		findings = append(findings, buildFindings(p.pkg, vulns, p.manifest)...)
 	}
 	return findings
 }
@@ -334,17 +366,15 @@ func runSerialFallback(ctx context.Context, client *http.Client, cache string, c
 // queryOSVBatch sends one /v1/querybatch request with up to
 // osvBatchMaxSize packages and returns map[<pkg>@<version>]vulns.
 //
-// Known limitation: /v1/querybatch's response shape includes vuln IDs
-// but NOT aliases. To get the CVE-* aliases the per-package /v1/query
-// path includes, a follow-up GET /v1/vulns/{id} per vuln would be
-// needed. This is intentionally NOT done here:
+// The response shape carries vuln IDs ONLY — no aliases, no summary, no
+// affected ranges. That is a property of the endpoint, which is why
+// runBatchOrFallback re-fetches every package this reports as vulnerable
+// through /v1/query before building findings: alias merging (FIX-05) and
+// fix-version ranking (FIX-06) both need the full record, and a bare id
+// renders as an empty description.
 //
-//   - Batch path (this function): N packages → 1 round trip, no aliases
-//   - Serial fallback (runSerialFallback): N packages → N round trips,
-//     full aliases
-//
-// Sprint 02.6 can hydrate aliases here if customers complain. Today we
-// accept the alias gap to win the throughput improvement.
+// Hydration is per PACKAGE, so the cost is one extra request per
+// VULNERABLE package; clean packages cost nothing beyond the batch.
 func queryOSVBatch(ctx context.Context, client *http.Client, pkgs []resolvedPackage) (map[string][]osvVuln, error) {
 	if len(pkgs) == 0 {
 		return map[string][]osvVuln{}, nil
@@ -408,10 +438,8 @@ func queryOSVBatch(ctx context.Context, client *http.Client, pkgs []resolvedPack
 		}
 		vulns := make([]osvVuln, 0, len(entry.Vulns))
 		for _, v := range entry.Vulns {
-			// TODO(sprint-02.6): hydrate aliases via GET /v1/vulns/{id}.
-			// Today: batch findings get a single OSV-id reference; the
-			// per-package /v1/query path remains the way to get full
-			// CVE-* aliases.
+			// Bare id only — everything else the finding needs comes from
+			// runBatchOrFallback's per-package hydration.
 			vulns = append(vulns, osvVuln{ID: v.ID})
 		}
 		out[pkgs[i].name+"@"+pkgs[i].version] = vulns
@@ -607,14 +635,313 @@ func queryOSV(ctx context.Context, client *http.Client, cacheDir, pkg, version s
 	return out.Vulns, nil
 }
 
-// buildFinding maps one OSV vulnerability to a fendix Finding, matching
-// the Python deps.py output shape exactly so dedup catches the overlap.
-func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.Evidence {
-	summary := v.Summary
-	if summary == "" {
-		summary = v.ID
+// ── FIX-05: one finding per VULNERABILITY, not per advisory record ──────
+//
+// Mirrors the pip scanner, deliberately duplicated rather than shared:
+// the two packages already keep separate copies of osvVuln/osvPackage so
+// they can diverge cleanly when one ecosystem grows ecosystem-specific
+// fields (see the comment on osvQueryRequest). The pip copy carries the
+// long-form rationale and the verified OSV ground truth.
+//
+// The npm-visible shape of the bug: OSV returns the GHSA record and any
+// CVE-named record for one vulnerability as separate vulns[] entries, so
+// a lockfile pin that matches both is reported twice.
+
+// aliasComponents partitions vulns into alias-connected components using
+// union-find over the id universe {v.ID} ∪ v.Aliases. Order-independent
+// by construction; members sorted by id, components by canonical id, so
+// no map iteration order escapes (Rule 8).
+//
+// Bad-alias guard: if ANY pair in a multi-member component has provably
+// disjoint affected ranges the WHOLE component splits back into
+// singletons and the refusal is logged — splitting wholesale is the only
+// formulation that does not depend on pair-evaluation order.
+func aliasComponents(vulns []osvVuln) [][]osvVuln {
+	if len(vulns) <= 1 {
+		if len(vulns) == 0 {
+			return nil
+		}
+		return [][]osvVuln{{vulns[0]}}
 	}
-	desc := v.Details
+
+	parent := map[string]string{}
+	var find func(string) string
+	find = func(x string) string {
+		p, ok := parent[x]
+		if !ok {
+			parent[x] = x
+			return x
+		}
+		if p != x {
+			parent[x] = find(p)
+		}
+		return parent[x]
+	}
+	union := func(a, b string) {
+		ra, rb := find(a), find(b)
+		if ra == rb {
+			return
+		}
+		// Deterministic attachment: the forest SHAPE, not just the
+		// partition, is a pure function of the input.
+		if ra < rb {
+			parent[rb] = ra
+		} else {
+			parent[ra] = rb
+		}
+	}
+
+	// An id-less record gets a synthetic per-index key so several of them
+	// cannot collapse into one component; its aliases still participate.
+	keys := make([]string, len(vulns))
+	for i, v := range vulns {
+		if v.ID != "" {
+			keys[i] = v.ID
+		} else {
+			keys[i] = fmt.Sprintf("\x00anonymous-%d", i)
+		}
+		find(keys[i])
+		for _, a := range v.Aliases {
+			if a != "" {
+				union(keys[i], a)
+			}
+		}
+	}
+
+	groups := map[string][]osvVuln{}
+	roots := make([]string, 0, len(vulns))
+	for i, v := range vulns {
+		r := find(keys[i])
+		if _, seen := groups[r]; !seen {
+			roots = append(roots, r)
+		}
+		groups[r] = append(groups[r], v)
+	}
+	sort.Strings(roots) // stderr log order must be deterministic too
+
+	comps := make([][]osvVuln, 0, len(roots))
+	for _, r := range roots {
+		members := groups[r]
+		sort.SliceStable(members, func(i, j int) bool { return members[i].ID < members[j].ID })
+		if len(members) > 1 && anyPairProvablyDisjoint(members) {
+			fmt.Fprintf(os.Stderr,
+				"[fendix] npm: refusing to merge alias-linked advisories with disjoint affected ranges: %v\n",
+				vulnIDs(members))
+			for _, m := range members {
+				comps = append(comps, []osvVuln{m})
+			}
+			continue
+		}
+		comps = append(comps, members)
+	}
+	sort.SliceStable(comps, func(i, j int) bool {
+		return canonicalID(componentIDs(comps[i])) < canonicalID(componentIDs(comps[j]))
+	})
+	return comps
+}
+
+// vulnIDs renders a component's top-level ids for the refusal log.
+func vulnIDs(members []osvVuln) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+// anyPairProvablyDisjoint reports whether ANY pair in the component has
+// provably non-overlapping affected ranges — the signal that the alias
+// edge joining them is bad data rather than two names for one bug.
+func anyPairProvablyDisjoint(members []osvVuln) bool {
+	for i := 0; i < len(members); i++ {
+		for j := i + 1; j < len(members); j++ {
+			if rangesProvablyDisjoint(members[i], members[j]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// versionInterval is one [introduced, fixed) affected window. An empty
+// endpoint is unbounded on that side.
+type versionInterval struct {
+	introduced string
+	fixed      string
+}
+
+// affectedIntervals flattens an advisory's non-GIT ranges into intervals.
+// OSV orders the events within a range, alternating `introduced` and
+// `fixed`; a trailing `introduced` means "still affected".
+func affectedIntervals(v osvVuln) []versionInterval {
+	var out []versionInterval
+	for _, a := range v.Affected {
+		for _, r := range a.Ranges {
+			if !usableRange(r) {
+				continue
+			}
+			var cur versionInterval
+			open := false
+			for _, ev := range r.Events {
+				switch {
+				case ev.Introduced != "":
+					if open {
+						out = append(out, cur)
+					}
+					cur = versionInterval{introduced: ev.Introduced}
+					open = true
+				case ev.Fixed != "":
+					if !open {
+						cur = versionInterval{}
+					}
+					cur.fixed = ev.Fixed
+					out = append(out, cur)
+					cur, open = versionInterval{}, false
+				}
+			}
+			if open {
+				out = append(out, cur)
+			}
+		}
+	}
+	return out
+}
+
+// intervalsOverlap reports whether two affected windows intersect, with an
+// empty endpoint read as unbounded.
+func intervalsOverlap(a, b versionInterval) bool {
+	if b.fixed != "" && a.introduced != "" && offline.CompareVersions(a.introduced, b.fixed) >= 0 {
+		return false
+	}
+	if a.fixed != "" && b.introduced != "" && offline.CompareVersions(b.introduced, a.fixed) >= 0 {
+		return false
+	}
+	return true
+}
+
+// rangesProvablyDisjoint reports whether a and b can be PROVEN to affect
+// non-overlapping version windows. Merge-unless-proven-disjoint: an
+// advisory with no usable range carries no evidence either way and merges.
+func rangesProvablyDisjoint(a, b osvVuln) bool {
+	ia, ib := affectedIntervals(a), affectedIntervals(b)
+	if len(ia) == 0 || len(ib) == 0 {
+		return false
+	}
+	for _, x := range ia {
+		for _, y := range ib {
+			if intervalsOverlap(x, y) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// componentIDs returns every id a component is known by — member ids AND
+// their aliases — deduped and sorted. Nothing a record told us is dropped
+// by the merge (Rule 3).
+func componentIDs(members []osvVuln) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(members)*2)
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, m := range members {
+		add(m.ID)
+		for _, a := range m.Aliases {
+			add(a)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// canonicalIDTier ranks an id by naming authority: CVE, then GHSA, then
+// PYSEC, then everything else. PYSEC is kept in the npm table so the two
+// scanners' pickers stay byte-comparable; an npm advisory carrying one is
+// vanishingly rare but costs nothing to rank.
+//
+// Matching is exact-with-hyphen so a prefix like BIT-* lands in "other".
+func canonicalIDTier(id string) int {
+	switch {
+	case strings.HasPrefix(id, "CVE-"):
+		return 0
+	case strings.HasPrefix(id, "GHSA-"):
+		return 1
+	case strings.HasPrefix(id, "PYSEC-"):
+		return 2
+	default:
+		return 3
+	}
+}
+
+// canonicalID picks the component's public identity: highest-priority
+// tier, lexicographically smallest within a tier. It ranges over ALIASES
+// as well as top-level ids — OSV routinely carries the CVE only as an
+// alias of a GHSA record.
+func canonicalID(ids []string) string {
+	best, bestTier := "", 0
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		t := canonicalIDTier(id)
+		if best == "" || t < bestTier || (t == bestTier && id < best) {
+			best, bestTier = id, t
+		}
+	}
+	return best
+}
+
+// buildFindings is the single emit point for a (package, version) result
+// set: partition into alias-connected components, one finding each.
+func buildFindings(pkg resolvedPackage, vulns []osvVuln, manifestName string) []evidence.Evidence {
+	comps := aliasComponents(vulns)
+	out := make([]evidence.Evidence, 0, len(comps))
+	for _, members := range comps {
+		out = append(out, buildMergedFinding(pkg, members, manifestName))
+	}
+	return out
+}
+
+// buildMergedFinding renders one alias-connected component as a single
+// finding. The description comes from the member whose id IS the canonical
+// id when one exists, otherwise the first member in sorted-id order with a
+// non-empty value — never "whichever came first in the slice".
+func buildMergedFinding(pkg resolvedPackage, members []osvVuln, manifestName string) evidence.Evidence {
+	ids := componentIDs(members)
+	canonical := canonicalID(ids)
+
+	sorted := make([]osvVuln, len(members))
+	copy(sorted, members)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+
+	pick := func(get func(osvVuln) string) string {
+		for _, m := range sorted {
+			if m.ID == canonical {
+				if val := get(m); val != "" {
+					return val
+				}
+				break
+			}
+		}
+		for _, m := range sorted {
+			if val := get(m); val != "" {
+				return val
+			}
+		}
+		return ""
+	}
+
+	summary := pick(func(v osvVuln) string { return v.Summary })
+	if summary == "" {
+		summary = canonical
+	}
+	desc := pick(func(v osvVuln) string { return v.Details })
 	if desc == "" {
 		desc = summary
 	}
@@ -622,22 +949,28 @@ func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.
 		desc = desc[:200]
 	}
 
-	fix := fixCandidate(v, pkg.version)
+	fix := mergedFixVersion(sorted, pkg.version)
 	fixMsg := "Upgrade to a patched version (no fix listed in OSV)."
 	if fix != "" {
 		fixMsg = fmt.Sprintf("Upgrade to %s@%s or later.", pkg.name, fix)
 	}
 
-	refs := []string{v.ID}
-	if len(v.Aliases) > 0 {
-		refs = append(refs, v.Aliases[0])
+	// Canonical first, then every other merged id sorted. This is a
+	// scanner-package contract only: engine.Deduplicate re-sorts
+	// References before a report renders them.
+	refs := make([]string, 0, len(ids))
+	refs = append(refs, canonical)
+	for _, id := range ids {
+		if id != canonical {
+			refs = append(refs, id)
+		}
 	}
 
-	idSlug := strings.ReplaceAll(v.ID, "-", "_")
+	idSlug := strings.ReplaceAll(canonical, "-", "_")
 	line := manifestName
 	return evidence.Evidence{
 		ID:         "SEC-DEPS-" + idSlug,
-		Title:      fmt.Sprintf("Vulnerable dependency: %s@%s (%s)", pkg.name, pkg.version, v.ID),
+		Title:      fmt.Sprintf("Vulnerable dependency: %s@%s (%s)", pkg.name, pkg.version, canonical),
 		Severity:   models.SeverityHigh,
 		Source:     models.SourceWhitebox,
 		Category:   "deps",
@@ -647,8 +980,15 @@ func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.
 		References: refs,
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
-		RuleID:     v.ID,
+		RuleID:     canonical,
 	}
+}
+
+// buildFinding maps ONE OSV record to a finding — the single-record case
+// of buildMergedFinding, kept so the one-record call sites and the
+// package's shape tests have a direct target.
+func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.Evidence {
+	return buildMergedFinding(pkg, []osvVuln{v}, manifestName)
 }
 
 // usableRange reports whether an OSV range's `fixed` events name real
@@ -809,6 +1149,23 @@ func cachePath(dir, pkg, version string) string {
 	return filepath.Join(dir, safe+".json")
 }
 
+// cacheSchema is bumped whenever the SHAPE of a cached record changes, not
+// merely its freshness. Before FIX-05 the cache held a bare []osvVuln
+// array whose contents depended on WHICH path filled it: a batch-path
+// write stored alias-less, Affected-less records that readCache then
+// served to every path for the full 24h TTL.
+//
+// v2 records are alias- and affected-complete (post-hydration). A v1 bare
+// array fails to decode into cacheEnvelope and is treated as a MISS, so
+// the entry is re-fetched once instead of silently lacking the aliases
+// FIX-05 merges on and the ranges FIX-06 reads.
+const cacheSchema = 2
+
+type cacheEnvelope struct {
+	Schema int       `json:"schema"`
+	Vulns  []osvVuln `json:"vulns"`
+}
+
 func readCache(dir, pkg, version string) ([]osvVuln, bool) {
 	if dir == "" {
 		return nil, false
@@ -825,18 +1182,18 @@ func readCache(dir, pkg, version string) ([]osvVuln, bool) {
 	if err != nil {
 		return nil, false
 	}
-	var vulns []osvVuln
-	if err := json.Unmarshal(data, &vulns); err != nil {
+	var env cacheEnvelope
+	if err := json.Unmarshal(data, &env); err != nil || env.Schema != cacheSchema {
 		return nil, false
 	}
-	return vulns, true
+	return env.Vulns, true
 }
 
 func writeCache(dir, pkg, version string, vulns []osvVuln) {
 	if dir == "" {
 		return
 	}
-	data, err := json.Marshal(vulns)
+	data, err := json.Marshal(cacheEnvelope{Schema: cacheSchema, Vulns: vulns})
 	if err != nil {
 		return
 	}

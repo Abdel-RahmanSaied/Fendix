@@ -144,10 +144,17 @@ func TestBuildFinding_MatchesPythonShape(t *testing.T) {
 	}
 	f := buildFinding(pinnedPackage{name: "flask", version: "2.0.1"}, v, "requirements.txt")
 
-	if f.ID != "SEC-DEPS-PYSEC_2022_43012" {
-		t.Errorf("ID: got %q want SEC-DEPS-PYSEC_2022_43012", f.ID)
+	// FIX-05: the finding is identified by the CANONICAL id of its
+	// alias set, not by whichever naming authority OSV happened to
+	// return the record under. The CVE is the one identifier every
+	// downstream tracker agrees on, and here it exists only as an alias.
+	if f.ID != "SEC-DEPS-CVE_2022_99999" {
+		t.Errorf("ID: got %q want SEC-DEPS-CVE_2022_99999", f.ID)
 	}
-	if !strings.Contains(f.Title, "flask==2.0.1") || !strings.Contains(f.Title, "PYSEC-2022-43012") {
+	if f.RuleID != "CVE-2022-99999" {
+		t.Errorf("RuleID: got %q want CVE-2022-99999", f.RuleID)
+	}
+	if !strings.Contains(f.Title, "flask==2.0.1") || !strings.Contains(f.Title, "CVE-2022-99999") {
 		t.Errorf("Title shape wrong: %s", f.Title)
 	}
 	if !strings.Contains(f.Fix, "flask==2.0.2") {
@@ -159,9 +166,18 @@ func TestBuildFinding_MatchesPythonShape(t *testing.T) {
 	if f.Category != "deps" || f.Source != "whitebox" {
 		t.Errorf("category/source drift: %s / %s", f.Category, f.Source)
 	}
-	// Python deps.py shape: refs = [vid, first-alias-only].
-	if len(f.References) != 2 || f.References[0] != "PYSEC-2022-43012" || f.References[1] != "CVE-2022-99999" {
-		t.Errorf("refs wrong: %v", f.References)
+	// References: canonical first, then EVERY other id the record was
+	// known by, sorted. Nothing is dropped — the old shape kept only the
+	// first alias, so a user who had pinned an ignore rule to the PYSEC
+	// id would have had nothing left to match on after the rename.
+	want := []string{"CVE-2022-99999", "GHSA-abc1-def2", "PYSEC-2022-43012"}
+	if len(f.References) != len(want) {
+		t.Fatalf("refs: got %v want %v", f.References, want)
+	}
+	for i := range want {
+		if f.References[i] != want[i] {
+			t.Errorf("refs[%d]: got %q want %q (full: %v)", i, f.References[i], want[i], f.References)
+		}
 	}
 }
 

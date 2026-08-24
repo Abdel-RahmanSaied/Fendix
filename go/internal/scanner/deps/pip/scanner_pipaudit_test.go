@@ -132,7 +132,11 @@ func TestScanViaSubprocess_HappyPath(t *testing.T) {
 		t.Fatalf("want 1 finding, got %d: %#v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.ID != "SEC-DEPS-PYSEC_2022_43012" {
+	// The pip-audit fixture carries aliases: ["CVE-2022-99999"], and
+	// pip-audit's output DOES decode them — so this path gets the same
+	// FIX-05 canonicalisation as /v1/query, not the alias-less batch
+	// treatment. Both paths must agree or dedup stops collapsing them.
+	if f.ID != "SEC-DEPS-CVE_2022_99999" {
 		t.Errorf("ID drift: %s", f.ID)
 	}
 	if !strings.Contains(f.Title, "flask==2.0.1") {
@@ -256,7 +260,8 @@ func TestParsePipAuditJSON_HappyPath(t *testing.T) {
 		t.Fatalf("want 1 finding, got %d", len(findings))
 	}
 	f := findings[0]
-	if f.ID != "SEC-DEPS-PYSEC_2022_43012" {
+	// FIX-05: canonical id from the alias set, same as the OSV.dev path.
+	if f.ID != "SEC-DEPS-CVE_2022_99999" {
 		t.Errorf("ID: %s", f.ID)
 	}
 	if f.Endpoint != "svc_a/requirements.txt" {

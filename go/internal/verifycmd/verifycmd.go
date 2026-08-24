@@ -582,9 +582,25 @@ func verifyDep(ctx context.Context, f *models.Finding, opts Options, out *Result
 	// Match by ID — dep findings carry stable SEC-DEPS-* / SEC-NPM-*
 	// IDs derived from the OSV-id, so the same vuln re-emits with the
 	// same suffix even if SEC-* renumbering changed the prefix.
+	//
+	// ...except the OSV-id a dep finding is named after is no longer
+	// fixed. FIX-05 collapses the several OSV records that describe one
+	// vulnerability into a single finding named after the CANONICAL id of
+	// that alias set — usually the CVE. A finding recorded before that
+	// change as SEC-DEPS-PYSEC_2026_3552 re-scans as
+	// SEC-DEPS-CVE_2026_69247, the id tail stops matching, and this loop
+	// would fall through to StatusResolved: a security tool announcing
+	// "fixed" about a vulnerability that is still installed. Worst
+	// possible direction of error.
+	//
+	// So the identity of a dep finding is its whole id SET, not one id.
+	// depIdentity gathers the OSV-id slug out of the finding's ID plus
+	// every reference (which, by construction, contains every merged
+	// alias), and a non-empty intersection means "same vulnerability".
 	idTail := tailAfterDash(f.ID)
+	storedIDs := depIdentity(*f)
 	for _, nf := range newFindings {
-		if strings.HasSuffix(nf.ID, idTail) || nf.ID == f.ID {
+		if strings.HasSuffix(nf.ID, idTail) || nf.ID == f.ID || depIdentitiesIntersect(storedIDs, depIdentity(nf)) {
 			out.Status = StatusStillPresent
 			out.Reason = fmt.Sprintf("dep scanner re-emitted %s for %s", nf.ID, truncate(nf.Title, 60))
 			return
@@ -934,6 +950,48 @@ func containsVersionLike(s string) bool {
 	// version number. Cheap, deliberately approximate.
 	for i := 0; i < len(s)-2; i++ {
 		if s[i] >= '0' && s[i] <= '9' && s[i+1] == '.' && s[i+2] >= '0' && s[i+2] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// depIdentity renders every OSV/CVE id a dependency finding is known by
+// into one comparable set: the slug carried in its SEC-DEPS-* id, plus
+// every reference, normalised to the underscored slug form the ids use.
+//
+// Both halves matter. The references are what survive a canonical rename
+// (FIX-05 preserves every merged id there), and the id slug is what a
+// finding recorded before that rename has instead of the new canonical
+// reference.
+func depIdentity(f models.Finding) map[string]bool {
+	set := map[string]bool{}
+	add := func(id string) {
+		if id != "" {
+			set[strings.ReplaceAll(id, "-", "_")] = true
+		}
+	}
+	for _, prefix := range []string{"SEC-DEPS-GO-", "SEC-DEPS-", "SEC-NPM-"} {
+		if tail := strings.TrimPrefix(f.ID, prefix); tail != f.ID {
+			add(tail)
+			break
+		}
+	}
+	for _, ref := range f.References {
+		add(ref)
+	}
+	return set
+}
+
+// depIdentitiesIntersect reports whether two dep findings name at least
+// one OSV/CVE id in common — i.e. describe the same vulnerability.
+func depIdentitiesIntersect(a, b map[string]bool) bool {
+	// Iterate the smaller set; the result is order-independent either way.
+	if len(b) < len(a) {
+		a, b = b, a
+	}
+	for id := range a {
+		if b[id] {
 			return true
 		}
 	}

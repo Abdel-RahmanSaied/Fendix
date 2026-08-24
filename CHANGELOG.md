@@ -148,6 +148,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   > INFO finding as new. A host that sets both a session cookie and a CSRF
   > cookie now produces two HttpOnly-class dedup groups where it produced one.
 
+- **Every dependency vulnerability was reported once per OSV RECORD, not once
+  per vulnerability.** OSV's `/v1/query` returns the GHSA record and each PYSEC
+  record for the same underlying bug as separate `vulns[]` entries, and the
+  scanner emitted one finding per entry. Verified against live OSV.dev:
+  `cryptography==48.0.1` returns **six** records that are **three** real
+  vulnerabilities, so the report asked the user to fix the same CVE three times
+  — the kind of inflated count that makes a whole report untrustworthy.
+
+  The pip and npm scanners now partition each `(package, version)` result set
+  into alias-connected components — union-find over `{id} ∪ aliases` — and emit
+  one finding per component. The finding is named after the **canonical** id of
+  its alias set: `CVE-*` first, then `GHSA-*`, then `PYSEC-*`, then everything
+  else, lexicographically smallest within a tier. The picker ranges over
+  ALIASES as well as top-level ids, because OSV routinely carries the CVE only
+  as an alias — in the cryptography data no record's own `id` is a CVE at all.
+  `BIT-*` is a real OSV alias prefix and ranks in the "other" tier.
+
+  Nothing is dropped (Rule 3): every merged id is preserved in `references`,
+  canonical first. Alias data is not verified upstream, so two alias-linked
+  records whose affected version ranges are provably disjoint are NOT merged —
+  they stay separate and the refusal is logged to stderr.
+
+  `govulncheck` is deliberately untouched: vuln.go.dev emits one `GO-*` record
+  per vulnerability with aliases pointing outward, so the duplicate-record
+  problem does not arise there. `python/analyzers/deps.py`'s pip-audit path
+  gets the identical canonicalisation, because `Deduplicate` collapses the
+  Go/Python overlap on `Severity|Category|Title` and a one-sided rename would
+  double-report every dependency vulnerability under `--python-engine`.
+
+  > **Fingerprint churn.** `models.Fingerprint` hashes
+  > `(Category, Endpoint, Title)` and the title now carries the canonical id,
+  > so every saved `--baseline` entry and every `.fendix-ignore`
+  > `fingerprint:` rule pinned to a dependency finding STOPS MATCHING, and a
+  > `--diff` scan reports the renamed finding as new. `fendix verify` is
+  > already handled — it matches on the whole preserved id set, so a finding
+  > recorded under the old id still resolves to its renamed twin instead of
+  > being reported as fixed.
+
+- **The batch path — the default one — emitted findings with no description
+  and no fix version.** `/v1/querybatch` answers with bare vuln ids: no
+  summary, no aliases, no affected ranges. So on the route most scans actually
+  take, every dependency finding fell back to printing the raw OSV id as its
+  description and said *"no fix listed in OSV"* even when OSV listed one.
+
+  Any package the batch reports as vulnerable is now re-fetched through the
+  per-package `/v1/query` before findings are built. The cost is one extra
+  request per VULNERABLE package — one for cryptography's six records, not six
+  — and clean packages cost nothing beyond their share of the batch. If that
+  hydration fails, the degraded record is still reported (Rule 3) with a
+  stderr warning, and is deliberately not cached.
+
+  > **Cache entries are now shape-versioned.** The OSV cache previously stored
+  > a bare array whose alias and range content depended on which code path
+  > filled it, so a single pre-upgrade batch run could serve alias-less records
+  > to every path for 24 hours. Entries written by an older fendix are now
+  > treated as a miss and re-fetched once.
+
 - **A dependency finding could tell you to "upgrade to" a git commit SHA, or
   to jump a major version.** Two separate defects in one line of output.
 
