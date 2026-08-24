@@ -82,10 +82,22 @@ func TestStampDecisionsAwardsPayloadValidation(t *testing.T) {
 	findings := evidence.ToFindings(evid)
 	stampDecisions(findings, evidence.NewProvenanceIndex(evid), "", decision.Options{})
 
-	// base 35 + static 10 + reachable 10 + tree-sitter 5 + payload 10 = 70.
-	if findings[0].ConfidenceScore != 70 {
-		t.Errorf("ConfidenceScore = %d, want 70 (payload-validated bonus missing)", findings[0].ConfidenceScore)
+	// base 35 + static 10 + reachable 10 + tree-sitter 5 + payload 10
+	// + deterministic detection 30 = 100.
+	//
+	// The deterministic-detection delta (DECISIONS.md D1) lands this fixture
+	// exactly on the clamp ceiling, so the score alone would stop discriminating
+	// if another positive rule were added later. The no-cap assertion below is
+	// what keeps this a real guard: the scorer records an explicit
+	// "capped at 100" reason line whenever the raw sum exceeds the ceiling.
+	if findings[0].ConfidenceScore != 100 {
+		t.Errorf("ConfidenceScore = %d, want 100 (payload-validated bonus missing)", findings[0].ConfidenceScore)
 	}
+	if strings.Contains(strings.Join(findings[0].ConfidenceReasons, "\n"), "capped at 100") {
+		t.Errorf("the raw sum now EXCEEDS the ceiling, so this fixture no longer pins the\n"+
+			"individual deltas — re-derive it: %v", findings[0].ConfidenceReasons)
+	}
+	assertReasonsSumToScore(t, findings[0])
 	if findings[0].ConfidenceBand != string(models.ConfidenceHigh) {
 		t.Errorf("ConfidenceBand = %q, want HIGH — the HIGH band must be reachable without correlation",
 			findings[0].ConfidenceBand)
@@ -208,6 +220,62 @@ func TestDedupGroupOnlyPenalizedWhenEveryOccurrenceWas(t *testing.T) {
 	}
 }
 
+// TestCorrelateEvidencePreservesInternalProvenance is the generalisation of
+// TestCorrelateEvidencePreservesResponseContext below. CorrelateEvidence
+// rebuilds its output through FromFindings(Correlate(ToFindings(...))), which
+// zeroes every Evidence-internal field, and then restores an explicit ALLOW
+// LIST. A field missing from that list is destroyed on any hybrid (--url +
+// --code) scan — and only on a hybrid scan, because the orchestrator runs the
+// correlator BEFORE it builds the ProvenanceIndex, so the index cannot cover
+// for it. That is exactly how ResponseContext died in v1.2.0.
+//
+// The three flags below are the ones with no endpoint-derived fallback, so a
+// dropped hop is permanent and silent rather than self-healing the way InTest
+// does. Each is exercised on the pass-through path (the header finding), which
+// is the path the allow list governs.
+func TestCorrelateEvidencePreservesInternalProvenance(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*evidence.Evidence)
+		get  func(evidence.Evidence) bool
+	}{
+		{"DirectObservation", func(e *evidence.Evidence) { e.DirectObservation = true }, func(e evidence.Evidence) bool { return e.DirectObservation }},
+		{"UnconfirmedByLiveScan", func(e *evidence.Evidence) { e.UnconfirmedByLiveScan = true }, func(e evidence.Evidence) bool { return e.UnconfirmedByLiveScan }},
+		{"Placeholder", func(e *evidence.Evidence) { e.Placeholder = true }, func(e evidence.Evidence) bool { return e.Placeholder }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := header4xxEvidence("GET /admin")
+			tc.set(&hdr)
+			// A whitebox finding alongside it so the hybrid correlation path
+			// actually runs; without one the correlator has nothing to do.
+			in := []evidence.Evidence{hdr, {
+				Title:      "Hardcoded credential",
+				Category:   "secrets",
+				Endpoint:   "src/config.py:9",
+				Severity:   models.SeverityHigh,
+				Source:     models.SourceWhitebox,
+				Confidence: models.ConfidenceHigh,
+			}}
+
+			var found bool
+			for _, e := range CorrelateEvidence(in) {
+				if e.Title != "Missing Content-Security-Policy header" {
+					continue
+				}
+				found = true
+				if !tc.get(e) {
+					t.Errorf("%s was dropped by CorrelateEvidence's pass-through restore —\n"+
+						"the rule that reads it is dead on every hybrid scan", tc.name)
+				}
+			}
+			if !found {
+				t.Fatal("pass-through header finding missing from correlator output")
+			}
+		})
+	}
+}
+
 // TestCorrelateEvidencePreservesResponseContext locks the second half of the
 // defect: CorrelateEvidence restored RuleID/Payload/Response/Lineage onto a
 // pass-through result but silently dropped ResponseContext, so on a hybrid
@@ -280,5 +348,60 @@ func TestStampDecisionsEmptyInput(t *testing.T) {
 	}
 	if got := stampDecisions([]models.Finding{}, evidence.ProvenanceIndex{}, "", decision.Options{}); len(got) != 0 {
 		t.Errorf("stampDecisions(empty) = %v, want none", got)
+	}
+}
+
+// TestDirectObservationReachesTheFindingThroughTheRealPipeline is THE test that
+// fails if any plumbing hop for FIX-07 is missed. It drives the REAL header
+// check against a loopback 200 and runs the production finalization sequence,
+// then asserts an ABSOLUTE score and band.
+//
+// The absolute form is the point. internal/engine's existing static-asset test
+// drives the same scanner but compares the two arms' scores, so it passes
+// identically whether DirectObservation survives the projection or is silently
+// dropped by ScoringProvenance / CorrelateEvidence — a delta cannot see a
+// constant that vanished from both sides. Only an absolute assertion can.
+func TestDirectObservationReachesTheFindingThroughTheRealPipeline(t *testing.T) {
+	findings := finalize(headerFindingsFor(t, "/api/v1/users"), "", decision.Options{})
+	if len(findings) == 0 {
+		t.Fatal("no findings survived finalization")
+	}
+
+	for _, f := range findings {
+		// base 35 + runtime 10 + direct observation 30 = 75, comfortably
+		// inside HIGH (>=70) rather than sitting on the boundary.
+		if f.ConfidenceScore != 75 {
+			t.Errorf("%q ConfidenceScore = %d, want 75 — the direct-observation bonus did not\n"+
+				"reach the finding through the real pipeline", f.Title, f.ConfidenceScore)
+		}
+		if f.ConfidenceBand != string(models.ConfidenceHigh) {
+			t.Errorf("%q ConfidenceBand = %q, want HIGH — a single-engine DAST finding must be\n"+
+				"able to reach HIGH without correlation", f.Title, f.ConfidenceBand)
+		}
+		if !strings.Contains(strings.Join(f.ConfidenceReasons, "\n"), "direct observation") {
+			t.Errorf("%q has no direct-observation reason line: %v", f.Title, f.ConfidenceReasons)
+		}
+		assertReasonsSumToScore(t, f)
+	}
+}
+
+// TestDeEscalatedDirectObservationStaysOutOfTheHighBand is the other half of the
+// calibration: the bonus must not be so large that the B4 context penalty stops
+// mattering. A header finding on a CDN-served asset is a real observation and is
+// preserved (Rule 3), but it must land in MEDIUM.
+func TestDeEscalatedDirectObservationStaysOutOfTheHighBand(t *testing.T) {
+	findings := finalize(headerFindingsFor(t, "/assets/app.js"), "", decision.Options{})
+	if len(findings) == 0 {
+		t.Fatal("static-asset findings were dropped rather than de-escalated")
+	}
+	for _, f := range findings {
+		// 35 + 10 + 30 - 15 = 60.
+		if f.ConfidenceScore != 60 {
+			t.Errorf("%q ConfidenceScore = %d, want 60", f.Title, f.ConfidenceScore)
+		}
+		if f.ConfidenceBand != string(models.ConfidenceMedium) {
+			t.Errorf("%q ConfidenceBand = %q, want MEDIUM — a de-escalated direct observation\n"+
+				"must not stay in HIGH", f.Title, f.ConfidenceBand)
+		}
 	}
 }

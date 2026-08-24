@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Confidence bands were arithmetically stuck at MEDIUM for uncorrelated
+  scans.** A DAST-only finding topped out at `35 base + 10 runtime = 45` — the
+  `+10` payload-validated bonus cannot fire, because `Evidence.Response` has no
+  producer anywhere in the module — while the HIGH band starts at 70. Worse,
+  correlation could never close the gap either: `engine.categoryMap` covers only
+  secrets/injection/auth, so a headers/cookie/CORS finding is never
+  `SourceCorrelated`. `decisions.confirmed` was therefore a synonym for
+  "correlated", and a scan with no code path could not produce a single
+  confirmed finding.
+
+  Two new deltas fix that, both deterministic named rules with reason lines like
+  every other (Rule 8):
+
+  - **direct observation, +30** — the claim is a deterministic read of a live
+    response: a header present or absent, a cookie attribute present or absent,
+    a literal CORS header value. Set by `scanner/headers.go`,
+    `scanner/cors.go` and `scanner/cookie_flags.go` on exactly the checks that
+    already assert `ConfidenceHigh` from a literal read. `Weak
+    Content-Security-Policy`, the SameSite finding and the two CORS
+    method-policy findings are excluded: each grades a policy or cannot
+    disambiguate its own parse, and each already carries `ConfidenceMedium`.
+  - **deterministic detection, +30** — the static mirror: a high-confidence
+    pattern match in production code, where the finding IS the read. Withheld
+    from test/fixture code, from placeholder-shaped credential values, and from
+    the semgrep-shim tier, each of which is a documented false-positive class
+    (31 of the 35 instances in `tasks/FP_CORPUS.md` are test fixtures).
+
+  The de-escalation still dominates: a direct observation on an auth-gated 4xx
+  or a CDN-served static asset lands at 60 — MEDIUM, not HIGH — and a
+  fixture-shaped credential lands at 25.
+
+  **Visible effects.** `confidence_score` and `confidence_band` move on almost
+  every scan. `decisions.confirmed` (JSON), the HTML "Confirmed" stat tile and
+  the stderr `Decision summary … (N high-confidence)` line all count
+  `ConfidenceBand == HIGH`, so all three jump. The GitHub App's PR comment ranks
+  its top five by `(status, severity, confidence_score)`, so that list reorders
+  against SAST findings of equal severity. No finding is added, removed,
+  re-titled, re-categorised or re-severitied, and no exit code changes: `Status`
+  still derives from severity and `--fail-on` alone.
+
 ## [1.2.1] - 2026-08-18
 
 **Headline:** two precision corrections found by running the engine over 216K LOC

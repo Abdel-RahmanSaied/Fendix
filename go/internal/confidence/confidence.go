@@ -42,6 +42,7 @@ const (
 	provenPathBonus    = 5   // confirmed route AND reachable taint chain
 	payloadValidated   = 10  // an active probe payload elicited a confirming response
 	directObservation  = 30  // the claim is a deterministic read of a live response (header/cookie/CORS value present or absent)
+	deterministicDetn  = 30  // the claim is a deterministic pattern match in production (non-test, non-fixture) source
 	tierTreeSitterBump = 5   // highest-trust analyzer tier
 	tierSemgrepPenalty = -5  // lowest-trust analyzer tier (regex breadth)
 	httpContextPenalty = -15 // B4: finding fired on a 4xx / static-asset context
@@ -127,6 +128,9 @@ func Score(ev evidence.Evidence) Result {
 	if hasRuntime && ev.DirectObservation {
 		add(directObservation, "direct observation: the finding is a deterministic read of a live response")
 	}
+	if HasDeterministicDetection(ev) {
+		add(deterministicDetn, "deterministic detection: a high-confidence pattern match in production (non-test) code")
+	}
 	switch ev.SourceTier {
 	case models.TierTreeSitter:
 		add(tierTreeSitterBump, "high-trust analyzer tier (tree-sitter taint)")
@@ -166,6 +170,56 @@ func Score(ev evidence.Evidence) Result {
 	}
 	score = clamp(score, 0, 100)
 	return Result{Value: score, Band: bandFor(score), Reasons: reasons}
+}
+
+// HasDeterministicDetection reports whether ev earns the deterministicDetn
+// delta: the static-analysis mirror of DirectObservation.
+//
+// A pattern analyzer that reads a credential, a vulnerable pinned version or a
+// dangerous construct out of source text and asserts models.ConfidenceHigh has
+// made the same KIND of claim a missing-header check makes — the finding IS the
+// read, with no inference between the bytes in the file and the claim. Without
+// it a whitebox secrets finding scores 35 base + 10 static = 45 and can never
+// leave the MEDIUM band on its own, because payloadValidated cannot fire (no
+// producer sets Evidence.Response) and correlation needs a live target. Once
+// band membership gates enforcement, that would stop a code-only scan of REAL
+// hardcoded credentials from failing the build — a security regression, which
+// is why this delta exists.
+//
+// Exported so the decision layer can count the same signal as corroboration
+// without re-deriving — and then drifting from — the predicate.
+//
+// The four conjuncts, each doing real work:
+//
+//   - hasStatic: the mirror of DirectObservation's hasRuntime gate. A live
+//     probe cannot make a source-text pattern match.
+//   - ConfidenceHigh: the emitting check's own claim that this is a literal
+//     match rather than a graded guess. It is the same predicate the DAST side
+//     uses, so one rule reads across both halves of the engine.
+//   - not TierSemgrepShim: that tier buys breadth at the cost of precision and
+//     has not cleared the F1 gate (see models.SourceTier.TrustRank and
+//     tierSemgrepPenalty). Letting regex breadth band HIGH on its own would
+//     hand the gate exactly the false positives band-gating exists to stop.
+//   - not InTest, not Placeholder: 31 of the 35 catalogued instances in
+//     tasks/FP_CORPUS.md are test fixtures, and a value the placeholder
+//     classifier recognises is deterministic evidence that the match is NOT a
+//     real credential. Both directly negate "deterministic detection of a real
+//     defect", so they gate the bonus rather than merely being penalised
+//     afterwards — a fixture-shaped credential must land in LOW, not in the
+//     MEDIUM band where one corroborator could still block a build.
+//
+// Reachable / proven-path findings are deliberately NOT excluded. A proven
+// source→sink chain is the most deterministic thing a static analyzer can
+// produce; excluding it would leave a CRITICAL proven-path SQLi in MEDIUM with
+// no corroborator on a code-only scan, which is the same regression this delta
+// was added to prevent.
+func HasDeterministicDetection(ev evidence.Evidence) bool {
+	hasStatic := ev.Source == models.SourceWhitebox || ev.Source == models.SourceCorrelated
+	return hasStatic &&
+		ev.Confidence == models.ConfidenceHigh &&
+		ev.SourceTier != models.TierSemgrepShim &&
+		!ev.InTest &&
+		!ev.Placeholder
 }
 
 // lineageTrace renders ev.Lineage (the BB+WB inputs that merged during

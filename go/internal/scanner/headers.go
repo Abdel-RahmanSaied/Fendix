@@ -22,6 +22,22 @@ type headerCheck struct {
 	Check    func(value string) *ev.Evidence
 }
 
+// DIRECT OBSERVATION. Every check in this file that asserts
+// models.ConfidenceHigh does so because it is reading a header LITERALLY —
+// present, absent, or exactly this token — so the claim carries no inference
+// between the bytes on the wire and the finding. Those all set
+// Evidence.DirectObservation, which the confidence scorer turns into a +30
+// delta; without it a single-engine DAST finding could never reach the HIGH
+// band, because headers/cookie/cors are outside engine.categoryMap and so can
+// never become SourceCorrelated.
+//
+// The one exception is "Weak Content-Security-Policy": analyzeCSP GRADES a
+// policy rather than reading it, and a nonce/'strict-dynamic' policy that lists
+// 'unsafe-inline' as a legacy fallback is not actually weak. It is already the
+// only ConfidenceMedium result here, and it stays out. The predicate in this
+// file is therefore exactly: DirectObservation == the check asserts
+// ConfidenceHigh from a literal read.
+//
 // securityHeaders returns the list of header checks. Implemented headers:
 // Strict-Transport-Security (presence + max-age depth), X-Content-Type-Options,
 // X-Frame-Options, Content-Security-Policy (presence + directive depth),
@@ -44,15 +60,16 @@ func securityHeaders(endpoint string) []headerCheck {
 			Check: func(value string) *ev.Evidence {
 				if strings.ToLower(value) != "nosniff" {
 					return &ev.Evidence{
-						Title:      "Missing or incorrect X-Content-Type-Options header",
-						Severity:   models.SeverityLow,
-						Source:     models.SourceBlackbox,
-						Category:   "headers",
-						Endpoint:   endpoint,
-						Evidence:   fmt.Sprintf("X-Content-Type-Options: %q (expected 'nosniff')", value),
-						Fix:        "Add header: X-Content-Type-Options: nosniff",
-						References: []string{"CWE-693"},
-						Confidence: models.ConfidenceHigh,
+						Title:             "Missing or incorrect X-Content-Type-Options header",
+						Severity:          models.SeverityLow,
+						Source:            models.SourceBlackbox,
+						Category:          "headers",
+						Endpoint:          endpoint,
+						Evidence:          fmt.Sprintf("X-Content-Type-Options: %q (expected 'nosniff')", value),
+						Fix:               "Add header: X-Content-Type-Options: nosniff",
+						References:        []string{"CWE-693"},
+						Confidence:        models.ConfidenceHigh,
+						DirectObservation: true,
 					}
 				}
 				return nil
@@ -66,15 +83,16 @@ func securityHeaders(endpoint string) []headerCheck {
 				v := strings.ToUpper(value)
 				if v != "DENY" && v != "SAMEORIGIN" {
 					return &ev.Evidence{
-						Title:      "Missing or incorrect X-Frame-Options header",
-						Severity:   models.SeverityLow,
-						Source:     models.SourceBlackbox,
-						Category:   "headers",
-						Endpoint:   endpoint,
-						Evidence:   fmt.Sprintf("X-Frame-Options: %q (expected 'DENY' or 'SAMEORIGIN')", value),
-						Fix:        "Add header: X-Frame-Options: DENY",
-						References: []string{"CWE-1021"},
-						Confidence: models.ConfidenceHigh,
+						Title:             "Missing or incorrect X-Frame-Options header",
+						Severity:          models.SeverityLow,
+						Source:            models.SourceBlackbox,
+						Category:          "headers",
+						Endpoint:          endpoint,
+						Evidence:          fmt.Sprintf("X-Frame-Options: %q (expected 'DENY' or 'SAMEORIGIN')", value),
+						Fix:               "Add header: X-Frame-Options: DENY",
+						References:        []string{"CWE-1021"},
+						Confidence:        models.ConfidenceHigh,
+						DirectObservation: true,
 					}
 				}
 				return nil
@@ -95,15 +113,16 @@ func securityHeaders(endpoint string) []headerCheck {
 			Check: func(value string) *ev.Evidence {
 				if value != "" && containsVersion(value) {
 					return &ev.Evidence{
-						Title:      "Server version disclosed in header",
-						Severity:   models.SeverityInfo,
-						Source:     models.SourceBlackbox,
-						Category:   "headers",
-						Endpoint:   endpoint,
-						Evidence:   fmt.Sprintf("Server: %s", value),
-						Fix:        "Remove version information from Server header or remove the header entirely",
-						References: []string{"CWE-200"},
-						Confidence: models.ConfidenceHigh,
+						Title:             "Server version disclosed in header",
+						Severity:          models.SeverityInfo,
+						Source:            models.SourceBlackbox,
+						Category:          "headers",
+						Endpoint:          endpoint,
+						Evidence:          fmt.Sprintf("Server: %s", value),
+						Fix:               "Remove version information from Server header or remove the header entirely",
+						References:        []string{"CWE-200"},
+						Confidence:        models.ConfidenceHigh,
+						DirectObservation: true,
 					}
 				}
 				return nil
@@ -116,15 +135,16 @@ func securityHeaders(endpoint string) []headerCheck {
 			Check: func(value string) *ev.Evidence {
 				if value != "" {
 					return &ev.Evidence{
-						Title:      "X-Powered-By header discloses technology",
-						Severity:   models.SeverityInfo,
-						Source:     models.SourceBlackbox,
-						Category:   "headers",
-						Endpoint:   endpoint,
-						Evidence:   fmt.Sprintf("X-Powered-By: %s", value),
-						Fix:        "Remove the X-Powered-By header",
-						References: []string{"CWE-200"},
-						Confidence: models.ConfidenceHigh,
+						Title:             "X-Powered-By header discloses technology",
+						Severity:          models.SeverityInfo,
+						Source:            models.SourceBlackbox,
+						Category:          "headers",
+						Endpoint:          endpoint,
+						Evidence:          fmt.Sprintf("X-Powered-By: %s", value),
+						Fix:               "Remove the X-Powered-By header",
+						References:        []string{"CWE-200"},
+						Confidence:        models.ConfidenceHigh,
+						DirectObservation: true,
 					}
 				}
 				return nil
@@ -146,15 +166,16 @@ func securityHeaders(endpoint string) []headerCheck {
 						evidence = "Referrer-Policy: unsafe-url (leaks full URL cross-origin)"
 					}
 					return &ev.Evidence{
-						Title:      "Missing Referrer-Policy header",
-						Severity:   sev,
-						Source:     models.SourceBlackbox,
-						Category:   "headers",
-						Endpoint:   endpoint,
-						Evidence:   evidence,
-						Fix:        "Add header: Referrer-Policy: no-referrer or strict-origin-when-cross-origin",
-						References: []string{"CWE-200"},
-						Confidence: models.ConfidenceHigh,
+						Title:             "Missing Referrer-Policy header",
+						Severity:          sev,
+						Source:            models.SourceBlackbox,
+						Category:          "headers",
+						Endpoint:          endpoint,
+						Evidence:          evidence,
+						Fix:               "Add header: Referrer-Policy: no-referrer or strict-origin-when-cross-origin",
+						References:        []string{"CWE-200"},
+						Confidence:        models.ConfidenceHigh,
+						DirectObservation: true,
 					}
 				}
 				return nil
@@ -167,15 +188,16 @@ func securityHeaders(endpoint string) []headerCheck {
 			Check: func(value string) *ev.Evidence {
 				if value == "" {
 					return &ev.Evidence{
-						Title:      "Missing Permissions-Policy header",
-						Severity:   models.SeverityInfo,
-						Source:     models.SourceBlackbox,
-						Category:   "headers",
-						Endpoint:   endpoint,
-						Evidence:   "Response does not include Permissions-Policy header",
-						Fix:        "Add a Permissions-Policy header to restrict powerful browser features (geolocation, camera, etc.)",
-						References: []string{"CWE-693"},
-						Confidence: models.ConfidenceHigh,
+						Title:             "Missing Permissions-Policy header",
+						Severity:          models.SeverityInfo,
+						Source:            models.SourceBlackbox,
+						Category:          "headers",
+						Endpoint:          endpoint,
+						Evidence:          "Response does not include Permissions-Policy header",
+						Fix:               "Add a Permissions-Policy header to restrict powerful browser features (geolocation, camera, etc.)",
+						References:        []string{"CWE-693"},
+						Confidence:        models.ConfidenceHigh,
+						DirectObservation: true,
 					}
 				}
 				return nil
@@ -201,15 +223,16 @@ func missingHeaderInfo(endpoint, name, fix string) headerCheck {
 		Check: func(value string) *ev.Evidence {
 			if value == "" {
 				return &ev.Evidence{
-					Title:      fmt.Sprintf("Missing %s header", name),
-					Severity:   models.SeverityInfo,
-					Source:     models.SourceBlackbox,
-					Category:   "headers",
-					Endpoint:   endpoint,
-					Evidence:   fmt.Sprintf("Response does not include %s header", name),
-					Fix:        fix,
-					References: []string{"CWE-693"},
-					Confidence: models.ConfidenceHigh,
+					Title:             fmt.Sprintf("Missing %s header", name),
+					Severity:          models.SeverityInfo,
+					Source:            models.SourceBlackbox,
+					Category:          "headers",
+					Endpoint:          endpoint,
+					Evidence:          fmt.Sprintf("Response does not include %s header", name),
+					Fix:               fix,
+					References:        []string{"CWE-693"},
+					Confidence:        models.ConfidenceHigh,
+					DirectObservation: true,
 				}
 			}
 			return nil
@@ -223,15 +246,16 @@ func missingHeaderInfo(endpoint, name, fix string) headerCheck {
 func checkHSTS(endpoint, value string) *ev.Evidence {
 	if value == "" {
 		return &ev.Evidence{
-			Title:      "Missing Strict-Transport-Security header",
-			Severity:   models.SeverityMedium,
-			Source:     models.SourceBlackbox,
-			Category:   "headers",
-			Endpoint:   endpoint,
-			Evidence:   "Response does not include Strict-Transport-Security header",
-			Fix:        "Add header: Strict-Transport-Security: max-age=31536000; includeSubDomains",
-			References: []string{"CWE-319"},
-			Confidence: models.ConfidenceHigh,
+			Title:             "Missing Strict-Transport-Security header",
+			Severity:          models.SeverityMedium,
+			Source:            models.SourceBlackbox,
+			Category:          "headers",
+			Endpoint:          endpoint,
+			Evidence:          "Response does not include Strict-Transport-Security header",
+			Fix:               "Add header: Strict-Transport-Security: max-age=31536000; includeSubDomains",
+			References:        []string{"CWE-319"},
+			Confidence:        models.ConfidenceHigh,
+			DirectObservation: true,
 		}
 	}
 
@@ -240,28 +264,30 @@ func checkHSTS(endpoint, value string) *ev.Evidence {
 
 	if !hasMaxAge || maxAge == 0 {
 		return &ev.Evidence{
-			Title:      "HSTS disabled",
-			Severity:   models.SeverityMedium,
-			Source:     models.SourceBlackbox,
-			Category:   "headers",
-			Endpoint:   endpoint,
-			Evidence:   fmt.Sprintf("Strict-Transport-Security: %q (max-age is 0 or absent — HSTS not enforced)", value),
-			Fix:        "Set a non-zero max-age, e.g. Strict-Transport-Security: max-age=31536000; includeSubDomains",
-			References: []string{"CWE-319"},
-			Confidence: models.ConfidenceHigh,
+			Title:             "HSTS disabled",
+			Severity:          models.SeverityMedium,
+			Source:            models.SourceBlackbox,
+			Category:          "headers",
+			Endpoint:          endpoint,
+			Evidence:          fmt.Sprintf("Strict-Transport-Security: %q (max-age is 0 or absent — HSTS not enforced)", value),
+			Fix:               "Set a non-zero max-age, e.g. Strict-Transport-Security: max-age=31536000; includeSubDomains",
+			References:        []string{"CWE-319"},
+			Confidence:        models.ConfidenceHigh,
+			DirectObservation: true,
 		}
 	}
 	if maxAge < minMaxAge {
 		return &ev.Evidence{
-			Title:      "HSTS max-age too short",
-			Severity:   models.SeverityLow,
-			Source:     models.SourceBlackbox,
-			Category:   "headers",
-			Endpoint:   endpoint,
-			Evidence:   fmt.Sprintf("Strict-Transport-Security: %q (max-age=%d < 180 days)", value, maxAge),
-			Fix:        "Increase max-age to at least 15552000 (180 days); 31536000 (1 year) is recommended",
-			References: []string{"CWE-319"},
-			Confidence: models.ConfidenceHigh,
+			Title:             "HSTS max-age too short",
+			Severity:          models.SeverityLow,
+			Source:            models.SourceBlackbox,
+			Category:          "headers",
+			Endpoint:          endpoint,
+			Evidence:          fmt.Sprintf("Strict-Transport-Security: %q (max-age=%d < 180 days)", value, maxAge),
+			Fix:               "Increase max-age to at least 15552000 (180 days); 31536000 (1 year) is recommended",
+			References:        []string{"CWE-319"},
+			Confidence:        models.ConfidenceHigh,
+			DirectObservation: true,
 		}
 	}
 	return nil
@@ -299,15 +325,16 @@ func parseHSTSMaxAge(value string) (int64, bool) {
 func checkCSP(endpoint, value string) *ev.Evidence {
 	if value == "" {
 		return &ev.Evidence{
-			Title:      "Missing Content-Security-Policy header",
-			Severity:   models.SeverityMedium,
-			Source:     models.SourceBlackbox,
-			Category:   "headers",
-			Endpoint:   endpoint,
-			Evidence:   "Response does not include Content-Security-Policy header",
-			Fix:        "Add a Content-Security-Policy header with appropriate directives",
-			References: []string{"CWE-693"},
-			Confidence: models.ConfidenceHigh,
+			Title:             "Missing Content-Security-Policy header",
+			Severity:          models.SeverityMedium,
+			Source:            models.SourceBlackbox,
+			Category:          "headers",
+			Endpoint:          endpoint,
+			Evidence:          "Response does not include Content-Security-Policy header",
+			Fix:               "Add a Content-Security-Policy header with appropriate directives",
+			References:        []string{"CWE-693"},
+			Confidence:        models.ConfidenceHigh,
+			DirectObservation: true,
 		}
 	}
 

@@ -248,3 +248,31 @@ func TestCookieFlags_EvidenceNamesCookie(t *testing.T) {
 		t.Fatal("expected at least one finding")
 	}
 }
+
+// TestCookieFlags_DirectObservationOnBooleanReadsOnly locks the same predicate
+// the header and CORS checks use. HttpOnly and Secure are plain boolean reads
+// of the parsed Set-Cookie. SameSite is not: net/http parses an ABSENT
+// attribute to http.SameSite(0) and an unrecognized one to
+// SameSiteDefaultMode, so the scanner cannot tell the two apart and the claim
+// is an inference — which is why that finding already carries ConfidenceMedium.
+func TestCookieFlags_DirectObservationOnBooleanReadsOnly(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "sessionid=abc123def456ghi789; Path=/")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	findings := runCookieCheck(t, srv, true)
+	for _, f := range findings {
+		want := !hasRef(f, "CWE-1275") // everything except the SameSite finding
+		if f.DirectObservation != want {
+			t.Errorf("%q DirectObservation = %v, want %v", f.Title, f.DirectObservation, want)
+		}
+		// The predicate must stay readable as "direct observation iff the check
+		// asserts ConfidenceHigh from a literal read".
+		if f.DirectObservation != (f.Confidence == models.ConfidenceHigh) {
+			t.Errorf("%q breaks the file's predicate: DirectObservation=%v Confidence=%s",
+				f.Title, f.DirectObservation, f.Confidence)
+		}
+	}
+}

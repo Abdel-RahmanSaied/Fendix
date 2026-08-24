@@ -112,15 +112,16 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		// Missing HttpOnly — exposes the cookie to document.cookie / XSS theft.
 		if !c.HttpOnly {
 			emit(c.Name, "httponly", ev.Evidence{
-				Title:      "Session cookie missing HttpOnly flag",
-				Severity:   models.SeverityMedium,
-				Source:     models.SourceBlackbox,
-				Category:   "cookie",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Set-Cookie %q has no HttpOnly attribute", c.Name),
-				Fix:        fmt.Sprintf("Set the HttpOnly attribute on the %q cookie so client-side script cannot read it.", c.Name),
-				References: []string{"CWE-1004"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "Session cookie missing HttpOnly flag",
+				Severity:          models.SeverityMedium,
+				Source:            models.SourceBlackbox,
+				Category:          "cookie",
+				Endpoint:          epLabel,
+				Evidence:          fmt.Sprintf("Set-Cookie %q has no HttpOnly attribute", c.Name),
+				Fix:               fmt.Sprintf("Set the HttpOnly attribute on the %q cookie so client-side script cannot read it.", c.Name),
+				References:        []string{"CWE-1004"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			})
 		}
 
@@ -128,15 +129,16 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		// not assertable on plain http responses).
 		if isHTTPS && !c.Secure {
 			emit(c.Name, "secure", ev.Evidence{
-				Title:      "Session cookie missing Secure flag",
-				Severity:   models.SeverityMedium,
-				Source:     models.SourceBlackbox,
-				Category:   "cookie",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Set-Cookie %q has no Secure attribute over HTTPS", c.Name),
-				Fix:        fmt.Sprintf("Set the Secure attribute on the %q cookie so it is only sent over TLS.", c.Name),
-				References: []string{"CWE-614"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "Session cookie missing Secure flag",
+				Severity:          models.SeverityMedium,
+				Source:            models.SourceBlackbox,
+				Category:          "cookie",
+				Endpoint:          epLabel,
+				Evidence:          fmt.Sprintf("Set-Cookie %q has no Secure attribute over HTTPS", c.Name),
+				Fix:               fmt.Sprintf("Set the Secure attribute on the %q cookie so it is only sent over TLS.", c.Name),
+				References:        []string{"CWE-614"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			})
 		}
 
@@ -145,6 +147,13 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		// explicit/unrecognized "SameSite" with no value to SameSiteDefaultMode
 		// (which is 1 in this Go version, not 0). Treat both — plus None — as
 		// weak. Strict/Lax → no finding.
+		//
+		// Deliberately NOT a DirectObservation: the sentence above is the
+		// reason. The scanner cannot distinguish an absent attribute from an
+		// unrecognized one, so the claim is an inference about which of two
+		// parses happened — which is also why this finding already carries
+		// ConfidenceMedium while HttpOnly and Secure (plain boolean reads of
+		// the parsed Set-Cookie) carry ConfidenceHigh.
 		if c.SameSite == 0 || c.SameSite == http.SameSiteDefaultMode || c.SameSite == http.SameSiteNoneMode {
 			severity := models.SeverityLow
 			detail := "no SameSite attribute (or an unrecognized value)"

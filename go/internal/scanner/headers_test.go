@@ -571,3 +571,59 @@ func TestCheckHeaders_LogaggCapsTransientErrors(t *testing.T) {
 		t.Errorf("total events: warned=%d suppressed=%d sum=%d, want %d", warned, suppressed, warned+suppressed, calls)
 	}
 }
+
+// TestHeaders_DirectObservationOnPresenceChecksOnly locks the predicate this
+// file commits to: DirectObservation is set exactly when the check asserts
+// ConfidenceHigh from a literal read of the header. It is what makes the
+// confidence scorer's +30 auditable — a reader can decide, per finding, whether
+// the claim really is "what the wire said".
+func TestHeaders_DirectObservationOnPresenceChecksOnly(t *testing.T) {
+	t.Run("presence and literal-value checks are direct observations", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(200)
+		}))
+		defer server.Close()
+
+		ep := Endpoint{Method: "GET", Path: "/api/v1/users", FullURL: server.URL + "/api/v1/users"}
+		findings := CheckHeaders(context.Background(), &models.ScanConfig{Timeout: 10, AllowPrivate: true}, ep)
+		if len(findings) == 0 {
+			t.Fatal("no findings for a response with no security headers — test premise broken")
+		}
+		for _, f := range findings {
+			if !f.DirectObservation {
+				t.Errorf("%q is not marked DirectObservation; a missing header is a deterministic\n"+
+					"read of the response", f.Title)
+			}
+			if f.Confidence != models.ConfidenceHigh {
+				t.Errorf("%q carries DirectObservation but not ConfidenceHigh — the two must agree\n"+
+					"in this file", f.Title)
+			}
+		}
+	})
+
+	t.Run("weak-CSP is an inference, not a read", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'")
+			w.WriteHeader(200)
+		}))
+		defer server.Close()
+
+		ep := Endpoint{Method: "GET", Path: "/api/v1/users", FullURL: server.URL + "/api/v1/users"}
+		findings := CheckHeaders(context.Background(), &models.ScanConfig{Timeout: 10, AllowPrivate: true}, ep)
+
+		var weak *ev.Evidence
+		for i := range findings {
+			if findings[i].Title == "Weak Content-Security-Policy" {
+				weak = &findings[i]
+			}
+		}
+		if weak == nil {
+			t.Fatalf("no Weak-CSP finding for an unsafe-inline policy: %v", findings)
+		}
+		if weak.DirectObservation {
+			t.Error("Weak Content-Security-Policy claimed the direct-observation bonus — analyzeCSP\n" +
+				"GRADES a policy (a nonce/'strict-dynamic' policy listing 'unsafe-inline' as a\n" +
+				"legacy fallback is not actually weak), so the claim is an inference")
+		}
+	})
+}

@@ -336,3 +336,206 @@ func TestScoreStaticAssetPenalty(t *testing.T) {
 			Score(base).Value, Score(stat).Value)
 	}
 }
+
+// TestDirectObservationReachesTheHighBand is the FIX-07 headline. Before it, a
+// single-engine DAST finding was arithmetically stuck in MEDIUM: the ceiling
+// was 35 base + 10 runtime = 45 (payloadValidated cannot fire — nothing in the
+// module produces Evidence.Response), bandHigh is 70, and headers/cookie/cors
+// are outside engine.categoryMap so correlation can never lift them either.
+// "Confirmed" was therefore a synonym for "correlated", and a scan with no code
+// path could not produce one.
+func TestDirectObservationReachesTheHighBand(t *testing.T) {
+	got := Score(evidence.Evidence{Source: models.SourceBlackbox, DirectObservation: true})
+
+	if want := base + runtimeEvidence + directObservation; got.Value != want {
+		t.Errorf("direct-observation Value = %d, want %d", got.Value, want)
+	}
+	if got.Band != models.ConfidenceHigh {
+		t.Errorf("Band = %q, want HIGH — a deterministic read of a live response must be able\n"+
+			"to reach HIGH without correlation", got.Band)
+	}
+	// Margin, not just membership: at +25 the score would land on exactly 70,
+	// and any later negative delta would de-band every header/cookie/cors
+	// finding in one step (DECISIONS.md D5).
+	if got.Value <= bandHigh {
+		t.Errorf("Value = %d sits on the bandHigh boundary (%d) with no margin", got.Value, bandHigh)
+	}
+	if !strings.Contains(strings.Join(got.Reasons, "\n"), "direct observation") {
+		t.Errorf("no direct-observation reason line: %v", got.Reasons)
+	}
+}
+
+// TestDirectObservationRequiresRuntimeEvidence guards the hasRuntime gate. The
+// bonus is a claim about reading a live RESPONSE, so a static emitter must not
+// be able to claim it — and internal/engine's payload-validation wiring test
+// pins an exact score that depends on this gate holding.
+func TestDirectObservationRequiresRuntimeEvidence(t *testing.T) {
+	got := Score(evidence.Evidence{Source: models.SourceWhitebox, DirectObservation: true})
+	if want := base + staticEvidence; got.Value != want {
+		t.Errorf("whitebox DirectObservation Value = %d, want %d — the bonus is DAST-only",
+			got.Value, want)
+	}
+	if strings.Contains(strings.Join(got.Reasons, "\n"), "direct observation") {
+		t.Errorf("a static finding claimed the direct-observation bonus: %v", got.Reasons)
+	}
+}
+
+// TestDeterministicDetectionLetsAProductionPatternMatchBandHigh is the SAST
+// mirror, and the reason a code-only scan of real hardcoded credentials still
+// fails a build once band membership gates enforcement (DECISIONS.md D1). A
+// secrets finding is Source=whitebox with no SourceTier, so without this delta
+// it scores 35 + 10 = 45 forever — MEDIUM, with no corroborator available on a
+// scan that has no live target.
+func TestDeterministicDetectionLetsAProductionPatternMatchBandHigh(t *testing.T) {
+	secret := evidence.Evidence{
+		Title:      "Hardcoded API key or token",
+		Category:   "secrets",
+		Endpoint:   "src/config.py:9",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Confidence: models.ConfidenceHigh,
+	}
+
+	got := Score(secret)
+	if want := base + staticEvidence + deterministicDetn; got.Value != want {
+		t.Errorf("production secrets Value = %d, want %d", got.Value, want)
+	}
+	if got.Band != models.ConfidenceHigh {
+		t.Errorf("Band = %q, want HIGH — a real credential in production code must be able to\n"+
+			"band HIGH on a code-only scan", got.Band)
+	}
+	if !strings.Contains(strings.Join(got.Reasons, "\n"), "deterministic detection") {
+		t.Errorf("no deterministic-detection reason line: %v", got.Reasons)
+	}
+
+	// Every conjunct of the predicate must be able to withhold the delta on its
+	// own — each is load-bearing for a different false-positive class.
+	demotions := []struct {
+		name string
+		mut  func(*evidence.Evidence)
+	}{
+		{"test/fixture code (FP_CORPUS P1: 31 of 35 catalogued instances)", func(e *evidence.Evidence) { e.InTest = true }},
+		{"fixture-shaped credential value", func(e *evidence.Evidence) { e.Placeholder = true }},
+		{"semgrep-shim tier (breadth before precision)", func(e *evidence.Evidence) { e.SourceTier = models.TierSemgrepShim }},
+		{"the analyzer did not assert HIGH confidence", func(e *evidence.Evidence) { e.Confidence = models.ConfidenceMedium }},
+		{"blackbox source (the DAST mirror is directObservation)", func(e *evidence.Evidence) { e.Source = models.SourceBlackbox }},
+	}
+	for _, d := range demotions {
+		t.Run(d.name, func(t *testing.T) {
+			ev := secret
+			d.mut(&ev)
+			r := Score(ev)
+			if strings.Contains(strings.Join(r.Reasons, "\n"), "deterministic detection") {
+				t.Errorf("the delta still fired: %v", r.Reasons)
+			}
+			if r.Band == models.ConfidenceHigh {
+				t.Errorf("Band = HIGH (%d); this shape must not band HIGH on its own", r.Value)
+			}
+		})
+	}
+}
+
+// TestFixtureShapedCredentialLandsInLow pins the FIX-09 end state the
+// deterministic-detection gate exists to make reachable: a placeholder value
+// must fall clear of MEDIUM, not merely one notch inside it. Sitting in MEDIUM
+// would leave it one corroborating signal away from blocking a build.
+func TestFixtureShapedCredentialLandsInLow(t *testing.T) {
+	got := Score(evidence.Evidence{
+		Title:       "Hardcoded API key or token",
+		Category:    "secrets",
+		Endpoint:    "src/config.py:9",
+		Source:      models.SourceWhitebox,
+		Confidence:  models.ConfidenceHigh,
+		Placeholder: true,
+	})
+	if want := base + staticEvidence + placeholderPenalty; got.Value != want {
+		t.Errorf("placeholder Value = %d, want %d", got.Value, want)
+	}
+	if got.Band != models.ConfidenceLow {
+		t.Errorf("Band = %q, want LOW", got.Band)
+	}
+}
+
+// TestFPCorpusBandCalibration is the FP-corpus recalibration, expressed as a Go
+// table because the benchmark labels cannot carry it: benchmark.MatchFinding
+// splits an endpoint on its last ":" and returns false without one, and a DAST
+// endpoint is "GET /admin" — no colon — so every header/cookie/cors finding
+// buckets as Unknown there. The class names below are the
+// benchmark.FPClass constants the taxonomy in BENCHMARKS.md §5 promises.
+//
+// Note on the 4xx row: tasks/FP_CORPUS.md's P2 instances are all 404s on
+// /.env.local, and headers.go / cors.go / cookie_flags.go now skip 404/410/5xx
+// outright, while httpResponseContext only tags 401/403/405/406/429. The
+// residual 4xx class is auth-gated responses, so that is what is calibrated
+// here rather than the file's 2026-05-11 table.
+func TestFPCorpusBandCalibration(t *testing.T) {
+	cases := []struct {
+		name      string
+		fpClass   string // benchmark.FPClass, or "" for a confirmed-TP class
+		ev        evidence.Evidence
+		wantValue int
+		wantBand  models.Confidence
+	}{
+		{
+			name:      "confirmed TP: missing X-Content-Type-Options on a live API route",
+			fpClass:   "", // FP_CORPUS P4 — tracked as a known-mostly-TP class
+			ev:        evidence.Evidence{Source: models.SourceBlackbox, DirectObservation: true},
+			wantValue: base + runtimeEvidence + directObservation,
+			wantBand:  models.ConfidenceHigh,
+		},
+		{
+			name:      "known FP: the same read on an auth-gated response",
+			fpClass:   "http-4xx-context", // benchmark.FPHTTP4xxContext
+			ev:        evidence.Evidence{Source: models.SourceBlackbox, DirectObservation: true, ResponseContext: "4xx"},
+			wantValue: base + runtimeEvidence + directObservation + httpContextPenalty,
+			wantBand:  models.ConfidenceMedium,
+		},
+		{
+			name:      "known FP: the same read on a CDN-served static asset",
+			fpClass:   "static-asset-context", // benchmark.FPStaticAssetCtx
+			ev:        evidence.Evidence{Source: models.SourceBlackbox, DirectObservation: true, ResponseContext: "static-asset"},
+			wantValue: base + runtimeEvidence + directObservation + httpContextPenalty,
+			wantBand:  models.ConfidenceMedium,
+		},
+		{
+			name:      "unchanged: a DAST finding that is an inference, not a read (Weak-CSP / SameSite)",
+			fpClass:   "",
+			ev:        evidence.Evidence{Source: models.SourceBlackbox},
+			wantValue: base + runtimeEvidence,
+			wantBand:  models.ConfidenceMedium,
+		},
+		{
+			name:      "unchanged: an inference-shaped DAST finding on a 4xx",
+			fpClass:   "http-4xx-context",
+			ev:        evidence.Evidence{Source: models.SourceBlackbox, ResponseContext: "4xx"},
+			wantValue: base + runtimeEvidence + httpContextPenalty,
+			wantBand:  models.ConfidenceLow,
+		},
+		{
+			name:    "known FP: a secrets match in test/fixture code",
+			fpClass: "test-fixture", // benchmark.FPTestFixture — FP_CORPUS P1, 31 of 35
+			ev: evidence.Evidence{
+				Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh, InTest: true,
+			},
+			wantValue: base + staticEvidence,
+			wantBand:  models.ConfidenceMedium,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Score(c.ev)
+			if got.Value != c.wantValue {
+				t.Errorf("Value = %d, want %d (fp_class %q)", got.Value, c.wantValue, c.fpClass)
+			}
+			if got.Band != c.wantBand {
+				t.Errorf("Band = %q, want %q (fp_class %q)", got.Band, c.wantBand, c.fpClass)
+			}
+			// The FP rows carry the load: a known-FP class reaching HIGH is the
+			// regression this calibration exists to catch.
+			if c.fpClass != "" && got.Band == models.ConfidenceHigh {
+				t.Errorf("known-FP class %q banded HIGH at %d — de-escalation failed", c.fpClass, got.Value)
+			}
+		})
+	}
+}

@@ -216,6 +216,14 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	//
 	// Severity ranking (highest first), credentialed > non-credentialed on ties:
 	//   wildcard+creds (CRIT) ≈ reflected+creds (CRIT) > reflected (HIGH) ≈ null (HIGH) > wildcard (MEDIUM)
+	// The five ORIGIN findings below are direct observations: ACAO and ACAC are
+	// read literally, and reflection is EXACT case-insensitive equality to the
+	// probe origin (never a substring match — see the switch above), so there
+	// is no inference step. The two appendMethodFindings results deliberately
+	// are not: an ACAM token list is read literally too, but those findings
+	// grade EXPLOITABILITY rather than certainty, which is why both already
+	// carry ConfidenceMedium. Same predicate as headers.go: DirectObservation
+	// == the check asserts ConfidenceHigh from a literal read.
 	var findings []ev.Evidence
 
 	type originCandidate struct {
@@ -228,15 +236,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 100,
 			finding: ev.Evidence{
-				Title:      "CORS wildcard origin with credentials allowed",
-				Severity:   models.SeverityCritical,
-				Source:     models.SourceBlackbox,
-				Category:   "cors",
-				Endpoint:   epLabel,
-				Evidence:   "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true",
-				Fix:        "Never combine wildcard origin with credentials. Specify explicit allowed origins.",
-				References: []string{"CWE-942"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "CORS wildcard origin with credentials allowed",
+				Severity:          models.SeverityCritical,
+				Source:            models.SourceBlackbox,
+				Category:          "cors",
+				Endpoint:          epLabel,
+				Evidence:          "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true",
+				Fix:               "Never combine wildcard origin with credentials. Specify explicit allowed origins.",
+				References:        []string{"CWE-942"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			},
 		})
 	}
@@ -246,15 +255,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 90,
 			finding: ev.Evidence{
-				Title:      "CORS reflects arbitrary origin with credentials",
-				Severity:   models.SeverityCritical,
-				Source:     models.SourceBlackbox,
-				Category:   "cors",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s with Access-Control-Allow-Credentials: true", reflectedEvid),
-				Fix:        "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
-				References: []string{"CWE-942"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "CORS reflects arbitrary origin with credentials",
+				Severity:          models.SeverityCritical,
+				Source:            models.SourceBlackbox,
+				Category:          "cors",
+				Endpoint:          epLabel,
+				Evidence:          fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s with Access-Control-Allow-Credentials: true", reflectedEvid),
+				Fix:               "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
+				References:        []string{"CWE-942"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			},
 		})
 	}
@@ -262,15 +272,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 70,
 			finding: ev.Evidence{
-				Title:      "CORS reflects arbitrary origin",
-				Severity:   models.SeverityHigh,
-				Source:     models.SourceBlackbox,
-				Category:   "cors",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s", reflectedEvid),
-				Fix:        "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
-				References: []string{"CWE-942"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "CORS reflects arbitrary origin",
+				Severity:          models.SeverityHigh,
+				Source:            models.SourceBlackbox,
+				Category:          "cors",
+				Endpoint:          epLabel,
+				Evidence:          fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s", reflectedEvid),
+				Fix:               "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
+				References:        []string{"CWE-942"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			},
 		})
 	}
@@ -278,15 +289,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	// fire — same arbitrary-origin root cause, don't double-report.
 	if sawNull && !sawReflected {
 		f := ev.Evidence{
-			Title:      "CORS accepts null origin",
-			Severity:   models.SeverityHigh,
-			Source:     models.SourceBlackbox,
-			Category:   "cors",
-			Endpoint:   epLabel,
-			Evidence:   "Access-Control-Allow-Origin: null",
-			Fix:        "Never allow the null origin. Validate Origin against an explicit allowlist.",
-			References: []string{"CWE-942"},
-			Confidence: models.ConfidenceHigh,
+			Title:             "CORS accepts null origin",
+			Severity:          models.SeverityHigh,
+			Source:            models.SourceBlackbox,
+			Category:          "cors",
+			Endpoint:          epLabel,
+			Evidence:          "Access-Control-Allow-Origin: null",
+			Fix:               "Never allow the null origin. Validate Origin against an explicit allowlist.",
+			References:        []string{"CWE-942"},
+			Confidence:        models.ConfidenceHigh,
+			DirectObservation: true,
 		}
 		rank := 60 // HIGH, slightly below reflected-HIGH on ties
 		if sawNullCred {
@@ -300,15 +312,16 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 30, // MEDIUM — lowest; must never suppress a higher finding
 			finding: ev.Evidence{
-				Title:      "CORS allows any origin",
-				Severity:   models.SeverityMedium,
-				Source:     models.SourceBlackbox,
-				Category:   "cors",
-				Endpoint:   epLabel,
-				Evidence:   "Access-Control-Allow-Origin: *",
-				Fix:        "Restrict Access-Control-Allow-Origin to specific trusted origins.",
-				References: []string{"CWE-942"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "CORS allows any origin",
+				Severity:          models.SeverityMedium,
+				Source:            models.SourceBlackbox,
+				Category:          "cors",
+				Endpoint:          epLabel,
+				Evidence:          "Access-Control-Allow-Origin: *",
+				Fix:               "Restrict Access-Control-Allow-Origin to specific trusted origins.",
+				References:        []string{"CWE-942"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			},
 		})
 	}
