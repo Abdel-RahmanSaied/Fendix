@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-24
+
+A precision and trust release. Every change below exists because the reports
+this engine produced made claims it could not support: a file called `"None"`,
+a file called `"https"`, six findings for three vulnerabilities, an upgrade
+recommendation naming a git commit SHA, a confidence band that was arithmetically
+stuck at MEDIUM, and a build failed by a finding whose own evidence text said it
+was unconfirmed.
+
+### BREAKING
+
+Read this before upgrading a CI pipeline.
+
+- **`--fail-on` now consults confidence, not severity alone.** A finding at or
+  above the threshold BLOCKs only when the deterministic confidence band
+  supports the claim: HIGH blocks; MEDIUM blocks only with at least one
+  corroborating signal; LOW warns. A finding the correlator marked unconfirmed
+  by live scan does not block without corroboration, regardless of band.
+
+  **Builds that used to fail may now pass.** That is the point — an
+  uncorroborated finding failing a build is the incoherence this release
+  removes — but it is a behaviour change on the default path, so it gets a
+  major version.
+
+  `--enforce-confidence=false` restores the previous severity-only mapping
+  byte-for-byte. That is not a promise: `TestExitCodeMatchesLegacyCheckFailOn`
+  locks all 54 severity/threshold combinations against the frozen legacy
+  implementation, which is retained solely to be that oracle.
+
+  Real credentials in production code still block. A deterministic pattern
+  match in non-test source scores into HIGH on its own, so a hardcoded AWS or
+  Stripe key still exits 1 on a code-only scan. Fixture-shaped values do not.
+
+- **An uncorroborated BLOCK in test code is demoted to WARN.** Previously
+  `--deescalate-tests` only moved WARN→INFO, so it could never reach the
+  project's own largest false-positive class (test fixtures are 31 of 35 FPs in
+  the corpus), whose findings are HIGH/CRITICAL and therefore always took the
+  BLOCK path. A corroborated finding in test code — a provider-validated live
+  credential — still blocks.
+
+- **Dependency finding identity changed.** Alias-linked OSV records are merged
+  into one finding per vulnerability and named after the canonical id
+  (`CVE-*` > `GHSA-*` > `PYSEC-*` > other), so `SEC-DEPS-PYSEC_2026_3552`
+  becomes `SEC-DEPS-CVE_2026_69247`. Because `models.Fingerprint` and the dedup
+  key both hash the title, **saved `--baseline` files and `fingerprint:` rules
+  in `.fendix-ignore` that pin a dependency finding stop matching** and must be
+  regenerated. `fendix verify` was taught to match on `References` as well as
+  the id, so re-verifying a pre-2.0 report does not report a still-installed
+  vulnerability as resolved.
+
+- **The CSRF cookie finding was retitled.** A `csrftoken` / `XSRF-TOKEN` /
+  `_csrf` cookie without `HttpOnly` is no longer reported as a session cookie
+  issue — it is an INFO finding describing the double-submit pattern. Same
+  fingerprint caveat as above for those findings.
+
+- **Base images that are not digest-pinned are now flagged** at INFO
+  (`python:3.14-slim`, `ubuntu:24.04`, `node:20-alpine`). This adds roughly one
+  finding per Dockerfile. It does not gate a build at that severity.
+
 ### Added
 
 - **`metadata.schema_version` — the JSON report now says which contract it is.**
