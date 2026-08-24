@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -398,9 +399,14 @@ func TestScan_FindingShape(t *testing.T) {
 	}
 }
 
+// TestScan_EvidenceRedactsRawSecret asserts that NO 6-char window of the
+// credential survives into evidence, not merely that the whole value is
+// absent. The weaker form this replaced passed while evidence carried
+// `ghp_AAAAAAAAAAAAAA...` — the first 20 RAW characters — because the whole
+// key was absent and the leaked prefix ended in "...".
 func TestScan_EvidenceRedactsRawSecret(t *testing.T) {
 	dir := t.TempDir()
-	const rawKey = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	const rawKey = "ghp_Zq7Wm3Xk9Rb2Nv5Tc8Hd1Jf4Ls6Py0Ag3BnK"
 	writeFile(t, dir, "tok.py", `GITHUB = "`+rawKey+`"`)
 	fs, err := Scan(context.Background(), dir)
 	if err != nil {
@@ -408,11 +414,14 @@ func TestScan_EvidenceRedactsRawSecret(t *testing.T) {
 	}
 	for _, f := range fs {
 		if f.ID == "SEC-GITHUB_TOKEN" {
-			if strings.Contains(f.Evidence, rawKey) {
-				t.Errorf("evidence leaks raw secret: %q", f.Evidence)
+			assertNoLeak(t, "SEC-GITHUB_TOKEN evidence", f.Evidence, rawKey, 6)
+			if !strings.Contains(f.Evidence, "[REDACTED len=40 sha256:") {
+				t.Errorf("evidence missing redaction marker: %q", f.Evidence)
 			}
-			if !strings.Contains(f.Evidence, "...") {
-				t.Errorf("evidence missing truncation ellipsis: %q", f.Evidence)
+			// Retained signal: the variable name still tells a triager which
+			// assignment to look at.
+			if !strings.Contains(f.Evidence, "GITHUB") {
+				t.Errorf("evidence lost the assignment context: %q", f.Evidence)
 			}
 			return
 		}
@@ -584,22 +593,162 @@ func TestScan_EndpointUsesForwardSlashes(t *testing.T) {
 // Helper unit tests.
 // ---------------------------------------------------------------------------
 
-func TestTruncateSecret(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"abc", "***"},
-		{"abcd", "***"},
-		{"abcdef", "abcd..."},
-		{strings.Repeat("A", 40), strings.Repeat("A", 20) + "..."},
+// TestRedactionMarkerIsDeterministicAndNonReversible replaces the deleted
+// TestTruncateSecret, which asserted the exact prefix leak this fix removes
+// (truncateSecret(40×"A") == 20×"A"+"...").
+func TestRedactionMarkerIsDeterministicAndNonReversible(t *testing.T) {
+	const value = "ghp_Zq7Wm3Xk9Rb2Nv5Tc8Hd1Jf4Ls6Py0Ag3BnK"
+	shape := regexp.MustCompile(`^\[REDACTED len=\d+ sha256:[0-9a-f]{8}\.\.\.\]$`)
+
+	got := redactionMarker(value)
+	if got != redactionMarker(value) {
+		t.Errorf("redactionMarker is not deterministic: %q vs %q", got, redactionMarker(value))
 	}
-	for _, c := range cases {
-		got := truncateSecret(c.in)
-		if got != c.want {
-			t.Errorf("truncateSecret(%q) = %q; want %q", c.in, got, c.want)
+	if !shape.MatchString(got) {
+		t.Errorf("marker %q does not match %s", got, shape)
+	}
+	if want := fmt.Sprintf("len=%d", len(value)); !strings.Contains(got, want) {
+		t.Errorf("marker %q does not carry %q", got, want)
+	}
+	if d := redactionMarker(value + "x"); d == got {
+		t.Errorf("distinct values produced the same marker: %q", got)
+	}
+	for _, sub := range substrings(value, 6) {
+		if strings.Contains(got, sub) {
+			t.Errorf("marker %q leaks %q from the value", got, sub)
 		}
 	}
+}
+
+// substrings returns every substring of s of exactly length n. Used by the
+// leak assertions: "the raw value is absent" is far too weak a check, because
+// half a token is still a leak.
+func substrings(s string, n int) []string {
+	if len(s) < n {
+		return nil
+	}
+	out := make([]string, 0, len(s)-n+1)
+	for i := 0; i+n <= len(s); i++ {
+		out = append(out, s[i:i+n])
+	}
+	return out
+}
+
+// assertNoLeak fails when any n-char window of secret appears in text.
+func assertNoLeak(t *testing.T, what, text, secret string, n int) {
+	t.Helper()
+	for _, sub := range substrings(secret, n) {
+		if strings.Contains(text, sub) {
+			t.Errorf("%s leaks %d-char fragment %q of the secret: %q", what, n, sub, text)
+			return
+		}
+	}
+}
+
+// TestEvidenceRedactsEverySecretOnTheLine is the multi-credential case: the
+// evidence window is a slice of the SOURCE LINE, so redacting only the
+// emitting pattern's own match ships the neighbour in the clear.
+func TestEvidenceRedactsEverySecretOnTheLine(t *testing.T) {
+	dir := t.TempDir()
+	const (
+		gh  = "ghp_Zq7Wm3Xk9Rb2Nv5Tc8Hd1Jf4Ls6Py0Ag3BnK"
+		aws = "AKIA5TQ3PJ7WVNE2HB4D"
+	)
+	writeFile(t, dir, "both.py", `CREDS = {"gh": "`+gh+`", "aws": "`+aws+`"}`)
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	ids := idsFound(fs)
+	for _, want := range []string{"SEC-GITHUB_TOKEN", "SEC-AWS_ACCESS_KEY"} {
+		if _, ok := ids[want]; !ok {
+			t.Fatalf("expected %s; got %v", want, ids)
+		}
+	}
+	for _, f := range fs {
+		assertNoLeak(t, f.ID+" evidence", f.Evidence, gh, 6)
+		assertNoLeak(t, f.ID+" evidence", f.Evidence, aws, 6)
+	}
+}
+
+// TestPrivateKeyBodyOnTheSameLineIsRedacted reproduces the shape of a Google
+// service-account JSON file, where the whole PEM sits on ONE line and the
+// pattern matches only the armour header — so the key body lands inside the
+// evidence window unless the rest of the line is treated as key material.
+func TestPrivateKeyBodyOnTheSameLineIsRedacted(t *testing.T) {
+	const body = "MIIBOgIBAAJBAK7X9v2QhT8mN3Wc"
+	dir := t.TempDir()
+	writeFile(t, dir, "sa.json", `{"private_key": "-----BEGIN RSA PRIVATE KEY-----`+body+`"}`)
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	var pem *evidence.Evidence
+	for i := range fs {
+		if fs[i].ID == "SEC-PRIVATE_KEY" {
+			pem = &fs[i]
+		}
+	}
+	if pem == nil {
+		t.Fatalf("expected SEC-PRIVATE_KEY; got %v", idsFound(fs))
+	}
+	// Retained signal: the armour header says WHAT was found and is not
+	// itself a secret.
+	if !strings.Contains(pem.Evidence, "-----BEGIN RSA PRIVATE KEY-----") {
+		t.Errorf("evidence lost the PEM header (retained signal): %q", pem.Evidence)
+	}
+	assertNoLeak(t, "SEC-PRIVATE_KEY evidence", pem.Evidence, body, 6)
+}
+
+// TestPrivateKeyHeaderAloneKeepsEvidenceUnmarked is the complementary case:
+// the ordinary multi-line PEM file, where the rest-of-line span is empty and
+// evidence must stay exactly as it was before redaction existed.
+func TestPrivateKeyHeaderAloneKeepsEvidenceUnmarked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "cert.js", "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n")
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range fs {
+		if f.ID != "SEC-PRIVATE_KEY" {
+			continue
+		}
+		if f.Evidence != "-----BEGIN RSA PRIVATE KEY-----" {
+			t.Errorf("evidence = %q; want the bare header with no marker", f.Evidence)
+		}
+		return
+	}
+	t.Fatalf("expected SEC-PRIVATE_KEY; got %v", idsFound(fs))
+}
+
+// TestDBConnectionStringRedactsOnlyThePassword pins the deliberate scoping of
+// DB_CONNECTION_STRING's capture group: scheme/user/host stay readable for
+// triage, the password does not.
+func TestDBConnectionStringRedactsOnlyThePassword(t *testing.T) {
+	const pw = "Pr0d9Db8Pw7Qz6Ln"
+	dir := t.TempDir()
+	writeFile(t, dir, "cfg.py", `DB = "postgresql://svc:`+pw+`@db.internal:5432/app"`)
+
+	fs, err := Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range fs {
+		if f.ID != "SEC-DB_CONNECTION_STRING" {
+			continue
+		}
+		assertNoLeak(t, "SEC-DB_CONNECTION_STRING evidence", f.Evidence, pw, 6)
+		for _, keep := range []string{"postgresql://", "svc", "db.internal"} {
+			if !strings.Contains(f.Evidence, keep) {
+				t.Errorf("evidence lost retained signal %q: %q", keep, f.Evidence)
+			}
+		}
+		return
+	}
+	t.Fatalf("expected SEC-DB_CONNECTION_STRING; got %v", idsFound(fs))
 }
 
 func TestIsEnvFile(t *testing.T) {

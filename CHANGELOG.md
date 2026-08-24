@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Secrets findings leaked the first 20 characters of every credential into
+  their own evidence.** `truncateSecret` kept a 20-char raw prefix of the
+  matched value, and `truncateEvidence` then framed it in a 120-char window
+  over the SOURCE LINE. `Finding.Evidence` is not an internal field: the JSON,
+  SARIF, HTML and PDF reporters print it, `internal/ghapp` posts it into GitHub
+  PR comments, and the Jira integration pastes it into a ticket body. Half of a
+  40-char token, distributed to every one of those, is a leak.
+
+  Credential material is now redacted at CAPTURE time — before an
+  `evidence.Evidence` is constructed — and replaced with
+  `[REDACTED len=N sha256:xxxxxxxx...]`. The marker is deterministic and
+  unsalted so identical values render identically (evidence bytes stay
+  reproducible and the dedup tiebreak stays stable), and it carries enough to
+  correlate two occurrences of the same credential without carrying the
+  credential. It is a fingerprint, not a security boundary: a low-entropy value
+  is still recoverable from an 8-hex-char digest by dictionary.
+
+  Redaction covers the union of EVERY pattern's value spans on the line, not
+  just the emitting pattern's own match. Two credentials on one line previously
+  each shipped the other in the clear inside its neighbour's window, and a
+  one-line PEM (the shape of a Google service-account JSON file) shipped the
+  whole key body, because `PRIVATE_KEY` matches only the armour header.
+  Retained signal is deliberate and tested: the PEM header, the connection
+  string's scheme/user/host, the `"type": "service_account"` signature and the
+  assignment's variable name all survive.
+
+  > **Evidence text changes for every secrets finding.** The strings are
+  > different, so a snapshot or golden file that pinned secrets evidence needs
+  > regenerating. `models.Fingerprint` hashes `(Category, Endpoint, Title)` and
+  > `dedupKey` hashes `(Severity, Category, Title)` — neither reads Evidence —
+  > so fingerprints, `.fendix-ignore` rules and `--baseline` entries are
+  > unaffected.
+
 - **`csrftoken` was reported as a session cookie missing HttpOnly.** `"csrf"`
   and `"xsrf"` sat in the cookie scanner's session/auth name list and the
   HttpOnly finding's title was hardcoded to `Session cookie missing HttpOnly
