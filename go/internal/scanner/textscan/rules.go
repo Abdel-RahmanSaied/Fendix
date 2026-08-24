@@ -417,9 +417,66 @@ func IaCRules() []Rule {
 			// builds. Tags starting with `l` (e.g. `lts`, `linux-…`)
 			// are correctly NOT flagged because the pattern only
 			// matches `:latest` literally.
+			//
+			// Multi-stage builds: `FROM <stage> AS <name>` referencing a
+			// stage declared earlier in the SAME file is not an image
+			// reference at all, so it cannot be pinned. scanFile's
+			// whole-file pre-pass (dockerfileStageAliases) suppresses this
+			// rule on exactly those lines — the same mechanism
+			// IAC_DOCKER_RUNS_AS_ROOT uses for USER, but per-LINE rather
+			// than per-file so a genuinely unpinned first stage in a
+			// multi-stage file is still reported.
+			//
+			// Known remaining FP class (NOT fixed here): `FROM scratch` and
+			// `FROM ${BASE_IMAGE}` also match this pattern. Known FN class:
+			// a lower-case `as`, a `--platform=` flag or a trailing
+			// `# comment` all defeat the `$` anchor, and a floating minor
+			// tag (`:3.14`, `:20-alpine`) is deliberately NOT matched —
+			// only a bare reference or a literal `:latest` is. That last
+			// gap is what IAC_DOCKER_FLOATING_TAG below covers; the two
+			// rules are kept separate because they carry different
+			// severities and different actionability.
 			Pattern: regexp.MustCompile(`^\s*FROM\s+[^\s:@]+(?::latest)?(?:\s+AS\s+\S+)?\s*$`),
 			Applies: IsDockerfile,
 			Fix:     "Pin to a specific tag or digest (e.g. `python:3.11.7-slim` or `python@sha256:…`). `:latest` makes builds unreproducible AND ships unreviewed upstream changes.",
+		},
+		{
+			ID:         "IAC_DOCKER_FLOATING_TAG",
+			Title:      "Dockerfile base image is not pinned to a digest",
+			Severity:   models.SeverityInfo,
+			Confidence: models.ConfidenceHigh,
+			Category:   "iac",
+			CWE:        "CWE-829",
+			// A tag is a MUTABLE POINTER. `python:3.14-slim`,
+			// `ubuntu:24.04`, `node:20-alpine` and `alpine:3.19` all look
+			// specific and all silently change contents when the publisher
+			// pushes a rebuild — which is how an unreviewed upstream layer
+			// reaches production without a single line of the Dockerfile
+			// changing. Only `@sha256:…` is content-addressable.
+			//
+			// This is INFO, not a gating severity, and that is a deliberate
+			// trade. The rule is broad by construction — it fires on nearly
+			// every real-world Dockerfile — so shipping it above INFO would
+			// newly fail builds that were passing, on a hygiene issue whose
+			// remedy (a digest and a bot to bump it) is a real project
+			// decision rather than a defect fix. It informs; it does not
+			// gate. The package's stated posture is "fewer rules, higher
+			// precision, no trust-eroding flood of FPs", and this rule is
+			// admitted under it because it has NO false positives: it says
+			// exactly one true thing about every line it fires on.
+			//
+			// The Pattern matches every FROM and every `COPY --from=`. The
+			// pinning judgement itself lives in scanFile's per-line
+			// suppression channel (dockerfileRefIsPinned), because it needs
+			// the whole file's stage aliases and because RE2 has no negative
+			// lookahead to express "an image ref containing no @digest".
+			// Exempt there, each a genuine non-finding: a stage alias
+			// (`FROM base AS production`, `COPY --from=builder`), a digest
+			// pin, `FROM scratch`, a build-arg reference (`${BASE_IMAGE}`),
+			// and a numeric stage index (`COPY --from=0`).
+			Pattern: regexp.MustCompile(`(?i)^\s*(?:FROM\s+\S|COPY\s+(?:--\S+\s+)*--from=)`),
+			Applies: IsDockerfile,
+			Fix:     "Pin the base image by digest: `FROM python:3.14-slim@sha256:…`. Keep the tag alongside it for readability — the digest is what makes the build reproducible, and a tool like Renovate or Dependabot can bump both together.",
 		},
 		// ----- k8s YAML -----
 		{

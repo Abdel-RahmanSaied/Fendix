@@ -218,6 +218,42 @@ func underSkipDir(root, abs string) bool {
 	return false
 }
 
+// dockerfileUserRe matches a `USER <name>` directive. Package-level because
+// dockerfileHasUSER used to compile it INSIDE its per-line loop — a recompile
+// for every line of every Dockerfile scanned.
+var dockerfileUserRe = regexp.MustCompile(`^USER\s+\S`)
+
+// dockerfileFromRe parses a Dockerfile FROM instruction:
+//
+//	group 1 = leading BuildKit flags (--platform=…, --chmod=…), if any
+//	group 2 = the image reference OR the stage alias being referenced
+//	group 3 = the `AS <alias>` name, empty when the stage is unnamed
+//
+// Case-insensitive on both FROM and AS: Dockerfile keywords are
+// case-insensitive and the builder lower-cases stage names. Deliberately NOT
+// anchored at the end, so a trailing `# comment` does not defeat the parse.
+//
+// This is intentionally MORE permissive than IAC_DOCKER_LATEST_TAG's detection
+// pattern, which is `$`-anchored and requires an upper-case `AS`. A pre-pass
+// that shared the detection pattern's blind spots would fail to register an
+// alias declared with a lower-case `as` or a `--platform=` flag, and the false
+// positive it exists to kill would survive on exactly those files.
+var dockerfileFromRe = regexp.MustCompile(`(?i)^\s*FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?`)
+
+// dockerfileCopyFromRe extracts the source of a `COPY --from=<ref>`. The ref
+// is either a stage alias, a numeric stage index, or an external image.
+var dockerfileCopyFromRe = regexp.MustCompile(`(?i)^\s*COPY\s+(?:--\S+\s+)*--from=(\S+)`)
+
+// dockerfileDigestRe matches a content-addressable image pin —
+// `@sha256:<64 hex>` and, generically, any `@<algo>:<hex>` form. A digest is
+// the ONLY thing that makes a base image reproducible: a tag, however
+// specific-looking, is a mutable pointer the publisher can move.
+var dockerfileDigestRe = regexp.MustCompile(`@[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z0-9]+)*:[0-9a-fA-F]{32,}`)
+
+// dockerfileNumericRe matches a bare stage INDEX (`COPY --from=0`), which
+// refers to a previous stage by position and is not an image reference.
+var dockerfileNumericRe = regexp.MustCompile(`^[0-9]+$`)
+
 // dockerfileHasUSER reports whether a Dockerfile-shaped file
 // contains a `USER` directive. Used to suppress IAC_DOCKER_RUNS_AS_ROOT
 // when the image actually drops privileges. Cheap whole-file pre-pass
@@ -235,11 +271,116 @@ func dockerfileHasUSER(path string) bool {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if regexp.MustCompile(`^USER\s+\S`).MatchString(line) {
+		if dockerfileUserRe.MatchString(line) {
 			return true
 		}
 	}
 	return false
+}
+
+// dockerfileStageAliases returns the set of LOWER-CASED stage names declared
+// by `FROM <image> AS <alias>` anywhere in the file. Dockerfile stage names
+// are case-insensitive (the builder lower-cases them), so the set is keyed
+// lower-case and callers must lower-case before lookup.
+//
+// Whole-file rather than prefix-of-file, matching the dockerfileHasUSER
+// precedent: a Dockerfile may not forward-reference a stage, so any alias in
+// the file is either already declared above the reference or the Dockerfile
+// does not build at all.
+//
+// Returns nil (not an empty map) when the file declares no aliases, so the
+// caller can skip installing the predicate entirely.
+func dockerfileStageAliases(path string) map[string]struct{} {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	var aliases map[string]struct{}
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		m := dockerfileFromRe.FindStringSubmatch(line)
+		if m == nil || m[3] == "" {
+			continue
+		}
+		if aliases == nil {
+			aliases = map[string]struct{}{}
+		}
+		aliases[strings.ToLower(m[3])] = struct{}{}
+	}
+	return aliases
+}
+
+// dockerfileLineImageRef returns the image reference a FROM or
+// `COPY --from=` line points at, and whether the line has one at all.
+//
+// For FROM it is group 2 — the token AFTER any BuildKit flag group, so
+// `FROM --platform=$BUILDPLATFORM base AS x` resolves to `base` and not to the
+// flag.
+func dockerfileLineImageRef(line string) (string, bool) {
+	if m := dockerfileFromRe.FindStringSubmatch(line); m != nil {
+		return m[2], true
+	}
+	if m := dockerfileCopyFromRe.FindStringSubmatch(line); m != nil {
+		return m[1], true
+	}
+	return "", false
+}
+
+// refIsKnownStage reports whether ref names a build stage declared in this
+// same Dockerfile.
+func refIsKnownStage(ref string, aliases map[string]struct{}) bool {
+	if len(aliases) == 0 {
+		return false
+	}
+	_, ok := aliases[strings.ToLower(ref)]
+	return ok
+}
+
+// lineRefsKnownStage reports whether this FROM / COPY --from line's SOURCE is
+// a stage declared elsewhere in the same Dockerfile (`FROM base AS production`
+// after `FROM python:3.14-slim AS base`).
+//
+// Such a line is not an image reference at all, so it cannot be pinned: it
+// inherits a base whose pinning was already judged on its own line. Flagging
+// it a second time is a pure false positive that double-counts one decision
+// and — because Deduplicate collapses the group and keeps the
+// lexicographically smallest endpoint — points the surviving finding at the
+// wrong line.
+func lineRefsKnownStage(line string, aliases map[string]struct{}) bool {
+	ref, ok := dockerfileLineImageRef(line)
+	return ok && refIsKnownStage(ref, aliases)
+}
+
+// dockerfileRefIsPinned reports whether an image reference is reproducible, or
+// is something this scanner has no business judging.
+//
+// Four exemptions, each a genuine non-finding rather than a suppression:
+//
+//   - a stage alias — judged on the line that declared it (see
+//     lineRefsKnownStage);
+//   - a `@sha256:` (or other algo) digest — the actual pin;
+//   - `scratch` — the empty base image, which has no registry entry and
+//     therefore no tag or digest to give it;
+//   - a build-arg / variable reference (`${BASE_IMAGE}`, `$BASE`) and a bare
+//     numeric stage index — the value is not knowable from the file, so any
+//     verdict would be a guess.
+func dockerfileRefIsPinned(ref string, aliases map[string]struct{}) bool {
+	if ref == "" || refIsKnownStage(ref, aliases) {
+		return true
+	}
+	if strings.EqualFold(ref, "scratch") {
+		return true
+	}
+	if strings.ContainsAny(ref, "$") || dockerfileNumericRe.MatchString(ref) {
+		return true
+	}
+	return dockerfileDigestRe.MatchString(ref)
 }
 
 // scanFile reads one file line-by-line and applies the supplied
@@ -253,12 +394,46 @@ func scanFile(rootDir, path string, rules []*Rule) ([]evidence.Evidence, error) 
 	defer f.Close()
 	rel := pathRel(rootDir, path)
 
-	// Whole-file pre-pass for rules that need context outside one
-	// line. Today: IAC_DOCKER_RUNS_AS_ROOT is suppressed when any
-	// `USER <name>` directive exists in the Dockerfile.
+	// Whole-file pre-passes for rules that need context outside one line.
+	//
+	//   IAC_DOCKER_RUNS_AS_ROOT   — off for the WHOLE FILE when any
+	//                               `USER <name>` directive exists.
+	//   IAC_DOCKER_LATEST_TAG     — off for the specific LINES whose FROM
+	//                               source is a stage declared in this file.
+	//   IAC_DOCKER_FLOATING_TAG   — on only for the lines carrying an image
+	//                               reference that is not digest-pinned.
+	//
+	// suppressRule is the whole-FILE channel; lineSuppress is the per-LINE
+	// channel. They are deliberately distinct: routing alias suppression
+	// through suppressRule would disable IAC_DOCKER_LATEST_TAG for every
+	// multi-stage Dockerfile, including one whose first stage really is
+	// `FROM golang:latest`.
+	//
+	// Both live only for this file. Rule values are shared BY POINTER across
+	// the whole walk (scanCandidate appends &rules[i] from one slice reused
+	// for every file), so per-file state must never be stored on a Rule — it
+	// would leak the first Dockerfile's alias set into every later file.
 	suppressRule := map[string]bool{}
-	if IsDockerfile(path) && dockerfileHasUSER(path) {
-		suppressRule["IAC_DOCKER_RUNS_AS_ROOT"] = true
+	lineSuppress := map[string]func(string) bool{}
+	if IsDockerfile(path) {
+		if dockerfileHasUSER(path) {
+			suppressRule["IAC_DOCKER_RUNS_AS_ROOT"] = true
+		}
+		aliases := dockerfileStageAliases(path)
+		if len(aliases) > 0 {
+			lineSuppress["IAC_DOCKER_LATEST_TAG"] = func(line string) bool {
+				return lineRefsKnownStage(line, aliases)
+			}
+		}
+		// IAC_DOCKER_FLOATING_TAG's Pattern matches every FROM and every
+		// COPY --from; the pinning judgement lives here, where the whole
+		// file's stage aliases are known. Installed unconditionally (not
+		// gated on len(aliases)) because the exemptions for scratch, build
+		// args and digests apply to single-stage files too.
+		lineSuppress["IAC_DOCKER_FLOATING_TAG"] = func(line string) bool {
+			ref, ok := dockerfileLineImageRef(line)
+			return !ok || dockerfileRefIsPinned(ref, aliases)
+		}
 	}
 
 	sc := bufio.NewScanner(f)
@@ -280,6 +455,11 @@ func scanFile(rootDir, path string, rules []*Rule) ([]evidence.Evidence, error) 
 				continue
 			}
 			if r.NegPattern != nil && r.NegPattern.MatchString(line) {
+				continue
+			}
+			// Per-line suppression runs LAST, after Pattern and NegPattern,
+			// so its cost is only paid on a line that already matched.
+			if sup := lineSuppress[r.ID]; sup != nil && sup(line) {
 				continue
 			}
 			endpoint := fmt.Sprintf("%s:%d", rel, lineNo)

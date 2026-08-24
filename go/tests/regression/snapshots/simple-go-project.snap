@@ -1,2 +1,3 @@
+iac|INFO|Dockerfile base image is not pinned to a digest
 iac|MEDIUM|Dockerfile doesn't drop privileges (no USER directive in file)
 iac|MEDIUM|Dockerfile pins to :latest (or no tag at all)

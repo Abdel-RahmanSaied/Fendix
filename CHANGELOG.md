@@ -7,7 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`IAC_DOCKER_FLOATING_TAG` — a Dockerfile base image that is not pinned to
+  a digest.** A tag is a mutable pointer: `python:3.14-slim`, `ubuntu:24.04`,
+  `node:20-alpine` and `alpine:3.19` all look specific and all silently change
+  contents when the publisher pushes a rebuild, which is how an unreviewed
+  upstream layer reaches production without a single line of the Dockerfile
+  changing. Only `@sha256:…` is content-addressable. `COPY --from=<image:tag>`
+  is covered too.
+
+  Exempt, each a genuine non-finding rather than a suppression: a build-stage
+  alias, an existing digest pin, `FROM scratch` (no registry entry, so nothing
+  to pin), a build-arg reference such as `${BASE_IMAGE}` (not knowable from the
+  file), and a numeric stage index (`COPY --from=0`).
+
+  > **Severity is INFO, deliberately.** The rule is broad by construction — it
+  > fires on nearly every real-world Dockerfile — so a gating severity would
+  > newly fail builds that were passing, on a hygiene issue whose remedy (a
+  > digest plus a bot to bump it) is a project decision rather than a defect
+  > fix. Expect a finding-count increase on any repo with Dockerfiles; expect
+  > no change to exit codes at the default `--fail-on`.
+
 ### Fixed
+
+- **Multi-stage Dockerfiles were flagged for "unpinned base image" on lines
+  that reference a build stage, not an image.** `IAC_DOCKER_LATEST_TAG` fired
+  on `FROM base AS production` and `FROM base AS development` — references to a
+  stage declared earlier in the same file, which cannot be pinned because they
+  are not image references at all. Worse, it did NOT fire on the line that
+  declares the real base image (`FROM python:3.14-slim AS base`), because a
+  floating MINOR tag is deliberately outside that rule's scope. Since
+  `Deduplicate` collapses the group and keeps the lexicographically smallest
+  endpoint, the user-visible symptom was one finding pointing at the wrong line.
+
+  A whole-file pre-pass now collects `FROM <image> AS <alias>` stage names,
+  lower-cased (Dockerfile stage names are case-insensitive), and the rule is
+  suppressed on the specific LINES whose source is one of them. `COPY --from=`
+  is covered the same way. This is a new per-LINE suppression channel, kept
+  distinct from the existing whole-FILE one on purpose: routing it through
+  `suppressRule` would have disabled the rule for every multi-stage Dockerfile,
+  including one whose first stage really is `FROM golang:latest`.
+
+  The pre-pass parses FROM more permissively than the detection pattern does —
+  case-insensitive `AS`, tolerant of `--platform=` flags and trailing comments —
+  because an alias it fails to register is a false positive that survives the
+  fix.
 
 - **Fixture-shaped credentials scored the same as real ones.**
   `FAKE_API_KEY = "08bf2e526…"`, `ghp_` followed by 36 `A`s and AWS's own
