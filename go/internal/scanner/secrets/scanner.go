@@ -12,8 +12,17 @@
 //     when --checks secrets is passed explicitly.
 //   - Same skip-dirs / file-extension gate / .env name match.
 //   - Same 1MB file-size cap and >500-char minified-JS-line skip.
-//   - Same evidence truncation (first 20 chars of the secret + "...",
-//     embedded in a 120-char window around the match).
+//
+// Evidence redaction DIVERGES from the removed Python analyzer on purpose:
+// credential material is replaced at CAPTURE time with
+// `[REDACTED len=N sha256:xxxxxxxx...]`, over the union of every pattern's
+// value spans on the line — no prefix of a secret is ever emitted, and a
+// neighbouring credential on the same line cannot ride along inside the
+// evidence window. The old behaviour (first 20 raw chars + "...") leaked half
+// of a 40-char token into every report, Jira ticket and PR comment. There is
+// no live Python counterpart to stay in parity with: python/analyzers/
+// secrets.py was deleted in TASK-115/116 and python/engine.py only prints a
+// redirect notice when `secrets` is requested. See redact.go.
 //
 // Beyond parity, matches are filtered through isReferenceOrPlaceholder so a
 // Secrets-Manager ARN / lookup key (a reference, not a credential) or a
@@ -54,8 +63,6 @@ const (
 	evidenceMaxLen = 120
 	// minifiedLineLen mirrors python _is_minified (>500 chars in .js/.ts).
 	minifiedLineLen = 500
-	// secretShowLen mirrors python _truncate_secret default (first 20 chars).
-	secretShowLen = 20
 	// fixText mirrors python finding `fix` field.
 	fixText = "Remove the hardcoded credential. Store secrets in environment variables or a secrets manager (e.g. Vault, AWS Secrets Manager). Rotate the exposed credential immediately."
 )
@@ -77,6 +84,26 @@ var scanExtensions = map[string]struct{}{
 	".conf": {}, ".config": {},
 }
 
+// valueGroup selectors — which part of a match is credential material, for
+// redaction (redact.go) and placeholder classification (placeholder.go).
+const (
+	// valueGroupAuto is the zero value, so an entry that wants it needs no
+	// field at all: credential material is the LAST capturing group when the
+	// pattern has one, else the whole match. Verified for every grouped
+	// pattern in the registry — AWS_ACCESS_KEY(1) is the key,
+	// AWS_SECRET_KEY(1) the 40-char value, GENERIC_API_KEY(1) the value,
+	// HARDCODED_PASSWORD(1) the value, HARDCODED_SECRET_CONFIG(2) the value
+	// (group 1 is the key NAME), ENV_SECRET(2) the value (group 1 the KEY).
+	valueGroupAuto = 0
+	// valueGroupNone: the match is a constant SIGNATURE, not credential
+	// material. Keep it verbatim — redacting it destroys all triage signal
+	// and leaks nothing.
+	valueGroupNone = -1
+	// valueGroupRestOfLine: the match is a HEADER and everything after it on
+	// the same line is key material.
+	valueGroupRestOfLine = -2
+)
+
 // pattern represents one detection rule. Regex is the body of the
 // Python pattern with any (?<!...) / (?!...) stripped; leftBoundary
 // and rightBoundary (when non-nil) match a single character that, if
@@ -91,6 +118,9 @@ type pattern struct {
 	cwe           string
 	leftBoundary  *regexp.Regexp
 	rightBoundary *regexp.Regexp
+	// valueGroup selects which part of a match is credential material. Zero
+	// (valueGroupAuto) for all but the three entries that say otherwise.
+	valueGroup int
 }
 
 // boundaryAlnum matches a single [A-Za-z0-9] byte. Used as the default
@@ -141,6 +171,16 @@ var patterns = []pattern{
 		regex:    regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`),
 		severity: models.SeverityCritical,
 		cwe:      "CWE-321",
+		// The pattern matches the ~27-char ARMOUR HEADER only, so the key
+		// body is not part of the match — and in a JSON service-account file
+		// the whole PEM lives on ONE line:
+		//   "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN…"
+		// Redacting just the match there would leave the actual key sitting
+		// in the evidence window. Everything after the header on the same
+		// line is therefore treated as key material. When that span is empty
+		// (the header alone on its own line, the ordinary PEM-file shape) no
+		// marker is emitted and evidence is unchanged.
+		valueGroup: valueGroupRestOfLine,
 	},
 	{
 		id:       "GENERIC_API_KEY",
@@ -214,9 +254,14 @@ var patterns = []pattern{
 		cwe:      "CWE-798",
 	},
 	{
-		id:       "DB_CONNECTION_STRING",
-		title:    "Database connection string with credentials",
-		regex:    regexp.MustCompile(`(?i)(?:mongodb|postgresql|postgres|mysql|mssql|redis|sqlite)://[^:@\s]+:[^@\s]+@[^\s"']+`),
+		id:    "DB_CONNECTION_STRING",
+		title: "Database connection string with credentials",
+		// The capture group is around the PASSWORD segment only, so
+		// redaction keeps the scheme, user and host readable for triage and
+		// blanks just the credential. Adding a group cannot change RE2 match
+		// extents, so detection behaviour is byte-identical to the ungrouped
+		// form this replaced.
+		regex:    regexp.MustCompile(`(?i)(?:mongodb|postgresql|postgres|mysql|mssql|redis|sqlite)://[^:@\s]+:([^@\s]+)@[^\s"']+`),
 		severity: models.SeverityHigh,
 		cwe:      "CWE-214",
 	},
@@ -296,6 +341,10 @@ var patterns = []pattern{
 		regex:    regexp.MustCompile(`"type"\s*:\s*"service_account"`),
 		severity: models.SeverityCritical,
 		cwe:      "CWE-798",
+		// The match is the literal `"type": "service_account"` — a file-type
+		// signature, not a credential. Redacting it would destroy the only
+		// triage signal the finding carries and hide nothing.
+		valueGroup: valueGroupNone,
 	},
 }
 
@@ -506,28 +555,60 @@ func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 	isJSOrTS := strings.HasSuffix(name, ".js") || strings.HasSuffix(name, ".ts")
 	text := string(data)
 	lineno := 0
+	// matches holds one FindAllStringSubmatchIndex row set per active
+	// pattern for the CURRENT line. Reused across lines, and shared by the
+	// redaction pre-pass and the emit loop so each regex runs exactly once
+	// per line rather than once per consumer.
+	matches := make([][][]int, len(active))
 	for _, line := range splitLines(text) {
 		lineno++
 		if isJSOrTS && len(line) > minifiedLineLen {
 			continue
 		}
+		matched := false
+		for i := range active {
+			matches[i] = active[i].regex.FindAllStringSubmatchIndex(line, -1)
+			matched = matched || matches[i] != nil
+		}
+		if !matched {
+			continue
+		}
+
+		// One redaction pass per line, over the union of EVERY pattern's
+		// credential spans — not just the emitting pattern's own. Evidence is
+		// a window over the SOURCE LINE, so a line carrying two credentials
+		// would otherwise ship each one in the clear inside the other's
+		// window. See redact.go for the full argument.
+		//
+		// INVARIANT from here down: `line` is used ONLY for offsets, pattern
+		// matching and placeholder classification. The only string that may
+		// reach an evidence.Evidence is `redacted`.
+		spans := lineSecretSpans(line, active, matches)
+		redacted, newSpans := redactSpans(line, spans)
+
 		for i := range active {
 			pat := &active[i]
-			locs := pat.regex.FindAllStringIndex(line, -1)
-			for _, loc := range locs {
-				if !boundaryOK(line, loc[0], loc[1], pat.leftBoundary, pat.rightBoundary) {
+			for _, sub := range matches[i] {
+				if !boundaryOK(line, sub[0], sub[1], pat.leftBoundary, pat.rightBoundary) {
 					continue
 				}
-				secret := line[loc[0]:loc[1]]
+				match := line[sub[0]:sub[1]]
 				// B1/B2: drop matches that are references-not-credentials
 				// (an ARN / Secrets-Manager lookup key) or well-known
 				// placeholders (YOUR_TOKEN_HERE, example keys, changeme…).
 				// These are the two false-positive classes that previously
 				// had to be hand-suppressed per file:line in .fendix-ignore.
-				if isReferenceOrPlaceholder(line, secret) {
+				// Unchanged: it still receives the FULL match.
+				if isReferenceOrPlaceholder(line, match) {
 					continue
 				}
-				safeEvidence := truncateEvidence(strings.ReplaceAll(line, secret, truncateSecret(secret)), loc[0])
+				vStart, vEnd, hasValue := secretValueSpan(pat, line, sub)
+				value := ""
+				if hasValue {
+					value = line[vStart:vEnd]
+				}
+				aStart, aEnd := evidenceAnchor(sub[0], vStart, hasValue, spans, newSpans)
+				safeEvidence := truncateEvidenceAround(redacted, aStart, aEnd)
 				lineRef := fmt.Sprintf("%s:%d", rel, lineno)
 				lineCopy := lineRef
 				out = append(out, evidence.Evidence{
@@ -543,6 +624,14 @@ func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 					References: []string{pat.cwe},
 					Confidence: models.ConfidenceHigh,
 					Line:       &lineCopy,
+					// Deterministic fixture-credential classification. An
+					// EVIDENCE ANNOTATION, not a filter — the finding is
+					// emitted either way, at the same ID, severity and
+					// endpoint, with full (redacted) evidence. The confidence
+					// scorer turns it into one named negative delta. See
+					// placeholder.go for why this is not folded into
+					// isReferenceOrPlaceholder.
+					Placeholder: classifyPlaceholder(line, vStart, value).isPlaceholder(),
 				})
 			}
 		}
@@ -620,6 +709,12 @@ var referencePrefixes = []string{
 // "ExampleFakeKeyForTesting" via the secrets module — "EXAMPLE" appears inside
 // real leaked keys too, and over-suppressing on it produces false negatives.
 // The two AWS example keys are handled separately by the textscan NegPattern.
+//
+// Those values ARE now de-escalated, just not here: classifyPlaceholder
+// (placeholder.go) recognises them and sets Evidence.Placeholder, which costs
+// the finding confidence while leaving it reported with full evidence. That is
+// the treatment this comment says suppression could not give them — so keep
+// this regex narrow and add nothing to it.
 var placeholderRE = regexp.MustCompile(`(?i)^(?:your[_-][a-z0-9_-]*here|<[^>]+>|\$\{[^}]+\}|changeme|placeholder|redacted|x{6,})$`)
 
 // quotedValueRE extracts the first single- or double-quoted string from a
@@ -647,39 +742,6 @@ func isReferenceOrPlaceholder(line, match string) bool {
 		value = m[1]
 	}
 	return placeholderRE.MatchString(strings.TrimSpace(value))
-}
-
-// truncateSecret returns a redacted form of match for inclusion in
-// evidence: first secretShowLen chars + "..." for long values; "<4
-// chars>..." for shorter; "***" for very short values. Mirrors Python
-// _truncate_secret.
-func truncateSecret(match string) string {
-	if len(match) <= secretShowLen {
-		if len(match) > 4 {
-			return match[:4] + "..."
-		}
-		return "***"
-	}
-	return match[:secretShowLen] + "..."
-}
-
-// truncateEvidence returns a context window around matchStart, capped
-// at evidenceMaxLen chars. Mirrors Python _truncate_evidence: 20 chars
-// of context on the left, the rest of the window on the right.
-func truncateEvidence(line string, matchStart int) string {
-	start := matchStart - 20
-	if start < 0 {
-		start = 0
-	}
-	end := start + evidenceMaxLen
-	if end > len(line) {
-		end = len(line)
-	}
-	snippet := strings.TrimRight(line[start:end], " \t\r\n")
-	if len(line)-start > evidenceMaxLen {
-		return snippet + "..."
-	}
-	return snippet
 }
 
 // isEnvFile mirrors python _is_env_file: .env exactly, anything

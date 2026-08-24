@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -114,6 +115,211 @@ RUN echo hi`)
 	// First file (no tag) should be flagged; second (pinned tag) should not.
 	if len(by["IAC_DOCKER_LATEST_TAG"]) != 1 {
 		t.Errorf("IAC_DOCKER_LATEST_TAG = %d; want 1: %+v", len(by["IAC_DOCKER_LATEST_TAG"]), by["IAC_DOCKER_LATEST_TAG"])
+	}
+	// Neither file pins a digest, so the floating-tag rule fires on both —
+	// including the "pinned tag" one, which is the whole point: a tag is a
+	// mutable pointer, not a pin.
+	if len(by["IAC_DOCKER_FLOATING_TAG"]) != 2 {
+		t.Errorf("IAC_DOCKER_FLOATING_TAG = %d; want 2: %+v", len(by["IAC_DOCKER_FLOATING_TAG"]), by["IAC_DOCKER_FLOATING_TAG"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multi-stage Dockerfiles. These are the regression gate for the false
+// positive where `FROM base AS production` — a reference to a stage declared
+// in the same file, which cannot be pinned because it is not an image — was
+// reported as an unpinned base image.
+// ---------------------------------------------------------------------------
+
+// TestIaCRules_MultiStageAliasIsNotUnpinned uses the exact shape of a real
+// multi-stage Dockerfile. Before the alias pre-pass this produced TWO
+// IAC_DOCKER_LATEST_TAG findings, both on alias-referencing lines, and none on
+// the line that actually declares the base image — so after Deduplicate (which
+// keeps the lexicographically smallest endpoint) the user saw one finding
+// pointing at the wrong line.
+func TestIaCRules_MultiStageAliasIsNotUnpinned(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", `FROM python:3.14-slim AS base
+WORKDIR /app
+
+FROM base AS production
+CMD ["gunicorn"]
+
+FROM base AS development
+CMD ["runserver"]`)
+
+	got, _ := Scan(dir, IaCRules())
+	by := findingsByID(got)
+
+	// Zero, not one. `FROM python:3.14-slim AS base` does not match
+	// IAC_DOCKER_LATEST_TAG's pattern at all — a floating MINOR tag is
+	// deliberately out of that rule's scope — so the only lines it ever
+	// matched here were the two alias references.
+	if n := len(by["IAC_DOCKER_LATEST_TAG"]); n != 0 {
+		t.Errorf("IAC_DOCKER_LATEST_TAG = %d; want 0 (alias references are not image refs): %+v", n, by["IAC_DOCKER_LATEST_TAG"])
+	}
+
+	// The floating-tag rule is what makes line 1 fire, and it must fire
+	// exactly once — on the real base image, not on the two aliases.
+	fl := by["IAC_DOCKER_FLOATING_TAG"]
+	if len(fl) != 1 {
+		t.Fatalf("IAC_DOCKER_FLOATING_TAG = %d; want 1: %+v", len(fl), fl)
+	}
+	if !strings.HasSuffix(fl[0].Endpoint, "Dockerfile:1") {
+		t.Errorf("floating-tag finding at %q; want Dockerfile:1", fl[0].Endpoint)
+	}
+}
+
+// TestIaCRules_StageAliasMatchIsCaseInsensitive pins the case rule: Dockerfile
+// stage names are case-insensitive (the builder lower-cases them), so the
+// pre-pass must lower-case both the declaration and the reference — even
+// though IAC_DOCKER_LATEST_TAG's own detection pattern requires an upper-case
+// `AS` and would not have seen the `as` declaration at all.
+func TestIaCRules_StageAliasMatchIsCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", `FROM alpine:3.19 AS Builder
+FROM builder AS Final
+FROM BUILDER as ship
+COPY --from=Builder /out /out`)
+
+	got, _ := Scan(dir, IaCRules())
+	by := findingsByID(got)
+	if n := len(by["IAC_DOCKER_LATEST_TAG"]); n != 0 {
+		t.Errorf("IAC_DOCKER_LATEST_TAG = %d; want 0: %+v", n, by["IAC_DOCKER_LATEST_TAG"])
+	}
+	fl := by["IAC_DOCKER_FLOATING_TAG"]
+	if len(fl) != 1 {
+		t.Fatalf("IAC_DOCKER_FLOATING_TAG = %d; want 1 (only alpine:3.19): %+v", len(fl), fl)
+	}
+	if !strings.HasSuffix(fl[0].Endpoint, "Dockerfile:1") {
+		t.Errorf("floating-tag finding at %q; want Dockerfile:1", fl[0].Endpoint)
+	}
+}
+
+// TestIaCRules_AliasSuppressionKeepsRealUnpinnedFROM is the Rule 3 guard: the
+// per-line channel must never blanket-disable the rule for the file the way
+// the whole-file suppressRule channel does.
+func TestIaCRules_AliasSuppressionKeepsRealUnpinnedFROM(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", `FROM golang:latest AS build
+RUN go build ./...
+FROM build AS run
+CMD ["/app"]`)
+
+	got, _ := Scan(dir, IaCRules())
+	by := findingsByID(got)
+	lt := by["IAC_DOCKER_LATEST_TAG"]
+	if len(lt) != 1 {
+		t.Fatalf("IAC_DOCKER_LATEST_TAG = %d; want exactly 1: %+v", len(lt), lt)
+	}
+	if !strings.HasSuffix(lt[0].Endpoint, "Dockerfile:1") {
+		t.Errorf("latest-tag finding at %q; want Dockerfile:1 (the :latest line)", lt[0].Endpoint)
+	}
+}
+
+// TestIaCRules_FloatingTagExemptions covers every non-finding the pinning
+// judgement recognises. Each row is a genuine "there is nothing to pin here",
+// not a suppression of a real issue.
+func TestIaCRules_FloatingTagExemptions(t *testing.T) {
+	const digest = "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"digest pin", "FROM python:3.14-slim" + digest + "\nRUN echo hi", 0},
+		{"digest pin without a tag", "FROM python" + digest, 0},
+		{"scratch has no registry entry", "FROM scratch\nCOPY app /app", 0},
+		{"build-arg reference is unknowable", "ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi", 0},
+		{"bare build-arg reference", "FROM $BASE\nRUN echo hi", 0},
+		{"numeric stage index", "FROM alpine" + digest + " AS b\nCOPY --from=0 /a /b", 0},
+		{"copy from an external image is NOT exempt", "FROM alpine" + digest + "\nCOPY --from=busybox:1.36 /bin/sh /bin/sh", 1},
+		{"floating minor tag", "FROM ubuntu:24.04\nRUN echo hi", 1},
+		{"floating alpine tag", "FROM node:20-alpine\nRUN echo hi", 1},
+		{"buildkit platform flag does not hide the ref", "FROM --platform=$BUILDPLATFORM alpine:3.19\nRUN echo hi", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "Dockerfile", c.body)
+			got, _ := Scan(dir, IaCRules())
+			by := findingsByID(got)
+			if n := len(by["IAC_DOCKER_FLOATING_TAG"]); n != c.want {
+				t.Errorf("IAC_DOCKER_FLOATING_TAG = %d; want %d for:\n%s\n%+v", n, c.want, c.body, by["IAC_DOCKER_FLOATING_TAG"])
+			}
+		})
+	}
+}
+
+// TestIaCRules_FloatingTagIsInformational pins the severity trade recorded on
+// the rule: it is broad enough to fire on nearly every real Dockerfile, so it
+// must not be able to newly gate a build.
+func TestIaCRules_FloatingTagIsInformational(t *testing.T) {
+	for _, r := range IaCRules() {
+		if r.ID != "IAC_DOCKER_FLOATING_TAG" {
+			continue
+		}
+		if r.Severity != models.SeverityInfo {
+			t.Errorf("severity = %q; want INFO — a rule this broad must inform, not gate", r.Severity)
+		}
+		return
+	}
+	t.Fatal("IAC_DOCKER_FLOATING_TAG is not in IaCRules()")
+}
+
+// TestDockerfileStageAliases is the unit test on the pre-pass itself. It has
+// to tolerate every FROM shape the DETECTION pattern cannot see — a lower-case
+// `as`, a BuildKit flag, a trailing comment — because an alias it fails to
+// register is a false positive that survives the fix.
+func TestDockerfileStageAliases(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", `FROM alpine:3.19 AS a
+FROM alpine:3.19 as b
+FROM --platform=$BUILDPLATFORM alpine:3.19 AS c
+FROM alpine:3.19 AS d # trailing comment
+#FROM alpine:3.19 AS e
+FROM alpine:3.19`)
+
+	got := dockerfileStageAliases(filepath.Join(dir, "Dockerfile"))
+	want := map[string]struct{}{"a": {}, "b": {}, "c": {}, "d": {}}
+	if len(got) != len(want) {
+		t.Fatalf("aliases = %v; want %v", got, want)
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("missing alias %q; got %v", k, got)
+		}
+	}
+
+	// nil, not an empty map — the caller's len(...)>0 guard skips installing
+	// the predicate entirely, so this distinction is load-bearing for cost.
+	writeFile(t, dir, "Dockerfile.single", "FROM alpine:3.19\nRUN echo hi")
+	if got := dockerfileStageAliases(filepath.Join(dir, "Dockerfile.single")); got != nil {
+		t.Errorf("alias-free Dockerfile returned %v; want nil", got)
+	}
+}
+
+// TestDockerfileAliasStateDoesNotLeakAcrossFiles guards the pointer-sharing
+// trap: scanCandidate hands every file POINTERS INTO ONE shared rules slice,
+// so per-file state kept on a Rule would leak the first Dockerfile's aliases
+// into every later one. Here `build` is an alias only in the first file; in
+// the second it is a genuine unpinned image name and must still be reported.
+func TestDockerfileAliasStateDoesNotLeakAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile", "FROM golang:1.22 AS build\nFROM build AS run")
+	writeFile(t, dir, "Dockerfile.other", "FROM build\nRUN echo hi")
+
+	got, _ := Scan(dir, IaCRules())
+	by := findingsByID(got)
+	var other int
+	for _, f := range by["IAC_DOCKER_LATEST_TAG"] {
+		if strings.Contains(f.Endpoint, "Dockerfile.other") {
+			other++
+		}
+	}
+	if other != 1 {
+		t.Errorf("Dockerfile.other IAC_DOCKER_LATEST_TAG = %d; want 1 — alias state leaked across files: %+v",
+			other, by["IAC_DOCKER_LATEST_TAG"])
 	}
 }
 

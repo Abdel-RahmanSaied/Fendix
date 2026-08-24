@@ -126,6 +126,54 @@ func TestParseFindings_HappyPath(t *testing.T) {
 	}
 }
 
+// TestParseFindings_GitRangeNeverReachesTheFixLine is the govulncheck half
+// of FIX-06. vuln.go.dev emits SEMVER in practice, so this shape is not
+// what is breaking today — but the fix line is a promise ("upgrade to
+// this") and a commit SHA cannot keep it. The GIT filter must hold here
+// too, or the one path that DOES start emitting GIT ranges regresses
+// silently.
+//
+// Note what is deliberately NOT changed: the finding ID stays
+// SEC-DEPS-GO-GO_2023_1234 even though the record carries a CVE alias.
+// FIX-05's canonical-ID rule is confined to pip/npm — govulncheck emits
+// exactly one GO-* record per vulnerability (parseFindings already keys
+// by ID), so the duplicate-record bug class does not occur here, and the
+// ID shape is locked by a cross-language parity test in
+// python/tests/test_deps.py.
+func TestParseFindings_GitRangeNeverReachesTheFixLine(t *testing.T) {
+	const sha = "8f1d2c3b4a59607e6c1f0dd0d2a1b9e77c3d4a51"
+	stdout := `{"osv": {
+		"id": "GO-2023-1234",
+		"summary": "RCE in example.com/bad",
+		"aliases": ["CVE-2023-9999"],
+		"affected": [{"ranges": [
+			{"type": "GIT", "events": [{"introduced": "0"}, {"fixed": "` + sha + `"}]},
+			{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.2.3"}]}
+		]}]
+	}}
+	{"finding": {
+		"osv": "GO-2023-1234",
+		"trace": [{"module": "example.com/bad", "package": "bad", "function": "Bad"}]
+	}}`
+	findings, err := parseFindings([]byte(stdout), "mymod")
+	if err != nil {
+		t.Fatalf("parseFindings: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if strings.Contains(f.Fix, sha) {
+		t.Errorf("a commit SHA reached the upgrade message: %s", f.Fix)
+	}
+	if !strings.Contains(f.Fix, "1.2.3") {
+		t.Errorf("fix line should name the SEMVER version: %s", f.Fix)
+	}
+	if f.ID != "SEC-DEPS-GO-GO_2023_1234" {
+		t.Errorf("govulncheck ID shape must not adopt FIX-05's canonical-ID rule: %s", f.ID)
+	}
+}
+
 func TestParseFindings_NoFixVersion_EmitsPlaceholder(t *testing.T) {
 	stdout := `{"osv": {"id": "GO-2023-0003", "summary": "No fix available"}}
 {"finding": {"osv": "GO-2023-0003", "trace": [{"function": "F"}]}}`

@@ -44,6 +44,7 @@ etc.) record when a field first appeared, not a support commitment.
 
 ```json
 {
+  "schema_version":    1,
   "target":            "https://api.example.com",
   "started_at":        "2026-04-29T10:00:00Z",
   "duration":          "12.5s",
@@ -64,6 +65,7 @@ etc.) record when a field first appeared, not a support commitment.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `schema_version` | integer | effectively yes | Version of this report contract. `RenderJSON` stamps it on **every** report it writes (overwriting whatever the caller set), so any report a current build produces carries it. It stays out of `schema.json`'s `required` set so pre-v1.2.2 archived reports still validate: those omit the key, and an absent key means "pre-versioned", **not** invalid. A consumer that does not recognise the value should warn, not fail — `ParseJSONReport` accepts any value, including 0 and unknown future ones. Bumped only for a change consumers must react to; purely additive keys do not bump it. |
 | `target` | string | yes | The `--url` value, or empty string for `--code`-only scans. |
 | `started_at` | string (RFC 3339 timestamp) | yes | When the scan started. |
 | `duration` | string (Go-formatted duration, e.g. `"12.5s"`) | yes | Wall-clock duration of the scan. |
@@ -145,7 +147,7 @@ entry rather than inferring coverage from `total`.
 | `route` | object | no | HTTP route binding `{method, pattern, handler, file, line}` (Proven Path v1). |
 | `route_confirmed` | boolean | no | A live blackbox scan hit the finding's `route.pattern`. |
 | `proven_path` | boolean | no | `route_confirmed` AND `reachable` — DAST hit + SAST taint path + exact route. |
-| `status` | string enum | no | **v0.24** decision verdict: `BLOCK`, `WARN`, `INFO`. |
+| `status` | string enum | no | **v0.24** decision verdict: `BLOCK`, `WARN`, `INFO`. Since v1.2.2 `BLOCK` additionally requires the confidence band to support the claim — see the decision-summary section below. |
 | `confidence_score` | integer (0–100) | no | **v0.24** deterministic confidence score (see Confidence Engine). |
 | `confidence_band` | string enum | no | **v0.24** score-derived band `HIGH`/`MEDIUM`/`LOW`. Distinct from `confidence` (the scanner/correlator enum, unchanged for back-compat). |
 | `confidence_reasons` | array of string | no | **v0.24** plain-text, per-rule breakdown of the score (no black boxes). |
@@ -153,12 +155,23 @@ entry rather than inferring coverage from `total`.
 ### Decision summary & confidence (v0.24)
 
 `decisions` reduces the finding list to "what needs action": `blocking`
-(status `BLOCK` — at/above `--fail-on`, the build-failing set), `warning`,
-`informational`, and `confirmed` (HIGH-confidence, the v0.23 score axis — kept
-distinct from `sources.correlated`). Per-finding `status` + `confidence_*`
-mirror this. The score is deterministic and rule-based (no AI); see
-`internal/confidence`. All v0.24 fields are additive/optional — existing
-consumers are unaffected (minor-release additive policy above).
+(status `BLOCK` — the build-failing set), `warning`, `informational`, and
+`confirmed` (HIGH-confidence, the v0.23 score axis — kept distinct from
+`sources.correlated`). Per-finding `status` + `confidence_*` mirror this. The
+score is deterministic and rule-based (no AI); see `internal/confidence`. All
+v0.24 fields are additive/optional — existing consumers are unaffected
+(minor-release additive policy above).
+
+**`BLOCK` is not "severity ≥ `--fail-on`" as of v1.2.2.** Meeting the threshold
+is necessary but no longer sufficient: under the default `--enforce-confidence`
+a finding also needs its band to support the claim — HIGH always blocks, MEDIUM
+blocks only with at least one corroborating signal, LOW never blocks — and a
+finding the correlator marked unconfirmed-by-live-scan never blocks
+uncorroborated. `--enforce-confidence=false` restores the severity-only mapping.
+`confidence_reasons` carries a `+0` line naming the reason whenever a
+threshold-crossing finding was held at WARN, so the demotion is always
+attributable from the report alone. See CHANGELOG `[Unreleased]` for the full
+rule table.
 
 **SARIF level note:** as of v0.24 the SARIF result `level` follows the
 decision verdict (`BLOCK`→`error`, `WARN`→`warning`, `INFO`→`note`), not raw
@@ -188,6 +201,15 @@ The suffix is appended to a whitebox finding's `evidence` only when:
 
 Source-only findings (e.g. a hardcoded secret at `src/config.py:14`) never
 receive the suffix because a live scan cannot observe source files.
+
+As of v1.2.2 the suffix has an internal machine-readable counterpart
+(`evidence.Evidence.UnconfirmedByLiveScan`) produced at the same moment by the
+same code, which the decision layer reads: a finding carrying it cannot reach
+status `BLOCK` under the default policy unless a corroborating signal is also
+present. **No new JSON field is added** — the public `Finding` shape is
+unchanged and the suffix text is byte-identical — so consumers that parse the
+prose suffix keep working exactly as before. The marker exists so that
+enforcement gates on structure instead of on a published string.
 
 ---
 

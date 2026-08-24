@@ -26,11 +26,20 @@ import (
 // field for.
 //
 // INVARIANT: every Evidence-internal field the confidence scorer or the
-// decision layer reads must appear here. TestScoringProvenanceCoversEveryScoredField
-// in the confidence package is the drift guard — it scores a fully-populated
-// Evidence, then scores the same Evidence after a projection + restore
-// round-trip, and fails if the two disagree. Add a scored field to Evidence
-// without adding it here and that test goes red.
+// decision layer reads must appear here. Two tests in the confidence package
+// guard it together, and both are needed:
+//
+//   - TestScoringProvenanceSurvivesTheFindingProjection scores a populated
+//     Evidence, then scores it again after a projection + restore round trip,
+//     and fails if the two disagree. It catches a field that is READ by the
+//     scorer but not CARRIED here.
+//   - TestScoringProvenanceCoversEveryScoredField reflects over this struct and
+//     requires every field to be exercised by one of those fixtures. It catches
+//     the hole the first test cannot see on its own: a hand-built fixture only
+//     covers the fields it happens to populate, so a new field added to Evidence
+//     and to this struct — but to no fixture — would otherwise ship green and
+//     dead, which is exactly how payload-validated / ResponseContext / lineage
+//     became dead code.
 type ScoringProvenance struct {
 	// Payload / Response are the active-probe request and its reply; the
 	// scorer awards payloadValidated only when BOTH are present.
@@ -47,6 +56,24 @@ type ScoringProvenance struct {
 	// rule as the rest, which is what stops one test occurrence in a dedup
 	// group from de-escalating a production occurrence.
 	InTest bool
+	// DirectObservation (the confidence scorer's directObservation bonus),
+	// UnconfirmedByLiveScan (the decision layer's "needs corroboration to
+	// block" marker), Placeholder (the scorer's placeholderPenalty) and
+	// ComponentNotImported (the scorer's componentNotImported penalty) are the
+	// producer-set flags that joined InTest. All of them merge with the same
+	// "agree or drop" rule, so a dedup group earns a bonus only when EVERY
+	// occurrence earned it and is de-escalated only when EVERY occurrence
+	// deserved it.
+	//
+	// CRITICAL, and the reason they are grouped and commented together: unlike
+	// InTest, NONE of them has an endpoint-derived fallback in
+	// NewProvenanceIndex. InTest is a pure function of the endpoint, so a
+	// missed hop self-heals; these are known only to their producer, so a
+	// missed hop is permanent and silent.
+	DirectObservation     bool
+	UnconfirmedByLiveScan bool
+	Placeholder           bool
+	ComponentNotImported  bool
 }
 
 // ProvenanceIndex maps a render-stable finding identity to the scoring
@@ -86,6 +113,15 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			// models.Finding unmarshal — and keeps the rule a pure function of
 			// the endpoint, so it stays reproducible.
 			InTest: e.InTest || models.IsTestPath(e.Endpoint),
+			// No `|| derive(...)` clause for the four below, on purpose:
+			// nothing on a projected Finding can reconstruct them, so an
+			// invented fallback would be a guess rather than a recovery.
+			// ComponentNotImported in particular is a fact about the SCANNED
+			// TREE, which nothing downstream of the scanner can re-observe.
+			DirectObservation:     e.DirectObservation,
+			UnconfirmedByLiveScan: e.UnconfirmedByLiveScan,
+			Placeholder:           e.Placeholder,
+			ComponentNotImported:  e.ComponentNotImported,
 		}
 		if prev, ok := ix[k]; ok {
 			p = mergeScoringProvenance(prev, p)
@@ -135,6 +171,18 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		if !out[i].InTest {
 			out[i].InTest = p.InTest
 		}
+		if !out[i].DirectObservation {
+			out[i].DirectObservation = p.DirectObservation
+		}
+		if !out[i].UnconfirmedByLiveScan {
+			out[i].UnconfirmedByLiveScan = p.UnconfirmedByLiveScan
+		}
+		if !out[i].Placeholder {
+			out[i].Placeholder = p.Placeholder
+		}
+		if !out[i].ComponentNotImported {
+			out[i].ComponentNotImported = p.ComponentNotImported
+		}
 	}
 	return out
 }
@@ -174,6 +222,11 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		ResponseContext: agreementOr(a.ResponseContext, b.ResponseContext),
 		Lineage:         agreementOrLineage(a.Lineage, b.Lineage),
 		InTest:          agreementOrBool(a.InTest, b.InTest),
+
+		DirectObservation:     agreementOrBool(a.DirectObservation, b.DirectObservation),
+		UnconfirmedByLiveScan: agreementOrBool(a.UnconfirmedByLiveScan, b.UnconfirmedByLiveScan),
+		Placeholder:           agreementOrBool(a.Placeholder, b.Placeholder),
+		ComponentNotImported:  agreementOrBool(a.ComponentNotImported, b.ComponentNotImported),
 	}
 }
 

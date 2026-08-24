@@ -51,8 +51,9 @@ version = "3.0.0"
 		t.Fatalf("expected 1 finding (transitive jinja2), got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.ID != "SEC-DEPS-GHSA_jinja2_xss" {
-		t.Errorf("ID = %q; want SEC-DEPS-GHSA_jinja2_xss", f.ID)
+	// FIX-05 canonical id: the advisory's CVE alias wins over the GHSA id.
+	if f.ID != "SEC-DEPS-CVE_2026_2222" {
+		t.Errorf("ID = %q; want SEC-DEPS-CVE_2026_2222", f.ID)
 	}
 	// The finding must attribute the poetry.lock manifest, not requirements.txt.
 	if f.Endpoint != "poetry.lock" {

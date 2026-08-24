@@ -23,6 +23,7 @@
       "required": ["target", "started_at", "duration", "version", "mode", "endpoints_scanned", "active_probes"],
       "additionalProperties": false,
       "properties": {
+        "schema_version":    { "type": "integer", "minimum": 1 },
         "target":            { "type": "string" },
         "started_at":        { "type": "string", "format": "date-time" },
         "duration":          { "type": "string" },

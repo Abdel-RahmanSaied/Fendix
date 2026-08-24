@@ -177,7 +177,7 @@ cd go && FENDIX_SCORE_JSON=/tmp/twiscope.json \
 | `heuristic-overfire` | weak-crypto skips metadata-named ids (`a8645fb`) | md5-of-non-password FP removed |
 | `version-range-floor` | npm caret/tilde ranges → INFO (`1d0fa6d`) | SCA over-assertion demoted |
 | `fabricated-chain` | from-imported non-fs `open()` ≠ traversal (`90fb9ad`) | 8 path-traversal `open()` FPs removed |
-| `test-fixture` | test-fixture findings → INFO, via `--deescalate-tests` / `scan.deescalate_tests` (`cec1efe`, wired end-to-end in the v1.1 wiring pass) | fixture-file noise demoted |
+| `test-fixture` | test-fixture findings → INFO, and an **uncorroborated** one at or above `--fail-on` → WARN, via `--deescalate-tests` / `scan.deescalate_tests` (`cec1efe`, wired end-to-end in the v1.1 wiring pass; the BLOCK→WARN half added in v1.2.2) | fixture-file noise demoted, and it no longer gates a build |
 | `http-4xx-context` | DAST 4xx de-escalation (`a03ce63`) | DAST context noise demoted |
 | `static-asset-context` | header/CORS findings on static assets de-escalated (`a03ce63`, producer added in the v1.1 wiring pass) | DAST context noise demoted |
 | `constant-authority` | settings.\*-host SSRF suppressed (C2, corpus lock) | TwitterAPI / FileGenerator / notificationApp / health_check FPs removed |
@@ -197,6 +197,19 @@ cd go && FENDIX_SCORE_JSON=/tmp/twiscope.json \
 > per-class effects for those two rows as *now-shipped mechanisms*, not as
 > contributors to the captured measurement. Every other row was already live
 > when the baseline was taken.
+
+> **v1.2.2 enforcement correction.** Until v1.2.2 the `test-fixture` mechanism
+> only demoted WARN → INFO, so a team running `--fail-on` — precisely the
+> audience the demotion exists for — still had their build failed by fixture
+> noise. It now also demotes an uncorroborated BLOCK to WARN, and `--fail-on`
+> in general requires the confidence band to support the claim
+> (`--enforce-confidence`, default on). **The per-class effects above are
+> measured on the finding set, not on the exit code, so the numbers are
+> unchanged — but the gating consequence of the `test-fixture`,
+> `http-4xx-context` and `static-asset-context` rows is materially larger than
+> when this baseline was captured**, because a demoted band now also removes a
+> finding from the build-failing set. A precision/recall re-run is unaffected;
+> a CI-impact estimate derived from these rows is not.
 
 **Caveats (read before quoting 33.3 %):**
 

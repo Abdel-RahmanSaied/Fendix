@@ -19,6 +19,12 @@ import (
 // analytics/preference cookies are ignored outright, deletion cookies are
 // skipped, and Secure is only required over https. CWE-1004 / CWE-614 /
 // CWE-1275.
+//
+// Cookies are classified into session/auth vs CSRF double-submit token vs
+// ignore (see classifyCookie), because the HttpOnly EXPECTATION differs between
+// the first two: a session credential must be unreadable by script, a CSRF
+// token must be readable. The Secure and SameSite expectations are identical
+// for both and are checked identically.
 type cookieFlagsCheck struct{}
 
 func (cookieFlagsCheck) Name() string                        { return "cookie-flags" }
@@ -41,10 +47,34 @@ var cookieIgnoreList = []string{
 // session / auth credential cookie. A name match here flags the cookie even if
 // its value is short.
 var cookieSessionList = []string{
-	"session", "sess", "sid", "auth", "token", "jwt", "csrf", "xsrf",
+	"session", "sess", "sid", "auth", "token", "jwt",
 	"remember", "login", "jsessionid", "phpsessid", "asp.net_sessionid",
 	"connect.sid", "laravel_session",
 }
+
+// cookieCSRFList holds lowercase substrings of cookies that are CSRF
+// double-submit tokens. These are DELIBERATELY readable by JavaScript in the
+// Django / Rails / Angular / Laravel AJAX patterns — the client has to read the
+// token to echo it back in a header — so "missing HttpOnly" is the EXPECTED
+// configuration, not a session-credential defect.
+//
+// "csrf" and "xsrf" used to live in cookieSessionList, which is what produced
+// the mislabel this list exists to fix. They are checked BEFORE that list and
+// the ordering is load-bearing: "csrftoken" also contains "token", so a
+// session-first order silently reproduces the bug. classifyCookie's test table
+// pins it.
+var cookieCSRFList = []string{"csrf", "xsrf"}
+
+// cookieClass is what a Set-Cookie was judged to be. It exists because the
+// HttpOnly expectation differs by class while the Secure and SameSite
+// expectations do not.
+type cookieClass int
+
+const (
+	cookieClassNone    cookieClass = iota // not session-shaped, or ignore-listed → no findings
+	cookieClassSession                    // session / auth credential
+	cookieClassCSRF                       // CSRF double-submit token
+)
 
 func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) []ev.Evidence {
 	cfg := cc.Cfg
@@ -105,38 +135,79 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		if isDeletionCookie(c) {
 			continue
 		}
-		if !isSessionShapedCookie(c) {
+		class := classifyCookie(c)
+		if class == cookieClassNone {
 			continue
 		}
 
-		// Missing HttpOnly — exposes the cookie to document.cookie / XSS theft.
+		// Missing HttpOnly. What that MEANS depends on the class, and it is the
+		// only expectation that does: a session credential must not be
+		// readable by script, while a CSRF double-submit token has to be.
 		if !c.HttpOnly {
-			emit(c.Name, "httponly", ev.Evidence{
-				Title:      "Session cookie missing HttpOnly flag",
-				Severity:   models.SeverityMedium,
-				Source:     models.SourceBlackbox,
-				Category:   "cookie",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Set-Cookie %q has no HttpOnly attribute", c.Name),
-				Fix:        fmt.Sprintf("Set the HttpOnly attribute on the %q cookie so client-side script cannot read it.", c.Name),
-				References: []string{"CWE-1004"},
-				Confidence: models.ConfidenceHigh,
-			})
+			if class == cookieClassCSRF {
+				// Rule 3: the observation is preserved and de-escalated, never
+				// suppressed. Reporting it as a session-credential defect was a
+				// mislabel, not a false positive — the cookie really is
+				// readable by document.cookie, and a reader still wants to see
+				// that and confirm the name is not misleading them.
+				//
+				// The title keeps the substring "HttpOnly" deliberately: it is
+				// the observation being reported, and the DVWA corpus matches
+				// its expected cookie finding on that substring in the title.
+				emit(c.Name, "csrf-httponly", ev.Evidence{
+					Title:             "CSRF cookie readable by JavaScript (no HttpOnly) — expected for double-submit patterns (Django/Rails AJAX); verify this is intentional",
+					Severity:          models.SeverityInfo,
+					Source:            models.SourceBlackbox,
+					Category:          "cookie",
+					Endpoint:          epLabel,
+					Evidence:          fmt.Sprintf("Set-Cookie %q has no HttpOnly attribute (CSRF double-submit token)", c.Name),
+					Fix:               fmt.Sprintf("No action needed if %q is a CSRF double-submit token your JS client reads. If it is NOT, set HttpOnly and rename it so it is not mistaken for one.", c.Name),
+					References:        []string{"CWE-1004"},
+					Confidence:        models.ConfidenceHigh,
+					DirectObservation: true,
+				})
+			} else {
+				// Exposes the cookie to document.cookie / XSS theft.
+				emit(c.Name, "httponly", ev.Evidence{
+					Title:             "Session cookie missing HttpOnly flag",
+					Severity:          models.SeverityMedium,
+					Source:            models.SourceBlackbox,
+					Category:          "cookie",
+					Endpoint:          epLabel,
+					Evidence:          fmt.Sprintf("Set-Cookie %q has no HttpOnly attribute", c.Name),
+					Fix:               fmt.Sprintf("Set the HttpOnly attribute on the %q cookie so client-side script cannot read it.", c.Name),
+					References:        []string{"CWE-1004"},
+					Confidence:        models.ConfidenceHigh,
+					DirectObservation: true,
+				})
+			}
 		}
 
 		// Missing Secure — only meaningful over https (Secure is a no-op /
 		// not assertable on plain http responses).
+		//
+		// REACHABLE FOR BOTH CLASSES, on purpose. A CSRF token has to be
+		// readable by script, but it does NOT have to travel in the clear, and
+		// SameSite=None on one is a real CSRF-permissive setting. Neither
+		// branch is re-titled either: models.Fingerprint hashes
+		// (Category, Endpoint, Title) and dedupKey hashes
+		// (Severity, Category, Title), so re-wording a title mints new
+		// identities and breaks every committed .fendix-ignore fingerprint rule
+		// and --baseline entry for it. The residual "Session cookie …" wording
+		// on a csrftoken is an accepted mislabel here; only the HttpOnly claim,
+		// which was actively wrong, changes.
 		if isHTTPS && !c.Secure {
 			emit(c.Name, "secure", ev.Evidence{
-				Title:      "Session cookie missing Secure flag",
-				Severity:   models.SeverityMedium,
-				Source:     models.SourceBlackbox,
-				Category:   "cookie",
-				Endpoint:   epLabel,
-				Evidence:   fmt.Sprintf("Set-Cookie %q has no Secure attribute over HTTPS", c.Name),
-				Fix:        fmt.Sprintf("Set the Secure attribute on the %q cookie so it is only sent over TLS.", c.Name),
-				References: []string{"CWE-614"},
-				Confidence: models.ConfidenceHigh,
+				Title:             "Session cookie missing Secure flag",
+				Severity:          models.SeverityMedium,
+				Source:            models.SourceBlackbox,
+				Category:          "cookie",
+				Endpoint:          epLabel,
+				Evidence:          fmt.Sprintf("Set-Cookie %q has no Secure attribute over HTTPS", c.Name),
+				Fix:               fmt.Sprintf("Set the Secure attribute on the %q cookie so it is only sent over TLS.", c.Name),
+				References:        []string{"CWE-614"},
+				Confidence:        models.ConfidenceHigh,
+				DirectObservation: true,
 			})
 		}
 
@@ -145,6 +216,13 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		// explicit/unrecognized "SameSite" with no value to SameSiteDefaultMode
 		// (which is 1 in this Go version, not 0). Treat both — plus None — as
 		// weak. Strict/Lax → no finding.
+		//
+		// Deliberately NOT a DirectObservation: the sentence above is the
+		// reason. The scanner cannot distinguish an absent attribute from an
+		// unrecognized one, so the claim is an inference about which of two
+		// parses happened — which is also why this finding already carries
+		// ConfidenceMedium while HttpOnly and Secure (plain boolean reads of
+		// the parsed Set-Cookie) carry ConfidenceHigh.
 		if c.SameSite == 0 || c.SameSite == http.SameSiteDefaultMode || c.SameSite == http.SameSiteNoneMode {
 			severity := models.SeverityLow
 			detail := "no SameSite attribute (or an unrecognized value)"
@@ -186,30 +264,49 @@ func isDeletionCookie(c *http.Cookie) bool {
 	return false
 }
 
-// isSessionShapedCookie classifies whether a cookie looks like a session/auth
-// credential worth hardening. The ignore-list (analytics/preferences) wins
-// over every heuristic.
-func isSessionShapedCookie(c *http.Cookie) bool {
+// classifyCookie decides what a cookie is: an analytics/preference cookie worth
+// no findings, a CSRF double-submit token, or a session/auth credential.
+//
+// The precedence is the whole point and each step earns its place:
+//
+//  1. the ignore-list (analytics/preferences) still WINS over every heuristic —
+//     a long opaque _ga value would otherwise trip the length rule;
+//  2. the CSRF list comes BEFORE the session list, because "csrftoken" contains
+//     "token" and a session-first order reproduces the mislabel;
+//  3. the session list;
+//  4. the length heuristic, unchanged: a long opaque value that is not a small
+//     integer is credential-shaped.
+//
+// Anything a caller wants to know beyond "is this worth checking" is carried by
+// the class, so the HttpOnly branch can be right about a CSRF token without any
+// other branch changing.
+func classifyCookie(c *http.Cookie) cookieClass {
 	name := strings.ToLower(c.Name)
 
 	for _, ig := range cookieIgnoreList {
 		if strings.Contains(name, ig) {
-			return false
+			return cookieClassNone
+		}
+	}
+
+	for _, s := range cookieCSRFList {
+		if strings.Contains(name, s) {
+			return cookieClassCSRF
 		}
 	}
 
 	for _, s := range cookieSessionList {
 		if strings.Contains(name, s) {
-			return true
+			return cookieClassSession
 		}
 	}
 
 	// Long opaque value that isn't a small integer → likely a token/session id.
 	if len(c.Value) >= 16 && !isSmallInteger(c.Value) {
-		return true
+		return cookieClassSession
 	}
 
-	return false
+	return cookieClassNone
 }
 
 // isSmallInteger reports whether v is a pure decimal integer (e.g. a unix

@@ -30,12 +30,10 @@ func legacyCheckFailOn(sevs []models.Severity, failOn string) int {
 	return 0
 }
 
-// TestExitCodeMatchesLegacyCheckFailOn is the v0.22 contract lock: for every
-// (findings, fail-on) combination, ExitCode(DecideAll(...)) must equal the
-// legacy checkFailOn result — so wiring the Decision layer in later can't
-// change the CLI exit code.
-func TestExitCodeMatchesLegacyCheckFailOn(t *testing.T) {
-	sevSets := [][]models.Severity{
+// sevSets / failOns are the exit-code cross-product shared by the legacy lock
+// and the --enforce-confidence=false contract test.
+func sevSets() [][]models.Severity {
+	return [][]models.Severity{
 		{},
 		{models.SeverityInfo},
 		{models.SeverityLow},
@@ -46,9 +44,24 @@ func TestExitCodeMatchesLegacyCheckFailOn(t *testing.T) {
 		{models.SeverityInfo, models.SeverityHigh},
 		{models.SeverityMedium, models.SeverityCritical},
 	}
-	failOns := []string{"", "MEDIUM", "HIGH", "CRITICAL", "INFO", "garbage"}
+}
 
-	for _, set := range sevSets {
+var failOns = []string{"", "MEDIUM", "HIGH", "CRITICAL", "INFO", "garbage"}
+
+// TestExitCodeMatchesLegacyCheckFailOn is the v0.22 contract lock, and since
+// v1.2.2 it guards the --enforce-confidence=false ESCAPE HATCH specifically:
+// Decide / DecideAll are the frozen legacy severity-only mapping, and for every
+// (findings, fail-on) combination ExitCode(DecideAll(...)) must still equal the
+// legacy checkFailOn result.
+//
+// Production no longer takes this path — the orchestrator calls
+// DecideAllWithOptions with the shipped policy — so this test alone no longer
+// proves the CLI's exit code. TestDecideEnforcedRuleTable and
+// TestEnforceConfidenceOffIsByteForByteLegacy cover the two live policies; note
+// in particular that ev() leaves Source empty, so every case here scores 35
+// (band LOW) and would collapse to WARN if enforcement were applied to it.
+func TestExitCodeMatchesLegacyCheckFailOn(t *testing.T) {
+	for _, set := range sevSets() {
 		for _, fo := range failOns {
 			evs := make([]evidence.Evidence, len(set))
 			for i, s := range set {
@@ -63,6 +76,10 @@ func TestExitCodeMatchesLegacyCheckFailOn(t *testing.T) {
 	}
 }
 
+// TestDecideStatus is the LEGACY (severity-only) status table: what Decide
+// returns with no Options, i.e. what --enforce-confidence=false restores. The
+// enforced table that production actually ships lives in
+// TestDecideEnforcedRuleTable.
 func TestDecideStatus(t *testing.T) {
 	cases := []struct {
 		sev    models.Severity
@@ -152,9 +169,24 @@ func TestDecideDeescalatesTestFixtureToInfo(t *testing.T) {
 	if got := DecideWithOptions(prod, "", Options{DeescalateTests: true}); got.Status != StatusWarn {
 		t.Errorf("non-test finding Status = %q, want WARN (unaffected)", got.Status)
 	}
-	// A BLOCK finding (at/above --fail-on) is NOT silently downgraded by the
-	// test-path rule — de-escalation only touches WARN/INFO.
-	if got := DecideWithOptions(ev, "HIGH", Options{DeescalateTests: true}); got.Status != StatusBlock {
-		t.Errorf("test-fixture BLOCK finding Status = %q, want BLOCK (threshold wins)", got.Status)
+	// FIX-09 (v1.2.2) INVERTED the old assertion here. Before, a BLOCK at/above
+	// --fail-on was never downgraded by the test-path rule; that made the
+	// project's largest FP class (31/35 of tasks/FP_CORPUS.md) structurally
+	// exempt from its own mitigation for exactly the teams that set a
+	// threshold. Now an UNCORROBORATED test-code BLOCK is held at WARN...
+	held := DecideWithOptions(ev, "HIGH", Options{DeescalateTests: true})
+	if held.Status != StatusWarn {
+		t.Errorf("uncorroborated test-fixture BLOCK Status = %q, want WARN", held.Status)
+	}
+	if !strings.Contains(held.Reason, "test/fixture code") || !strings.Contains(held.Reason, "corroborating") {
+		t.Errorf("reason should name both the test-fixture rule and the missing corroboration: %q", held.Reason)
+	}
+	// ...while a CORROBORATED one still gates the build. That is what keeps
+	// this a de-escalation rather than path suppression (Rule 3): a live
+	// credential a provider validated is a real leak wherever it lives.
+	corroborated := ev
+	corroborated.Reachable = true
+	if got := DecideWithOptions(corroborated, "HIGH", Options{DeescalateTests: true}); got.Status != StatusBlock {
+		t.Errorf("corroborated test-fixture finding Status = %q, want BLOCK", got.Status)
 	}
 }

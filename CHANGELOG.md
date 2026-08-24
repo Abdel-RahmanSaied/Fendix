@@ -7,6 +7,592 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-24
+
+A precision and trust release. Every change below exists because the reports
+this engine produced made claims it could not support: a file called `"None"`,
+a file called `"https"`, six findings for three vulnerabilities, an upgrade
+recommendation naming a git commit SHA, a confidence band that was arithmetically
+stuck at MEDIUM, and a build failed by a finding whose own evidence text said it
+was unconfirmed.
+
+### BREAKING
+
+Read this before upgrading a CI pipeline.
+
+- **`--fail-on` now consults confidence, not severity alone.** A finding at or
+  above the threshold BLOCKs only when the deterministic confidence band
+  supports the claim: HIGH blocks; MEDIUM blocks only with at least one
+  corroborating signal; LOW warns. A finding the correlator marked unconfirmed
+  by live scan does not block without corroboration, regardless of band.
+
+  **Builds that used to fail may now pass.** That is the point — an
+  uncorroborated finding failing a build is the incoherence this release
+  removes — but it is a behaviour change on the default path, so it gets a
+  major version.
+
+  `--enforce-confidence=false` restores the previous severity-only mapping
+  byte-for-byte. That is not a promise: `TestExitCodeMatchesLegacyCheckFailOn`
+  locks all 54 severity/threshold combinations against the frozen legacy
+  implementation, which is retained solely to be that oracle.
+
+  Real credentials in production code still block. A deterministic pattern
+  match in non-test source scores into HIGH on its own, so a hardcoded AWS or
+  Stripe key still exits 1 on a code-only scan. Fixture-shaped values do not.
+
+- **An uncorroborated BLOCK in test code is demoted to WARN.** Previously
+  `--deescalate-tests` only moved WARN→INFO, so it could never reach the
+  project's own largest false-positive class (test fixtures are 31 of 35 FPs in
+  the corpus), whose findings are HIGH/CRITICAL and therefore always took the
+  BLOCK path. A corroborated finding in test code — a provider-validated live
+  credential — still blocks.
+
+- **Dependency finding identity changed.** Alias-linked OSV records are merged
+  into one finding per vulnerability and named after the canonical id
+  (`CVE-*` > `GHSA-*` > `PYSEC-*` > other), so `SEC-DEPS-PYSEC_2026_3552`
+  becomes `SEC-DEPS-CVE_2026_69247`. Because `models.Fingerprint` and the dedup
+  key both hash the title, **saved `--baseline` files and `fingerprint:` rules
+  in `.fendix-ignore` that pin a dependency finding stop matching** and must be
+  regenerated. `fendix verify` was taught to match on `References` as well as
+  the id, so re-verifying a pre-2.0 report does not report a still-installed
+  vulnerability as resolved.
+
+- **The CSRF cookie finding was retitled.** A `csrftoken` / `XSRF-TOKEN` /
+  `_csrf` cookie without `HttpOnly` is no longer reported as a session cookie
+  issue — it is an INFO finding describing the double-submit pattern. Same
+  fingerprint caveat as above for those findings.
+
+- **Base images that are not digest-pinned are now flagged** at INFO
+  (`python:3.14-slim`, `ubuntu:24.04`, `node:20-alpine`). This adds roughly one
+  finding per Dockerfile. It does not gate a build at that severity.
+
+### Added
+
+- **`metadata.schema_version` — the JSON report now says which contract it is.**
+  `fendix scan --format json` and `fendix report --format json` stamp
+  `"schema_version": 1` into the metadata block of every report they write.
+  Until now a consumer had to infer the shape from which optional keys
+  happened to be present, which cannot distinguish "this build does not emit
+  `decisions`" from "this scan produced none" — and gave a downstream
+  integration nothing to warn on when it is handed a report from a newer
+  engine than it was written against.
+
+  Additive and backward compatible, in both directions:
+
+  - **Older reports keep parsing.** `reporters.ParseJSONReport` rejects a
+    document only when `metadata.version` AND `metadata.mode` are both empty.
+    `schema_version` is deliberately NOT part of that check: an archived
+    report omits the key, decodes to `0`, and is still accepted. `0` means
+    "pre-versioned", never "invalid".
+  - **Newer reports keep parsing too.** An unrecognised value is not a parse
+    error — the reader stays permissive and leaves "I don't know this
+    contract" to the consumer that has to act on it.
+  - `docs/schema.json` lists the key under `properties` (it must —
+    `additionalProperties` is `false`) but deliberately NOT under `required`,
+    the same treatment `decisions` gets, so pre-v1.2.2 archived reports still
+    validate.
+
+  The writer stamps the value rather than propagating it, so
+  `fendix report --input old.json --format json` labels its output with the
+  build that actually wrote the bytes. Version `1` describes today's shape;
+  it is bumped only for a change a consumer must react to — a purely
+  additive key does not bump it, because a reader that ignores an unknown
+  key still reads a v1 report correctly.
+
+- **SARIF results now carry a stable identity, a GitHub ranking score, and an
+  analysis category.** Three separate gaps that each cost something concrete on
+  the `fendix report --format sarif` → GitHub code-scanning path the GitHub App
+  already uses:
+
+  - `result.partialFingerprints["fendix/v1"]` (SARIF §3.27.16), sourced from
+    `Finding.Fingerprint` — the same `sha1(Category|Endpoint|Title)` token that
+    `.fendix-ignore` fingerprint rules pin to. Without it a consumer identifies
+    an alert by file and line, so a re-ordered scan closes and reopens every
+    alert. Per DECISIONS.md D4 the key is emitted ONLY when a real
+    engine-scheme fingerprint is present: one producer, one meaning. A finding
+    without one gets no key rather than an invented value, and a pre-fingerprint
+    report stays byte-identical.
+
+  - `rule.properties["security-severity"]` — the CVSS-style score GitHub ranks
+    alerts by, as a string: CRITICAL 9.5, HIGH 8.0, MEDIUM 5.5, LOW 3.0,
+    INFO 1.0, one per GitHub bucket. Without it GitHub files every Fendix alert
+    as "medium" no matter what level it carries. Working rule 8: it is a pure
+    function of SEVERITY and never of confidence.
+
+  - `run.automationDetails.id` = `"fendix/scan"` (SARIF §3.14.3 → §3.17), on the
+    RUN object. GitHub reads the id as the analysis "category"; two tools
+    uploading SARIF for the same commit without distinct ids overwrite each
+    other's alerts. Emitted on zero-findings runs too, otherwise a clean upload
+    cannot clear the previous run's alerts for the category. Treat the value as
+    a one-way door — changing it re-partitions existing alerts.
+
+- **`IAC_DOCKER_FLOATING_TAG` — a Dockerfile base image that is not pinned to
+  a digest.** A tag is a mutable pointer: `python:3.14-slim`, `ubuntu:24.04`,
+  `node:20-alpine` and `alpine:3.19` all look specific and all silently change
+  contents when the publisher pushes a rebuild, which is how an unreviewed
+  upstream layer reaches production without a single line of the Dockerfile
+  changing. Only `@sha256:…` is content-addressable. `COPY --from=<image:tag>`
+  is covered too.
+
+  Exempt, each a genuine non-finding rather than a suppression: a build-stage
+  alias, an existing digest pin, `FROM scratch` (no registry entry, so nothing
+  to pin), a build-arg reference such as `${BASE_IMAGE}` (not knowable from the
+  file), and a numeric stage index (`COPY --from=0`).
+
+  > **Severity is INFO, deliberately.** The rule is broad by construction — it
+  > fires on nearly every real-world Dockerfile — so a gating severity would
+  > newly fail builds that were passing, on a hygiene issue whose remedy (a
+  > digest plus a bot to bump it) is a project decision rather than a defect
+  > fix. Expect a finding-count increase on any repo with Dockerfiles; expect
+  > no change to exit codes at the default `--fail-on`.
+
+### Fixed
+
+- **A SARIF result's message was the raw evidence — for a SAST finding, a line
+  of source code.** `result.message.text` is what GitHub renders as the PR
+  annotation, and it read `with open(path, 'w', ...) as f:` — the code, with no
+  statement of what was wrong with it. An evidence-less finding produced an
+  EMPTY message, which GitHub rejects outright.
+
+  The message is now a description: the rule name plus the location it fired
+  at — `Hardcoded secret at src/config.py:14`, `Missing CSP at GET /api/users
+  (+2 more)`. It is composed from the same branch that built `result.locations`,
+  so the two can never disagree about where the finding is, and it falls back to
+  the rule key when a finding has no title, so it is never empty.
+
+  The code line moves to `region.snippet.text` (SARIF §3.30.13), where it
+  belongs — reusing `Finding.Evidence` rather than re-reading the source file,
+  because Evidence is already the redacted/truncated string and re-reading would
+  put raw credentials into a blob the GitHub App uploads. Working rule 3: the
+  evidence is DE-ESCALATED, not deleted — it is also kept verbatim in
+  `result.properties.evidence` for every finding, including the blackbox ones
+  that have no snippet to hold it.
+
+- **A URL in a finding's `line` field became a SARIF file called `https`.**
+  `parseLine` split the value on EVERY `:` and read the last segment as the
+  line number, so `https://api.example.com/openapi.json` produced
+  `artifactLocation.uri: "https"`. With a port it was worse:
+  `https://host:8080/api/x` split into three parts, `8080` parsed as a line
+  number, and the emitter published `uri: "host"` with `startLine: 8080` — a
+  line that was never observed, in a file that does not exist. This is a live
+  path, not a hypothetical: `python/analyzers/spec_parser.py` stamps the spec
+  path into `line` at eight sites and that path may be an `https://` URL, and
+  the GitHub App re-renders the same findings as SARIF and uploads them.
+
+  Only a TRAILING `:<digits>` run is a line suffix now; anything else comes
+  back whole with line 0. That matches what the Python side already asserts
+  about the field (`test_line_field_format` does `rsplit(":", 1)` and requires
+  `parts[1].isdigit()`).
+
+  A second guard covers what the parser cannot: when the parsed path still
+  contains `://`, or is a bare scheme token left over from one, the renderer
+  takes the endpoint branch and emits a `logicalLocations` entry instead of a
+  physical location. That branch was already correct — the bug was feeding it
+  a non-empty `line` so it never ran. The guard is deliberately narrow (a
+  literal `://`, or an exact scheme token) rather than the existing
+  `uriSchemeRE`, which also matches the `C:` of a Windows drive path.
+
+  Working rule 3 holds on the fallback: a URL-shaped `line` on a finding with
+  no endpoint is de-escalated to a logical location, not dropped.
+
+  Three smaller behaviour changes fall out of the same rule and are called out
+  rather than buried: a `line` ending in a bare colon (`src/app.py:`) keeps
+  the colon in the uri where it used to lose it; a `line` that normalizes to
+  nothing (`../..`) now takes the endpoint branch instead of emitting
+  `"uri": ""`; and `file:line:col` (`src/app.py:42:10`) still yields path
+  `src/app.py:42`, exactly as before — that shape has no producer in the tree
+  and is out of this fix's scope.
+
+- **Multi-stage Dockerfiles were flagged for "unpinned base image" on lines
+  that reference a build stage, not an image.** `IAC_DOCKER_LATEST_TAG` fired
+  on `FROM base AS production` and `FROM base AS development` — references to a
+  stage declared earlier in the same file, which cannot be pinned because they
+  are not image references at all. Worse, it did NOT fire on the line that
+  declares the real base image (`FROM python:3.14-slim AS base`), because a
+  floating MINOR tag is deliberately outside that rule's scope. Since
+  `Deduplicate` collapses the group and keeps the lexicographically smallest
+  endpoint, the user-visible symptom was one finding pointing at the wrong line.
+
+  A whole-file pre-pass now collects `FROM <image> AS <alias>` stage names,
+  lower-cased (Dockerfile stage names are case-insensitive), and the rule is
+  suppressed on the specific LINES whose source is one of them. `COPY --from=`
+  is covered the same way. This is a new per-LINE suppression channel, kept
+  distinct from the existing whole-FILE one on purpose: routing it through
+  `suppressRule` would have disabled the rule for every multi-stage Dockerfile,
+  including one whose first stage really is `FROM golang:latest`.
+
+  The pre-pass parses FROM more permissively than the detection pattern does —
+  case-insensitive `AS`, tolerant of `--platform=` flags and trailing comments —
+  because an alias it fails to register is a false positive that survives the
+  fix.
+
+- **Fixture-shaped credentials scored the same as real ones.**
+  `FAKE_API_KEY = "08bf2e526…"`, `ghp_` followed by 36 `A`s and AWS's own
+  documented `AKIAIOSFODNN7EXAMPLE` were reported at exactly the confidence of
+  a live production credential, because nothing downstream of the regex looked
+  at the value or the name it was bound to.
+
+  The secrets scanner now classifies each captured value against four
+  deterministic rules — a `FAKE_`/`TEST_`/`DUMMY_`/`MOCK_`/`EXAMPLE_`/
+  `PLACEHOLDER_`/`SAMPLE_` assignment key (snake, kebab or camelCase), a
+  placeholder word inside the value, a long identical run or a single dominant
+  byte, and a value too short to be a credential — and records the verdict on
+  the evidence. The confidence scorer turns it into a named `-20` delta, and a
+  classified value no longer earns the deterministic-detection bonus, so a
+  fixture-shaped secret lands in the LOW band where a real one lands HIGH.
+
+  Per Rule 3 this is de-escalation, never suppression: the finding is still
+  emitted, at the same id, severity, endpoint and evidence. It is deliberately
+  NOT folded into the existing placeholder suppression — that path DROPS
+  matches, and "EXAMPLE" appears inside real leaked keys too.
+
+  The classifier is pure and rule-based (Rule 8): no model, no randomness, and
+  every point it costs is a reason line that reconciles with the score. The
+  boundary cases are pinned — `latest_token`, `testament`, `testing_key` and
+  `TESTING_KEY` do NOT classify as fixtures, and neither do Stripe's
+  documentation key, a 48-char OpenAI key or a database password.
+
+  > **`confidence_score` and `confidence_band` change for affected findings.**
+  > Both are serialized into JSON and SARIF. Severity, `Status` and the
+  > `confidence` enum are untouched — the decision layer keys status off
+  > severity rank alone.
+
+- **Secrets findings leaked the first 20 characters of every credential into
+  their own evidence.** `truncateSecret` kept a 20-char raw prefix of the
+  matched value, and `truncateEvidence` then framed it in a 120-char window
+  over the SOURCE LINE. `Finding.Evidence` is not an internal field: the JSON,
+  SARIF, HTML and PDF reporters print it, `internal/ghapp` posts it into GitHub
+  PR comments, and the Jira integration pastes it into a ticket body. Half of a
+  40-char token, distributed to every one of those, is a leak.
+
+  Credential material is now redacted at CAPTURE time — before an
+  `evidence.Evidence` is constructed — and replaced with
+  `[REDACTED len=N sha256:xxxxxxxx...]`. The marker is deterministic and
+  unsalted so identical values render identically (evidence bytes stay
+  reproducible and the dedup tiebreak stays stable), and it carries enough to
+  correlate two occurrences of the same credential without carrying the
+  credential. It is a fingerprint, not a security boundary: a low-entropy value
+  is still recoverable from an 8-hex-char digest by dictionary.
+
+  Redaction covers the union of EVERY pattern's value spans on the line, not
+  just the emitting pattern's own match. Two credentials on one line previously
+  each shipped the other in the clear inside its neighbour's window, and a
+  one-line PEM (the shape of a Google service-account JSON file) shipped the
+  whole key body, because `PRIVATE_KEY` matches only the armour header.
+  Retained signal is deliberate and tested: the PEM header, the connection
+  string's scheme/user/host, the `"type": "service_account"` signature and the
+  assignment's variable name all survive.
+
+  > **Evidence text changes for every secrets finding.** The strings are
+  > different, so a snapshot or golden file that pinned secrets evidence needs
+  > regenerating. `models.Fingerprint` hashes `(Category, Endpoint, Title)` and
+  > `dedupKey` hashes `(Severity, Category, Title)` — neither reads Evidence —
+  > so fingerprints, `.fendix-ignore` rules and `--baseline` entries are
+  > unaffected.
+
+- **`csrftoken` was reported as a session cookie missing HttpOnly.** `"csrf"`
+  and `"xsrf"` sat in the cookie scanner's session/auth name list and the
+  HttpOnly finding's title was hardcoded to `Session cookie missing HttpOnly
+  flag`, so Django's `csrftoken`, Angular/Laravel's `XSRF-TOKEN` and
+  Express/Rails' `_csrf` were all reported as session-credential defects at
+  MEDIUM. A CSRF double-submit token has to be readable by `document.cookie` —
+  that is how the client echoes it back in a header — so "missing HttpOnly" is
+  the expected configuration for one, not a defect.
+
+  Cookies are now classified into ignore / CSRF / session, and the CSRF list is
+  consulted BEFORE the session list because `csrftoken` also contains `token`.
+  A CSRF token without HttpOnly gets its own INFO finding that says what was
+  actually observed and asks the reader to confirm the name is not misleading
+  them. Per Rule 3 the observation is de-escalated, never suppressed: the
+  finding count is a 1-for-1 swap, and CWE-1004 is retained so a consumer
+  filtering on it still sees the observation.
+
+  The `Secure` and `SameSite` checks are unchanged and still apply to CSRF
+  cookies — a token has to be readable by script, but it does not have to
+  travel in the clear, and `SameSite=None` on one is genuinely CSRF-permissive.
+
+  > **Fingerprint churn.** `models.Fingerprint` hashes
+  > `(Category, Endpoint, Title)` and `dedupKey` hashes
+  > `(Severity, Category, Title)`, so the new title mints a new fingerprint and
+  > a new dedup group. Any committed `.fendix-ignore` `fingerprint:` rule or
+  > `--baseline` entry that suppressed `Session cookie missing HttpOnly flag`
+  > on a csrf/xsrf-named cookie STOPS MATCHING, and a `--diff` scan reports the
+  > INFO finding as new. A host that sets both a session cookie and a CSRF
+  > cookie now produces two HttpOnly-class dedup groups where it produced one.
+
+- **A dependency advisory scoped to a sub-component the project never imports
+  scored exactly like one on a code path it uses every request.** A Django
+  advisory that only touches `django.contrib.gis` is real — the vulnerable code
+  is installed — but a project that never imports GeoDjango cannot reach it, and
+  reporting both at identical confidence is what makes a dependency report
+  tiring to read rather than actionable.
+
+  A new `internal/scanner/deps/applicability` pass consults a small curated
+  catalog and, when an advisory maps to an importable component, greps the
+  scanned tree for it. If nothing imports it, the finding gains one sentence of
+  evidence saying so and a named `-10` confidence delta, which moves a typical
+  dependency finding from the HIGH band to MEDIUM.
+
+  Per Rule 3 this is de-escalation and nothing else: the finding keeps its id,
+  its severity, its endpoint, its upgrade advice and its original evidence text
+  verbatim. No path is suppressed and no finding is dropped.
+
+  Everything about it is deterministic (Rule 8). The catalog is Go literals; the
+  package tier only fires when the advisory's OWN summary names the component,
+  so it cannot mis-scope an advisory that says nothing about one; the id tier
+  ships empty because an entry there is an assertion about a specific published
+  advisory. The grep is one `WalkDir` for all advisories at once with a
+  per-language compiled alternation — a scan whose advisories are not in the
+  catalog touches the filesystem zero times — and it fails OPEN, at full
+  confidence, if the tree exceeds the file budget or the walk cannot complete.
+
+  The matchers deliberately over-match rather than under-match, because a false
+  "imported" costs nothing while a false "not imported" quietly reduces the
+  confidence of a real risk. A Python component counts as imported when its
+  dotted path appears anywhere in a `.py` file — including as a string in
+  `INSTALLED_APPS`, which is how a Django app is actually enabled. A fully
+  dynamic import (`importlib.import_module(name)`, `require(variable)`) is a
+  known blind spot, and is the reason the penalty is a modest `-10` rather than
+  something that could move a band on its own.
+
+- **Every dependency vulnerability was reported once per OSV RECORD, not once
+  per vulnerability.** OSV's `/v1/query` returns the GHSA record and each PYSEC
+  record for the same underlying bug as separate `vulns[]` entries, and the
+  scanner emitted one finding per entry. Verified against live OSV.dev:
+  `cryptography==48.0.1` returns **six** records that are **three** real
+  vulnerabilities, so the report asked the user to fix the same CVE three times
+  — the kind of inflated count that makes a whole report untrustworthy.
+
+  The pip and npm scanners now partition each `(package, version)` result set
+  into alias-connected components — union-find over `{id} ∪ aliases` — and emit
+  one finding per component. The finding is named after the **canonical** id of
+  its alias set: `CVE-*` first, then `GHSA-*`, then `PYSEC-*`, then everything
+  else, lexicographically smallest within a tier. The picker ranges over
+  ALIASES as well as top-level ids, because OSV routinely carries the CVE only
+  as an alias — in the cryptography data no record's own `id` is a CVE at all.
+  `BIT-*` is a real OSV alias prefix and ranks in the "other" tier.
+
+  Nothing is dropped (Rule 3): every merged id is preserved in `references`,
+  canonical first. Alias data is not verified upstream, so two alias-linked
+  records whose affected version ranges are provably disjoint are NOT merged —
+  they stay separate and the refusal is logged to stderr.
+
+  `govulncheck` is deliberately untouched: vuln.go.dev emits one `GO-*` record
+  per vulnerability with aliases pointing outward, so the duplicate-record
+  problem does not arise there. `python/analyzers/deps.py`'s pip-audit path
+  gets the identical canonicalisation, because `Deduplicate` collapses the
+  Go/Python overlap on `Severity|Category|Title` and a one-sided rename would
+  double-report every dependency vulnerability under `--python-engine`.
+
+  > **Fingerprint churn.** `models.Fingerprint` hashes
+  > `(Category, Endpoint, Title)` and the title now carries the canonical id,
+  > so every saved `--baseline` entry and every `.fendix-ignore`
+  > `fingerprint:` rule pinned to a dependency finding STOPS MATCHING, and a
+  > `--diff` scan reports the renamed finding as new. `fendix verify` is
+  > already handled — it matches on the whole preserved id set, so a finding
+  > recorded under the old id still resolves to its renamed twin instead of
+  > being reported as fixed.
+
+- **The batch path — the default one — emitted findings with no description
+  and no fix version.** `/v1/querybatch` answers with bare vuln ids: no
+  summary, no aliases, no affected ranges. So on the route most scans actually
+  take, every dependency finding fell back to printing the raw OSV id as its
+  description and said *"no fix listed in OSV"* even when OSV listed one.
+
+  Any package the batch reports as vulnerable is now re-fetched through the
+  per-package `/v1/query` before findings are built. The cost is one extra
+  request per VULNERABLE package — one for cryptography's six records, not six
+  — and clean packages cost nothing beyond their share of the batch. If that
+  hydration fails, the degraded record is still reported (Rule 3) with a
+  stderr warning, and is deliberately not cached.
+
+  > **Cache entries are now shape-versioned.** The OSV cache previously stored
+  > a bare array whose alias and range content depended on which code path
+  > filled it, so a single pre-upgrade batch run could serve alias-less records
+  > to every path for 24 hours. Entries written by an older fendix are now
+  > treated as a miss and re-fetched once.
+
+- **A dependency finding could tell you to "upgrade to" a git commit SHA, or
+  to jump a major version.** Two separate defects in one line of output.
+
+  `osvRange` did not decode OSV's `type` field, so a GIT range — whose `fixed`
+  event carries a commit SHA rather than a release — was indistinguishable from
+  an ECOSYSTEM one. Whichever the advisory listed first won. This is not
+  hypothetical: `pillow==9.0.0`'s advisory set carries ECOSYSTEM, SEMVER **and**
+  GIT ranges today. GIT ranges are now ignored for the upgrade message in the
+  pip, npm and govulncheck scanners; an absent `type` is still treated as
+  ECOSYSTEM, because the offline-snapshot and pip-audit adapters synthesise
+  ranges without one.
+
+  Separately, the version chosen was simply the first `fixed` event in the JSON,
+  with no reference to what the user actually has installed. An advisory that
+  patches several release branches lists one `fixed` per branch —
+  `django`'s PYSEC-2026-3717 lists `5.2.17` and `6.0.8` — so a user pinned at
+  `5.2.16` could be told to move to `6.0.8`. The rule is now two-level: WITHIN
+  one advisory, the lowest `fixed` version strictly greater than the installed
+  pin (the minimal in-branch upgrade); ACROSS the alias-merged members of one
+  finding, the maximum of those per-advisory candidates, so the printed version
+  really does fix every vulnerability the finding reports.
+
+  Ranking reuses `internal/offline`'s existing comparator (now exported as
+  `CompareVersions`) rather than growing a second one. When it cannot rank a
+  fix above the pin — it collapses PyPI pre-releases onto their release core —
+  the scanner falls back to the lowest listed fix rather than claiming "no fix
+  listed in OSV". A version is never invented: an advisory with no usable
+  `fixed` event still prints the honest no-fix sentinel.
+
+  > **Advisory freshness is bounded by a 24h cache.** OSV responses are cached
+  > per `(package, version)` under `~/.fendix/cache/osv-{pypi,npm}/` for 24
+  > hours, so an advisory published in the last day is not seen until that
+  > entry expires, and one withdrawn in the last day keeps being reported.
+  > There is no cache-bust flag — delete the directory to force a refresh.
+
+### Changed
+
+- **A deduplicated SARIF rule now takes the MAXIMUM severity of the findings
+  under it, not the first one seen.** A rule is keyed on (category, title) while
+  the engine's `dedupKey` is severity|category|title, so `Deduplicate`
+  deliberately keeps a same-check pair at two severities as two findings — and
+  `enforceConsistency` (LOW confidence caps severity at MEDIUM, MEDIUM at HIGH)
+  actively creates that split. First-wins was not deterministic in any useful
+  sense: the orchestrator sorts by Endpoint → Category → Title and never by
+  severity, so the rule's level was whichever finding had the lexicographically
+  smallest endpoint, and `fendix report --input` accepts an arbitrarily ordered
+  array anyway.
+
+  This changes `defaultConfiguration.level` for a rule that spans severities.
+  It is also required for correctness: `security-severity` has no per-result
+  equivalent, so one value serves every alert under the rule, and a rule reading
+  level "note" beside security-severity "9.5" is a defect. Per-result `level` is
+  unaffected — each result still carries its own, from the decision verdict.
+
+  Out of scope, and still first-wins: the rule's Name, Help, HelpURI, and
+  `properties.category`/`tags`/`confidence`. `properties.confidence` in
+  particular remains order-dependent on a deduplicated rule — an independent
+  reason `security-severity` must not be derived from it.
+
+- **`--fail-on` now requires the confidence band to support the claim.**
+  `decision.Decide` computed a full confidence `Result`, attached it to every
+  decision, published it as `confidence_score` / `confidence_band` /
+  `confidence_reasons` — and then set `BLOCK` purely from severity rank, never
+  reading it. The engine could therefore print `[Unconfirmed by live scan]` in a
+  finding's evidence and fail the build on that same finding, in one report.
+
+  Under the new default (`--enforce-confidence`, on), a finding at or above the
+  `--fail-on` threshold BLOCKs only when the deterministic band supports it:
+
+  | severity vs `--fail-on` | confidence band | corroborating signal | status | with `--enforce-confidence=false` |
+  | --- | --- | --- | --- | --- |
+  | at or above | HIGH | any | **BLOCK** | BLOCK |
+  | at or above | MEDIUM | ≥ 1 | **BLOCK** | BLOCK |
+  | at or above | MEDIUM | none | **WARN** | BLOCK |
+  | at or above | LOW | any | **WARN** | BLOCK |
+  | at or above | any | marked unconfirmed-by-live-scan, and uncorroborated | **WARN** | BLOCK |
+  | at or above | any | in test code, uncorroborated, `--deescalate-tests` on | **WARN** | WARN |
+  | below | — | — | WARN (≥ MEDIUM severity) | unchanged |
+  | below | — | — | INFO (< MEDIUM severity) | unchanged |
+
+  The corroborating signals, in the fixed order they are reported in: **cross-
+  engine agreement** (`source: correlated`), **live runtime observation**
+  (`source: blackbox` or `correlated` — the finding came from a probe against a
+  running target), **direct observation of a live response** (the header /
+  cookie / CORS deterministic read), **deterministic detection in production
+  code** (a high-confidence pattern match outside test and fixture code),
+  **confirmed route**, **reachable taint path**, **proven path**, and
+  **payload-validated probe**. A BLOCK's reason names the ones that justified
+  it; a WARN's reason names what was missing, and a 0-point line is added to
+  `confidence_reasons` so the published breakdown still reconciles with
+  `confidence_score`.
+
+  > **This changes the process exit code, not only the reported status.**
+  > `orchestrator.Run` returns `decision.ExitCode(decisions)`, so a CI job
+  > gating on `--fail-on` can now exit 0 where it exited 1. The largest class
+  > affected is chainless static findings: a whitebox finding scores
+  > `35 base + 10 static = 45` (MEDIUM) and, unless it is a high-confidence
+  > pattern match in production code or carries a proven taint path, nothing
+  > corroborates it — so shape-match SAST no longer gates on its own. That
+  > explicitly includes the **semgrep-shim tier**, which is excluded from the
+  > deterministic-detection bonus and lands at 40: a semgrep HIGH with no taint
+  > chain now WARNs. Pure DAST findings are unaffected (`source: blackbox` is
+  > itself a corroborating signal), and a real hardcoded credential in
+  > production code still bands HIGH and still exits 1.
+  >
+  > Two independent escape hatches, because there are two independent rules:
+  > `--enforce-confidence=false` (or `scan.enforce_confidence: false` in
+  > `.fendix.yaml`) restores the legacy severity-only gate byte-for-byte, and
+  > `--deescalate-tests=false` restores blocking on uncorroborated test-code
+  > findings. Neither implies the other.
+
+- **`--deescalate-tests` now also demotes an uncorroborated BLOCK to WARN.**
+  The rule only ever demoted `WARN → INFO`, so a team that set `--fail-on` —
+  exactly the audience the demotion exists for — got none of it. Test fixtures
+  are 31 of the 35 catalogued false positives in `tasks/FP_CORPUS.md`, and they
+  were structurally exempt from their own mitigation.
+
+  A finding in test/fixture code that meets `--fail-on` with **no** corroborating
+  signal beyond the pattern match is now held at WARN, with the reason stating
+  both the rule and the missing corroboration. A **corroborated** one — a proven
+  taint path, a provider-validated live credential — still BLOCKs, which is what
+  keeps this de-escalation rather than path suppression (Rule 3). Nothing is
+  dropped, no evidence text is touched and no score moves.
+
+  A finding that crossed the `--fail-on` threshold is never reported below WARN:
+  the two demotion rules cannot cascade into INFO and bury it alongside a
+  below-threshold LOW.
+
+- **`[Unconfirmed by live scan]` gained a machine-readable counterpart.** The
+  correlator writes that suffix into a finding's evidence text when a live scan
+  ran and did not confirm a URL-shaped whitebox finding. It is now produced
+  alongside an internal `UnconfirmedByLiveScan` marker that the decision layer
+  reads, so enforcement gates on structure rather than on prose. The suffix text
+  is byte-identical and the public `Finding` shape is unchanged — no new JSON
+  field — so consumers parsing the suffix keep working. Under the default policy
+  a finding carrying the marker cannot reach BLOCK without a corroborating
+  signal.
+
+- **Confidence bands were arithmetically stuck at MEDIUM for uncorrelated
+  scans.** A DAST-only finding topped out at `35 base + 10 runtime = 45` — the
+  `+10` payload-validated bonus cannot fire, because `Evidence.Response` has no
+  producer anywhere in the module — while the HIGH band starts at 70. Worse,
+  correlation could never close the gap either: `engine.categoryMap` covers only
+  secrets/injection/auth, so a headers/cookie/CORS finding is never
+  `SourceCorrelated`. `decisions.confirmed` was therefore a synonym for
+  "correlated", and a scan with no code path could not produce a single
+  confirmed finding.
+
+  Two new deltas fix that, both deterministic named rules with reason lines like
+  every other (Rule 8):
+
+  - **direct observation, +30** — the claim is a deterministic read of a live
+    response: a header present or absent, a cookie attribute present or absent,
+    a literal CORS header value. Set by `scanner/headers.go`,
+    `scanner/cors.go` and `scanner/cookie_flags.go` on exactly the checks that
+    already assert `ConfidenceHigh` from a literal read. `Weak
+    Content-Security-Policy`, the SameSite finding and the two CORS
+    method-policy findings are excluded: each grades a policy or cannot
+    disambiguate its own parse, and each already carries `ConfidenceMedium`.
+  - **deterministic detection, +30** — the static mirror: a high-confidence
+    pattern match in production code, where the finding IS the read. Withheld
+    from test/fixture code, from placeholder-shaped credential values, and from
+    the semgrep-shim tier, each of which is a documented false-positive class
+    (31 of the 35 instances in `tasks/FP_CORPUS.md` are test fixtures).
+
+  The de-escalation still dominates: a direct observation on an auth-gated 4xx
+  or a CDN-served static asset lands at 60 — MEDIUM, not HIGH — and a
+  fixture-shaped credential lands at 25.
+
+  **Visible effects.** `confidence_score` and `confidence_band` move on almost
+  every scan. `decisions.confirmed` (JSON), the HTML "Confirmed" stat tile and
+  the stderr `Decision summary … (N high-confidence)` line all count
+  `ConfidenceBand == HIGH`, so all three jump. The GitHub App's PR comment ranks
+  its top five by `(status, severity, confidence_score)`, so that list reorders
+  against SAST findings of equal severity. No finding is added, removed,
+  re-titled, re-categorised or re-severitied.
+
+  On its own this entry changed no exit code. The band it moves is now an input
+  to enforcement — see the confidence-gated `--fail-on` entry above — so the two
+  must be read together.
+
 ## [1.2.1] - 2026-08-18
 
 **Headline:** two precision corrections found by running the engine over 216K LOC

@@ -74,9 +74,16 @@ scan:
   delay_ms: 100          # --delay (ms)
   format: json           # --format (json | html | sarif | pdf)
   deescalate_tests: true # --deescalate-tests (findings in test/fixture code
-                         #   report as INFO instead of WARN; the evidence is
-                         #   preserved, and anything at or above `fail_on`
-                         #   still blocks)
+                         #   report as INFO instead of WARN, and one at or
+                         #   above `fail_on` is held at WARN unless a
+                         #   corroborating signal backs it; the evidence is
+                         #   always preserved)
+  enforce_confidence: true # --enforce-confidence (a finding at or above
+                         #   `fail_on` blocks only when its deterministic
+                         #   confidence band supports the claim: HIGH always,
+                         #   MEDIUM only with a corroborating signal, LOW
+                         #   never. Set false to restore the legacy
+                         #   severity-only gate.)
 
 # Crawler discovery knobs.
 crawler:
@@ -201,6 +208,7 @@ flag in that invocation is a candidate for `.fendix.yaml`:
 | `--delay 50` | `scan.delay_ms: 50` |
 | `--format sarif` | `scan.format: sarif` |
 | `--deescalate-tests=false` | `scan.deescalate_tests: false` |
+| `--enforce-confidence=false` | `scan.enforce_confidence: false` |
 | `--crawl-depth 2` | `crawler.crawl_depth: 2` |
 | `--max-endpoints 1000` | `crawler.max_endpoints: 1000` |
 | `--wordlist ./words.txt` | `crawler.wordlist_path: ./words.txt` |

@@ -361,6 +361,31 @@ func compareVersions(a, b string) int {
 	return 0
 }
 
+// CompareVersions is the exported form of compareVersions, for the pip and
+// npm dependency scanners' upgrade-target selection (FIX-06). Returns -1, 0
+// or +1. The unexported body stays the single implementation, so the offline
+// range matching above and the scanners' fix-version ranking can never drift
+// apart — and TestCompareVersions keeps locking both.
+//
+// Semantics, stated precisely because the callers depend on the edges:
+//
+//   - Dotted components compare numerically when both parse as ints
+//     ("1.2.0" < "1.10.0"), lexically otherwise; a missing trailing component
+//     is zero ("1.2" == "1.2.0").
+//   - A leading "v" is stripped, and everything from the first '-' or '+' is
+//     discarded. So npm semver pre-releases ("1.0.0-rc.1") and build metadata
+//     ("1.0.0+build") both collapse to their release core — a pre-release pin
+//     compares EQUAL to its release, not less.
+//   - PyPI suffixes with no separator are NOT normalised: "1.2.3.post1" and
+//     "1.2.3rc1" both sort ABOVE "1.2.3" (post1 correctly, rc1 incorrectly),
+//     and "1.2.3.dev0" sorts above "1.2.3" (incorrectly). PEP 440 epochs
+//     ("1!2.0") are not understood.
+//
+// Callers MUST NOT read a non-positive result as "no fix exists" — see the
+// fallback ladder in the scanners' fixCandidate, which is what keeps these
+// pre/dev-release edges from turning into a false "no fix listed in OSV".
+func CompareVersions(a, b string) int { return compareVersions(a, b) }
+
 // normalizeVersion strips a leading 'v' and any pre-release/build
 // metadata so the dotted-numeric comparison sees only the release core.
 func normalizeVersion(v string) string {

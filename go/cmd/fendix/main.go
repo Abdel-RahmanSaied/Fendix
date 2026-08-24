@@ -409,6 +409,7 @@ func newScanCmd() *cobra.Command {
 			}
 			fastFlag, _ := flags.GetBool("fast")
 			deescalateTestsFlag, _ := flags.GetBool("deescalate-tests")
+			enforceConfidenceFlag, _ := flags.GetBool("enforce-confidence")
 			checksFlag, _ := flags.GetStringSlice("checks")
 
 			// Resolve --config: explicit path takes precedence; if
@@ -478,6 +479,7 @@ func newScanCmd() *cobra.Command {
 				DiffStaged:            diffStagedFlag,
 				Fast:                  fastFlag,
 				DeescalateTests:       deescalateTestsFlag,
+				EnforceConfidence:     enforceConfidenceFlag,
 				Checks:                checksFlag,
 			}
 
@@ -505,7 +507,8 @@ func newScanCmd() *cobra.Command {
 					SetIgnorePath:    func(v string) { cfg.IgnorePath = v },
 					SetAuthProfile:   func(v string) { appliedProfile = v },
 
-					SetDeescalateTests: func(v bool) { cfg.DeescalateTests = v },
+					SetDeescalateTests:   func(v bool) { cfg.DeescalateTests = v },
+					SetEnforceConfidence: func(v bool) { cfg.EnforceConfidence = v },
 				}.Run(pol, cli)
 				if applied > 0 {
 					slog.Info("policy applied", "path", policyPath, "fields", applied)
@@ -558,7 +561,7 @@ func newScanCmd() *cobra.Command {
 	flags.String("profile", "", "Auth profile name from ~/.fendix/profiles/<name>.yaml")
 	flags.StringP("output", "o", "", "Output file path (default: stdout)")
 	flags.StringP("format", "f", "json", "Output format: json, html, sarif, pdf")
-	flags.String("fail-on", "", "Exit 1 if findings at this severity: CRITICAL, HIGH, MEDIUM")
+	flags.String("fail-on", "", "Exit 1 if a CORROBORATED finding is at this severity: CRITICAL, HIGH, MEDIUM (confidence gating applies — see --enforce-confidence)")
 	flags.String("baseline", "", "Path to previous findings JSON for diff mode")
 	flags.String("save-baseline", "", "Save current findings to this path")
 	flags.Bool("enable-active", false, "Enable active injection probes (default: false)")
@@ -586,7 +589,8 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("offline", false, "Air-gapped mode: consult the local offline-db snapshot for dep CVEs instead of osv.dev/vuln.go.dev. The pip and npm scanners run against the snapshot (create it with `fendix db update`); govulncheck needs vuln.go.dev and is recorded SKIPPED. No outbound network call is made.")
 	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
 	flags.Bool("fail-on-scanner-error", false, "Exit non-zero (2) if any scanner (govulncheck/pip/npm/secrets/semgrep/textscan) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners do not count.")
-	flags.Bool("deescalate-tests", true, "Report findings in test/fixture code as INFO instead of WARN (evidence is preserved, never suppressed). A finding at or above --fail-on still blocks. Pass --deescalate-tests=false to treat test-code findings like production ones.")
+	flags.Bool("deescalate-tests", true, "Report findings in test/fixture code as INFO instead of WARN (evidence is preserved, never suppressed). A finding at or above --fail-on still blocks when a corroborating signal backs it (e.g. a provider-validated live credential); an uncorroborated test-code match is held at WARN. Pass --deescalate-tests=false to treat test-code findings like production ones.")
+	flags.Bool("enforce-confidence", true, "Only BLOCK a finding at or above --fail-on when the deterministic confidence band supports it: LOW band warns instead of blocking, MEDIUM band blocks only with a corroborating signal (live observation, cross-engine agreement, deterministic detection in production code, confirmed route, reachable taint path, payload-validated probe), HIGH band always blocks. Evidence is never suppressed. Pass --enforce-confidence=false to restore the legacy severity-only gate.")
 	flags.StringSlice("checks", nil, "Override which checks the Python whitebox engine runs (default: auth,injection,deps). Only effective with --python-engine; the native Go scanners (secrets/semgrep/textscan/deps) always run when --code is set.")
 	// Diff-aware scanning (90-day cut, item 1). `--diff` alone diffs the
 	// working tree against HEAD; `--diff=origin/main` against that ref;

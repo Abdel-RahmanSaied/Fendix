@@ -29,6 +29,47 @@ from typing import Callable, NamedTuple
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024  # 4 MB
 
 
+# Advisory-id priority for _canonical_advisory_id, highest first. Anything
+# not listed lands in an implicit "other" tier.
+_CANONICAL_ID_TIERS = ("CVE-", "GHSA-", "PYSEC-")
+
+
+def _canonical_advisory_id(ids: list[str]) -> str:
+    """Pick the id a dependency finding is published under.
+
+    This MIRRORS the Go pip scanner's ``canonicalID`` (FIX-05) exactly, and
+    it has to. ``engine.Deduplicate`` collapses the Go/Python overlap only
+    because the two engines' finding TITLES are byte-identical — its dedup
+    key is ``Severity|Category|Title``. If only the Go side canonicalised,
+    every dependency vulnerability would be reported TWICE under
+    ``--python-engine``.
+
+    Priority is CVE > GHSA > PYSEC > everything else, lexicographically
+    smallest within a tier so the choice is a pure function of the id SET
+    rather than of iteration order. Prefix matching is exact-with-hyphen,
+    so a real OSV prefix like ``BIT-`` lands in "other" instead of being
+    promoted past the PYSEC id that should win.
+
+    Deliberately NOT applied to the govulncheck path: vuln.go.dev emits one
+    ``GO-*`` record per vulnerability with aliases pointing outward, so the
+    duplicate-record problem does not arise there, and the ``GO-*`` id shape
+    is locked by a cross-language parity test.
+    """
+    best = ""
+    best_tier = len(_CANONICAL_ID_TIERS)
+    for cid in ids:
+        if not cid:
+            continue
+        tier = len(_CANONICAL_ID_TIERS)
+        for i, prefix in enumerate(_CANONICAL_ID_TIERS):
+            if cid.startswith(prefix):
+                tier = i
+                break
+        if not best or tier < best_tier or (tier == best_tier and cid < best):
+            best, best_tier = cid, tier
+    return best
+
+
 def _read_capped(path: Path) -> str | None:
     """Read ``path`` as UTF-8 text, or return None if it's too large to trust.
 
@@ -445,6 +486,16 @@ class DepsAnalyzer:
             ver = entry.get("version", "?")
             for v in entry.get("vulns", []) or []:
                 vid = v.get("id", "CVE-UNKNOWN")
+                # Name the finding after the CANONICAL id of its alias set,
+                # matching the Go pip scanner byte-for-byte so dedup keeps
+                # collapsing the two engines' overlap (see
+                # _canonical_advisory_id). The CVE is routinely present only
+                # as an alias, which is why the picker ranges over both.
+                all_ids = sorted({i for i in [vid, *(v.get("aliases") or [])] if i})
+                canonical = _canonical_advisory_id(all_ids) or vid
+                # Canonical first, then every other id, so nothing a record
+                # was known by is dropped by the rename.
+                refs = [canonical] + [i for i in all_ids if i != canonical]
                 fix_versions = v.get("fix_versions") or []
                 fix_text = (
                     f"Upgrade to {pkg}=={fix_versions[0]} or later."
@@ -453,16 +504,15 @@ class DepsAnalyzer:
                 )
                 emit_fn(
                     {
-                        "id": f"SEC-DEPS-{vid.replace('-', '_')}",
-                        "title": f"Vulnerable dependency: {pkg}=={ver} ({vid})",
+                        "id": f"SEC-DEPS-{canonical.replace('-', '_')}",
+                        "title": f"Vulnerable dependency: {pkg}=={ver} ({canonical})",
                         "severity": "HIGH",
                         "source": "whitebox",
                         "category": "deps",
                         "endpoint": req_file.name,
                         "evidence": f"{pkg}=={ver}: {(v.get('description') or '')[:200]}",
                         "fix": fix_text,
-                        "references": [vid]
-                        + ([v.get("aliases")[0]] if v.get("aliases") else []),
+                        "references": refs,
                         "confidence": "HIGH",
                         "line": req_file.name,
                     }

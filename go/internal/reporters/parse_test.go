@@ -155,3 +155,67 @@ func TestIsSARIF_Heuristics(t *testing.T) {
 		})
 	}
 }
+
+// preSchemaVersionJSONReport is a verbatim report body from a build that
+// predates `metadata.schema_version`. It is duplicated rather than derived
+// from validJSONReport on purpose: its whole job is to be frozen, and a
+// future edit that adds schema_version to the shared const would silently
+// stop exercising the thing this asserts.
+const preSchemaVersionJSONReport = `{
+  "metadata": {
+    "target": "https://api.example.com",
+    "started_at": "2026-04-29T17:00:00Z",
+    "duration": "1.2s",
+    "version": "v0.4.1",
+    "mode": "blackbox",
+    "endpoints_scanned": 12,
+    "active_probes": false
+  },
+  "summary": {"critical": 0, "high": 0, "medium": 1, "low": 0, "info": 0},
+  "sources": {"blackbox": 1, "whitebox": 0, "correlated": 0},
+  "total": 1,
+  "findings": []
+}`
+
+// TestParseJSONReport_PreSchemaVersionStillParses is the backward-compat
+// guard for the schema_version field. Adding it must not invalidate a
+// single archived report: the key is absent, so it decodes to 0, and the
+// report is still accepted — the shape check reads version+mode only.
+func TestParseJSONReport_PreSchemaVersionStillParses(t *testing.T) {
+	got, err := ParseJSONReport([]byte(preSchemaVersionJSONReport))
+	if err != nil {
+		t.Fatalf("a pre-schema_version report must still parse, got error: %v", err)
+	}
+	if got.Metadata.SchemaVersion != 0 {
+		t.Errorf("Metadata.SchemaVersion = %d, want 0 for an absent key", got.Metadata.SchemaVersion)
+	}
+	// The rest of the metadata must be untouched by the new field.
+	if got.Metadata.Version != "v0.4.1" {
+		t.Errorf("Metadata.Version = %q, want v0.4.1", got.Metadata.Version)
+	}
+	if got.Metadata.Mode != "blackbox" {
+		t.Errorf("Metadata.Mode = %q, want blackbox", got.Metadata.Mode)
+	}
+	if got.Total != 1 {
+		t.Errorf("Total = %d, want 1", got.Total)
+	}
+}
+
+// TestParseJSONReport_UnknownSchemaVersionStillParses is the forward half:
+// a value this build does not know is not a parse failure. Deciding what to
+// do about an unrecognised contract belongs to the consumer, not the reader.
+func TestParseJSONReport_UnknownSchemaVersionStillParses(t *testing.T) {
+	future := strings.Replace(
+		validJSONReport,
+		`"target": "https://api.example.com"`,
+		`"schema_version": 99, "target": "https://api.example.com"`,
+		1,
+	)
+	got, err := ParseJSONReport([]byte(future))
+	if err != nil {
+		t.Fatalf("an unknown schema_version must still parse, got error: %v", err)
+	}
+	if got.Metadata.SchemaVersion != 99 {
+		t.Errorf("Metadata.SchemaVersion = %d, want 99 (decoded verbatim)", got.Metadata.SchemaVersion)
+	}
+}

@@ -26,7 +26,12 @@ import (
 // pipeline in v0.22), they cannot affect the public output — they are
 // groundwork for the v0.23 confidence engine.
 func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
-	correlated := Correlate(evidence.ToFindings(evs))
+	// correlateWithMarks, not Correlate: the parallel slice is the only way to
+	// learn WHICH outputs the correlator suffixed with "[Unconfirmed by live
+	// scan]". FromFindings below cannot recover it — the marker is not a
+	// Finding field — and re-deriving it by string-matching the evidence text
+	// would make a published prose string load-bearing.
+	correlated, unconfirmed := correlateWithMarks(evidence.ToFindings(evs))
 	out := evidence.FromFindings(correlated)
 
 	// Index inputs by a render-stable identity so a pass-through output can
@@ -40,6 +45,13 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 
 	for i := range out {
 		o := &out[i]
+		// Stamp the correlator's own verdict FIRST, before the pass-through
+		// branch's `continue` can skip it. An unconfirmed whitebox finding
+		// still matches its input on the idKey below (the branch mutates only
+		// the evidence text and Confidence, neither of which is part of the
+		// key), so it takes the pass-through path — where the OR-restore below
+		// preserves this mark rather than clobbering it with the input's zero.
+		o.UnconfirmedByLiveScan = unconfirmed[i]
 		if src, ok := inByKey[idKey{string(o.Source), o.Category, o.Endpoint, o.Title}]; ok {
 			// Unchanged pass-through: restore its provenance verbatim.
 			o.RuleID = src.RuleID
@@ -54,6 +66,25 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			// on a hybrid scan — the 4xx/static-asset penalty then couldn't
 			// fire even once the scorer was given the Evidence.
 			o.ResponseContext = src.ResponseContext
+			// The same trap, four more times. DirectObservation (the scorer's
+			// deterministic-read bonus), UnconfirmedByLiveScan (the decision
+			// layer's needs-corroboration marker), Placeholder (the
+			// fixture-credential de-escalation) and ComponentNotImported (the
+			// dep-applicability de-escalation) are all producer-set, and none
+			// of them has the endpoint-derived fallback that lets InTest
+			// survive being omitted here. Dropping one would leave its rule
+			// working on a pure-DAST or pure-SAST scan and silently dead on
+			// every hybrid (--url + --code) scan, because the orchestrator
+			// builds the ProvenanceIndex AFTER correlation.
+			o.DirectObservation = src.DirectObservation
+			o.Placeholder = src.Placeholder
+			o.ComponentNotImported = src.ComponentNotImported
+			// UnconfirmedByLiveScan is OR-ed rather than assigned because THIS
+			// function is also a producer for it — the correlator is what
+			// discovers that a whitebox finding had no live match. A plain
+			// assignment would clobber a mark set earlier in this same loop
+			// with the input's zero value.
+			o.UnconfirmedByLiveScan = o.UnconfirmedByLiveScan || src.UnconfirmedByLiveScan
 			continue
 		}
 		// Merged/transformed (typically Source=correlated): record the inputs

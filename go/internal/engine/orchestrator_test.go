@@ -229,6 +229,14 @@ paths:
 		Format:     "json",
 		OutputPath: filepath.Join(dir, "report.json"),
 		FailOn:     "CRITICAL",
+		// A directly-constructed ScanConfig zero-values EnforceConfidence,
+		// which is the LEGACY mapping — so without this the assertion below
+		// would silently stop exercising the shipped gate. The findings the
+		// vulnerable server produces are Source=blackbox on 200 responses (no
+		// 4xx/static-asset penalty), so they are corroborated by the live
+		// runtime observation and must still exit 1. If this goes to 0, the
+		// corroboration predicate is wrong, not the test.
+		EnforceConfidence: true,
 	}
 
 	orch := NewOrchestrator(cfg, "dev")

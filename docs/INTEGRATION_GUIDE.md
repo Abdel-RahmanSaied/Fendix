@@ -272,6 +272,7 @@ Three surfaces, each driven by a flag:
 ```json
 {
   "metadata": {
+    "schema_version": 1,
     "target": "https://api.example.com",
     "started_at": "2026-06-20T10:00:00Z",
     "duration": "4.521s",
@@ -315,6 +316,7 @@ Three surfaces, each driven by a flag:
 
 Key facts:
 
+- **`metadata.schema_version`** is the contract version, currently `1`, and is present on every report a current build writes. An **absent** key means the report predates the field — treat that as "pre-versioned", not as invalid. An **unrecognised** value means the report is newer than your integration: warn and keep parsing rather than failing, since the versioned keys are additive by policy.
 - **`metadata.mode`** ∈ `blackbox` / `whitebox` / `hybrid`.
 - **`scanner_status[].state`** ∈ `ok` / `skipped` / `failed`. Only `failed` counts toward `--fail-on-scanner-error` and SARIF `executionSuccessful`; `skipped` does not. `name` ∈ govulncheck/pip/npm/secrets/semgrep/textscan.
 - **`findings[].severity`** ∈ `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`/`INFO`. Severity rank used by `--fail-on`: CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1, INFO=0; gate trips when `rank(finding) >= rank(threshold)`.

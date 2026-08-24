@@ -26,8 +26,15 @@ import (
 // sort → IDs/fingerprint → stamp), including the provenance index captured
 // BEFORE the projection.
 func finalize(evid []evidence.Evidence, failOn string, opts decision.Options) []models.Finding {
-	prov := evidence.NewProvenanceIndex(evid)
+	return finalizeIndexed(evid, evidence.NewProvenanceIndex(evid), failOn, opts)
+}
 
+// finalizeIndexed is finalize with the provenance index supplied by the
+// caller. A HYBRID scan runs CorrelateEvidence BEFORE building the index
+// (orchestrator.go:539 then :552), and that ordering is exactly what the
+// correlator's provenance restore has to survive — so a test covering it must
+// be able to interpose. finalize is the code-only shorthand.
+func finalizeIndexed(evid []evidence.Evidence, prov evidence.ProvenanceIndex, failOn string, opts decision.Options) []models.Finding {
 	findings := evidence.ToFindings(evid)
 	findings = escalateNonCorrelatedReachable(findings)
 	findings = Deduplicate(findings)
@@ -280,18 +287,136 @@ func TestOrchestratorPassesTheConfigPolicyToTheDecisionLayer(t *testing.T) {
 	}
 }
 
-// TestPipelineNeverDowngradesABlockingTestFinding is the safety gate: a team
-// that set --fail-on HIGH asked for that gate explicitly, and the test-code
-// exemption must not quietly disarm it.
-func TestPipelineNeverDowngradesABlockingTestFinding(t *testing.T) {
+// TestPipelineDemotesAnUncorroboratedBlockingTestFinding replaces the v1.1
+// TestPipelineNeverDowngradesABlockingTestFinding, whose invariant FIX-09
+// deliberately removes.
+//
+// The old rule ("--fail-on always wins over the test-fixture rule") sounded
+// safe but was the exact hole that exempted the project's largest FP class from
+// its own mitigation: 31 of the 35 catalogued false positives in
+// tasks/FP_CORPUS.md are test fixtures, and a team with --fail-on set — i.e.
+// everyone the demotion was meant to help — got none of it. The demotion is
+// conditional on the ABSENCE of corroboration, so the safety property moved
+// rather than disappeared; its other half is the test below.
+func TestPipelineDemotesAnUncorroboratedBlockingTestFinding(t *testing.T) {
 	evid := []evidence.Evidence{secretEvidence("app/tests/test_client.py:12")}
 
 	got := finalize(evid, "HIGH", decision.Options{DeescalateTests: true})
 
-	if got[0].Status != string(decision.StatusBlock) {
-		t.Errorf("Status = %q, want BLOCK — --fail-on must win over the test-fixture rule",
+	if got[0].Status != string(decision.StatusWarn) {
+		t.Errorf("Status = %q, want WARN — an uncorroborated test-code match must not gate a build",
 			got[0].Status)
 	}
+	if !strings.Contains(strings.Join(got[0].ConfidenceReasons, "\n"), "test/fixture code") {
+		t.Errorf("no reason line explains the demotion: %v", got[0].ConfidenceReasons)
+	}
+	// Rule 3: de-escalated, never deleted.
+	if len(got) != 1 {
+		t.Errorf("finding count = %d, want 1 — evidence must be preserved, not suppressed", len(got))
+	}
+	if got[0].Evidence == "" {
+		t.Error("evidence text was dropped; de-escalation must preserve it")
+	}
+}
+
+// TestPipelineKeepsACorroboratedBlockingTestFinding is the other half, and the
+// reason FIX-09 is a de-escalation rather than path suppression: a credential
+// with a signal behind it — a proven taint path here, a provider-validated live
+// key in the field — is a real leak wherever the file lives, and still exits 1.
+func TestPipelineKeepsACorroboratedBlockingTestFinding(t *testing.T) {
+	ev := secretEvidence("app/tests/test_client.py:12")
+	ev.Reachable = true
+
+	got := finalize([]evidence.Evidence{ev}, "HIGH", decision.Options{DeescalateTests: true})
+
+	if got[0].Status != string(decision.StatusBlock) {
+		t.Errorf("Status = %q, want BLOCK — a corroborated test-code finding must still gate",
+			got[0].Status)
+	}
+	if len(got) != 1 || got[0].Evidence == "" {
+		t.Errorf("Rule 3: expected 1 finding with intact evidence, got %+v", got)
+	}
+}
+
+// TestOrchestratorPassesTheConfidencePolicyToTheDecisionLayer is the
+// mutation-audit guard for the SECOND config hop, and it is not optional: the
+// zero value of both ScanConfig.EnforceConfidence and Options.EnforceConfidence
+// is false, so hardcoding decisionOptions() to drop the field would leave every
+// other test in the module green. That is precisely how DeescalateTests shipped
+// as dead code.
+func TestOrchestratorPassesTheConfidencePolicyToTheDecisionLayer(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		cfg := &models.ScanConfig{EnforceConfidence: enabled, FailOn: "HIGH"}
+		o := &Orchestrator{cfg: cfg}
+
+		if got := o.decisionOptions().EnforceConfidence; got != enabled {
+			t.Errorf("decisionOptions().EnforceConfidence = %v, want %v — ScanConfig is not\n"+
+				"reaching the decision layer", got, enabled)
+		}
+
+		// An uncorroborated whitebox HIGH finding in PRODUCTION code, scored
+		// without the deterministic-detection delta (Confidence MEDIUM, as a
+		// graded static check emits): 35 base + 10 static = 45, MEDIUM band,
+		// no corroborating signal.
+		ev := secretEvidence("app/services/client.py:22")
+		ev.Confidence = models.ConfidenceMedium
+		evid := []evidence.Evidence{ev}
+		prov := evidence.NewProvenanceIndex(evid)
+		findings := evidence.ToFindings(evid)
+		stampDecisions(findings, prov, o.cfg.FailOn, o.decisionOptions())
+
+		want := string(decision.StatusBlock)
+		if enabled {
+			want = string(decision.StatusWarn)
+		}
+		if findings[0].Status != want {
+			t.Errorf("EnforceConfidence=%v produced Status %q, want %q — the ScanConfig field is\n"+
+				"not reaching decision.Options", enabled, findings[0].Status, want)
+		}
+	}
+}
+
+// TestPipelineStillBlocksARealProductionSecret is DECISIONS.md D1 driven
+// through the real finalization sequence: the whole point of the
+// deterministicDetection delta is that a genuine hardcoded credential in
+// PRODUCTION code keeps failing the build under the new gate, on a code-only
+// scan where no live corroboration is even possible.
+//
+// 35 base + 10 static + 30 deterministic detection = 75 → HIGH band → BLOCK.
+// The fixture-shaped twin in tests/ is the contrast case: it loses the delta to
+// the InTest gate, lands MEDIUM with nothing corroborating it, and is held at
+// WARN.
+func TestPipelineStillBlocksARealProductionSecret(t *testing.T) {
+	opts := decision.Options{EnforceConfidence: true, DeescalateTests: true}
+
+	prod, prodDecisions := finalizeDecisions(secretEvidence("app/services/client.py:22"), "HIGH", opts)
+	if prod[0].Status != string(decision.StatusBlock) {
+		t.Errorf("production secret Status = %q (score %d, band %q), want BLOCK — the confidence\n"+
+			"gate must not stop a code-only scan from failing on a real credential",
+			prod[0].Status, prod[0].ConfidenceScore, prod[0].ConfidenceBand)
+	}
+	if decision.ExitCode(prodDecisions) != 1 {
+		t.Error("a real production secret no longer exits 1 — this is a security regression")
+	}
+
+	fixture, fixtureDecisions := finalizeDecisions(secretEvidence("app/tests/test_client.py:12"), "HIGH", opts)
+	if fixture[0].Status != string(decision.StatusWarn) {
+		t.Errorf("fixture secret Status = %q (score %d, band %q), want WARN",
+			fixture[0].Status, fixture[0].ConfidenceScore, fixture[0].ConfidenceBand)
+	}
+	if decision.ExitCode(fixtureDecisions) != 0 {
+		t.Error("a fixture-shaped secret still exits 1 — the FP mitigation did not reach the gate")
+	}
+}
+
+// finalizeDecisions is finalize for one Evidence, additionally returning the
+// decisions orchestrator.Run derives its process exit code from. Asserting on
+// the status alone would miss a break between Decision.Status and ExitCode.
+func finalizeDecisions(ev evidence.Evidence, failOn string, opts decision.Options) ([]models.Finding, []decision.Decision) {
+	evid := []evidence.Evidence{ev}
+	prov := evidence.NewProvenanceIndex(evid)
+	findings := evidence.ToFindings(evid)
+	return findings, stampDecisions(findings, prov, failOn, opts)
 }
 
 // TestPipelineDeescalationDistinguishesTwoFindings makes sure the flag is

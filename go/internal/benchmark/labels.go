@@ -63,7 +63,8 @@ var fpClassMechanism = map[FPClass]string{
 	FPGuardDominance: "python/analyzers/ast_analyzer.py:_name_is_membership_guarded " +
 		"(the membership guard must dominate the sink)",
 	FPTestFixture: "internal/decision.DecideWithOptions + models.ScanConfig.DeescalateTests " +
-		"(test/fixture findings demote WARN→INFO; evidence preserved, --fail-on still blocks)",
+		"(test/fixture findings demote WARN→INFO, and an uncorroborated BLOCK→WARN; " +
+		"evidence preserved, a corroborated finding at or above --fail-on still blocks)",
 	FPHTTP4xxContext: "internal/scanner.responseContextFor → \"4xx\" + " +
 		"internal/confidence httpContextPenalty",
 	FPStaticAssetCtx: "internal/scanner.responseContextFor → \"static-asset\" + " +

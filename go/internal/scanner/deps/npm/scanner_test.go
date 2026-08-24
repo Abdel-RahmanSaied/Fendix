@@ -187,10 +187,16 @@ func TestBuildFinding_MatchesPythonShape(t *testing.T) {
 	}
 	f := buildFinding(resolvedPackage{name: "lodash", version: "4.17.20"}, v, "package-lock.json")
 
-	if f.ID != "SEC-DEPS-GHSA_jf85_cpcp_j695" {
-		t.Errorf("ID: got %q", f.ID)
+	// FIX-05: identified by the CANONICAL id of the alias set. The CVE is
+	// the identifier every downstream tracker agrees on, and OSV carries
+	// it here only as an alias of the GHSA record.
+	if f.ID != "SEC-DEPS-CVE_2020_8203" {
+		t.Errorf("ID: got %q want SEC-DEPS-CVE_2020_8203", f.ID)
 	}
-	if !strings.Contains(f.Title, "lodash@4.17.20") || !strings.Contains(f.Title, "GHSA-jf85-cpcp-j695") {
+	if f.RuleID != "CVE-2020-8203" {
+		t.Errorf("RuleID: got %q want CVE-2020-8203", f.RuleID)
+	}
+	if !strings.Contains(f.Title, "lodash@4.17.20") || !strings.Contains(f.Title, "CVE-2020-8203") {
 		t.Errorf("Title shape wrong: %s", f.Title)
 	}
 	if !strings.Contains(f.Fix, "lodash@4.17.21") {
@@ -202,8 +208,10 @@ func TestBuildFinding_MatchesPythonShape(t *testing.T) {
 	if f.Category != "deps" || f.Source != "whitebox" {
 		t.Errorf("category/source drift: %s / %s", f.Category, f.Source)
 	}
-	// Same as pip: refs = [vid, first-alias-only].
-	if len(f.References) != 2 || f.References[0] != "GHSA-jf85-cpcp-j695" || f.References[1] != "CVE-2020-8203" {
+	// Same as pip: canonical first, then every other merged id sorted.
+	// Nothing is dropped, so an ignore rule pinned to the GHSA id still
+	// has something to match after the rename (Rule 3).
+	if len(f.References) != 2 || f.References[0] != "CVE-2020-8203" || f.References[1] != "GHSA-jf85-cpcp-j695" {
 		t.Errorf("refs wrong: %v", f.References)
 	}
 }

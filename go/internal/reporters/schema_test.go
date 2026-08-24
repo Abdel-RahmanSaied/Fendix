@@ -29,6 +29,14 @@ func validateAgainstSchema(t *testing.T, report map[string]any) {
 	requireEnum(t, "metadata.mode", meta["mode"], []string{"blackbox", "whitebox", "hybrid"})
 	requireInt(t, "metadata.endpoints_scanned", meta["endpoints_scanned"])
 	requireBool(t, "metadata.active_probes", meta["active_probes"])
+	// schema_version is type-checked when present but not required: reports
+	// written before the field existed omit it entirely and must still
+	// validate. Same treatment docs/schema.json gives it — the key is in
+	// `properties` (it has to be, `additionalProperties` is false) but not
+	// in `required`.
+	if sv, ok := meta["schema_version"]; ok {
+		requireInt(t, "metadata.schema_version", sv)
+	}
 	if checks, ok := meta["checks_run"]; ok {
 		arr := requireArray(t, "metadata.checks_run", checks)
 		for i, c := range arr {

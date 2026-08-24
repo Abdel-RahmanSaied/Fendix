@@ -49,6 +49,15 @@ func ParseJSONReport(data []byte) (*JSONReport, error) {
 		return nil, fmt.Errorf("input is valid JSON but does not look like a Fendix JSONReport (missing `metadata.version` and `metadata.mode`) — produce one with `fendix scan --format json`")
 	}
 
+	// `metadata.schema_version` is deliberately NOT part of that check and
+	// must never be added to it. Every report written before the field
+	// existed omits the key and decodes to 0, so requiring it would reject
+	// the whole archive. An UNKNOWN (future) value is not this reader's
+	// call to reject either — the engine parses permissively and leaves
+	// "I don't recognise this contract" to the consumer that has to act
+	// on it. TestParseJSONReport_PreSchemaVersionStillParses and
+	// TestParseJSONReport_UnknownSchemaVersionStillParses pin both halves.
+
 	return &report, nil
 }
 

@@ -1,0 +1,446 @@
+package decision
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+)
+
+// FIX-08: --fail-on alone no longer decides the exit code. A finding at or
+// above the threshold BLOCKs only when the deterministic confidence band
+// supports the claim. These tests pin the rule table, the escape hatch, and the
+// determinism of the corroboration list.
+//
+// Every band below is DERIVED from confidence.Score, never from
+// models.Confidence — the two are different things and a row that sets only the
+// enum proves nothing. The comment on each row shows the arithmetic so a future
+// delta change makes the intent (not just the number) reviewable.
+
+// enforced is the shipped policy; legacy is what --enforce-confidence=false
+// restores. DeescalateTests is off in both so these rows isolate FIX-08.
+var (
+	enforced = Options{EnforceConfidence: true}
+	legacy   = Options{}
+)
+
+// TestDecideEnforcedRuleTable is the FIX-08 rule table. Each row also asserts
+// the SAME input under the legacy policy, so the flag is provably the only
+// difference — a row that behaved identically in both modes would be testing
+// nothing.
+func TestDecideEnforcedRuleTable(t *testing.T) {
+	cases := []struct {
+		name        string
+		ev          evidence.Evidence
+		want        Status
+		wantLegacy  Status
+		reasonHas   string
+		reasonExact string
+	}{
+		{
+			// 35 base + 10 static + 10 runtime + 25 cross-engine = 80 → HIGH.
+			name:       "HIGH band always blocks",
+			ev:         evidence.Evidence{Severity: models.SeverityCritical, Source: models.SourceCorrelated},
+			want:       StatusBlock,
+			wantLegacy: StatusBlock,
+			reasonHas:  "confidence HIGH",
+		},
+		{
+			// 35 + 10 static + 30 deterministic detection = 75 → HIGH.
+			// This is the D1 row: a REAL hardcoded credential in production
+			// code must still fail the build on a code-only scan.
+			name: "production pattern match bands HIGH and blocks",
+			ev: evidence.Evidence{
+				Severity:   models.SeverityHigh,
+				Source:     models.SourceWhitebox,
+				Confidence: models.ConfidenceHigh,
+			},
+			want:       StatusBlock,
+			wantLegacy: StatusBlock,
+			reasonHas:  "deterministic detection in production code",
+		},
+		{
+			// 35 + 10 static = 45 → MEDIUM, and nothing corroborates it.
+			name:       "MEDIUM band with no corroborating signal warns",
+			ev:         evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceWhitebox},
+			want:       StatusWarn,
+			wantLegacy: StatusBlock,
+			reasonHas:  "needs corroboration to block",
+		},
+		{
+			// 35 + 10 static + 10 reachable = 55 → MEDIUM, corroborated.
+			name:       "MEDIUM band with a reachable taint path blocks",
+			ev:         evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceWhitebox, Reachable: true},
+			want:       StatusBlock,
+			wantLegacy: StatusBlock,
+			reasonHas:  "corroborated by: reachable taint path",
+		},
+		{
+			// 35 + 10 runtime = 45 → MEDIUM. THE DAST ROW: a pure blackbox
+			// finding's only corroborator is the live runtime observation
+			// keyed on Source (DECISIONS.md D7). If this flips to WARN, the
+			// whole active-scan gate has been destroyed.
+			name:       "MEDIUM band blackbox blocks on the live runtime observation",
+			ev:         evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceBlackbox},
+			want:       StatusBlock,
+			wantLegacy: StatusBlock,
+			reasonHas:  "corroborated by: live runtime observation",
+		},
+		{
+			// 35 + 10 runtime - 15 4xx context = 30 → LOW.
+			name: "LOW band never blocks",
+			ev: evidence.Evidence{
+				Severity:        models.SeverityHigh,
+				Source:          models.SourceBlackbox,
+				ResponseContext: "4xx",
+			},
+			want:        StatusWarn,
+			wantLegacy:  StatusBlock,
+			reasonExact: "severity above threshold but confidence LOW — needs corroboration to block",
+		},
+		{
+			// 35 base only (no source) → LOW.
+			name:        "sourceless evidence bands LOW and warns",
+			ev:          evidence.Evidence{Severity: models.SeverityHigh},
+			want:        StatusWarn,
+			wantLegacy:  StatusBlock,
+			reasonExact: "severity above threshold but confidence LOW — needs corroboration to block",
+		},
+		{
+			// 35 + 10 static = 45 → MEDIUM. InTest gates the deterministic
+			// detection delta off, so the fixture match cannot band HIGH.
+			name: "test-code pattern match stays MEDIUM and uncorroborated",
+			ev: evidence.Evidence{
+				Severity:   models.SeverityHigh,
+				Source:     models.SourceWhitebox,
+				Confidence: models.ConfidenceHigh,
+				InTest:     true,
+			},
+			want:       StatusWarn,
+			wantLegacy: StatusBlock,
+			reasonHas:  "needs corroboration to block",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DecideWithOptions(tc.ev, "HIGH", enforced)
+			if got.Status != tc.want {
+				t.Errorf("Status = %q, want %q (score %d, band %s, reason %q)",
+					got.Status, tc.want, got.Score.Value, got.Score.Band, got.Reason)
+			}
+			if tc.reasonExact != "" && got.Reason != tc.reasonExact {
+				t.Errorf("Reason = %q, want exactly %q", got.Reason, tc.reasonExact)
+			}
+			if tc.reasonHas != "" && !strings.Contains(got.Reason, tc.reasonHas) {
+				t.Errorf("Reason = %q, want it to contain %q", got.Reason, tc.reasonHas)
+			}
+			if legacyGot := DecideWithOptions(tc.ev, "HIGH", legacy).Status; legacyGot != tc.wantLegacy {
+				t.Errorf("legacy policy Status = %q, want %q — the flag must be the only difference",
+					legacyGot, tc.wantLegacy)
+			}
+			// Rule 3: enforcement moved, nothing else. The score is the
+			// evidence's, not the gate's.
+			if got.Score.Value != DecideWithOptions(tc.ev, "HIGH", legacy).Score.Value {
+				t.Errorf("the confidence gate changed the SCORE; it may only change STATUS")
+			}
+		})
+	}
+}
+
+// TestEnforcedDecisionsNameTheSignalsThatJustifiedTheBlock is the
+// explainability half of the DoD: a BLOCK must say what corroborated it, so a
+// reader can tell a HIGH-band claim from a MEDIUM-band-plus-one-signal claim.
+func TestEnforcedDecisionsNameTheSignalsThatJustifiedTheBlock(t *testing.T) {
+	ev := evidence.Evidence{
+		Severity:       models.SeverityCritical,
+		Source:         models.SourceCorrelated,
+		RouteConfirmed: true,
+		Reachable:      true,
+		ProvenPath:     true,
+	}
+	d := DecideWithOptions(ev, "HIGH", enforced)
+	if d.Status != StatusBlock {
+		t.Fatalf("Status = %q, want BLOCK", d.Status)
+	}
+	for _, want := range []string{
+		"cross-engine agreement", "live runtime observation",
+		"confirmed route", "reachable taint path", "proven path",
+	} {
+		if !strings.Contains(d.Reason, want) {
+			t.Errorf("BLOCK reason does not name %q: %q", want, d.Reason)
+		}
+	}
+}
+
+// TestEnforceConfidenceOffIsByteForByteLegacy is the escape-hatch contract:
+// with the flag off, every Status, Reason and exit code is what the pre-FIX-08
+// severity-only mapping produced — including for evidence carrying the new
+// signals, which must be ignored entirely in this mode.
+func TestEnforceConfidenceOffIsByteForByteLegacy(t *testing.T) {
+	off := Options{EnforceConfidence: false, DeescalateTests: false}
+
+	// The exit-code cross-product, against the independent legacy oracle.
+	for _, set := range sevSets() {
+		for _, fo := range failOns {
+			evs := make([]evidence.Evidence, len(set))
+			for i, sev := range set {
+				evs[i] = ev(sev)
+			}
+			got := ExitCode(DecideAllWithOptions(evs, fo, off))
+			if want := legacyCheckFailOn(set, fo); got != want {
+				t.Errorf("set=%v failOn=%q: ExitCode=%d, legacy checkFailOn=%d", set, fo, got, want)
+			}
+		}
+	}
+
+	// Per-decision Status AND Reason identity, over evidence that varies every
+	// field the new gate reads. Decide() is the frozen legacy implementation,
+	// so it is the oracle.
+	variants := []evidence.Evidence{
+		{Severity: models.SeverityHigh},
+		{Severity: models.SeverityHigh, Source: models.SourceWhitebox},
+		{Severity: models.SeverityHigh, Source: models.SourceBlackbox},
+		{Severity: models.SeverityHigh, Source: models.SourceCorrelated},
+		{Severity: models.SeverityHigh, Source: models.SourceWhitebox, Reachable: true},
+		{Severity: models.SeverityHigh, Source: models.SourceWhitebox, RouteConfirmed: true},
+		{Severity: models.SeverityHigh, Source: models.SourceWhitebox, UnconfirmedByLiveScan: true},
+		{Severity: models.SeverityHigh, Source: models.SourceBlackbox, ResponseContext: "4xx"},
+		{Severity: models.SeverityCritical, Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh},
+		{Severity: models.SeverityMedium, Source: models.SourceWhitebox},
+		{Severity: models.SeverityLow, Source: models.SourceWhitebox},
+	}
+	for _, fo := range failOns {
+		for _, v := range variants {
+			want := Decide(v, fo)
+			got := DecideWithOptions(v, fo, off)
+			if got.Status != want.Status || got.Reason != want.Reason {
+				t.Errorf("failOn=%q ev=%+v: got %q/%q, want the legacy %q/%q",
+					fo, v, got.Status, got.Reason, want.Status, want.Reason)
+			}
+			if len(got.Score.Reasons) != len(want.Score.Reasons) {
+				t.Errorf("failOn=%q ev=%+v: the disabled gate still appended a reason line: %v",
+					fo, v, got.Score.Reasons)
+			}
+		}
+	}
+}
+
+// TestUnconfirmedEvidenceNeverBlocksUnderDefaultPolicy is FIX-08 item 3: the
+// correlator's "[Unconfirmed by live scan]" claim and a BLOCK verdict on the
+// same finding are contradictory, and the contradiction is what the marker
+// exists to stop. The arm is band-independent — CRITICAL severity does not lift
+// it — but it IS corroboration-dependent, so this is de-escalation, not
+// suppression.
+func TestUnconfirmedEvidenceNeverBlocksUnderDefaultPolicy(t *testing.T) {
+	// Shaped like what correlator.correlateWithMarks actually emits: the
+	// unconfirmed branch forces Confidence to MEDIUM.
+	unconfirmed := evidence.Evidence{
+		Title:                 "SQL injection",
+		Category:              "injection",
+		Endpoint:              "/api/v1/orders",
+		Severity:              models.SeverityCritical,
+		Source:                models.SourceWhitebox,
+		Confidence:            models.ConfidenceMedium,
+		Evidence:              "cursor.execute(...) [Unconfirmed by live scan]",
+		UnconfirmedByLiveScan: true,
+	}
+
+	d := DecideWithOptions(unconfirmed, "CRITICAL", enforced)
+	if d.Status != StatusWarn {
+		t.Errorf("unconfirmed finding Status = %q, want WARN (score %d, band %s)",
+			d.Status, d.Score.Value, d.Score.Band)
+	}
+	if !strings.Contains(d.Reason, "unconfirmed by live scan") {
+		t.Errorf("reason should name the unconfirmed marker: %q", d.Reason)
+	}
+	if d.Evidence.Evidence == "" {
+		t.Error("evidence text was dropped; the marker de-escalates, it never suppresses (Rule 3)")
+	}
+
+	// Corroborated: the live scan not matching it no longer stands alone.
+	corroborated := unconfirmed
+	corroborated.Reachable = true
+	if got := DecideWithOptions(corroborated, "CRITICAL", enforced); got.Status != StatusBlock {
+		t.Errorf("corroborated unconfirmed finding Status = %q, want BLOCK", got.Status)
+	}
+
+	// Escape hatch: the legacy mapping ignores the marker entirely.
+	if got := DecideWithOptions(unconfirmed, "CRITICAL", legacy); got.Status != StatusBlock {
+		t.Errorf("with --enforce-confidence=false Status = %q, want the legacy BLOCK", got.Status)
+	}
+}
+
+// TestCorroborationsAreDeterministicAndOrdered is the Rule 8 lock. The list is
+// joined into Decision.Reason, which is published as part of the decision
+// output and compared verbatim by the order-independence tests in
+// internal/engine — so any map or set in here would surface as flaky output.
+func TestCorroborationsAreDeterministicAndOrdered(t *testing.T) {
+	full := evidence.Evidence{
+		Severity:       models.SeverityHigh,
+		Source:         models.SourceCorrelated,
+		Confidence:     models.ConfidenceHigh,
+		RouteConfirmed: true,
+		Reachable:      true,
+		ProvenPath:     true,
+		Payload:        "' OR 1=1--",
+		Response:       "500 Internal Server Error",
+
+		DirectObservation: true,
+	}
+	want := []string{
+		"cross-engine agreement",
+		"live runtime observation",
+		"direct observation of a live response",
+		"deterministic detection in production code",
+		"confirmed route",
+		"reachable taint path",
+		"proven path",
+		"payload-validated probe",
+	}
+	got := corroborations(full)
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("corroborations = %v, want %v", got, want)
+	}
+	for i := 0; i < 1000; i++ {
+		if strings.Join(corroborations(full), "|") != strings.Join(want, "|") {
+			t.Fatalf("corroborations is not deterministic (iteration %d): %v", i, corroborations(full))
+		}
+	}
+	if got := corroborations(evidence.Evidence{Severity: models.SeverityHigh}); got != nil {
+		t.Errorf("corroborations with no signals = %v, want nil so len()==0 is the single predicate", got)
+	}
+}
+
+// TestCorroborationsAcceptsBothObservationConcepts is DECISIONS.md D7 in test
+// form: decision's wide Source-keyed predicate and the narrow
+// evidence.DirectObservation field are DIFFERENT signals and both count. If
+// someone "unifies" them onto the narrow field, the first case here goes red —
+// and with it every active-probe DAST finding's ability to gate a build.
+func TestCorroborationsAcceptsBothObservationConcepts(t *testing.T) {
+	// An active-probe DAST finding: blackbox, but no DirectObservation (the
+	// injection/XSS/SSRF/GraphQL scanners do not set it).
+	probe := evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceBlackbox, Payload: "' OR 1=1--"}
+	if len(corroborations(probe)) == 0 {
+		t.Error("an active-probe blackbox finding has no corroborator — the live-scan gate is gone")
+	}
+
+	// The narrow field on its own (a header/cookie/CORS read) also counts.
+	direct := evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceBlackbox, DirectObservation: true}
+	if !contains(corroborations(direct), "direct observation of a live response") {
+		t.Error("evidence.DirectObservation is not counted as corroboration")
+	}
+
+	// And the static mirror, so a code-only scan of production code can gate.
+	det := evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh}
+	if !contains(corroborations(det), "deterministic detection in production code") {
+		t.Error("the deterministic-detection signal is not counted as corroboration")
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTestFixtureBlockDemotionRequiresNoCorroboration is FIX-09 item 1: the
+// demotion is conditional on the absence of corroboration, which is what makes
+// it a de-escalation rather than a path-based exemption (Rule 3 forbids the
+// latter outright).
+func TestTestFixtureBlockDemotionRequiresNoCorroboration(t *testing.T) {
+	ev := evidence.Evidence{
+		Title:      "Hardcoded API key or token",
+		Category:   "secrets",
+		Endpoint:   "app/tests/test_client.py:12",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Confidence: models.ConfidenceHigh,
+		Evidence:   `api_key = "sk-live-abc..."`,
+		InTest:     true,
+	}
+	on := Options{DeescalateTests: true}
+	off := Options{DeescalateTests: false}
+
+	held := DecideWithOptions(ev, "HIGH", on)
+	if held.Status != StatusWarn {
+		t.Errorf("Status = %q, want WARN", held.Status)
+	}
+	if !strings.Contains(held.Reason, "test/fixture code") || !strings.Contains(held.Reason, "corroborating") {
+		t.Errorf("reason must name the rule and the missing corroboration: %q", held.Reason)
+	}
+	if held.Evidence.Evidence == "" {
+		t.Error("evidence text was dropped (Rule 3)")
+	}
+
+	plain := DecideWithOptions(ev, "HIGH", off)
+	if plain.Status != StatusBlock {
+		t.Errorf("with --deescalate-tests=false Status = %q, want BLOCK", plain.Status)
+	}
+	if held.Score.Value != plain.Score.Value {
+		t.Errorf("the de-escalation changed the SCORE (%d → %d); it must only change STATUS",
+			plain.Score.Value, held.Score.Value)
+	}
+	if len(held.Score.Reasons) != len(plain.Score.Reasons)+1 {
+		t.Errorf("expected exactly one extra reason line, got %d vs %d",
+			len(held.Score.Reasons), len(plain.Score.Reasons))
+	}
+	last := held.Score.Reasons[len(held.Score.Reasons)-1]
+	if !strings.HasPrefix(last, "+0 ") {
+		t.Errorf("the de-escalation line must carry an explicit +0 delta so reasons still\n"+
+			"reconcile with the score: %q", last)
+	}
+
+	// A provider-validated live credential that happens to live in a fixture
+	// is still a leak. Reachable stands in for "some signal beyond the pattern
+	// match" here; the arm is len(corroborations)==0, not any specific field.
+	corroborated := ev
+	corroborated.Reachable = true
+	if got := DecideWithOptions(corroborated, "HIGH", on); got.Status != StatusBlock {
+		t.Errorf("corroborated test-code finding Status = %q, want BLOCK", got.Status)
+	}
+}
+
+// TestThresholdCrossingFindingNeverSinksBelowWarn locks the floor. Two
+// independent demotions now exist (the confidence gate and the test-fixture
+// rule), and letting them cascade would bury a finding that DID cross the
+// team's --fail-on threshold at the same level as a below-threshold LOW.
+func TestThresholdCrossingFindingNeverSinksBelowWarn(t *testing.T) {
+	// InTest + Placeholder: 35 base + 10 static - 20 placeholder = 25 → LOW
+	// band, so the confidence gate demotes it too. The worst case for the
+	// cascade.
+	ev := evidence.Evidence{
+		Title:       "Hardcoded API key or token",
+		Category:    "secrets",
+		Endpoint:    "app/tests/test_client.py:12",
+		Severity:    models.SeverityHigh,
+		Source:      models.SourceWhitebox,
+		Confidence:  models.ConfidenceHigh,
+		InTest:      true,
+		Placeholder: true,
+	}
+	for _, enforce := range []bool{true, false} {
+		for _, deescalate := range []bool{true, false} {
+			opts := Options{EnforceConfidence: enforce, DeescalateTests: deescalate}
+			d := DecideWithOptions(ev, "HIGH", opts)
+			if d.Status == StatusInfo {
+				t.Errorf("enforce=%v deescalate=%v: a finding at or above --fail-on was reported INFO",
+					enforce, deescalate)
+			}
+			if d.Status != StatusBlock && d.Status != StatusWarn {
+				t.Errorf("enforce=%v deescalate=%v: unexpected Status %q", enforce, deescalate, d.Status)
+			}
+		}
+	}
+
+	// Below the threshold the original WARN → INFO rule is untouched.
+	below := ev
+	below.Severity = models.SeverityMedium
+	if d := DecideWithOptions(below, "HIGH", Options{EnforceConfidence: true, DeescalateTests: true}); d.Status != StatusInfo {
+		t.Errorf("below-threshold test finding Status = %q, want INFO (the v1.1 rule must still fire)", d.Status)
+	}
+}

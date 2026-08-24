@@ -23,6 +23,15 @@ import (
 
 // Rule deltas. Exposed as consts so the scoring policy is auditable at a
 // glance and a future release can tune it without spelunking the logic.
+//
+// NOTE on payloadValidated, recorded because it changes how the rest of the
+// table should be read: the rule requires BOTH ev.Payload and ev.Response, and
+// evidence.Evidence.Response has no production producer anywhere in the module
+// — every active-probe scanner sets Payload, none sets Response, and the only
+// other occurrences are provenance/correlator plumbing that copies it. So the
+// +10 has never fired outside tests, and the real DAST-only ceiling before
+// directObservation was 45, not 55. Do not re-derive the calibration from the
+// nominal sum.
 const (
 	base               = 35  // a scanner flagged this at all
 	staticEvidence     = 10  // SAST (whitebox/correlated) saw it in source
@@ -32,9 +41,19 @@ const (
 	reachableTaint     = 10  // AST proved a source→sink taint path
 	provenPathBonus    = 5   // confirmed route AND reachable taint chain
 	payloadValidated   = 10  // an active probe payload elicited a confirming response
+	directObservation  = 30  // the claim is a deterministic read of a live response (header/cookie/CORS value present or absent)
+	deterministicDetn  = 30  // the claim is a deterministic pattern match in production (non-test, non-fixture) source
 	tierTreeSitterBump = 5   // highest-trust analyzer tier
 	tierSemgrepPenalty = -5  // lowest-trust analyzer tier (regex breadth)
 	httpContextPenalty = -15 // B4: finding fired on a 4xx / static-asset context
+	placeholderPenalty = -20 // the credential value matches deterministic fixture heuristics
+	// FIX-14. Lighter than httpContextPenalty on purpose: that rule fires when
+	// a finding was observed in a context that makes it PROBABLY inapplicable
+	// (an auth-gated 4xx, a static asset), whereas "the advisory's component is
+	// never imported" is a weaker inference — the vulnerable dependency IS
+	// installed, and reflective import forms (importlib.import_module) are a
+	// documented false-negative of the grep that backs it.
+	componentNotImported = -10
 
 	// Band thresholds on the 0–100 score.
 	bandHigh   = 70
@@ -98,6 +117,27 @@ func Score(ev evidence.Evidence) Result {
 	if ev.Payload != "" && ev.Response != "" {
 		add(payloadValidated, "active probe payload elicited a confirming response")
 	}
+	// A deterministic read of a live response — a header present or absent, a
+	// cookie attribute present or absent, a literal CORS header value — is
+	// near-certain: there is no inference step between the bytes on the wire
+	// and the claim. Gated on hasRuntime because the concept is DAST-only; a
+	// static analyzer can never make this observation, and the gate stops a
+	// future SAST emitter from claiming the bonus.
+	//
+	// The delta is 30, not 25. At +25 a clean direct observation lands on
+	// exactly bandHigh (35+10+25 == 70) with zero margin, and correlation can
+	// never lift these categories higher — engine.categoryMap covers only
+	// secrets/injection/auth, so a headers/cookie/cors finding is never
+	// SourceCorrelated. Any future negative delta would then drop every one of
+	// them out of HIGH in a single step. At +30 a clean observation sits at 75,
+	// and one carrying the B4 context penalty lands at 60 — still MEDIUM, which
+	// is precisely the de-escalation the 4xx / static-asset FP classes need.
+	if hasRuntime && ev.DirectObservation {
+		add(directObservation, "direct observation: the finding is a deterministic read of a live response")
+	}
+	if HasDeterministicDetection(ev) {
+		add(deterministicDetn, "deterministic detection: a high-confidence pattern match in production (non-test) code")
+	}
 	switch ev.SourceTier {
 	case models.TierTreeSitter:
 		add(tierTreeSitterBump, "high-trust analyzer tier (tree-sitter taint)")
@@ -115,6 +155,26 @@ func Score(ev evidence.Evidence) Result {
 		add(httpContextPenalty, "finding fired on a static-asset endpoint, not an API route")
 	}
 
+	// De-escalate (never suppress) a credential finding whose value is shaped
+	// like a fixture. The classification itself is computed deterministically
+	// in scanner/secrets and carried on the Evidence, so nothing here is
+	// heuristic at scoring time (Rule 8) and the finding is still reported in
+	// full with its evidence intact (Rule 3).
+	if ev.Placeholder {
+		add(placeholderPenalty, "credential value matches deterministic placeholder heuristics (fixture-shaped)")
+	}
+
+	// De-escalate (never suppress) a dependency finding whose advisory is
+	// scoped to an importable sub-component the scanned tree never imports.
+	// The grep behind the flag is deterministic and runs in the scanner
+	// (Rule 8); the finding keeps its id, severity, endpoint and full evidence
+	// text (Rule 3) — only the confidence drops, which is what stops a
+	// smaller-surface vulnerability from gating a build at the same weight as
+	// one on a code path the project actually uses.
+	if ev.ComponentNotImported {
+		add(componentNotImported, "the advisory's affected component is not imported by the scanned code")
+	}
+
 	// Evidence-chain tracing: a correlated score is only as trustworthy as
 	// the inputs that merged into it, so surface them.
 	if trace := lineageTrace(ev); trace != "" {
@@ -128,6 +188,56 @@ func Score(ev evidence.Evidence) Result {
 	}
 	score = clamp(score, 0, 100)
 	return Result{Value: score, Band: bandFor(score), Reasons: reasons}
+}
+
+// HasDeterministicDetection reports whether ev earns the deterministicDetn
+// delta: the static-analysis mirror of DirectObservation.
+//
+// A pattern analyzer that reads a credential, a vulnerable pinned version or a
+// dangerous construct out of source text and asserts models.ConfidenceHigh has
+// made the same KIND of claim a missing-header check makes — the finding IS the
+// read, with no inference between the bytes in the file and the claim. Without
+// it a whitebox secrets finding scores 35 base + 10 static = 45 and can never
+// leave the MEDIUM band on its own, because payloadValidated cannot fire (no
+// producer sets Evidence.Response) and correlation needs a live target. Once
+// band membership gates enforcement, that would stop a code-only scan of REAL
+// hardcoded credentials from failing the build — a security regression, which
+// is why this delta exists.
+//
+// Exported so the decision layer can count the same signal as corroboration
+// without re-deriving — and then drifting from — the predicate.
+//
+// The four conjuncts, each doing real work:
+//
+//   - hasStatic: the mirror of DirectObservation's hasRuntime gate. A live
+//     probe cannot make a source-text pattern match.
+//   - ConfidenceHigh: the emitting check's own claim that this is a literal
+//     match rather than a graded guess. It is the same predicate the DAST side
+//     uses, so one rule reads across both halves of the engine.
+//   - not TierSemgrepShim: that tier buys breadth at the cost of precision and
+//     has not cleared the F1 gate (see models.SourceTier.TrustRank and
+//     tierSemgrepPenalty). Letting regex breadth band HIGH on its own would
+//     hand the gate exactly the false positives band-gating exists to stop.
+//   - not InTest, not Placeholder: 31 of the 35 catalogued instances in
+//     tasks/FP_CORPUS.md are test fixtures, and a value the placeholder
+//     classifier recognises is deterministic evidence that the match is NOT a
+//     real credential. Both directly negate "deterministic detection of a real
+//     defect", so they gate the bonus rather than merely being penalised
+//     afterwards — a fixture-shaped credential must land in LOW, not in the
+//     MEDIUM band where one corroborator could still block a build.
+//
+// Reachable / proven-path findings are deliberately NOT excluded. A proven
+// source→sink chain is the most deterministic thing a static analyzer can
+// produce; excluding it would leave a CRITICAL proven-path SQLi in MEDIUM with
+// no corroborator on a code-only scan, which is the same regression this delta
+// was added to prevent.
+func HasDeterministicDetection(ev evidence.Evidence) bool {
+	hasStatic := ev.Source == models.SourceWhitebox || ev.Source == models.SourceCorrelated
+	return hasStatic &&
+		ev.Confidence == models.ConfidenceHigh &&
+		ev.SourceTier != models.TierSemgrepShim &&
+		!ev.InTest &&
+		!ev.Placeholder
 }
 
 // lineageTrace renders ev.Lineage (the BB+WB inputs that merged during

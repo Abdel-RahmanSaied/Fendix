@@ -472,3 +472,63 @@ func TestCORS_WildcardMethods(t *testing.T) {
 		t.Errorf("unexpected title: %s", findings[0].Title)
 	}
 }
+
+// TestCORS_DirectObservationOnOriginFindingsOnly mirrors the headers predicate.
+// ACAO/ACAC are read literally and reflection is exact case-insensitive
+// equality to the probe origin, so the origin findings are direct observations.
+// The method-policy findings are not: an ACAM token list is read literally too,
+// but those findings grade EXPLOITABILITY rather than certainty, which is why
+// both already carry ConfidenceMedium.
+func TestCORS_DirectObservationOnOriginFindingsOnly(t *testing.T) {
+	t.Run("origin findings", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			w.WriteHeader(200)
+		}))
+		defer server.Close()
+
+		ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
+		findings := CheckCORS(context.Background(), &models.ScanConfig{Timeout: 10, AllowPrivate: true}, ep)
+		if len(findings) == 0 {
+			t.Fatal("no CORS findings for a reflecting server — test premise broken")
+		}
+		for _, f := range findings {
+			if !strings.HasPrefix(f.Title, "CORS reflects") && !strings.HasPrefix(f.Title, "CORS wildcard") &&
+				!strings.HasPrefix(f.Title, "CORS accepts") && !strings.HasPrefix(f.Title, "CORS allows any") {
+				continue // a method-policy finding; covered by the subtest below
+			}
+			if !f.DirectObservation {
+				t.Errorf("%q is not marked DirectObservation; ACAO/ACAC are literal reads", f.Title)
+			}
+		}
+	})
+
+	t.Run("method-policy findings are graded, not read", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Methods", "*")
+			w.WriteHeader(200)
+		}))
+		defer server.Close()
+
+		ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
+		findings := CheckCORS(context.Background(), &models.ScanConfig{Timeout: 10, AllowPrivate: true}, ep)
+
+		var found bool
+		for _, f := range findings {
+			if f.Title != "CORS allows all methods (wildcard)" {
+				continue
+			}
+			found = true
+			if f.DirectObservation {
+				t.Error("the method-policy finding claimed the direct-observation bonus; it is graded\n" +
+					"on exploitability, which is why it carries ConfidenceMedium")
+			}
+		}
+		if !found {
+			t.Fatalf("no wildcard-methods finding: %v", findings)
+		}
+	})
+}
