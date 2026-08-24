@@ -47,6 +47,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/applicability"
 )
 
 // ErrLockfileMissingButPackageJsonPresent is returned when the
@@ -200,6 +201,10 @@ func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 		findings = append(findings, batchFindings...)
 	}
 
+	// Deliberately NOT applied on the sem.Acquire cancellation path above:
+	// that branch is unwinding a cancelled scan and must not start a tree
+	// walk.
+	findings = applicability.Resolve(abs, findings)
 	sortFindingsByID(findings)
 	return findings, nil
 }
@@ -261,6 +266,7 @@ func ScanOffline(codePath string, snap *offline.Snapshot) ([]evidence.Evidence, 
 		}
 		findings = append(findings, buildFindings(p, vulns, manifestName)...)
 	}
+	findings = applicability.Resolve(abs, findings)
 	sortFindingsByID(findings)
 	return findings, nil
 }
@@ -981,6 +987,14 @@ func buildMergedFinding(pkg resolvedPackage, members []osvVuln, manifestName str
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
 		RuleID:     canonical,
+		// INTERNAL handoff to scanner/deps/applicability (FIX-14). Metadata
+		// is dropped by ToFinding, which is fine: Resolve runs inside this
+		// package, before any projection.
+		Metadata: map[string]string{
+			"deps.ecosystem": "npm",
+			"deps.package":   pkg.name,
+			"deps.version":   pkg.version,
+		},
 	}
 }
 

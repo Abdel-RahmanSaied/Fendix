@@ -214,6 +214,15 @@ func TestInternalProvenanceRoundTripsAndMergesConservatively(t *testing.T) {
 			set:  func(e *Evidence, v bool) { e.Placeholder = v },
 			get:  func(e Evidence) bool { return e.Placeholder },
 		},
+		{
+			// ComponentNotImported is the strongest case for the "no
+			// endpoint-derived fallback" warning: it is a fact about the
+			// SCANNED TREE (does anything import django.contrib.gis?), which
+			// nothing downstream of the scanner can re-observe at all.
+			name: "ComponentNotImported",
+			set:  func(e *Evidence, v bool) { e.ComponentNotImported = v },
+			get:  func(e Evidence) bool { return e.ComponentNotImported },
+		},
 	}
 
 	for _, tc := range cases {

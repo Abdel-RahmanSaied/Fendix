@@ -66,10 +66,11 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			// on a hybrid scan — the 4xx/static-asset penalty then couldn't
 			// fire even once the scorer was given the Evidence.
 			o.ResponseContext = src.ResponseContext
-			// The same trap, three more times. DirectObservation (the scorer's
+			// The same trap, four more times. DirectObservation (the scorer's
 			// deterministic-read bonus), UnconfirmedByLiveScan (the decision
-			// layer's needs-corroboration marker) and Placeholder (the
-			// fixture-credential de-escalation) are all producer-set, and none
+			// layer's needs-corroboration marker), Placeholder (the
+			// fixture-credential de-escalation) and ComponentNotImported (the
+			// dep-applicability de-escalation) are all producer-set, and none
 			// of them has the endpoint-derived fallback that lets InTest
 			// survive being omitted here. Dropping one would leave its rule
 			// working on a pure-DAST or pure-SAST scan and silently dead on
@@ -77,6 +78,7 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			// builds the ProvenanceIndex AFTER correlation.
 			o.DirectObservation = src.DirectObservation
 			o.Placeholder = src.Placeholder
+			o.ComponentNotImported = src.ComponentNotImported
 			// UnconfirmedByLiveScan is OR-ed rather than assigned because THIS
 			// function is also a producer for it — the correlator is what
 			// discovers that a whitebox finding had no live match. A plain

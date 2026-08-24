@@ -148,6 +148,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   > INFO finding as new. A host that sets both a session cookie and a CSRF
   > cookie now produces two HttpOnly-class dedup groups where it produced one.
 
+- **A dependency advisory scoped to a sub-component the project never imports
+  scored exactly like one on a code path it uses every request.** A Django
+  advisory that only touches `django.contrib.gis` is real — the vulnerable code
+  is installed — but a project that never imports GeoDjango cannot reach it, and
+  reporting both at identical confidence is what makes a dependency report
+  tiring to read rather than actionable.
+
+  A new `internal/scanner/deps/applicability` pass consults a small curated
+  catalog and, when an advisory maps to an importable component, greps the
+  scanned tree for it. If nothing imports it, the finding gains one sentence of
+  evidence saying so and a named `-10` confidence delta, which moves a typical
+  dependency finding from the HIGH band to MEDIUM.
+
+  Per Rule 3 this is de-escalation and nothing else: the finding keeps its id,
+  its severity, its endpoint, its upgrade advice and its original evidence text
+  verbatim. No path is suppressed and no finding is dropped.
+
+  Everything about it is deterministic (Rule 8). The catalog is Go literals; the
+  package tier only fires when the advisory's OWN summary names the component,
+  so it cannot mis-scope an advisory that says nothing about one; the id tier
+  ships empty because an entry there is an assertion about a specific published
+  advisory. The grep is one `WalkDir` for all advisories at once with a
+  per-language compiled alternation — a scan whose advisories are not in the
+  catalog touches the filesystem zero times — and it fails OPEN, at full
+  confidence, if the tree exceeds the file budget or the walk cannot complete.
+
+  The matchers deliberately over-match rather than under-match, because a false
+  "imported" costs nothing while a false "not imported" quietly reduces the
+  confidence of a real risk. A Python component counts as imported when its
+  dotted path appears anywhere in a `.py` file — including as a string in
+  `INSTALLED_APPS`, which is how a Django app is actually enabled. A fully
+  dynamic import (`importlib.import_module(name)`, `require(variable)`) is a
+  known blind spot, and is the reason the penalty is a modest `-10` rather than
+  something that could move a band on its own.
+
 - **Every dependency vulnerability was reported once per OSV RECORD, not once
   per vulnerability.** OSV's `/v1/query` returns the GHSA record and each PYSEC
   record for the same underlying bug as separate `vulns[]` entries, and the

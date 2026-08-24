@@ -47,6 +47,13 @@ const (
 	tierSemgrepPenalty = -5  // lowest-trust analyzer tier (regex breadth)
 	httpContextPenalty = -15 // B4: finding fired on a 4xx / static-asset context
 	placeholderPenalty = -20 // the credential value matches deterministic fixture heuristics
+	// FIX-14. Lighter than httpContextPenalty on purpose: that rule fires when
+	// a finding was observed in a context that makes it PROBABLY inapplicable
+	// (an auth-gated 4xx, a static asset), whereas "the advisory's component is
+	// never imported" is a weaker inference — the vulnerable dependency IS
+	// installed, and reflective import forms (importlib.import_module) are a
+	// documented false-negative of the grep that backs it.
+	componentNotImported = -10
 
 	// Band thresholds on the 0–100 score.
 	bandHigh   = 70
@@ -155,6 +162,17 @@ func Score(ev evidence.Evidence) Result {
 	// full with its evidence intact (Rule 3).
 	if ev.Placeholder {
 		add(placeholderPenalty, "credential value matches deterministic placeholder heuristics (fixture-shaped)")
+	}
+
+	// De-escalate (never suppress) a dependency finding whose advisory is
+	// scoped to an importable sub-component the scanned tree never imports.
+	// The grep behind the flag is deterministic and runs in the scanner
+	// (Rule 8); the finding keeps its id, severity, endpoint and full evidence
+	// text (Rule 3) — only the confidence drops, which is what stops a
+	// smaller-surface vulnerability from gating a build at the same weight as
+	// one on a code path the project actually uses.
+	if ev.ComponentNotImported {
+		add(componentNotImported, "the advisory's affected component is not imported by the scanned code")
 	}
 
 	// Evidence-chain tracing: a correlated score is only as trustworthy as

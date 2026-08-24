@@ -45,6 +45,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/applicability"
 )
 
 // ErrNoRequirements is returned by Scan when codePath has no
@@ -168,6 +169,7 @@ func Scan(ctx context.Context, codePath string) ([]evidence.Evidence, error) {
 		}
 		findings = append(findings, buildFindings(p, vulns, "requirements.txt")...)
 	}
+	findings = applicability.Resolve(abs, findings)
 	sortFindingsByID(findings)
 	return findings, nil
 }
@@ -289,6 +291,7 @@ func ScanOffline(codePath string, maxDepth int, snap *offline.Snapshot) ([]evide
 			findings = append(findings, buildFindings(p, vulns, rel)...)
 		}
 	}
+	findings = applicability.Resolve(abs, findings)
 	sortFindingsByID(findings)
 	return findings, nil
 }
@@ -426,6 +429,10 @@ func scanViaOSV(ctx context.Context, codePath string, maxDepth int) ([]evidence.
 		findings = append(findings, batchFindings...)
 	}
 
+	// Deliberately NOT applied on the sem.Acquire cancellation path above:
+	// that branch is unwinding a cancelled scan and must not start a tree
+	// walk.
+	findings = applicability.Resolve(abs, findings)
 	sortFindingsByID(findings)
 	return findings, nil
 }
@@ -653,6 +660,7 @@ func scanViaSubprocess(ctx context.Context, codePath string, maxDepth int, pipAu
 		}
 		all = append(all, findings...)
 	}
+	all = applicability.Resolve(abs, all)
 	sortFindingsByID(all)
 	return all, nil
 }
@@ -1323,6 +1331,17 @@ func buildMergedFinding(pkg pinnedPackage, members []osvVuln, manifestName strin
 		References: refs,
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
+		// INTERNAL handoff to scanner/deps/applicability (FIX-14), which
+		// needs the ecosystem/package/version this finding is about in a
+		// form it can look up without re-parsing the title. Metadata is
+		// dropped by ToFinding, which is fine: applicability.Resolve runs
+		// inside this package, before any projection, and nothing
+		// downstream may reach for these keys.
+		Metadata: map[string]string{
+			"deps.ecosystem": "PyPI",
+			"deps.package":   pkg.name,
+			"deps.version":   pkg.version,
+		},
 	}
 }
 

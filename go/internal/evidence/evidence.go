@@ -134,6 +134,20 @@ type Evidence struct {
 	// be carried explicitly by ScoringProvenance AND restored by
 	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
 	Placeholder bool
+	// ComponentNotImported marks dependency evidence whose advisory is scoped
+	// to a specific importable sub-component — a Django advisory that only
+	// touches django.contrib.gis, say — that the scanned tree never imports.
+	// The vulnerable package IS installed, so this is a weaker inference than
+	// the HTTP-context de-escalation: it says the reachable surface is
+	// smaller, not that the finding is wrong. The confidence scorer applies
+	// componentNotImported (-10) and the finding is PRESERVED in full with its
+	// evidence text (Rule 3), never suppressed.
+	//
+	// Set by scanner/deps/applicability, which is the only thing that can know
+	// it — like the three flags above it has NO endpoint-derived fallback, so
+	// it must be carried by ScoringProvenance AND restored by
+	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
+	ComponentNotImported bool
 }
 
 // FromFinding lifts a models.Finding into Evidence, copying the render block

@@ -58,20 +58,22 @@ type ScoringProvenance struct {
 	InTest bool
 	// DirectObservation (the confidence scorer's directObservation bonus),
 	// UnconfirmedByLiveScan (the decision layer's "needs corroboration to
-	// block" marker) and Placeholder (the scorer's placeholderPenalty) are the
-	// three producer-set flags that joined InTest. All three merge with the
-	// same "agree or drop" rule, so a dedup group earns a bonus only when
-	// EVERY occurrence earned it and is de-escalated only when EVERY
-	// occurrence deserved it.
+	// block" marker), Placeholder (the scorer's placeholderPenalty) and
+	// ComponentNotImported (the scorer's componentNotImported penalty) are the
+	// producer-set flags that joined InTest. All of them merge with the same
+	// "agree or drop" rule, so a dedup group earns a bonus only when EVERY
+	// occurrence earned it and is de-escalated only when EVERY occurrence
+	// deserved it.
 	//
 	// CRITICAL, and the reason they are grouped and commented together: unlike
 	// InTest, NONE of them has an endpoint-derived fallback in
 	// NewProvenanceIndex. InTest is a pure function of the endpoint, so a
-	// missed hop self-heals; these three are known only to their producer, so a
+	// missed hop self-heals; these are known only to their producer, so a
 	// missed hop is permanent and silent.
 	DirectObservation     bool
 	UnconfirmedByLiveScan bool
 	Placeholder           bool
+	ComponentNotImported  bool
 }
 
 // ProvenanceIndex maps a render-stable finding identity to the scoring
@@ -111,12 +113,15 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			// models.Finding unmarshal — and keeps the rule a pure function of
 			// the endpoint, so it stays reproducible.
 			InTest: e.InTest || models.IsTestPath(e.Endpoint),
-			// No `|| derive(...)` clause for the three below, on purpose:
+			// No `|| derive(...)` clause for the four below, on purpose:
 			// nothing on a projected Finding can reconstruct them, so an
 			// invented fallback would be a guess rather than a recovery.
+			// ComponentNotImported in particular is a fact about the SCANNED
+			// TREE, which nothing downstream of the scanner can re-observe.
 			DirectObservation:     e.DirectObservation,
 			UnconfirmedByLiveScan: e.UnconfirmedByLiveScan,
 			Placeholder:           e.Placeholder,
+			ComponentNotImported:  e.ComponentNotImported,
 		}
 		if prev, ok := ix[k]; ok {
 			p = mergeScoringProvenance(prev, p)
@@ -175,6 +180,9 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		if !out[i].Placeholder {
 			out[i].Placeholder = p.Placeholder
 		}
+		if !out[i].ComponentNotImported {
+			out[i].ComponentNotImported = p.ComponentNotImported
+		}
 	}
 	return out
 }
@@ -218,6 +226,7 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		DirectObservation:     agreementOrBool(a.DirectObservation, b.DirectObservation),
 		UnconfirmedByLiveScan: agreementOrBool(a.UnconfirmedByLiveScan, b.UnconfirmedByLiveScan),
 		Placeholder:           agreementOrBool(a.Placeholder, b.Placeholder),
+		ComponentNotImported:  agreementOrBool(a.ComponentNotImported, b.ComponentNotImported),
 	}
 }
 

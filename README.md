@@ -643,8 +643,8 @@ Separately, every finding carries a **deterministic 0–100 confidence score**
 +10, route confirmed +10, validated probe payload +10, direct observation of a
 live response +30, deterministic pattern match in production source +30,
 analyzer tier ±5, low-trust HTTP context −15, placeholder-shaped
-credential −20. There is no AI anywhere in that path; the same
-evidence always yields the same score.
+credential −20, advisory's affected component never imported −10. There is no
+AI anywhere in that path; the same evidence always yields the same score.
 
 <details>
 <summary>Reference scoring model (spec, not the runtime path)</summary>

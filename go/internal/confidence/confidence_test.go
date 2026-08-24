@@ -148,6 +148,9 @@ func TestReasonsSumToValue(t *testing.T) {
 		{Source: models.SourceBlackbox, DirectObservation: true, ResponseContext: "4xx"},
 		// The placeholder de-escalation is negative and must reconcile too.
 		{Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh, Placeholder: true},
+		// So must the dep-applicability one, which stacks on top of the
+		// deterministic-detection bonus rather than cancelling it.
+		{Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh, Category: "deps", ComponentNotImported: true},
 	}
 	for _, ev := range cases {
 		r := Score(ev)
@@ -250,6 +253,27 @@ func provenanceDriftFixtures() []provenanceFixture {
 			},
 			// 35 base + 10 static.
 			wantValue: base + staticEvidence,
+		},
+		{
+			// A dependency finding whose advisory is scoped to an importable
+			// sub-component the scanned tree never imports. It gets its own
+			// fixture rather than riding on one of the above because the flag
+			// is meaningless outside the deps category, and because this is
+			// the shape whose SURVIVAL matters: the fact is observed by the
+			// scanner walking the source tree, and nothing downstream of the
+			// projection can re-observe it.
+			name: "dependency advisory whose affected component is never imported",
+			ev: evidence.Evidence{
+				Title:                "Vulnerable dependency: django==5.2.16 (CVE-2026-15830)",
+				Category:             "deps",
+				Endpoint:             "requirements.txt",
+				Severity:             models.SeverityHigh,
+				Source:               models.SourceWhitebox,
+				Confidence:           models.ConfidenceHigh,
+				ComponentNotImported: true,
+			},
+			// 35 base + 10 static + 30 deterministic detection - 10 component.
+			wantValue: base + staticEvidence + deterministicDetn + componentNotImported,
 		},
 	}
 }
@@ -453,6 +477,60 @@ func TestFixtureShapedCredentialLandsInLow(t *testing.T) {
 	}
 	if got.Band != models.ConfidenceLow {
 		t.Errorf("Band = %q, want LOW", got.Band)
+	}
+}
+
+// TestScoreComponentNotImportedPenalty is the FIX-14 gate. A dependency
+// finding whose advisory only touches a sub-component the scanned tree never
+// imports is REAL — the vulnerable package is installed — but its reachable
+// surface is smaller, so it should not gate a build at the same weight as one
+// on a code path the project actually uses.
+//
+// Rule 3 is the whole shape of this: the finding is de-escalated, never
+// dropped. Detection, id, severity, endpoint and evidence text all stay; only
+// the score moves.
+func TestScoreComponentNotImportedPenalty(t *testing.T) {
+	dep := evidence.Evidence{
+		Title:      "Vulnerable dependency: django==5.2.16 (CVE-2026-15830)",
+		Category:   "deps",
+		Endpoint:   "requirements.txt",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Confidence: models.ConfidenceHigh,
+	}
+	full := Score(dep)
+
+	notImported := dep
+	notImported.ComponentNotImported = true
+	got := Score(notImported)
+
+	if got.Value >= full.Value {
+		t.Errorf("Value = %d; want strictly below the un-annotated %d", got.Value, full.Value)
+	}
+	if want := full.Value + componentNotImported; got.Value != want {
+		t.Errorf("Value = %d; want %d (exactly one delta applied)", got.Value, want)
+	}
+	if !strings.Contains(strings.Join(got.Reasons, "\n"),
+		"the advisory's affected component is not imported by the scanned code") {
+		t.Errorf("no component-not-imported reason line: %v", got.Reasons)
+	}
+	// The observable effect is the band flip: a dependency finding is
+	// whitebox + ConfidenceHigh with no analyzer tier, so it earns
+	// deterministicDetn and sits at 75 = HIGH. The penalty moves it to 65 =
+	// MEDIUM, where --fail-on's band gate no longer treats it as
+	// self-corroborating.
+	if full.Band != models.ConfidenceHigh {
+		t.Fatalf("baseline dep band = %q (%d); this test's premise is that it starts HIGH",
+			full.Band, full.Value)
+	}
+	if got.Band != models.ConfidenceMedium {
+		t.Errorf("Band = %q (%d); want MEDIUM", got.Band, got.Value)
+	}
+	// De-escalation, not suppression: the delta must NOT withhold the
+	// deterministic-detection bonus the way Placeholder does. The dependency
+	// really is installed and really is vulnerable.
+	if !strings.Contains(strings.Join(got.Reasons, "\n"), "deterministic detection") {
+		t.Errorf("the component penalty suppressed the detection bonus; it should only subtract: %v", got.Reasons)
 	}
 }
 
