@@ -635,8 +635,9 @@ a formula at report time:
 Separately, every finding carries a **deterministic 0–100 confidence score**
 (`confidence_score`) with a per-rule plain-text breakdown in
 `confidence_reasons` — base 35, cross-engine agreement +25, reachable taint
-+10, route confirmed +10, validated probe payload +10, analyzer tier ±5,
-low-trust HTTP context −15. There is no AI anywhere in that path; the same
++10, route confirmed +10, validated probe payload +10, direct observation of a
+live response +30, analyzer tier ±5, low-trust HTTP context −15,
+placeholder-shaped credential −20. There is no AI anywhere in that path; the same
 evidence always yields the same score.
 
 <details>

@@ -95,6 +95,45 @@ type Evidence struct {
 	// the Python bridge alike) gets the same classification without an IPC
 	// change. INTERNAL — never projected onto Finding.
 	InTest bool
+	// DirectObservation marks evidence whose claim is a DETERMINISTIC READ of a
+	// single live response: a header present or absent, a cookie attribute
+	// present or absent, a literal CORS header value. Such a claim carries no
+	// inference about exploitability, reachability or intent — it is what the
+	// wire said. Set by the emitting scanner (headers.go, cors.go,
+	// cookie_flags.go); the confidence scorer awards directObservation for it.
+	//
+	// Unlike InTest there is NO derivable fallback — NewProvenanceIndex
+	// re-derives InTest from the endpoint via models.IsTestPath, and nothing on
+	// models.Finding can re-derive this — so it MUST be carried by
+	// ScoringProvenance AND restored by engine.CorrelateEvidence, or the rule is
+	// permanently dead. INTERNAL — never projected onto Finding.
+	DirectObservation bool
+	// UnconfirmedByLiveScan marks evidence the correlator could not confirm
+	// against the live scan: correlation actually ran (both a blackbox and a
+	// whitebox slice existed), the whitebox endpoint is URL-shaped, and no
+	// blackbox match was found. It is the machine-readable counterpart of the
+	// "[Unconfirmed by live scan]" prose suffix the correlator already writes
+	// into the evidence text, and the decision layer reads it to hold such a
+	// finding at WARN.
+	//
+	// Deliberately NOT named `Confirmed`: the zero value would then assert
+	// "unconfirmed" for every producer that never runs through the correlator
+	// (every code-only scan), inverting the meaning of the default. Like
+	// DirectObservation it has no endpoint-derivable fallback. INTERNAL — never
+	// projected onto Finding.
+	UnconfirmedByLiveScan bool
+	// Placeholder marks credential evidence whose value matched the
+	// deterministic fixture heuristics in scanner/secrets: a
+	// FAKE_/TEST_/DUMMY_/MOCK_/EXAMPLE_/PLACEHOLDER_/SAMPLE_ variable name, a
+	// placeholder word inside the value, a dominant-character or long-run
+	// value, or an implausibly short value. The confidence scorer applies
+	// placeholderPenalty; the finding is still reported with full evidence
+	// (Rule 3) — this is de-escalation, never suppression.
+	//
+	// Like the two above it CANNOT be re-derived from the endpoint, so it must
+	// be carried explicitly by ScoringProvenance AND restored by
+	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
+	Placeholder bool
 }
 
 // FromFinding lifts a models.Finding into Evidence, copying the render block

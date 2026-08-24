@@ -20,7 +20,11 @@ func TestScoreDeterministic(t *testing.T) {
 }
 
 func TestScoreBlackboxOnlyIsModest(t *testing.T) {
-	// A blackbox-only finding: base(35) + runtime(10) = 45 → MEDIUM.
+	// A blackbox-only finding that is NOT a direct observation — an inference
+	// about policy strength (Weak-CSP), or a read the scanner itself cannot
+	// disambiguate (SameSite): base(35) + runtime(10) = 45 → MEDIUM. Findings
+	// that ARE deterministic reads earn directObservation on top and reach the
+	// HIGH band.
 	got := Score(evidence.Evidence{Source: models.SourceBlackbox})
 	if got.Value != base+runtimeEvidence {
 		t.Errorf("blackbox-only Value = %d, want %d", got.Value, base+runtimeEvidence)
@@ -139,6 +143,11 @@ func TestReasonsSumToValue(t *testing.T) {
 		{Source: models.SourceBlackbox, ResponseContext: "4xx"},
 		{Source: models.SourceBlackbox, Payload: "p", Response: "r", ResponseContext: "static-asset",
 			Lineage: []evidence.Evidence{{Source: models.SourceBlackbox, Category: "headers"}}},
+		// A direct observation, on its own and with the B4 penalty on top.
+		{Source: models.SourceBlackbox, DirectObservation: true},
+		{Source: models.SourceBlackbox, DirectObservation: true, ResponseContext: "4xx"},
+		// The placeholder de-escalation is negative and must reconcile too.
+		{Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh, Placeholder: true},
 	}
 	for _, ev := range cases {
 		r := Score(ev)
@@ -178,6 +187,73 @@ func TestScore4xxContextPenalty(t *testing.T) {
 	}
 }
 
+// provenanceFixture is one Evidence shape the two drift guards below share,
+// with its score pinned so a silent retune of the rule deltas cannot slip past.
+type provenanceFixture struct {
+	name      string
+	ev        evidence.Evidence
+	wantValue int
+}
+
+// provenanceDriftFixtures must, BETWEEN THEM, populate every field of
+// evidence.ScoringProvenance — TestScoringProvenanceCoversEveryScoredField
+// enforces exactly that. Adding a field to Evidence + ScoringProvenance and
+// forgetting to exercise it here is the hole that left payload-validated,
+// ResponseContext and lineage dead in production with a green suite.
+func provenanceDriftFixtures() []provenanceFixture {
+	return []provenanceFixture{
+		{
+			// A DAST header finding on a static asset whose credential-shaped
+			// value looked like a fixture: exercises Payload, Response,
+			// ResponseContext, Lineage, DirectObservation and Placeholder in
+			// one shot.
+			name: "blackbox direct observation, fixture-shaped, on a static asset",
+			ev: evidence.Evidence{
+				Title:    "Missing Content-Security-Policy header",
+				Category: "headers",
+				Endpoint: "GET /assets/app.js",
+				Severity: models.SeverityMedium,
+				Source:   models.SourceBlackbox,
+				// every Evidence-internal field the scorer reads:
+				Payload:           "GET /assets/app.js",
+				Response:          "HTTP/1.1 200 OK",
+				ResponseContext:   "static-asset",
+				Lineage:           []evidence.Evidence{{Source: models.SourceBlackbox, Category: "headers"}},
+				DirectObservation: true,
+				Placeholder:       true,
+			},
+			// 35 base + 10 runtime + 10 payload + 30 direct - 20 placeholder
+			// - 15 context.
+			wantValue: base + runtimeEvidence + payloadValidated + directObservation +
+				placeholderPenalty + httpContextPenalty,
+		},
+		{
+			// A SAST finding whose producer marked it as test code even though
+			// the ENDPOINT is a production path — so models.IsTestPath cannot
+			// re-derive the flag and the round trip depends on
+			// ScoringProvenance.InTest alone. UnconfirmedByLiveScan rides along
+			// here: the confidence scorer does not read it (it is a
+			// decision-layer signal, guarded by
+			// decision.TestDecisionProvenanceSurvivesTheFindingProjection), but
+			// it still has to be CARRIED, and the coverage guard below is what
+			// says so.
+			name: "whitebox pattern match its producer marked as test code",
+			ev: evidence.Evidence{
+				Title:                 "Hardcoded API key or token",
+				Category:              "secrets",
+				Endpoint:              "src/app.py:42",
+				Severity:              models.SeverityHigh,
+				Source:                models.SourceWhitebox,
+				Confidence:            models.ConfidenceHigh,
+				InTest:                true,
+				UnconfirmedByLiveScan: true,
+			},
+			// 35 base + 10 static.
+			wantValue: base + staticEvidence,
+		},
+	}
+}
+
 // TestScoringProvenanceSurvivesTheFindingProjection is the DRIFT GUARD for the
 // wiring fix. Score is a pure function of Evidence, but the orchestrator can
 // only hand it Evidence rebuilt from the projected models.Finding — a lossy
@@ -190,33 +266,65 @@ func TestScore4xxContextPenalty(t *testing.T) {
 // ScoringProvenance and this test goes red — which is exactly how the
 // payload-validated / HTTP-context / lineage rules became dead code.
 func TestScoringProvenanceSurvivesTheFindingProjection(t *testing.T) {
-	ev := evidence.Evidence{
-		Title:    "Missing Content-Security-Policy header",
-		Category: "headers",
-		Endpoint: "GET /assets/app.js",
-		Severity: models.SeverityMedium,
-		Source:   models.SourceBlackbox,
-		// every Evidence-internal field the scorer reads:
-		Payload:         "GET /assets/app.js",
-		Response:        "HTTP/1.1 200 OK",
-		ResponseContext: "static-asset",
-		Lineage:         []evidence.Evidence{{Source: models.SourceBlackbox, Category: "headers"}},
+	for _, fx := range provenanceDriftFixtures() {
+		t.Run(fx.name, func(t *testing.T) {
+			want := Score(fx.ev)
+			// Pinned so the guard fails loudly if the deltas are retuned
+			// without revisiting this contract.
+			if want.Value != fx.wantValue {
+				t.Fatalf("unexpected baseline Value %d, want %d — retune this fixture with the rule deltas",
+					want.Value, fx.wantValue)
+			}
+
+			ix := evidence.NewProvenanceIndex([]evidence.Evidence{fx.ev})
+			restored := ix.Restore(evidence.FromFindings(evidence.ToFindings([]evidence.Evidence{fx.ev})))
+			got := Score(restored[0])
+
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("score differs across the Finding projection — an Evidence-internal\n"+
+					"field the scorer reads is missing from evidence.ScoringProvenance.\n got=%+v\nwant=%+v", got, want)
+			}
+		})
 	}
+}
 
-	want := Score(ev)
-	// Pinned so the guard fails loudly if the deltas are retuned without
-	// revisiting this contract: 35 base + 10 runtime + 10 payload - 15 context.
-	if want.Value != base+runtimeEvidence+payloadValidated+httpContextPenalty {
-		t.Fatalf("unexpected baseline Value %d — retune this test with the rule deltas", want.Value)
-	}
-
-	ix := evidence.NewProvenanceIndex([]evidence.Evidence{ev})
-	restored := ix.Restore(evidence.FromFindings(evidence.ToFindings([]evidence.Evidence{ev})))
-	got := Score(restored[0])
-
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("score differs across the Finding projection — an Evidence-internal\n"+
-			"field the scorer reads is missing from evidence.ScoringProvenance.\n got=%+v\nwant=%+v", got, want)
+// TestScoringProvenanceCoversEveryScoredField is the guard that
+// evidence/provenance.go's INVARIANT comment has always named — and which,
+// until now, existed nowhere in the repo, so the invariant it promised was
+// never actually enforced.
+//
+// The round-trip guard above is only as good as its fixtures: a field that no
+// fixture sets is never exercised, so a new internal field can be added to
+// Evidence AND to ScoringProvenance, be dropped by NewProvenanceIndex, and
+// still leave the suite green. This one reflects over ScoringProvenance and
+// requires every field to be non-zero on at least one fixture, which turns
+// "someone remembered" into "the build says so".
+//
+// A field the scorer does not read (UnconfirmedByLiveScan today) still has to
+// appear: the point is that the next author consciously decides where it is
+// covered rather than discovering later that it was nowhere.
+func TestScoringProvenanceCoversEveryScoredField(t *testing.T) {
+	fixtures := provenanceDriftFixtures()
+	pt := reflect.TypeOf(evidence.ScoringProvenance{})
+	for i := 0; i < pt.NumField(); i++ {
+		name := pt.Field(i).Name
+		covered := false
+		for _, fx := range fixtures {
+			fv := reflect.ValueOf(fx.ev).FieldByName(name)
+			if !fv.IsValid() {
+				t.Fatalf("evidence.ScoringProvenance.%s has no same-named field on evidence.Evidence —\n"+
+					"the two must stay name-for-name so Restore can be a mechanical copy", name)
+			}
+			if !fv.IsZero() {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			t.Errorf("evidence.ScoringProvenance.%s is not exercised by any fixture in\n"+
+				"provenanceDriftFixtures — add it to one, or the projection guard cannot\n"+
+				"see whether the field survives the round trip", name)
+		}
 	}
 }
 

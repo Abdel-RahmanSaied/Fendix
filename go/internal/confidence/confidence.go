@@ -23,6 +23,15 @@ import (
 
 // Rule deltas. Exposed as consts so the scoring policy is auditable at a
 // glance and a future release can tune it without spelunking the logic.
+//
+// NOTE on payloadValidated, recorded because it changes how the rest of the
+// table should be read: the rule requires BOTH ev.Payload and ev.Response, and
+// evidence.Evidence.Response has no production producer anywhere in the module
+// — every active-probe scanner sets Payload, none sets Response, and the only
+// other occurrences are provenance/correlator plumbing that copies it. So the
+// +10 has never fired outside tests, and the real DAST-only ceiling before
+// directObservation was 45, not 55. Do not re-derive the calibration from the
+// nominal sum.
 const (
 	base               = 35  // a scanner flagged this at all
 	staticEvidence     = 10  // SAST (whitebox/correlated) saw it in source
@@ -32,9 +41,11 @@ const (
 	reachableTaint     = 10  // AST proved a source→sink taint path
 	provenPathBonus    = 5   // confirmed route AND reachable taint chain
 	payloadValidated   = 10  // an active probe payload elicited a confirming response
+	directObservation  = 30  // the claim is a deterministic read of a live response (header/cookie/CORS value present or absent)
 	tierTreeSitterBump = 5   // highest-trust analyzer tier
 	tierSemgrepPenalty = -5  // lowest-trust analyzer tier (regex breadth)
 	httpContextPenalty = -15 // B4: finding fired on a 4xx / static-asset context
+	placeholderPenalty = -20 // the credential value matches deterministic fixture heuristics
 
 	// Band thresholds on the 0–100 score.
 	bandHigh   = 70
@@ -98,6 +109,24 @@ func Score(ev evidence.Evidence) Result {
 	if ev.Payload != "" && ev.Response != "" {
 		add(payloadValidated, "active probe payload elicited a confirming response")
 	}
+	// A deterministic read of a live response — a header present or absent, a
+	// cookie attribute present or absent, a literal CORS header value — is
+	// near-certain: there is no inference step between the bytes on the wire
+	// and the claim. Gated on hasRuntime because the concept is DAST-only; a
+	// static analyzer can never make this observation, and the gate stops a
+	// future SAST emitter from claiming the bonus.
+	//
+	// The delta is 30, not 25. At +25 a clean direct observation lands on
+	// exactly bandHigh (35+10+25 == 70) with zero margin, and correlation can
+	// never lift these categories higher — engine.categoryMap covers only
+	// secrets/injection/auth, so a headers/cookie/cors finding is never
+	// SourceCorrelated. Any future negative delta would then drop every one of
+	// them out of HIGH in a single step. At +30 a clean observation sits at 75,
+	// and one carrying the B4 context penalty lands at 60 — still MEDIUM, which
+	// is precisely the de-escalation the 4xx / static-asset FP classes need.
+	if hasRuntime && ev.DirectObservation {
+		add(directObservation, "direct observation: the finding is a deterministic read of a live response")
+	}
 	switch ev.SourceTier {
 	case models.TierTreeSitter:
 		add(tierTreeSitterBump, "high-trust analyzer tier (tree-sitter taint)")
@@ -113,6 +142,15 @@ func Score(ev evidence.Evidence) Result {
 		add(httpContextPenalty, "finding fired on a 4xx (auth-gated/client-error) response")
 	case "static-asset":
 		add(httpContextPenalty, "finding fired on a static-asset endpoint, not an API route")
+	}
+
+	// De-escalate (never suppress) a credential finding whose value is shaped
+	// like a fixture. The classification itself is computed deterministically
+	// in scanner/secrets and carried on the Evidence, so nothing here is
+	// heuristic at scoring time (Rule 8) and the finding is still reported in
+	// full with its evidence intact (Rule 3).
+	if ev.Placeholder {
+		add(placeholderPenalty, "credential value matches deterministic placeholder heuristics (fixture-shaped)")
 	}
 
 	// Evidence-chain tracing: a correlated score is only as trustworthy as

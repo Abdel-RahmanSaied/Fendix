@@ -180,3 +180,89 @@ func TestProvenanceIndexNilAndEmpty(t *testing.T) {
 		t.Errorf("nil index should pass evidence through unchanged")
 	}
 }
+
+// TestInternalProvenanceRoundTripsAndMergesConservatively covers the three
+// producer-set flags that joined InTest: DirectObservation, Placeholder and
+// UnconfirmedByLiveScan.
+//
+// They are grouped into ONE table because they share the exact property that
+// makes them dangerous: none of them can be re-derived from the endpoint the
+// way NewProvenanceIndex re-derives InTest via models.IsTestPath. A dropped hop
+// is therefore permanent and silent — the flag simply reads false forever, and
+// the rule that depends on it looks like it was never written. Each flag has to
+// clear all three bars: it must survive the lossy projection, it must merge
+// with "agree or drop" so one member of a dedup group cannot speak for the
+// rest, and the fold must not depend on input order (F-L6).
+func TestInternalProvenanceRoundTripsAndMergesConservatively(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*Evidence, bool)
+		get  func(Evidence) bool
+	}{
+		{
+			name: "DirectObservation",
+			set:  func(e *Evidence, v bool) { e.DirectObservation = v },
+			get:  func(e Evidence) bool { return e.DirectObservation },
+		},
+		{
+			name: "UnconfirmedByLiveScan",
+			set:  func(e *Evidence, v bool) { e.UnconfirmedByLiveScan = v },
+			get:  func(e Evidence) bool { return e.UnconfirmedByLiveScan },
+		},
+		{
+			name: "Placeholder",
+			set:  func(e *Evidence, v bool) { e.Placeholder = v },
+			get:  func(e Evidence) bool { return e.Placeholder },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1. Round trip: what ToFinding drops, the index puts back.
+			in := probeEvidence("GET /admin")
+			tc.set(&in, true)
+
+			projected := FromFindings(ToFindings([]Evidence{in}))
+			if tc.get(projected[0]) {
+				t.Fatalf("guard: %s is supposed to be dropped by the Finding projection —\n"+
+					"if it now survives, it has leaked onto the frozen public shape", tc.name)
+			}
+
+			restored := NewProvenanceIndex([]Evidence{in}).Restore(projected)
+			if !tc.get(restored[0]) {
+				t.Errorf("%s did not survive project → restore; the rule that reads it is dead\n"+
+					"in production for every caller downstream of the projection", tc.name)
+			}
+
+			// 2. Conservative merge: two occurrences of one identity that
+			// DISAGREE collapse to false, so a bonus is awarded (and a
+			// de-escalation applied) only when every occurrence earned it.
+			agree := probeEvidence("GET /admin")
+			tc.set(&agree, true)
+			disagree := probeEvidence("GET /admin")
+			tc.set(&disagree, false)
+
+			mixed := NewProvenanceIndex([]Evidence{agree, disagree}).
+				Restore(FromFindings(ToFindings([]Evidence{agree})))
+			if tc.get(mixed[0]) {
+				t.Errorf("%s survived a dedup group where one occurrence did not carry it —\n"+
+					"the merge must be agreementOrBool (logical AND), not OR", tc.name)
+			}
+
+			both := NewProvenanceIndex([]Evidence{agree, agree}).
+				Restore(FromFindings(ToFindings([]Evidence{agree})))
+			if !tc.get(both[0]) {
+				t.Errorf("%s was lost in a group where EVERY occurrence carried it — the merge\n"+
+					"must be conservative, not just always-false", tc.name)
+			}
+
+			// 3. Order independence (F-L6): the fold is a meet, so the index is
+			// a pure function of the member SET, not of worker arrival order.
+			fwd := NewProvenanceIndex([]Evidence{agree, disagree})
+			rev := NewProvenanceIndex([]Evidence{disagree, agree})
+			if !reflect.DeepEqual(fwd, rev) {
+				t.Errorf("%s merge depends on input order:\n fwd=%+v\n rev=%+v", tc.name, fwd, rev)
+			}
+		})
+	}
+}
