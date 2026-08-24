@@ -148,6 +148,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   > INFO finding as new. A host that sets both a session cookie and a CSRF
   > cookie now produces two HttpOnly-class dedup groups where it produced one.
 
+- **A dependency finding could tell you to "upgrade to" a git commit SHA, or
+  to jump a major version.** Two separate defects in one line of output.
+
+  `osvRange` did not decode OSV's `type` field, so a GIT range — whose `fixed`
+  event carries a commit SHA rather than a release — was indistinguishable from
+  an ECOSYSTEM one. Whichever the advisory listed first won. This is not
+  hypothetical: `pillow==9.0.0`'s advisory set carries ECOSYSTEM, SEMVER **and**
+  GIT ranges today. GIT ranges are now ignored for the upgrade message in the
+  pip, npm and govulncheck scanners; an absent `type` is still treated as
+  ECOSYSTEM, because the offline-snapshot and pip-audit adapters synthesise
+  ranges without one.
+
+  Separately, the version chosen was simply the first `fixed` event in the JSON,
+  with no reference to what the user actually has installed. An advisory that
+  patches several release branches lists one `fixed` per branch —
+  `django`'s PYSEC-2026-3717 lists `5.2.17` and `6.0.8` — so a user pinned at
+  `5.2.16` could be told to move to `6.0.8`. The rule is now two-level: WITHIN
+  one advisory, the lowest `fixed` version strictly greater than the installed
+  pin (the minimal in-branch upgrade); ACROSS the alias-merged members of one
+  finding, the maximum of those per-advisory candidates, so the printed version
+  really does fix every vulnerability the finding reports.
+
+  Ranking reuses `internal/offline`'s existing comparator (now exported as
+  `CompareVersions`) rather than growing a second one. When it cannot rank a
+  fix above the pin — it collapses PyPI pre-releases onto their release core —
+  the scanner falls back to the lowest listed fix rather than claiming "no fix
+  listed in OSV". A version is never invented: an advisory with no usable
+  `fixed` event still prints the honest no-fix sentinel.
+
+  > **Advisory freshness is bounded by a 24h cache.** OSV responses are cached
+  > per `(package, version)` under `~/.fendix/cache/osv-{pypi,npm}/` for 24
+  > hours, so an advisory published in the last day is not seen until that
+  > entry expires, and one withdrawn in the last day keeps being reported.
+  > There is no cache-bust flag — delete the directory to force a refresh.
+
 ### Changed
 
 - **`--fail-on` now requires the confidence band to support the claim.**

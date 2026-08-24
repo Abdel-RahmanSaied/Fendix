@@ -122,6 +122,13 @@ type osvAffected struct {
 }
 
 type osvRange struct {
+	// Type is the OSV range type: "ECOSYSTEM", "SEMVER" or "GIT".
+	// vuln.go.dev emits SEMVER in practice, so the practical impact here
+	// is nil — the field is decoded for the same reason the pip and npm
+	// scanners decode it (FIX-06): a GIT range's `fixed` event carries a
+	// commit SHA, and one leaking into "Upgrade to <sha> or later" would
+	// be a lie. Empty is treated as ECOSYSTEM-equivalent.
+	Type   string     `json:"type"`
 	Events []osvEvent `json:"events"`
 }
 
@@ -246,6 +253,10 @@ func buildFinding(osv *osvRecord, modName string) evidence.Evidence {
 func firstFixVersion(osv *osvRecord) string {
 	for _, a := range osv.Affected {
 		for _, r := range a.Ranges {
+			// A GIT range's `fixed` is a commit SHA, not a version.
+			if r.Type == "GIT" {
+				continue
+			}
 			for _, ev := range r.Events {
 				if ev.Fixed != "" {
 					return ev.Fixed

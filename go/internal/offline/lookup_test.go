@@ -73,6 +73,14 @@ func TestCompareVersions(t *testing.T) {
 		if got := compareVersions(c.a, c.b); got != c.want {
 			t.Errorf("compareVersions(%q,%q) = %d; want %d", c.a, c.b, got, c.want)
 		}
+		// FIX-06 exported the comparator for the pip/npm scanners' upgrade
+		// ranking rather than letting them grow a second one. Pin that the
+		// wrapper stays a wrapper — a divergence here would mean the
+		// scanners rank fix versions by rules the offline range matcher
+		// does not use.
+		if got := CompareVersions(c.a, c.b); got != c.want {
+			t.Errorf("CompareVersions(%q,%q) = %d; want %d", c.a, c.b, got, c.want)
+		}
 	}
 }
 

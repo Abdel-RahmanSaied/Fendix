@@ -69,6 +69,12 @@ var ErrNoLockfile = errors.New("npm: no package-lock.json at path root")
 var osvAPIBase = "https://api.osv.dev"
 
 // cacheTTL matches the pip scanner — same 24h freshness window.
+//
+// Staleness window: an advisory published in the last 24h is not seen
+// until the entry for that exact (package, version) expires, and one
+// withdrawn in the last 24h keeps being reported. There is no cache-bust
+// flag — delete ~/.fendix/cache/osv-npm/ to force a refresh. Entries are
+// shape-versioned as well as time-bounded; see cacheSchema.
 const cacheTTL = 24 * time.Hour
 
 const httpTimeout = 15 * time.Second
@@ -261,7 +267,10 @@ func advisoryToOSV(a offline.Advisory) osvVuln {
 		Aliases: a.Aliases,
 	}
 	if fix := a.FirstFixedVersion(); fix != "" {
-		v.Affected = []osvAffected{{Ranges: []osvRange{{Events: []osvEvent{{Fixed: fix}}}}}}
+		// Stamp the type explicitly: a snapshot fix IS an ecosystem
+		// version, and saying so keeps the GIT filter from having to
+		// guess about a synthesised range.
+		v.Affected = []osvAffected{{Ranges: []osvRange{{Type: "ECOSYSTEM", Events: []osvEvent{{Fixed: fix}}}}}}
 	}
 	return v
 }
@@ -551,6 +560,12 @@ type osvAffected struct {
 }
 
 type osvRange struct {
+	// Type is the OSV range type: "ECOSYSTEM", "SEMVER" or "GIT". See the
+	// pip scanner's copy for the full rationale — the short version is
+	// that a GIT range's `fixed` event is a COMMIT SHA, and printing one
+	// in "Upgrade to lodash@<sha>" is worse than saying nothing. Empty is
+	// treated as ECOSYSTEM-equivalent (synthesised ranges, old caches).
+	Type   string     `json:"type"`
 	Events []osvEvent `json:"events"`
 }
 
@@ -607,7 +622,7 @@ func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.
 		desc = desc[:200]
 	}
 
-	fix := firstFixVersion(v)
+	fix := fixCandidate(v, pkg.version)
 	fixMsg := "Upgrade to a patched version (no fix listed in OSV)."
 	if fix != "" {
 		fixMsg = fmt.Sprintf("Upgrade to %s@%s or later.", pkg.name, fix)
@@ -636,9 +651,21 @@ func buildFinding(pkg resolvedPackage, v osvVuln, manifestName string) evidence.
 	}
 }
 
+// usableRange reports whether an OSV range's `fixed` events name real
+// package versions. GIT ranges name commit SHAs, which are useless in an
+// "Upgrade to X" message and meaningless to a version comparator. An
+// empty type is accepted: the offline-snapshot adapter synthesises
+// ECOSYSTEM-equivalent ranges without setting it.
+func usableRange(r osvRange) bool { return r.Type != "GIT" }
+
+// firstFixVersion returns the first non-GIT `fixed` event, installed-
+// version-agnostic. fixCandidate is what the finding constructor uses.
 func firstFixVersion(v osvVuln) string {
 	for _, a := range v.Affected {
 		for _, r := range a.Ranges {
+			if !usableRange(r) {
+				continue
+			}
 			for _, ev := range r.Events {
 				if ev.Fixed != "" {
 					return ev.Fixed
@@ -647,6 +674,113 @@ func firstFixVersion(v osvVuln) string {
 		}
 	}
 	return ""
+}
+
+// fixedVersions collects every `fixed` event across an advisory's non-GIT
+// ranges, in document order.
+func fixedVersions(v osvVuln) []string {
+	var out []string
+	for _, a := range v.Affected {
+		for _, r := range a.Ranges {
+			if !usableRange(r) {
+				continue
+			}
+			for _, ev := range r.Events {
+				if ev.Fixed != "" {
+					out = append(out, ev.Fixed)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// lowerVersion / higherVersion pick between two version strings using the
+// shared offline comparator, breaking a comparator TIE lexicographically
+// so the winner is a pure function of the input set (Rule 8) — npm
+// pre-releases collapse to their release core under that comparator, so
+// ties are reachable here. "" means "no candidate yet".
+func lowerVersion(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	switch c := offline.CompareVersions(a, b); {
+	case c < 0:
+		return a
+	case c > 0:
+		return b
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func higherVersion(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	switch c := offline.CompareVersions(a, b); {
+	case c > 0:
+		return a
+	case c < 0:
+		return b
+	}
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// fixCandidate is level (a) of FIX-06's two-level rule: the LOWEST `fixed`
+// version strictly greater than the installed pin, across every non-GIT
+// range of ONE advisory. An advisory that patches several release branches
+// lists a fixed event per branch, and a user pinned inside the oldest
+// branch wants the patch on THEIR branch, not the newest major.
+//
+// Fallback ladder (never invent a version, never claim "no fix" when OSV
+// named one):
+//
+//  1. Something compares strictly greater than installed → the lowest
+//     such, lexicographic tie-break.
+//  2. Nothing does (the comparator cannot rank a pre-release pin, or a
+//     stale cache carries a fix below the pin) → the lowest listed fixed
+//     version.
+//  3. No usable fixed event at all → "", and the caller prints the honest
+//     "no fix listed in OSV" message.
+func fixCandidate(v osvVuln, installed string) string {
+	fixed := fixedVersions(v)
+	if len(fixed) == 0 {
+		return ""
+	}
+	var above, lowest string
+	for _, f := range fixed {
+		lowest = lowerVersion(lowest, f)
+		if installed == "" || offline.CompareVersions(f, installed) > 0 {
+			above = lowerVersion(above, f)
+		}
+	}
+	if above != "" {
+		return above
+	}
+	return lowest
+}
+
+// mergedFixVersion is level (b): across the alias-merged members of one
+// component, the MAX of the per-advisory candidates, so the printed
+// version actually fixes every vulnerability the merged finding reports.
+func mergedFixVersion(members []osvVuln, installed string) string {
+	var best string
+	for _, m := range members {
+		best = higherVersion(best, fixCandidate(m, installed))
+	}
+	return best
 }
 
 func sortFindingsByID(fs []evidence.Evidence) {

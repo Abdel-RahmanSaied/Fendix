@@ -99,6 +99,14 @@ func SetOSVAPIBaseForTest(url string) (restore func()) {
 
 // cacheTTL is how long an OSV response is considered fresh. 24h matches
 // pip-audit's default cache lifetime.
+//
+// Staleness window, stated plainly because it is a real limitation of
+// every finding this scanner emits: an advisory PUBLISHED in the last 24h
+// is not seen until the entry for that exact (package, version) expires,
+// and an advisory WITHDRAWN in the last 24h keeps being reported. There is
+// no cache-bust flag — delete ~/.fendix/cache/osv-pypi/ to force a
+// refresh. Entries are shape-versioned as well as time-bounded; see
+// cacheSchema.
 const cacheTTL = 24 * time.Hour
 
 // httpTimeout bounds a single OSV.dev request. The /v1/query endpoint
@@ -286,7 +294,11 @@ func advisoryToOSV(a offline.Advisory) osvVuln {
 		Aliases: a.Aliases,
 	}
 	if fix := a.FirstFixedVersion(); fix != "" {
-		v.Affected = []osvAffected{{Ranges: []osvRange{{Events: []osvEvent{{Fixed: fix}}}}}}
+		// Stamp the type explicitly rather than leaning on usableRange's
+		// empty-means-ECOSYSTEM allowance: a snapshot fix IS an ecosystem
+		// version, and saying so keeps the GIT filter from ever having to
+		// guess about a synthesised range.
+		v.Affected = []osvAffected{{Ranges: []osvRange{{Type: "ECOSYSTEM", Events: []osvEvent{{Fixed: fix}}}}}}
 	}
 	return v
 }
@@ -648,7 +660,7 @@ func parsePipAuditJSON(jsonBytes []byte, manifestRelPath string) ([]evidence.Evi
 			// pip-audit returns fix_versions as a list; preserve the first.
 			if len(v.FixVersions) > 0 {
 				osv.Affected = []osvAffected{{
-					Ranges: []osvRange{{Events: []osvEvent{{Fixed: v.FixVersions[0]}}}},
+					Ranges: []osvRange{{Type: "ECOSYSTEM", Events: []osvEvent{{Fixed: v.FixVersions[0]}}}},
 				}}
 			}
 			findings = append(findings, buildFinding(
@@ -825,6 +837,18 @@ type osvAffected struct {
 }
 
 type osvRange struct {
+	// Type is the OSV range type: "ECOSYSTEM", "SEMVER" or "GIT". Until
+	// FIX-06 it was not decoded at all, which made the upgrade message a
+	// liar: a GIT range's `fixed` event carries a COMMIT SHA, not a
+	// version, so "Upgrade to pillow==8f1d2c3..." was reachable in
+	// production (pillow==9.0.0's advisories carry ECOSYSTEM 50 /
+	// SEMVER 11 / GIT 3 ranges today). Decoding the field lets
+	// usableRange filter those out.
+	//
+	// An empty type is treated as ECOSYSTEM-equivalent: both the offline
+	// snapshot adapter and the pip-audit adapter synthesise ranges, and
+	// a cache entry written by an older binary has no type either.
+	Type   string     `json:"type"`
 	Events []osvEvent `json:"events"`
 }
 
@@ -884,7 +908,7 @@ func buildFinding(pkg pinnedPackage, v osvVuln, manifestName string) evidence.Ev
 		desc = desc[:200]
 	}
 
-	fix := firstFixVersion(v)
+	fix := fixCandidate(v, pkg.version)
 	fixMsg := "Upgrade to a patched version (no fix listed in OSV)."
 	if fix != "" {
 		fixMsg = fmt.Sprintf("Upgrade to %s==%s or later.", pkg.name, fix)
@@ -915,12 +939,26 @@ func buildFinding(pkg pinnedPackage, v osvVuln, manifestName string) evidence.Ev
 	}
 }
 
+// usableRange reports whether an OSV range's `fixed` events name real
+// package versions. GIT ranges name commit SHAs, which are useless in an
+// "Upgrade to X" message and meaningless to a version comparator. An
+// empty type is accepted: the offline-snapshot and pip-audit adapters
+// synthesise ECOSYSTEM-equivalent ranges without setting it.
+func usableRange(r osvRange) bool { return r.Type != "GIT" }
+
 // firstFixVersion walks OSV.affected[].ranges[].events[] and returns
 // the first `fixed` version (per OSV schema, the canonical upgrade
-// target).
+// target), skipping GIT ranges whose `fixed` is a commit SHA.
+//
+// Kept as the installed-version-agnostic form. fixCandidate is what the
+// finding constructor uses; this remains the honest answer to "does this
+// advisory name a fix at all".
 func firstFixVersion(v osvVuln) string {
 	for _, a := range v.Affected {
 		for _, r := range a.Ranges {
+			if !usableRange(r) {
+				continue
+			}
 			for _, ev := range r.Events {
 				if ev.Fixed != "" {
 					return ev.Fixed
@@ -929,6 +967,130 @@ func firstFixVersion(v osvVuln) string {
 		}
 	}
 	return ""
+}
+
+// fixedVersions collects every `fixed` event across an advisory's non-GIT
+// ranges, in document order.
+func fixedVersions(v osvVuln) []string {
+	var out []string
+	for _, a := range v.Affected {
+		for _, r := range a.Ranges {
+			if !usableRange(r) {
+				continue
+			}
+			for _, ev := range r.Events {
+				if ev.Fixed != "" {
+					out = append(out, ev.Fixed)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// lowerVersion / higherVersion pick between two version strings using the
+// shared offline comparator, breaking a comparator TIE lexicographically.
+// The tie-break is not cosmetic: offline.CompareVersions collapses
+// "1.0.0-rc.1" and "1.0.0" to the same release core, so without it the
+// winner would depend on iteration order and the output would stop being
+// a pure function of the input set (Rule 8). "" means "no candidate yet".
+func lowerVersion(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	switch c := offline.CompareVersions(a, b); {
+	case c < 0:
+		return a
+	case c > 0:
+		return b
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func higherVersion(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	switch c := offline.CompareVersions(a, b); {
+	case c > 0:
+		return a
+	case c < 0:
+		return b
+	}
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// fixCandidate returns the minimal in-branch upgrade target for ONE
+// advisory: the LOWEST `fixed` version strictly greater than the installed
+// pin, across every non-GIT range.
+//
+// Django's PYSEC-2026-3717 is why this is not simply "the first fixed
+// event", and equally why it is not "the max": that single advisory lists
+// fixed=5.2.17 (the 5.2.x branch) AND fixed=6.0.8 (the 6.0.x branch). For
+// a user pinned at 5.2.16 the correct answer is 5.2.17 — the first-event
+// rule would have picked whichever the JSON happened to list first, and a
+// max would push a major-version jump at someone who asked for a patch.
+//
+// Fallback ladder — the point of which is to never invent a version and
+// never claim "no fix" when OSV named one:
+//
+//  1. Some fixed event compares strictly greater than installed → the
+//     lowest such (lexicographic tie-break, see lowerVersion).
+//  2. Nothing compares greater — offline.CompareVersions cannot order a
+//     PyPI pre/dev-release pin against a release, and a stale cache can
+//     carry a fix already below the pin → the lowest listed fixed
+//     version. The advisory DOES name a fix; we merely cannot rank it
+//     against this pin, and printing "no fix listed" there would be a lie.
+//  3. No usable fixed event at all (GIT-only, or none) → "". The caller
+//     prints the honest "no fix listed in OSV" message.
+func fixCandidate(v osvVuln, installed string) string {
+	fixed := fixedVersions(v)
+	if len(fixed) == 0 {
+		return ""
+	}
+	var above, lowest string
+	for _, f := range fixed {
+		lowest = lowerVersion(lowest, f)
+		if installed == "" || offline.CompareVersions(f, installed) > 0 {
+			above = lowerVersion(above, f)
+		}
+	}
+	if above != "" {
+		return above
+	}
+	return lowest
+}
+
+// mergedFixVersion is level (b) of the two-level rule: across the
+// alias-merged members of one component, take the MAX of the per-advisory
+// candidates, so the printed version actually fixes every vulnerability
+// the merged finding reports. A member with no usable fix contributes
+// nothing; when EVERY member contributes nothing the caller falls back to
+// the honest no-fix message.
+//
+// Level (a) is deliberately inside fixCandidate rather than folded in
+// here: minimality is a property of one advisory's branch set, and
+// maximality is a property of the component. Collapsing them into a
+// single max over all fixed events would reintroduce the django
+// 5.2.16 → 6.0.8 jump.
+func mergedFixVersion(members []osvVuln, installed string) string {
+	var best string
+	for _, m := range members {
+		best = higherVersion(best, fixCandidate(m, installed))
+	}
+	return best
 }
 
 // sortFindingsByID puts findings in deterministic order so the report
