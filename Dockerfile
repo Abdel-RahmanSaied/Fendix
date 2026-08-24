@@ -26,13 +26,29 @@ COPY python/ ./python/
 COPY go/ ./go/
 COPY Makefile ./
 
+# Version stamped into the binary as `main.Version`, surfaced by
+# `fendix version` and — since the backend forwards it — as SARIF
+# `driver.version` and the persisted `engine_version` on every scan.
+#
+# release.yml passes the git tag (`VERSION=v2.0.1`). The default is
+# deliberately the literal "docker" rather than a version number: a plain
+# `docker build .` has no tag to claim, and a local build asserting it is a
+# release would be worse than one that says it is an unversioned image.
+#
+# It used to be hardcoded to "docker" with no way to override, so every
+# published image reported `fendix version docker`. That was invisible until
+# the backend began persisting the value, at which point production scans
+# started recording their engine as "docker" — replacing one uninformative
+# placeholder with another.
+ARG VERSION=docker
+
 # Bundle Python engine into Go embed directory and build.
 # -trimpath + CGO_ENABLED=0 match release.yml so a docker-built fendix
 # and a release-pipeline fendix have comparable build provenance.
 RUN make embed-engine && \
     cd go && CGO_ENABLED=0 go build \
     -trimpath \
-    -ldflags="-s -w -X main.Version=docker" \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /fendix ./cmd/fendix/
 
 # ---- Stage 2: Runtime image ----

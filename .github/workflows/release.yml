@@ -433,6 +433,14 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # Stamp the git tag into the binary as main.Version. Without this
+          # the Dockerfile's ARG default wins and every published image
+          # reports `fendix version docker` — which the backend then persists
+          # as the scan's engine_version and emits as SARIF driver.version.
+          # Uses `tag` (with the leading `v`), not `version`, to match the
+          # platform binaries built above from ${GITHUB_REF_NAME}.
+          build-args: |
+            VERSION=${{ steps.tags.outputs.tag }}
           tags: |
             ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.tag }}
             ${{ steps.tags.outputs.image }}:latest

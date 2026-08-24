@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-24
+
+### Fixed
+
+- **The published Docker image now reports its real version.** `Dockerfile`
+  hardcoded `-X main.Version=docker` with no way to override it, so every image
+  ever pushed to GHCR answered `fendix version docker` — including the 2.0.0
+  image. The build now takes a `VERSION` build-arg and `release.yml` passes the
+  git tag, matching how the platform binaries have always been stamped.
+
+  This was invisible for as long as the value was only printed by
+  `fendix version`. It stopped being invisible in 2.0.0: the backend now
+  persists the engine version on each scan and forwards it as SARIF
+  `driver.version`, so a deployed scan recorded its engine as `"docker"` —
+  which is the same class of uninformative placeholder that release replaced
+  `"backend"` to remove. A report has to be able to say which engine produced
+  it.
+
+  The `ARG` default stays the literal `docker` rather than a version number: a
+  plain `docker build .` has no tag to claim, and a local build asserting it is
+  a release would be worse than one that says it is an unversioned image.
+
 ## [2.0.0] - 2026-08-24
 
 A precision and trust release. Every change below exists because the reports
