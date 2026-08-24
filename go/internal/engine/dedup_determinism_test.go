@@ -95,3 +95,42 @@ func TestDedupDropsEmptyEndpoints(t *testing.T) {
 }
 
 var _ = models.Finding{}
+
+// TestGatedDedupVerdictIsOrderIndependent extends the same lock over the
+// enforcement path. FIX-08's BLOCK reason is built by joining
+// decision.corroborations(), so a map or a set in that list would show up here
+// as a reason string that flips with worker arrival order — while every
+// existing determinism test, which runs with failOn "", would stay green.
+func TestGatedDedupVerdictIsOrderIndependent(t *testing.T) {
+	a := tiedMember([]string{"tests/test_auth.py:1"})
+	b := tiedMember([]string{"tests/test_auth.py:1", "src/app.py:9"})
+	// Every corroborating signal on, so the joined reason has something to
+	// reorder.
+	for _, e := range []*evidence.Evidence{&a, &b} {
+		e.Source = models.SourceCorrelated
+		e.RouteConfirmed = true
+		e.Reachable = true
+		e.ProvenPath = true
+	}
+	opts := decision.Options{DeescalateTests: true, EnforceConfidence: true}
+
+	fwd := finalize([]evidence.Evidence{a, b}, "HIGH", opts)
+	rev := finalize([]evidence.Evidence{b, a}, "HIGH", opts)
+
+	if len(fwd) != len(rev) {
+		t.Fatalf("finding count differs by order: %d vs %d", len(fwd), len(rev))
+	}
+	for i := range fwd {
+		if fwd[i].Status != rev[i].Status {
+			t.Errorf("finding %d status flips with input order: %q vs %q", i, fwd[i].Status, rev[i].Status)
+		}
+		if strings.Join(fwd[i].ConfidenceReasons, "|") != strings.Join(rev[i].ConfidenceReasons, "|") {
+			t.Errorf("finding %d reasons flip with input order:\n f=%v\n r=%v", i, fwd[i].ConfidenceReasons, rev[i].ConfidenceReasons)
+		}
+	}
+	// Premise guard: a corroborated group spanning production code must still
+	// gate, or this test is comparing two WARNs and proving nothing.
+	if fwd[0].Status != string(decision.StatusBlock) {
+		t.Fatalf("corroborated group Status = %q, want BLOCK — this test's premise no longer holds", fwd[0].Status)
+	}
+}

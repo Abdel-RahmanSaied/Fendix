@@ -162,7 +162,8 @@ func captureSetters(captured map[string]any) ApplyTo {
 		SetIgnorePath:    func(v string) { captured["ignore"] = v },
 		SetAuthProfile:   func(v string) { captured["profile"] = v },
 
-		SetDeescalateTests: func(v bool) { captured["deescalate-tests"] = v },
+		SetDeescalateTests:   func(v bool) { captured["deescalate-tests"] = v },
+		SetEnforceConfidence: func(v bool) { captured["enforce-confidence"] = v },
 	}
 }
 

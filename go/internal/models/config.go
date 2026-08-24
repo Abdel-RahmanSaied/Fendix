@@ -193,6 +193,24 @@ type ScanConfig struct {
 	// --deescalate-tests=false or set scan.deescalate_tests in .fendix.yaml.
 	DeescalateTests bool
 
+	// EnforceConfidence gates the --fail-on threshold on the deterministic
+	// confidence band: at or above the threshold a finding BLOCKs only when its
+	// band supports the claim (HIGH always; MEDIUM with at least one
+	// corroborating signal — live observation, cross-engine agreement,
+	// deterministic detection in production code, a confirmed route, a
+	// reachable taint path, a payload-validated probe; LOW never), and a
+	// finding the correlator marked unconfirmed-by-live-scan never blocks on
+	// its own. Evidence is preserved, never suppressed (Rule 3) — only
+	// enforcement moves. (v1.2.2 FIX-08.)
+	//
+	// Default TRUE (the CLI flag defaults to true; a zero-valued ScanConfig
+	// built directly in a test opts out — the same trap that left
+	// DeescalateTests dead code, so a test that means to exercise the shipped
+	// gate must set this explicitly). --enforce-confidence=false restores the
+	// legacy severity-only mapping byte-for-byte; it does NOT also disable the
+	// test-fixture rule, which is gated on DeescalateTests.
+	EnforceConfidence bool
+
 	// Fast runs only the instant native scanners (secrets + textscan),
 	// skipping semgrep (whose process startup is ~1.5s) and the dep-CVE
 	// scanners (which make network calls). This is the <1s budget the

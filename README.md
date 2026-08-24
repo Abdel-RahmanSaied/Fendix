@@ -360,9 +360,10 @@ Run `fendix <command> --help` for the flags of any subcommand.
 | `--auth-header` | string | `Authorization` | Custom auth header name |
 | `-o, --output` | string | stdout | Output file path |
 | `-f, --format` | string | `json` | Output format: `json`, `html`, `sarif`, `pdf` |
-| `--fail-on` | string | | Exit 1 if findings at this severity: `CRITICAL`, `HIGH`, `MEDIUM` |
+| `--fail-on` | string | | Exit 1 if a **corroborated** finding is at this severity: `CRITICAL`, `HIGH`, `MEDIUM`. Confidence gating applies — see `--enforce-confidence`. |
 | `--fail-on-scanner-error` | bool | `false` | Exit 2 if any scanner (`govulncheck`/`pip`/`npm`/`secrets`/`semgrep`/`textscan`) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners don't count. |
 | `--deescalate-tests` | bool | `true` | Report findings in test/fixture code (`tests/`, `test_*.py`, `*_test.py`, `conftest`, `fixtures/`) as `INFO` instead of `WARN`. The finding and its evidence are still emitted — this changes triage status, not visibility. A finding at or above `--fail-on` still blocks. Pass `--deescalate-tests=false` to treat test-code findings like production ones. |
+| `--enforce-confidence` | bool | `true` | Only `BLOCK` a finding at or above `--fail-on` when the deterministic confidence band supports it: `LOW` band warns instead of blocking, `MEDIUM` blocks only with a corroborating signal (live observation, cross-engine agreement, deterministic detection in production code, confirmed route, reachable taint path, payload-validated probe), `HIGH` always blocks. Evidence is never suppressed, and every demotion is named in `confidence_reasons`. Pass `--enforce-confidence=false` to restore the legacy severity-only gate. |
 | `--baseline` | string | | Path to previous findings JSON for diff mode |
 | `--save-baseline` | string | | Save current findings to this path |
 | `--enable-active` | bool | `false` | Enable active injection probes |
@@ -379,9 +380,13 @@ Run `fendix <command> --help` for the flags of any subcommand.
 
 | Code | Meaning |
 |---|---|
-| `0` | Scan completed, no findings at or above `--fail-on` threshold |
-| `1` | Scan completed, findings found at or above threshold |
+| `0` | Scan completed, nothing reached status `BLOCK` |
+| `1` | Scan completed, at least one finding reached status `BLOCK` |
 | `2` | Scan error (network failure, invalid config, etc.) |
+
+`BLOCK` means "at or above `--fail-on` **and** the confidence band supports the
+claim" — see `--enforce-confidence` above, and the rule table in the CHANGELOG.
+Pass `--enforce-confidence=false` for the pre-v1.2.2 severity-only mapping.
 
 ---
 

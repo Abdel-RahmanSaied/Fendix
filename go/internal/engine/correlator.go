@@ -54,7 +54,30 @@ var methodPrefixRe = regexp.MustCompile(`(?i)^(GET|POST|PUT|DELETE|PATCH|HEAD|OP
 //     `/api/v1/users`.
 //
 // Each blackbox finding can correlate with at most one whitebox finding.
+//
+// Correlate is a thin wrapper over correlateWithMarks so the exported signature
+// and the rendered output stay exactly as they were; the Evidence pipeline uses
+// the marked form.
 func Correlate(findings []models.Finding) []models.Finding {
+	out, _ := correlateWithMarks(findings)
+	return out
+}
+
+// correlateWithMarks is Correlate plus a parallel []bool recording, for each
+// returned finding, whether THIS function is what appended the
+// "[Unconfirmed by live scan]" suffix to its evidence text.
+//
+// The prose suffix is part of the published `evidence` string (docs/schema.md)
+// and cannot be removed, but prose is not something the decision layer can
+// safely gate on. The parallel slice is the machine-readable counterpart:
+// engine.CorrelateEvidence stamps it onto Evidence.UnconfirmedByLiveScan, and
+// decision.decide reads it to hold such a finding at WARN. This function is the
+// SINGLE producer of that marker — if a third suffix site is ever added, it must
+// append `true` here too, or the marker and the prose drift apart silently.
+//
+// The returned slice is always the same length as the returned findings, in the
+// same order, so callers can index them together.
+func correlateWithMarks(findings []models.Finding) ([]models.Finding, []bool) {
 	var blackbox, whitebox []models.Finding
 	for _, f := range findings {
 		switch f.Source {
@@ -81,18 +104,28 @@ func Correlate(findings []models.Finding) []models.Finding {
 		// findings tied to a URL endpoint; file-path findings (e.g. a
 		// hardcoded secret at src/config.py:14) cannot be confirmed by a
 		// live scan, so they keep their original evidence and confidence.
+		//
+		// NOTE: the len(blackbox)==0 branch below is not reachable from
+		// orchestrator.Run — it only correlates when hasWhitebox && hasBlackbox
+		// — so it is a test-only path. It is marked anyway: the marker must
+		// track the suffix at EVERY site that writes it, or the two drift.
+		unconfirmed := make([]bool, 0, len(blackbox)+len(whitebox))
+		wbUnconfirmed := make([]bool, len(whitebox))
 		if len(blackbox) == 0 && len(whitebox) > 0 {
 			for i := range whitebox {
 				if isURLEndpoint(whitebox[i].Endpoint) {
 					whitebox[i].Confidence = models.ConfidenceMedium
 					whitebox[i].Evidence += " [Unconfirmed by live scan]"
+					wbUnconfirmed[i] = true
 				}
 			}
 		}
 		result := make([]models.Finding, 0, len(blackbox)+len(whitebox))
 		result = append(result, blackbox...)
+		unconfirmed = append(unconfirmed, make([]bool, len(blackbox))...)
 		result = append(result, whitebox...)
-		return result
+		unconfirmed = append(unconfirmed, wbUnconfirmed...)
+		return result, unconfirmed
 	}
 
 	// Pre-compute normalized blackbox endpoints once. The suffix and fuzzy
@@ -121,6 +154,7 @@ func Correlate(findings []models.Finding) []models.Finding {
 	bbCorrelated := make(map[int]bool)
 
 	var result []models.Finding
+	var unconfirmed []bool
 
 	for _, wf := range whitebox {
 		wbNorm := normalizeEndpoint(wf.Endpoint)
@@ -136,6 +170,7 @@ func Correlate(findings []models.Finding) []models.Finding {
 			bbCorrelated[bbIdx] = true
 			merged := mergeFindings(bf, wf, routeConfirmed)
 			result = append(result, merged)
+			unconfirmed = append(unconfirmed, false)
 			slog.Info("correlated finding",
 				"wb_endpoint", wf.Endpoint,
 				"bb_endpoint", bf.Endpoint,
@@ -156,21 +191,24 @@ func Correlate(findings []models.Finding) []models.Finding {
 
 		// Unconfirmed whitebox finding. Suffix only when the endpoint is a
 		// URL — file:line findings can't be confirmed by a live scan.
-		if isURLEndpoint(wf.Endpoint) {
+		marked := isURLEndpoint(wf.Endpoint)
+		if marked {
 			wf.Confidence = models.ConfidenceMedium
 			wf.Evidence += " [Unconfirmed by live scan]"
 		}
 		result = append(result, wf)
+		unconfirmed = append(unconfirmed, marked)
 	}
 
 	// Add uncorrelated blackbox findings as-is
 	for i, bf := range blackbox {
 		if !bbCorrelated[i] {
 			result = append(result, bf)
+			unconfirmed = append(unconfirmed, false)
 		}
 	}
 
-	return result
+	return result, unconfirmed
 }
 
 // findCorrelationMatch returns the index of a blackbox finding that matches

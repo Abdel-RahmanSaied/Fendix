@@ -828,7 +828,8 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 // nothing observed the two being connected.
 func (o *Orchestrator) decisionOptions() decision.Options {
 	return decision.Options{
-		DeescalateTests: o.cfg.DeescalateTests,
+		DeescalateTests:   o.cfg.DeescalateTests,
+		EnforceConfidence: o.cfg.EnforceConfidence,
 	}
 }
 

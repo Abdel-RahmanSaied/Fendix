@@ -198,6 +198,15 @@ cd go && FENDIX_SCORE_JSON=/tmp/twiscope.json \
 > contributors to the captured measurement. Every other row was already live
 > when the baseline was taken.
 
+> **v1.2.2 enforcement correction.** `--fail-on` now requires the confidence
+> band to support the claim (`--enforce-confidence`, default on). **The
+> per-class effects above are measured on the finding set, not on the exit
+> code, so the numbers are unchanged — but the gating consequence of the
+> `http-4xx-context` and `static-asset-context` rows is materially larger than
+> when this baseline was captured**, because a demoted band now also removes a
+> finding from the build-failing set. A precision/recall re-run is unaffected;
+> a CI-impact estimate derived from these rows is not.
+
 **Caveats (read before quoting 33.3 %):**
 
 - **Thin denominator / label coverage.** The labels were authored against the

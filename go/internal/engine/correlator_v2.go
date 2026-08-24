@@ -26,7 +26,12 @@ import (
 // pipeline in v0.22), they cannot affect the public output — they are
 // groundwork for the v0.23 confidence engine.
 func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
-	correlated := Correlate(evidence.ToFindings(evs))
+	// correlateWithMarks, not Correlate: the parallel slice is the only way to
+	// learn WHICH outputs the correlator suffixed with "[Unconfirmed by live
+	// scan]". FromFindings below cannot recover it — the marker is not a
+	// Finding field — and re-deriving it by string-matching the evidence text
+	// would make a published prose string load-bearing.
+	correlated, unconfirmed := correlateWithMarks(evidence.ToFindings(evs))
 	out := evidence.FromFindings(correlated)
 
 	// Index inputs by a render-stable identity so a pass-through output can
@@ -40,6 +45,13 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 
 	for i := range out {
 		o := &out[i]
+		// Stamp the correlator's own verdict FIRST, before the pass-through
+		// branch's `continue` can skip it. An unconfirmed whitebox finding
+		// still matches its input on the idKey below (the branch mutates only
+		// the evidence text and Confidence, neither of which is part of the
+		// key), so it takes the pass-through path — where the OR-restore below
+		// preserves this mark rather than clobbering it with the input's zero.
+		o.UnconfirmedByLiveScan = unconfirmed[i]
 		if src, ok := inByKey[idKey{string(o.Source), o.Category, o.Endpoint, o.Title}]; ok {
 			// Unchanged pass-through: restore its provenance verbatim.
 			o.RuleID = src.RuleID

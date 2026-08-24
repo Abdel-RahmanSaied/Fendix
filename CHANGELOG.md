@@ -150,6 +150,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`--fail-on` now requires the confidence band to support the claim.**
+  `decision.Decide` computed a full confidence `Result`, attached it to every
+  decision, published it as `confidence_score` / `confidence_band` /
+  `confidence_reasons` — and then set `BLOCK` purely from severity rank, never
+  reading it. The engine could therefore print `[Unconfirmed by live scan]` in a
+  finding's evidence and fail the build on that same finding, in one report.
+
+  Under the new default (`--enforce-confidence`, on), a finding at or above the
+  `--fail-on` threshold BLOCKs only when the deterministic band supports it:
+
+  | severity vs `--fail-on` | confidence band | corroborating signal | status | with `--enforce-confidence=false` |
+  | --- | --- | --- | --- | --- |
+  | at or above | HIGH | any | **BLOCK** | BLOCK |
+  | at or above | MEDIUM | ≥ 1 | **BLOCK** | BLOCK |
+  | at or above | MEDIUM | none | **WARN** | BLOCK |
+  | at or above | LOW | any | **WARN** | BLOCK |
+  | at or above | any | marked unconfirmed-by-live-scan, and uncorroborated | **WARN** | BLOCK |
+  | at or above | any | in test code, uncorroborated, `--deescalate-tests` on | **WARN** | WARN |
+  | below | — | — | WARN (≥ MEDIUM severity) | unchanged |
+  | below | — | — | INFO (< MEDIUM severity) | unchanged |
+
+  The corroborating signals, in the fixed order they are reported in: **cross-
+  engine agreement** (`source: correlated`), **live runtime observation**
+  (`source: blackbox` or `correlated` — the finding came from a probe against a
+  running target), **direct observation of a live response** (the header /
+  cookie / CORS deterministic read), **deterministic detection in production
+  code** (a high-confidence pattern match outside test and fixture code),
+  **confirmed route**, **reachable taint path**, **proven path**, and
+  **payload-validated probe**. A BLOCK's reason names the ones that justified
+  it; a WARN's reason names what was missing, and a 0-point line is added to
+  `confidence_reasons` so the published breakdown still reconciles with
+  `confidence_score`.
+
+  > **This changes the process exit code, not only the reported status.**
+  > `orchestrator.Run` returns `decision.ExitCode(decisions)`, so a CI job
+  > gating on `--fail-on` can now exit 0 where it exited 1. The largest class
+  > affected is chainless static findings: a whitebox finding scores
+  > `35 base + 10 static = 45` (MEDIUM) and, unless it is a high-confidence
+  > pattern match in production code or carries a proven taint path, nothing
+  > corroborates it — so shape-match SAST no longer gates on its own. That
+  > explicitly includes the **semgrep-shim tier**, which is excluded from the
+  > deterministic-detection bonus and lands at 40: a semgrep HIGH with no taint
+  > chain now WARNs. Pure DAST findings are unaffected (`source: blackbox` is
+  > itself a corroborating signal), and a real hardcoded credential in
+  > production code still bands HIGH and still exits 1.
+  >
+  > The escape hatch is `--enforce-confidence=false`, or
+  > `scan.enforce_confidence: false` in `.fendix.yaml`, which restores the
+  > legacy severity-only gate byte-for-byte.
+
+- **`[Unconfirmed by live scan]` gained a machine-readable counterpart.** The
+  correlator writes that suffix into a finding's evidence text when a live scan
+  ran and did not confirm a URL-shaped whitebox finding. It is now produced
+  alongside an internal `UnconfirmedByLiveScan` marker that the decision layer
+  reads, so enforcement gates on structure rather than on prose. The suffix text
+  is byte-identical and the public `Finding` shape is unchanged — no new JSON
+  field — so consumers parsing the suffix keep working. Under the default policy
+  a finding carrying the marker cannot reach BLOCK without a corroborating
+  signal.
+
 - **Confidence bands were arithmetically stuck at MEDIUM for uncorrelated
   scans.** A DAST-only finding topped out at `35 base + 10 runtime = 45` — the
   `+10` payload-validated bonus cannot fire, because `Evidence.Response` has no
@@ -187,8 +247,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ConfidenceBand == HIGH`, so all three jump. The GitHub App's PR comment ranks
   its top five by `(status, severity, confidence_score)`, so that list reorders
   against SAST findings of equal severity. No finding is added, removed,
-  re-titled, re-categorised or re-severitied, and no exit code changes: `Status`
-  still derives from severity and `--fail-on` alone.
+  re-titled, re-categorised or re-severitied.
+
+  On its own this entry changed no exit code. The band it moves is now an input
+  to enforcement — see the confidence-gated `--fail-on` entry above — so the two
+  must be read together.
 
 ## [1.2.1] - 2026-08-18
 

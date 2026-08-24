@@ -313,13 +313,21 @@ func TestCorrelateEvidencePreservesResponseContext(t *testing.T) {
 // that must NOT change: every finding gets a status, and the returned
 // decisions line up index-for-index with the findings they were stamped onto
 // (the exit code is derived from them).
+//
+// It runs under the SHIPPED policy (EnforceConfidence), not decision.Options{}.
+// With the zero Options it passed either way and locked a code path production
+// no longer takes. Finding A still BLOCKs on purpose: it scores 35 base + 10
+// runtime = 45 (MEDIUM band) and Source=blackbox supplies the "live runtime
+// observation" corroboration. If this ever flips to WARN, the corroboration
+// predicate has been narrowed and DAST gating is gone — see DECISIONS.md D7.
 func TestStampDecisionsKeepsStatusAndExitContract(t *testing.T) {
 	evid := []evidence.Evidence{
 		{Title: "A", Category: "headers", Endpoint: "GET /a", Severity: models.SeverityCritical, Source: models.SourceBlackbox},
 		{Title: "B", Category: "headers", Endpoint: "GET /b", Severity: models.SeverityLow, Source: models.SourceBlackbox},
 	}
 	findings := evidence.ToFindings(evid)
-	decisions := stampDecisions(findings, evidence.NewProvenanceIndex(evid), "HIGH", decision.Options{})
+	decisions := stampDecisions(findings, evidence.NewProvenanceIndex(evid), "HIGH",
+		decision.Options{EnforceConfidence: true})
 
 	if len(decisions) != len(findings) {
 		t.Fatalf("decisions/findings length mismatch: %d vs %d", len(decisions), len(findings))

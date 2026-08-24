@@ -122,3 +122,38 @@ func TestDeescalationDoesNotAliasTheSharedReasonSlice(t *testing.T) {
 		}
 	}
 }
+
+// TestUnconfirmedMarkerSurvivesTheFindingProjection is the same drift guard for
+// FIX-08's marker. UnconfirmedByLiveScan is set by the correlator, read by the
+// decision layer, and has NO field on models.Finding and NO endpoint-derived
+// fallback — so if it stops surviving the project → restore round trip, the
+// "never BLOCK on unconfirmed-only evidence" rule is silently dead on every
+// hybrid scan, which is the only scan shape that produces the marker at all.
+func TestUnconfirmedMarkerSurvivesTheFindingProjection(t *testing.T) {
+	ev := evidence.Evidence{
+		Title:                 "SQL injection",
+		Category:              "injection",
+		Endpoint:              "/api/v1/orders",
+		Severity:              models.SeverityCritical,
+		Source:                models.SourceWhitebox,
+		Confidence:            models.ConfidenceMedium,
+		Evidence:              "cursor.execute(...) [Unconfirmed by live scan]",
+		UnconfirmedByLiveScan: true,
+	}
+	opts := Options{EnforceConfidence: true}
+
+	want := DecideWithOptions(ev, "HIGH", opts)
+	if want.Status != StatusWarn {
+		t.Fatalf("baseline: Status = %q, want WARN (test setup is wrong)", want.Status)
+	}
+
+	ix := evidence.NewProvenanceIndex([]evidence.Evidence{ev})
+	restored := ix.Restore(evidence.FromFindings(evidence.ToFindings([]evidence.Evidence{ev})))
+	got := DecideWithOptions(restored[0], "HIGH", opts)
+
+	if got.Status != want.Status {
+		t.Errorf("decision differs across the Finding projection: got %q, want %q —\n"+
+			"UnconfirmedByLiveScan is missing from evidence.ScoringProvenance",
+			got.Status, want.Status)
+	}
+}

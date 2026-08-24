@@ -77,6 +77,12 @@ type ScanSection struct {
 	// findings?" is a team triage policy, not a per-invocation knob. Defaults
 	// to the CLI default (true) when absent.
 	DeescalateTests *bool `yaml:"deescalate_tests,omitempty"`
+	// EnforceConfidence gates --fail-on on the deterministic confidence band
+	// (v1.2.2 FIX-08). Committable for the same reason deescalate_tests is:
+	// "how much corroboration do we demand before failing a build?" is a team
+	// triage policy, not a per-invocation knob. Defaults to the CLI default
+	// (true) when absent.
+	EnforceConfidence *bool `yaml:"enforce_confidence,omitempty"`
 }
 
 // CrawlerSection covers endpoint discovery knobs that affect the scan
@@ -194,7 +200,8 @@ type ApplyTo struct {
 	SetIgnorePath    func(string)
 	SetAuthProfile   func(string)
 
-	SetDeescalateTests func(bool)
+	SetDeescalateTests   func(bool)
+	SetEnforceConfidence func(bool)
 }
 
 // Run applies p onto target via the setter callbacks, respecting
@@ -237,6 +244,9 @@ func (a ApplyTo) Run(p *Policy, cli CLISet) int {
 		}
 		if s.DeescalateTests != nil && a.SetDeescalateTests != nil {
 			apply("deescalate-tests", func() { a.SetDeescalateTests(*s.DeescalateTests) })
+		}
+		if s.EnforceConfidence != nil && a.SetEnforceConfidence != nil {
+			apply("enforce-confidence", func() { a.SetEnforceConfidence(*s.EnforceConfidence) })
 		}
 	}
 	if p.Crawler != nil {

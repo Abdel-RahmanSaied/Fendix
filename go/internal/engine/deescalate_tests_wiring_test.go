@@ -290,6 +290,11 @@ func TestOrchestratorPassesTheConfigPolicyToTheDecisionLayer(t *testing.T) {
 // TestPipelineNeverDowngradesABlockingTestFinding is the safety gate: a team
 // that set --fail-on HIGH asked for that gate explicitly, and the test-code
 // exemption must not quietly disarm it.
+//
+// NOTE: the finding here is uncorroborated, and it reaches BLOCK only because
+// finalize passes decision.Options{DeescalateTests: true} — EnforceConfidence
+// is the false zero value, i.e. the LEGACY gate. Under the shipped policy the
+// confidence gate holds it at WARN; see TestPipelineStillBlocksARealProductionSecret.
 func TestPipelineNeverDowngradesABlockingTestFinding(t *testing.T) {
 	evid := []evidence.Evidence{secretEvidence("app/tests/test_client.py:12")}
 
@@ -299,6 +304,87 @@ func TestPipelineNeverDowngradesABlockingTestFinding(t *testing.T) {
 		t.Errorf("Status = %q, want BLOCK — --fail-on must win over the test-fixture rule",
 			got[0].Status)
 	}
+}
+
+// TestOrchestratorPassesTheConfidencePolicyToTheDecisionLayer is the
+// mutation-audit guard for the SECOND config hop, and it is not optional: the
+// zero value of both ScanConfig.EnforceConfidence and Options.EnforceConfidence
+// is false, so hardcoding decisionOptions() to drop the field would leave every
+// other test in the module green. That is precisely how DeescalateTests shipped
+// as dead code.
+func TestOrchestratorPassesTheConfidencePolicyToTheDecisionLayer(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		cfg := &models.ScanConfig{EnforceConfidence: enabled, FailOn: "HIGH"}
+		o := &Orchestrator{cfg: cfg}
+
+		if got := o.decisionOptions().EnforceConfidence; got != enabled {
+			t.Errorf("decisionOptions().EnforceConfidence = %v, want %v — ScanConfig is not\n"+
+				"reaching the decision layer", got, enabled)
+		}
+
+		// An uncorroborated whitebox HIGH finding in PRODUCTION code, scored
+		// without the deterministic-detection delta (Confidence MEDIUM, as a
+		// graded static check emits): 35 base + 10 static = 45, MEDIUM band,
+		// no corroborating signal.
+		ev := secretEvidence("app/services/client.py:22")
+		ev.Confidence = models.ConfidenceMedium
+		evid := []evidence.Evidence{ev}
+		prov := evidence.NewProvenanceIndex(evid)
+		findings := evidence.ToFindings(evid)
+		stampDecisions(findings, prov, o.cfg.FailOn, o.decisionOptions())
+
+		want := string(decision.StatusBlock)
+		if enabled {
+			want = string(decision.StatusWarn)
+		}
+		if findings[0].Status != want {
+			t.Errorf("EnforceConfidence=%v produced Status %q, want %q — the ScanConfig field is\n"+
+				"not reaching decision.Options", enabled, findings[0].Status, want)
+		}
+	}
+}
+
+// TestPipelineStillBlocksARealProductionSecret is DECISIONS.md D1 driven
+// through the real finalization sequence: the whole point of the
+// deterministicDetection delta is that a genuine hardcoded credential in
+// PRODUCTION code keeps failing the build under the new gate, on a code-only
+// scan where no live corroboration is even possible.
+//
+// 35 base + 10 static + 30 deterministic detection = 75 → HIGH band → BLOCK.
+// The fixture-shaped twin in tests/ is the contrast case: it loses the delta to
+// the InTest gate, lands MEDIUM with nothing corroborating it, and is held at
+// WARN.
+func TestPipelineStillBlocksARealProductionSecret(t *testing.T) {
+	opts := decision.Options{EnforceConfidence: true, DeescalateTests: true}
+
+	prod, prodDecisions := finalizeDecisions(secretEvidence("app/services/client.py:22"), "HIGH", opts)
+	if prod[0].Status != string(decision.StatusBlock) {
+		t.Errorf("production secret Status = %q (score %d, band %q), want BLOCK — the confidence\n"+
+			"gate must not stop a code-only scan from failing on a real credential",
+			prod[0].Status, prod[0].ConfidenceScore, prod[0].ConfidenceBand)
+	}
+	if decision.ExitCode(prodDecisions) != 1 {
+		t.Error("a real production secret no longer exits 1 — this is a security regression")
+	}
+
+	fixture, fixtureDecisions := finalizeDecisions(secretEvidence("app/tests/test_client.py:12"), "HIGH", opts)
+	if fixture[0].Status != string(decision.StatusWarn) {
+		t.Errorf("fixture secret Status = %q (score %d, band %q), want WARN",
+			fixture[0].Status, fixture[0].ConfidenceScore, fixture[0].ConfidenceBand)
+	}
+	if decision.ExitCode(fixtureDecisions) != 0 {
+		t.Error("a fixture-shaped secret still exits 1 — the FP mitigation did not reach the gate")
+	}
+}
+
+// finalizeDecisions is finalize for one Evidence, additionally returning the
+// decisions orchestrator.Run derives its process exit code from. Asserting on
+// the status alone would miss a break between Decision.Status and ExitCode.
+func finalizeDecisions(ev evidence.Evidence, failOn string, opts decision.Options) ([]models.Finding, []decision.Decision) {
+	evid := []evidence.Evidence{ev}
+	prov := evidence.NewProvenanceIndex(evid)
+	findings := evidence.ToFindings(evid)
+	return findings, stampDecisions(findings, prov, failOn, opts)
 }
 
 // TestPipelineDeescalationDistinguishesTwoFindings makes sure the flag is
