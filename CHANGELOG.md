@@ -31,6 +31,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A URL in a finding's `line` field became a SARIF file called `https`.**
+  `parseLine` split the value on EVERY `:` and read the last segment as the
+  line number, so `https://api.example.com/openapi.json` produced
+  `artifactLocation.uri: "https"`. With a port it was worse:
+  `https://host:8080/api/x` split into three parts, `8080` parsed as a line
+  number, and the emitter published `uri: "host"` with `startLine: 8080` — a
+  line that was never observed, in a file that does not exist. This is a live
+  path, not a hypothetical: `python/analyzers/spec_parser.py` stamps the spec
+  path into `line` at eight sites and that path may be an `https://` URL, and
+  the GitHub App re-renders the same findings as SARIF and uploads them.
+
+  Only a TRAILING `:<digits>` run is a line suffix now; anything else comes
+  back whole with line 0. That matches what the Python side already asserts
+  about the field (`test_line_field_format` does `rsplit(":", 1)` and requires
+  `parts[1].isdigit()`).
+
+  A second guard covers what the parser cannot: when the parsed path still
+  contains `://`, or is a bare scheme token left over from one, the renderer
+  takes the endpoint branch and emits a `logicalLocations` entry instead of a
+  physical location. That branch was already correct — the bug was feeding it
+  a non-empty `line` so it never ran. The guard is deliberately narrow (a
+  literal `://`, or an exact scheme token) rather than the existing
+  `uriSchemeRE`, which also matches the `C:` of a Windows drive path.
+
+  Working rule 3 holds on the fallback: a URL-shaped `line` on a finding with
+  no endpoint is de-escalated to a logical location, not dropped.
+
+  Three smaller behaviour changes fall out of the same rule and are called out
+  rather than buried: a `line` ending in a bare colon (`src/app.py:`) keeps
+  the colon in the uri where it used to lose it; a `line` that normalizes to
+  nothing (`../..`) now takes the endpoint branch instead of emitting
+  `"uri": ""`; and `file:line:col` (`src/app.py:42:10`) still yields path
+  `src/app.py:42`, exactly as before — that shape has no producer in the tree
+  and is out of this fix's scope.
+
 - **Multi-stage Dockerfiles were flagged for "unpinned base image" on lines
   that reference a build stage, not an image.** `IAC_DOCKER_LATEST_TAG` fired
   on `FROM base AS production` and `FROM base AS development` — references to a

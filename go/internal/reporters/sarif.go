@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -358,6 +359,32 @@ func normalizeArtifactURI(uri string) string {
 	return strings.Join(clean, "/")
 }
 
+// bareURISchemes are the scheme tokens a URL collapses to once a trailing
+// line suffix is stripped off it. `line: "https:8080"` parses as path
+// "https" + line 8080 under parseLine's rule (a legal all-digit suffix), and
+// reports rendered before FIX-02 may already carry a bare "https" in the
+// field. Neither is a file.
+var bareURISchemes = map[string]bool{
+	"http": true, "https": true, "ftp": true, "ftps": true,
+	"file": true, "data": true, "ws": true, "wss": true, "javascript": true,
+}
+
+// looksLikeURLPath reports whether a path parsed out of Finding.Line is
+// really a URL — or the bare scheme fragment left over from one — in which
+// case it must NOT become an artifactLocation.uri.
+//
+// The predicate is deliberately NARROW, and deliberately not uriSchemeRE
+// (which matches any RFC 3986 scheme prefix): uriSchemeRE also matches the
+// "C:" of `C:\src\app.go`, so reusing it here would route every Windows
+// whitebox finding into the endpoint branch. Only a literal "://" or an
+// exact bare-scheme token counts.
+func looksLikeURLPath(p string) bool {
+	if strings.Contains(p, "://") {
+		return true
+	}
+	return bareURISchemes[strings.ToLower(strings.TrimSpace(p))]
+}
+
 // neutralizeTags strips control/bidi characters from each reference tag.
 // References feed both helpUri (already scheme-filtered) and the SARIF
 // rule's properties.tags array; the tags are free text and must not
@@ -375,19 +402,68 @@ func neutralizeTags(refs []string) []string {
 	return out
 }
 
-// parseLine extracts file path and line number from a "file:line" string.
+// parseLine splits a Finding.Line value into a file path and a line number.
+//
+// Only a TRAILING ":<digits>" run is a line suffix. Everything else — no
+// colon at all, a colon followed by anything non-numeric, a colon at the very
+// end — returns the string WHOLE with line 0. That narrow rule is the entire
+// fix (FIX-02): the previous implementation split on EVERY ":" and read the
+// last segment as the line number, which mangled the URLs that legitimately
+// arrive in this field.
+//
+// They arrive from python/analyzers/spec_parser.py, which stamps
+// `"line": self.spec_path` at eight sites (126/194/217/240/274/298/340/380),
+// and spec_path may itself be an https:// URL — spec_parser.py:404 fetches a
+// spec over https on purpose. Pre-fix:
+//
+//	"https://api.example.com/openapi.json"
+//	  → Split → ["https", "//api.example.com/openapi.json"]
+//	  → Sscanf fails → filePath "https", line 0
+//
+//	"https://host:8080/api/x"
+//	  → Split → ["https", "//host", "8080/api/x"]
+//	  → Sscanf reads 8080 → filePath "https://host", line 8080
+//
+// The second is the worse of the two: normalizeArtifactURI then strips the
+// scheme, so the emitter published artifactLocation.uri "host" carrying a
+// FABRICATED startLine 8080 — a plausible-looking line in a file that does
+// not exist. Both now come back whole with line 0, and RenderSARIF routes
+// them to a logical location instead (see looksLikeURLPath).
+//
+// Parity anchor: this is precisely what the Python side already asserts about
+// the same field. python/tests/test_ast_analyzer.py::TestFindingStructure::
+// test_line_field_format does `f["line"].rsplit(":", 1)` and requires
+// `parts[1].isdigit()`. Do not diverge from it.
+//
+// NOT fixed here, deliberately: "file:line:col" ("src/app.py:42:10") still
+// yields path "src/app.py:42" + line 10, exactly as the old splitter did. No
+// producer in the tree emits that shape, so reproducing the behaviour is
+// cheaper than guessing at a new one.
 func parseLine(line *string) (string, int) {
 	if line == nil || *line == "" {
 		return "", 0
 	}
-	parts := strings.Split(*line, ":")
-	if len(parts) < 2 {
-		return *line, 0
+	s := *line
+	i := strings.LastIndexByte(s, ':')
+	if i < 0 || i == len(s)-1 {
+		// No colon, or a trailing colon with nothing behind it. An empty
+		// suffix is not a digit run — `"".isdigit()` is False on the Python
+		// side too, so the colon stays part of the path.
+		return s, 0
 	}
-	lineNum := 0
-	fmt.Sscanf(parts[len(parts)-1], "%d", &lineNum)
-	filePath := strings.Join(parts[:len(parts)-1], ":")
-	return filePath, lineNum
+	suffix := s[i+1:]
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return s, 0
+		}
+	}
+	n, err := strconv.Atoi(suffix)
+	if err != nil {
+		// All digits, but too many of them to fit an int. A whole path is a
+		// better answer than a silently truncated line number.
+		return s, 0
+	}
+	return s[:i], n
 }
 
 // RenderSARIF writes a SARIF 2.1.0 report to the writer.
@@ -447,13 +523,26 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		// Per SARIF spec, multiple locations on a single result mean "this
 		// finding applies to all of these places" — exactly the semantics we
 		// want for deduplicated findings (TASK-088).
-		if f.Line != nil && *f.Line != "" {
-			filePath, lineNum := parseLine(f.Line)
+		//
+		// FIX-02: the branch is chosen on the PARSED path, not merely on
+		// `f.Line` being non-empty. A `line` that is really a URL names no
+		// artifact, so it belongs with the endpoints — and the logicalLocation
+		// branch below already renders that correctly, which is why the fix is
+		// to stop feeding it a bogus physicalLocation rather than to rewrite
+		// it. The URL test has to run BEFORE normalizeArtifactURI, because
+		// normalizeArtifactURI is what deletes the scheme and hides the
+		// URL-ness.
+		filePath, lineNum := parseLine(f.Line) // handles nil / "" itself
+		artifactURI := ""
+		if filePath != "" && !looksLikeURLPath(filePath) {
 			// Coerce the artifact URI into a safe relative path: no
 			// scheme (javascript:/http://), no leading slash, no "..".
+			artifactURI = normalizeArtifactURI(filePath)
+		}
+		if artifactURI != "" {
 			loc := SARIFLocation{
 				PhysicalLocation: &SARIFPhysicalLocation{
-					ArtifactLocation: SARIFArtifactLocation{URI: normalizeArtifactURI(filePath)},
+					ArtifactLocation: SARIFArtifactLocation{URI: artifactURI},
 				},
 			}
 			if lineNum > 0 {
@@ -467,6 +556,13 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 			endpoints := f.AffectedEndpoints
 			if len(endpoints) == 0 && f.Endpoint != "" {
 				endpoints = []string{f.Endpoint}
+			}
+			// A URL-shaped `line` on a finding with no endpoint at all is
+			// still a location. De-escalate it to a logical one rather than
+			// dropping it — working rule 3: evidence is de-escalated, never
+			// deleted.
+			if len(endpoints) == 0 && filePath != "" && looksLikeURLPath(filePath) {
+				endpoints = []string{filePath}
 			}
 			if len(endpoints) > 0 {
 				locs := make([]SARIFLocation, 0, len(endpoints))

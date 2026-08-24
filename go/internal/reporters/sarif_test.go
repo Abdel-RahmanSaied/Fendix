@@ -101,6 +101,9 @@ func TestRenderSARIF_HelpURI(t *testing.T) {
 	}
 }
 
+// TestRenderSARIF_ParseLine locks the FIX-02 contract clause by clause: only
+// a TRAILING ":<digits>" run is a line suffix; anything else comes back whole
+// with line 0. Each row documents one clause.
 func TestRenderSARIF_ParseLine(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -113,6 +116,40 @@ func TestRenderSARIF_ParseLine(t *testing.T) {
 		{"nil", nil, "", 0},
 		{"empty", strPtr(""), "", 0},
 		{"deep path", strPtr("src/pkg/handler.go:100"), "src/pkg/handler.go", 100},
+		{"sast file:line", strPtr("app/views.py:674"), "app/views.py", 674},
+
+		// FIX-02: a URL is never a "file:line". The pre-fix splitter turned
+		// the first into filePath "https" and the second into filePath
+		// "https://host" + a fabricated startLine 8080.
+		{"url", strPtr("https://api.example.com/openapi.json"), "https://api.example.com/openapi.json", 0},
+		{"url with port", strPtr("https://host:8080/api/x"), "https://host:8080/api/x", 0},
+		// A URL that really does end in ":<digits>" is indistinguishable from
+		// a line suffix by this rule, and is consumed as one. RenderSARIF's
+		// looksLikeURLPath guard is what keeps the leftover out of a
+		// physicalLocation.
+		{"url with trailing line number", strPtr("https://host/api/x:42"), "https://host/api/x", 42},
+		{"bare scheme with port", strPtr("https:8080"), "https", 8080},
+
+		// A Windows drive path keeps its "C:" — the colon is not trailing.
+		{"windows drive path", strPtr(`C:\src\app.go:42`), `C:\src\app.go`, 42},
+
+		// Manifest-shaped lines from the deps scanners: no suffix, no line.
+		{"manifest name", strPtr("requirements.txt"), "requirements.txt", 0},
+
+		// Pre-existing behaviour, reproduced on purpose and out of FIX-02's
+		// scope: only the LAST segment is considered, so "file:line:col"
+		// still leaves ":42" glued to the path.
+		{"file line col", strPtr("src/app.py:42:10"), "src/app.py:42", 10},
+
+		// Everything that is not an all-digit trailing run stays whole.
+		{"non numeric suffix", strPtr("file.py:notanumber"), "file.py:notanumber", 0},
+		{"empty suffix keeps colon", strPtr("src/app.py:"), "src/app.py:", 0},
+		{"negative suffix", strPtr("src/app.py:-5"), "src/app.py:-5", 0},
+		{"overflowing digits", strPtr("src/app.py:99999999999999999999"), "src/app.py:99999999999999999999", 0},
+
+		// A leading ":<digits>" is a legal (if useless) suffix parse: the
+		// path half is empty, which RenderSARIF then treats as "no artifact".
+		{"leading colon digits", strPtr(":42"), "", 42},
 	}
 
 	for _, tt := range tests {
@@ -130,6 +167,194 @@ func TestRenderSARIF_ParseLine(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+// TestLooksLikeURLPath pins the narrowness of the FIX-02 URL guard. The
+// Windows and CWE rows are the ones that matter: reusing uriSchemeRE (which
+// matches any RFC 3986 scheme prefix, "C:" included) would send every Windows
+// whitebox finding to the logicalLocations branch.
+func TestLooksLikeURLPath(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"https://api.example.com/openapi.json", true},
+		{"http://host/x", true},
+		{"ws://host/socket", true},
+		{"https", true},
+		{"HTTPS", true},
+		{"  https  ", true},
+		{"javascript", true},
+		{`C:\src\app.go`, false},
+		{"src/app.py", false},
+		{"requirements.txt", false},
+		{"Dockerfile", false},
+		{"https-config.yaml", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := looksLikeURLPath(tt.in); got != tt.want {
+				t.Errorf("looksLikeURLPath(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRenderSARIF_URLLineDoesNotBecomeFilePath is the FIX-02 regression test,
+// modelled on the real producer: python/analyzers/spec_parser.py stamps the
+// spec path into `line`, and that path can be an https:// URL. Pre-fix the
+// emitter published artifactLocation.uri "https".
+//
+// Note what the fix is NOT: the logicalLocations branch below already
+// produced the right answer for this finding shape. The bug was feeding it a
+// non-empty `line` so it never ran.
+func TestRenderSARIF_URLLineDoesNotBecomeFilePath(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Spec missing security scheme", Severity: models.SeverityHigh,
+			Source: models.SourceWhitebox, Category: "auth",
+			Endpoint: "https://api.example.com/openapi.json",
+			Line:     strPtr("https://api.example.com/openapi.json"),
+			Evidence: "no securitySchemes declared", Fix: "declare one",
+			Confidence: models.ConfidenceMedium,
+		},
+	}
+	if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	if strings.Contains(buf.String(), `"uri": "https"`) {
+		t.Errorf("emitted the pre-fix bogus artifact uri \"https\":\n%s", buf.String())
+	}
+
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	locs := log.Runs[0].Results[0].Locations
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 location, got %d", len(locs))
+	}
+	if locs[0].PhysicalLocation != nil {
+		t.Errorf("a URL is not a file: physicalLocation should be nil, got %+v", locs[0].PhysicalLocation)
+	}
+	if len(locs[0].LogicalLocations) != 1 {
+		t.Fatalf("expected 1 logical location, got %d", len(locs[0].LogicalLocations))
+	}
+	if got := locs[0].LogicalLocations[0].Name; got != "https://api.example.com/openapi.json" {
+		t.Errorf("logical location name = %q, want the full URL", got)
+	}
+	if got := locs[0].LogicalLocations[0].Kind; got != "endpoint" {
+		t.Errorf("logical location kind = %q, want endpoint", got)
+	}
+}
+
+// TestRenderSARIF_URLWithPortDoesNotFabricateLineNumber covers the nastier
+// half of FIX-02. "https://host:8080/api/x" split into three parts, Sscanf
+// read 8080 out of "8080/api/x", and the emitter published uri "host" (the
+// scheme having been stripped by normalizeArtifactURI) with startLine 8080 —
+// a line number that was never observed, in a file that does not exist.
+func TestRenderSARIF_URLWithPortDoesNotFabricateLineNumber(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Spec served over a nonstandard port", Severity: models.SeverityLow,
+			Source: models.SourceWhitebox, Category: "auth",
+			Endpoint: "https://host:8080/api/x", Line: strPtr("https://host:8080/api/x"),
+			Confidence: models.ConfidenceLow,
+		},
+	}
+	if err := RenderSARIF(&buf, findings, ScanMetadata{Version: "dev"}); err != nil {
+		t.Fatalf("RenderSARIF: %v", err)
+	}
+	if strings.Contains(buf.String(), "8080") && strings.Contains(buf.String(), `"startLine"`) {
+		t.Errorf("output still carries a startLine near the port:\n%s", buf.String())
+	}
+	var log SARIFLog
+	if err := json.Unmarshal(buf.Bytes(), &log); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, loc := range log.Runs[0].Results[0].Locations {
+		if loc.PhysicalLocation != nil {
+			t.Fatalf("expected no physicalLocation for a URL line, got %+v", loc.PhysicalLocation)
+		}
+	}
+	if got := log.Runs[0].Results[0].Locations[0].LogicalLocations[0].Name; got != "https://host:8080/api/x" {
+		t.Errorf("logical location name = %q, want the full URL", got)
+	}
+}
+
+// TestRenderSARIF_BareSchemeLineFallsBackToEndpoint guards the
+// bareURISchemes half of looksLikeURLPath. "https:8080" parses as a legal
+// path+suffix ("https", 8080) — the leftover of a URL, not a file — so the
+// finding must fall through to its endpoint.
+func TestRenderSARIF_BareSchemeLineFallsBackToEndpoint(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Missing auth", Severity: models.SeverityHigh,
+			Source: models.SourceBlackbox, Category: "auth", Endpoint: "GET /api/users",
+			Line: strPtr("https:8080"), Confidence: models.ConfidenceHigh,
+		},
+	}
+	locs := renderAndDecode(t, findings)[0].Locations
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 location, got %d", len(locs))
+	}
+	if locs[0].PhysicalLocation != nil {
+		t.Errorf("a bare scheme is not a file: got %+v", locs[0].PhysicalLocation)
+	}
+	if got := locs[0].LogicalLocations[0].Name; got != "GET /api/users" {
+		t.Errorf("logical location name = %q, want the endpoint", got)
+	}
+}
+
+// TestRenderSARIF_WindowsPathStaysPhysical is the negative control for the
+// looksLikeURLPath narrowness constraint. It fails if anyone swaps the guard
+// for uriSchemeRE, which matches the "C:" drive prefix.
+func TestRenderSARIF_WindowsPathStaysPhysical(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Hardcoded secret", Severity: models.SeverityHigh,
+			Source: models.SourceWhitebox, Category: "secrets",
+			Line: strPtr(`C:\src\app.go:42`), Evidence: "apiKey := \"redacted\"",
+			Confidence: models.ConfidenceHigh,
+		},
+	}
+	locs := renderAndDecode(t, findings)[0].Locations
+	if len(locs) != 1 || locs[0].PhysicalLocation == nil {
+		t.Fatalf("a Windows path must stay a physical location, got %+v", locs)
+	}
+	if locs[0].PhysicalLocation.Region == nil || locs[0].PhysicalLocation.Region.StartLine != 42 {
+		t.Errorf("expected startLine 42, got %+v", locs[0].PhysicalLocation.Region)
+	}
+}
+
+// TestRenderSARIF_URLLineWithNoEndpointStillYieldsLocation is the working
+// rule 3 guard on the FIX-02 fallback: a URL-shaped `line` on a finding with
+// no endpoint at all is DE-ESCALATED to a logical location, never dropped.
+func TestRenderSARIF_URLLineWithNoEndpointStillYieldsLocation(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID: "SEC-001", Title: "Spec fetched over https", Severity: models.SeverityInfo,
+			Source: models.SourceWhitebox, Category: "auth",
+			Endpoint: "", AffectedEndpoints: nil,
+			Line: strPtr("https://host/spec.json"), Confidence: models.ConfidenceLow,
+		},
+	}
+	locs := renderAndDecode(t, findings)[0].Locations
+	if len(locs) != 1 {
+		t.Fatalf("expected exactly 1 (de-escalated, not deleted) location, got %d", len(locs))
+	}
+	if locs[0].PhysicalLocation != nil {
+		t.Errorf("expected no physicalLocation, got %+v", locs[0].PhysicalLocation)
+	}
+	if got := locs[0].LogicalLocations[0].Name; got != "https://host/spec.json" {
+		t.Errorf("logical location name = %q, want the URL", got)
+	}
+	if got := locs[0].LogicalLocations[0].Kind; got != "endpoint" {
+		t.Errorf("logical location kind = %q, want endpoint", got)
+	}
 }
 
 func TestRenderSARIF_WhiteboxLocation(t *testing.T) {
