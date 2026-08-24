@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`csrftoken` was reported as a session cookie missing HttpOnly.** `"csrf"`
+  and `"xsrf"` sat in the cookie scanner's session/auth name list and the
+  HttpOnly finding's title was hardcoded to `Session cookie missing HttpOnly
+  flag`, so Django's `csrftoken`, Angular/Laravel's `XSRF-TOKEN` and
+  Express/Rails' `_csrf` were all reported as session-credential defects at
+  MEDIUM. A CSRF double-submit token has to be readable by `document.cookie` —
+  that is how the client echoes it back in a header — so "missing HttpOnly" is
+  the expected configuration for one, not a defect.
+
+  Cookies are now classified into ignore / CSRF / session, and the CSRF list is
+  consulted BEFORE the session list because `csrftoken` also contains `token`.
+  A CSRF token without HttpOnly gets its own INFO finding that says what was
+  actually observed and asks the reader to confirm the name is not misleading
+  them. Per Rule 3 the observation is de-escalated, never suppressed: the
+  finding count is a 1-for-1 swap, and CWE-1004 is retained so a consumer
+  filtering on it still sees the observation.
+
+  The `Secure` and `SameSite` checks are unchanged and still apply to CSRF
+  cookies — a token has to be readable by script, but it does not have to
+  travel in the clear, and `SameSite=None` on one is genuinely CSRF-permissive.
+
+  > **Fingerprint churn.** `models.Fingerprint` hashes
+  > `(Category, Endpoint, Title)` and `dedupKey` hashes
+  > `(Severity, Category, Title)`, so the new title mints a new fingerprint and
+  > a new dedup group. Any committed `.fendix-ignore` `fingerprint:` rule or
+  > `--baseline` entry that suppressed `Session cookie missing HttpOnly flag`
+  > on a csrf/xsrf-named cookie STOPS MATCHING, and a `--diff` scan reports the
+  > INFO finding as new. A host that sets both a session cookie and a CSRF
+  > cookie now produces two HttpOnly-class dedup groups where it produced one.
+
 ### Changed
 
 - **Confidence bands were arithmetically stuck at MEDIUM for uncorrelated
