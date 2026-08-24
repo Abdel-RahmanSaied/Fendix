@@ -39,10 +39,16 @@ func TestDeescalateTestsFlagIsDocumented(t *testing.T) {
 			t.Errorf("--deescalate-tests usage should mention %q: %q", want, f.Usage)
 		}
 	}
-	// The safety carve-out must be discoverable from --help: a team that gates
-	// on --fail-on needs to know the demotion cannot disarm their gate.
+	// The carve-out must be discoverable from --help. Its CONTENT changed in
+	// v1.2.2: the demotion now CAN hold a threshold-crossing finding at WARN
+	// when nothing corroborates it, so the help text has to say what still
+	// blocks (a corroborated finding) rather than promising that --fail-on
+	// always wins. A team gating on --fail-on cannot learn that anywhere else.
 	if !strings.Contains(strings.ToLower(f.Usage), "fail-on") {
-		t.Errorf("--deescalate-tests usage should state that --fail-on still blocks: %q", f.Usage)
+		t.Errorf("--deescalate-tests usage should explain its interaction with --fail-on: %q", f.Usage)
+	}
+	if !strings.Contains(strings.ToLower(f.Usage), "corroborat") {
+		t.Errorf("--deescalate-tests usage should say that a CORROBORATED finding still blocks: %q", f.Usage)
 	}
 }
 

@@ -66,11 +66,10 @@ type Decision struct {
 	Evidence evidence.Evidence
 
 	// aboveThreshold records that this finding's severity met --fail-on,
-	// independent of what the confidence gate then did with it. It is the floor
-	// DecideWithOptions uses to keep a finding the gate demoted to WARN from
-	// cascading into the test-fixture WARN → INFO rule and being buried at the
-	// same level as a below-threshold LOW. Unexported on purpose: nothing
-	// serializes Decision, and it is policy bookkeeping, not a verdict.
+	// independent of what the confidence policy then did with it. It is the
+	// floor DecideWithOptions uses to keep a threshold-crossing finding from
+	// sinking all the way to INFO after a demotion. Unexported on purpose:
+	// nothing serializes Decision, and it is policy bookkeeping, not a verdict.
 	aboveThreshold bool
 }
 
@@ -256,9 +255,12 @@ func appendReason(reasons []string, line string) []string {
 // on. If you add a field here, add a wiring test that drives it from
 // models.ScanConfig, not just from a literal.
 type Options struct {
-	// DeescalateTests drops findings in test / fixture code to INFO (evidence
-	// preserved — Rule 3), overridable so a team that DOES want to gate on
-	// test-code findings can turn it off. (B3.)
+	// DeescalateTests drops findings in test / fixture code (evidence
+	// preserved — Rule 3): WARN → INFO, and an UNCORROBORATED BLOCK → WARN.
+	// A corroborated test-code finding — e.g. a provider-validated live
+	// credential committed into a fixture — still BLOCKs. Overridable so a
+	// team that DOES want to gate on every test-code finding can turn it off
+	// with --deescalate-tests=false. (B3 / FIX-09.)
 	DeescalateTests bool
 
 	// EnforceConfidence gates the --fail-on threshold on the deterministic
@@ -275,23 +277,41 @@ type Options struct {
 }
 
 // testFixtureReason is the 0-point explainability line appended to the score
-// breakdown when the test-fixture de-escalation fires. It carries an explicit
-// "+0" so the published reasons still sum to ConfidenceScore — the
+// breakdown when the test-fixture WARN → INFO de-escalation fires. It carries
+// an explicit "+0" so the published reasons still sum to ConfidenceScore — the
 // de-escalation changes the decision STATUS, never the score (the same
 // zero-delta convention confidence.lineageTrace uses).
 const testFixtureReason = "+0 de-escalated to INFO: finding is in test/fixture code " +
 	"(rule: test-fixture; evidence preserved)"
 
+// testFixtureBlockReason is the same line for FIX-09's BLOCK → WARN arm. Kept
+// separate so the report distinguishes "this was never going to gate anything"
+// from "this crossed your --fail-on threshold and we held it at WARN".
+const testFixtureBlockReason = "+0 de-escalated to WARN: finding is in test/fixture code " +
+	"with no corroborating signal (rule: test-fixture; evidence preserved)"
+
 // DecideWithOptions is the production entry point: decide() under the scan
-// policy, plus the v1.1 test-fixture de-escalation (B3). A finding in
-// test/fixture code drops to INFO — evidence preserved (Rule 3), not
-// suppressed — but only from WARN/INFO; a BLOCK (at/above --fail-on) is never
-// silently downgraded, so the gate a team explicitly asked for still fires.
+// policy, plus the test-fixture de-escalation.
+//
+// The test-fixture rule (B3, extended by FIX-09) reads:
+//
+//   - BLOCK + no corroborating signal → WARN. 31 of the 35 catalogued false
+//     positives in tasks/FP_CORPUS.md are test fixtures, and before FIX-09 the
+//     rule only demoted WARN → INFO — so the project's single largest FP class
+//     was structurally exempt from its own mitigation whenever a team set
+//     --fail-on. A CORROBORATED test-code finding still BLOCKs, which is what
+//     keeps this de-escalation rather than path suppression (Rule 3).
+//   - WARN + below --fail-on → INFO. The original v1.1 rule, unchanged.
+//
+// The arms are mutually exclusive by construction (a switch on the status
+// decide() produced), so exactly ONE 0-point reason line is ever appended —
+// TestDeescalationIsExplainedInTheScoreReasons locks that arithmetic.
 //
 // THE FLOOR: a finding whose severity met --fail-on is never reported below
-// WARN. Without it, a finding the confidence gate just demoted BLOCK → WARN
-// would cascade straight into this rule and be buried at INFO, alongside
-// genuinely below-threshold noise. d.aboveThreshold is the guard.
+// WARN. Without it, a threshold-crossing test-code finding could be demoted
+// BLOCK → WARN here (or WARN by the confidence gate) and then demoted again
+// WARN → INFO by the second arm, burying it at the same level as a
+// below-threshold LOW. d.aboveThreshold is the guard.
 //
 // CALLER CONTRACT: the de-escalation keys off ev.InTest, which is
 // Evidence-internal and therefore does NOT survive the Evidence→Finding
@@ -304,13 +324,30 @@ const testFixtureReason = "+0 de-escalated to INFO: finding is in test/fixture c
 // occurrences. The index's "agree or drop" fold is the only correct source.
 func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decision {
 	d := decide(ev, failOn, opts)
-	if opts.DeescalateTests && d.Status == StatusWarn && ev.InTest && !d.aboveThreshold {
-		d.Status = StatusInfo
-		d.Reason = "de-escalated to INFO: finding is in test/fixture code (rule: test-fixture; evidence preserved)"
-		// Surface the de-escalation in the published breakdown too. Without
-		// this the report shows a finding silently demoted to INFO with
-		// nothing in confidence_reasons explaining why.
-		d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureReason)
+	if !opts.DeescalateTests || !ev.InTest {
+		return d
+	}
+	switch d.Status {
+	case StatusBlock:
+		// A corroborated finding in test code still gates the build: a live
+		// credential that a provider validated is a real leak wherever the
+		// file happens to live.
+		if len(corroborations(ev)) == 0 {
+			d.Status = StatusWarn
+			d.Reason = "de-escalated to WARN: finding is in test/fixture code with no corroborating " +
+				"signal beyond the pattern match (rule: test-fixture; evidence preserved; " +
+				"--fail-on threshold was met)"
+			d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureBlockReason)
+		}
+	case StatusWarn:
+		if !d.aboveThreshold {
+			d.Status = StatusInfo
+			d.Reason = "de-escalated to INFO: finding is in test/fixture code (rule: test-fixture; evidence preserved)"
+			// Surface the de-escalation in the published breakdown too. Without
+			// this the report shows a finding silently demoted to INFO with
+			// nothing in confidence_reasons explaining why.
+			d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureReason)
+		}
 	}
 	return d
 }

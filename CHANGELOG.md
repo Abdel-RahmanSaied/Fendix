@@ -196,9 +196,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   > itself a corroborating signal), and a real hardcoded credential in
   > production code still bands HIGH and still exits 1.
   >
-  > The escape hatch is `--enforce-confidence=false`, or
-  > `scan.enforce_confidence: false` in `.fendix.yaml`, which restores the
-  > legacy severity-only gate byte-for-byte.
+  > Two independent escape hatches, because there are two independent rules:
+  > `--enforce-confidence=false` (or `scan.enforce_confidence: false` in
+  > `.fendix.yaml`) restores the legacy severity-only gate byte-for-byte, and
+  > `--deescalate-tests=false` restores blocking on uncorroborated test-code
+  > findings. Neither implies the other.
+
+- **`--deescalate-tests` now also demotes an uncorroborated BLOCK to WARN.**
+  The rule only ever demoted `WARN → INFO`, so a team that set `--fail-on` —
+  exactly the audience the demotion exists for — got none of it. Test fixtures
+  are 31 of the 35 catalogued false positives in `tasks/FP_CORPUS.md`, and they
+  were structurally exempt from their own mitigation.
+
+  A finding in test/fixture code that meets `--fail-on` with **no** corroborating
+  signal beyond the pattern match is now held at WARN, with the reason stating
+  both the rule and the missing corroboration. A **corroborated** one — a proven
+  taint path, a provider-validated live credential — still BLOCKs, which is what
+  keeps this de-escalation rather than path suppression (Rule 3). Nothing is
+  dropped, no evidence text is touched and no score moves.
+
+  A finding that crossed the `--fail-on` threshold is never reported below WARN:
+  the two demotion rules cannot cascade into INFO and bury it alongside a
+  below-threshold LOW.
 
 - **`[Unconfirmed by live scan]` gained a machine-readable counterpart.** The
   correlator writes that suffix into a finding's evidence text when a live scan

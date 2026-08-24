@@ -74,9 +74,10 @@ scan:
   delay_ms: 100          # --delay (ms)
   format: json           # --format (json | html | sarif | pdf)
   deescalate_tests: true # --deescalate-tests (findings in test/fixture code
-                         #   report as INFO instead of WARN; the evidence is
-                         #   preserved, and anything at or above `fail_on`
-                         #   still blocks)
+                         #   report as INFO instead of WARN, and one at or
+                         #   above `fail_on` is held at WARN unless a
+                         #   corroborating signal backs it; the evidence is
+                         #   always preserved)
   enforce_confidence: true # --enforce-confidence (a finding at or above
                          #   `fail_on` blocks only when its deterministic
                          #   confidence band supports the claim: HIGH always,

@@ -287,22 +287,54 @@ func TestOrchestratorPassesTheConfigPolicyToTheDecisionLayer(t *testing.T) {
 	}
 }
 
-// TestPipelineNeverDowngradesABlockingTestFinding is the safety gate: a team
-// that set --fail-on HIGH asked for that gate explicitly, and the test-code
-// exemption must not quietly disarm it.
+// TestPipelineDemotesAnUncorroboratedBlockingTestFinding replaces the v1.1
+// TestPipelineNeverDowngradesABlockingTestFinding, whose invariant FIX-09
+// deliberately removes.
 //
-// NOTE: the finding here is uncorroborated, and it reaches BLOCK only because
-// finalize passes decision.Options{DeescalateTests: true} — EnforceConfidence
-// is the false zero value, i.e. the LEGACY gate. Under the shipped policy the
-// confidence gate holds it at WARN; see TestPipelineStillBlocksARealProductionSecret.
-func TestPipelineNeverDowngradesABlockingTestFinding(t *testing.T) {
+// The old rule ("--fail-on always wins over the test-fixture rule") sounded
+// safe but was the exact hole that exempted the project's largest FP class from
+// its own mitigation: 31 of the 35 catalogued false positives in
+// tasks/FP_CORPUS.md are test fixtures, and a team with --fail-on set — i.e.
+// everyone the demotion was meant to help — got none of it. The demotion is
+// conditional on the ABSENCE of corroboration, so the safety property moved
+// rather than disappeared; its other half is the test below.
+func TestPipelineDemotesAnUncorroboratedBlockingTestFinding(t *testing.T) {
 	evid := []evidence.Evidence{secretEvidence("app/tests/test_client.py:12")}
 
 	got := finalize(evid, "HIGH", decision.Options{DeescalateTests: true})
 
-	if got[0].Status != string(decision.StatusBlock) {
-		t.Errorf("Status = %q, want BLOCK — --fail-on must win over the test-fixture rule",
+	if got[0].Status != string(decision.StatusWarn) {
+		t.Errorf("Status = %q, want WARN — an uncorroborated test-code match must not gate a build",
 			got[0].Status)
+	}
+	if !strings.Contains(strings.Join(got[0].ConfidenceReasons, "\n"), "test/fixture code") {
+		t.Errorf("no reason line explains the demotion: %v", got[0].ConfidenceReasons)
+	}
+	// Rule 3: de-escalated, never deleted.
+	if len(got) != 1 {
+		t.Errorf("finding count = %d, want 1 — evidence must be preserved, not suppressed", len(got))
+	}
+	if got[0].Evidence == "" {
+		t.Error("evidence text was dropped; de-escalation must preserve it")
+	}
+}
+
+// TestPipelineKeepsACorroboratedBlockingTestFinding is the other half, and the
+// reason FIX-09 is a de-escalation rather than path suppression: a credential
+// with a signal behind it — a proven taint path here, a provider-validated live
+// key in the field — is a real leak wherever the file lives, and still exits 1.
+func TestPipelineKeepsACorroboratedBlockingTestFinding(t *testing.T) {
+	ev := secretEvidence("app/tests/test_client.py:12")
+	ev.Reachable = true
+
+	got := finalize([]evidence.Evidence{ev}, "HIGH", decision.Options{DeescalateTests: true})
+
+	if got[0].Status != string(decision.StatusBlock) {
+		t.Errorf("Status = %q, want BLOCK — a corroborated test-code finding must still gate",
+			got[0].Status)
+	}
+	if len(got) != 1 || got[0].Evidence == "" {
+		t.Errorf("Rule 3: expected 1 finding with intact evidence, got %+v", got)
 	}
 }
 

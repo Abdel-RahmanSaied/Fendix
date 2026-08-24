@@ -169,9 +169,24 @@ func TestDecideDeescalatesTestFixtureToInfo(t *testing.T) {
 	if got := DecideWithOptions(prod, "", Options{DeescalateTests: true}); got.Status != StatusWarn {
 		t.Errorf("non-test finding Status = %q, want WARN (unaffected)", got.Status)
 	}
-	// A BLOCK finding (at/above --fail-on) is NOT silently downgraded by the
-	// test-path rule — de-escalation only touches WARN/INFO.
-	if got := DecideWithOptions(ev, "HIGH", Options{DeescalateTests: true}); got.Status != StatusBlock {
-		t.Errorf("test-fixture BLOCK finding Status = %q, want BLOCK (threshold wins)", got.Status)
+	// FIX-09 (v1.2.2) INVERTED the old assertion here. Before, a BLOCK at/above
+	// --fail-on was never downgraded by the test-path rule; that made the
+	// project's largest FP class (31/35 of tasks/FP_CORPUS.md) structurally
+	// exempt from its own mitigation for exactly the teams that set a
+	// threshold. Now an UNCORROBORATED test-code BLOCK is held at WARN...
+	held := DecideWithOptions(ev, "HIGH", Options{DeescalateTests: true})
+	if held.Status != StatusWarn {
+		t.Errorf("uncorroborated test-fixture BLOCK Status = %q, want WARN", held.Status)
+	}
+	if !strings.Contains(held.Reason, "test/fixture code") || !strings.Contains(held.Reason, "corroborating") {
+		t.Errorf("reason should name both the test-fixture rule and the missing corroboration: %q", held.Reason)
+	}
+	// ...while a CORROBORATED one still gates the build. That is what keeps
+	// this a de-escalation rather than path suppression (Rule 3): a live
+	// credential a provider validated is a real leak wherever it lives.
+	corroborated := ev
+	corroborated.Reachable = true
+	if got := DecideWithOptions(corroborated, "HIGH", Options{DeescalateTests: true}); got.Status != StatusBlock {
+		t.Errorf("corroborated test-fixture finding Status = %q, want BLOCK", got.Status)
 	}
 }

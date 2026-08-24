@@ -347,3 +347,100 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+// TestTestFixtureBlockDemotionRequiresNoCorroboration is FIX-09 item 1: the
+// demotion is conditional on the absence of corroboration, which is what makes
+// it a de-escalation rather than a path-based exemption (Rule 3 forbids the
+// latter outright).
+func TestTestFixtureBlockDemotionRequiresNoCorroboration(t *testing.T) {
+	ev := evidence.Evidence{
+		Title:      "Hardcoded API key or token",
+		Category:   "secrets",
+		Endpoint:   "app/tests/test_client.py:12",
+		Severity:   models.SeverityHigh,
+		Source:     models.SourceWhitebox,
+		Confidence: models.ConfidenceHigh,
+		Evidence:   `api_key = "sk-live-abc..."`,
+		InTest:     true,
+	}
+	on := Options{DeescalateTests: true}
+	off := Options{DeescalateTests: false}
+
+	held := DecideWithOptions(ev, "HIGH", on)
+	if held.Status != StatusWarn {
+		t.Errorf("Status = %q, want WARN", held.Status)
+	}
+	if !strings.Contains(held.Reason, "test/fixture code") || !strings.Contains(held.Reason, "corroborating") {
+		t.Errorf("reason must name the rule and the missing corroboration: %q", held.Reason)
+	}
+	if held.Evidence.Evidence == "" {
+		t.Error("evidence text was dropped (Rule 3)")
+	}
+
+	plain := DecideWithOptions(ev, "HIGH", off)
+	if plain.Status != StatusBlock {
+		t.Errorf("with --deescalate-tests=false Status = %q, want BLOCK", plain.Status)
+	}
+	if held.Score.Value != plain.Score.Value {
+		t.Errorf("the de-escalation changed the SCORE (%d → %d); it must only change STATUS",
+			plain.Score.Value, held.Score.Value)
+	}
+	if len(held.Score.Reasons) != len(plain.Score.Reasons)+1 {
+		t.Errorf("expected exactly one extra reason line, got %d vs %d",
+			len(held.Score.Reasons), len(plain.Score.Reasons))
+	}
+	last := held.Score.Reasons[len(held.Score.Reasons)-1]
+	if !strings.HasPrefix(last, "+0 ") {
+		t.Errorf("the de-escalation line must carry an explicit +0 delta so reasons still\n"+
+			"reconcile with the score: %q", last)
+	}
+
+	// A provider-validated live credential that happens to live in a fixture
+	// is still a leak. Reachable stands in for "some signal beyond the pattern
+	// match" here; the arm is len(corroborations)==0, not any specific field.
+	corroborated := ev
+	corroborated.Reachable = true
+	if got := DecideWithOptions(corroborated, "HIGH", on); got.Status != StatusBlock {
+		t.Errorf("corroborated test-code finding Status = %q, want BLOCK", got.Status)
+	}
+}
+
+// TestThresholdCrossingFindingNeverSinksBelowWarn locks the floor. Two
+// independent demotions now exist (the confidence gate and the test-fixture
+// rule), and letting them cascade would bury a finding that DID cross the
+// team's --fail-on threshold at the same level as a below-threshold LOW.
+func TestThresholdCrossingFindingNeverSinksBelowWarn(t *testing.T) {
+	// InTest + Placeholder: 35 base + 10 static - 20 placeholder = 25 → LOW
+	// band, so the confidence gate demotes it too. The worst case for the
+	// cascade.
+	ev := evidence.Evidence{
+		Title:       "Hardcoded API key or token",
+		Category:    "secrets",
+		Endpoint:    "app/tests/test_client.py:12",
+		Severity:    models.SeverityHigh,
+		Source:      models.SourceWhitebox,
+		Confidence:  models.ConfidenceHigh,
+		InTest:      true,
+		Placeholder: true,
+	}
+	for _, enforce := range []bool{true, false} {
+		for _, deescalate := range []bool{true, false} {
+			opts := Options{EnforceConfidence: enforce, DeescalateTests: deescalate}
+			d := DecideWithOptions(ev, "HIGH", opts)
+			if d.Status == StatusInfo {
+				t.Errorf("enforce=%v deescalate=%v: a finding at or above --fail-on was reported INFO",
+					enforce, deescalate)
+			}
+			if d.Status != StatusBlock && d.Status != StatusWarn {
+				t.Errorf("enforce=%v deescalate=%v: unexpected Status %q", enforce, deescalate, d.Status)
+			}
+		}
+	}
+
+	// Below the threshold the original WARN → INFO rule is untouched.
+	below := ev
+	below.Severity = models.SeverityMedium
+	if d := DecideWithOptions(below, "HIGH", Options{EnforceConfidence: true, DeescalateTests: true}); d.Status != StatusInfo {
+		t.Errorf("below-threshold test finding Status = %q, want INFO (the v1.1 rule must still fire)", d.Status)
+	}
+}
