@@ -15,15 +15,15 @@ will:
   `actions/cache`) so a PR comment shows only the diff.
 - Post a summary comment on each PR with finding counts, top 5
   findings, and links to the Security tab.
-- Fail the build if any HIGH or CRITICAL findings exist after baseline
-  filtering (`--fail-on HIGH`).
+- Fail the build on a HIGH or CRITICAL finding that survives baseline
+  filtering **and** whose confidence band supports the claim (`--fail-on HIGH`).
 
 The sections below show the individual building blocks if you'd rather
 assemble your own workflow.
 
 ## GitHub Actions — SARIF Upload
 
-This workflow runs Fendix on every pull request, uploads SARIF results to GitHub Code Scanning, and fails the build if any HIGH or CRITICAL findings are detected.
+This workflow runs Fendix on every pull request, uploads SARIF results to GitHub Code Scanning, and fails the build on a HIGH or CRITICAL finding that reaches status `BLOCK`.
 
 ```yaml
 name: Fendix Security Scan
@@ -153,14 +153,48 @@ fendix report --input findings.json --format sarif --output results.sarif
 
 | Code | Meaning |
 |------|---------|
-| 0 | Scan complete, no findings at or above `--fail-on` threshold |
-| 1 | Scan complete, findings found at or above threshold |
+| 0 | Scan complete, nothing reached status `BLOCK` |
+| 1 | Scan complete, at least one finding reached status `BLOCK` |
 | 2 | Scan error (network failure, invalid config, etc.) |
 
-Use `--fail-on` to control which severity level triggers a non-zero exit:
-- `--fail-on CRITICAL` — only fail on critical findings
-- `--fail-on HIGH` — fail on high or critical
-- `--fail-on MEDIUM` — fail on medium, high, or critical
+Use `--fail-on` to set the severity floor for the gate:
+- `--fail-on CRITICAL` — only critical findings can block
+- `--fail-on HIGH` — high or critical
+- `--fail-on MEDIUM` — medium, high, or critical
+
+### Meeting the threshold is necessary, not sufficient (v2.0)
+
+Since **v2.0**, `--fail-on` consults the deterministic confidence band as well
+as severity. A finding at or above the threshold reaches `BLOCK` only when the
+band supports the claim:
+
+| Confidence band | Corroborating signal | Status |
+|---|---|---|
+| `HIGH` | any | **BLOCK** |
+| `MEDIUM` | ≥ 1 | **BLOCK** |
+| `MEDIUM` | none | WARN |
+| `LOW` | any | WARN |
+| any | marked unconfirmed-by-live-scan, uncorroborated | WARN |
+
+The corroborating signals are cross-engine agreement, live runtime observation,
+direct observation of a live response, deterministic detection in production
+code, confirmed route, reachable taint path, proven path, and payload-validated
+probe. Every demotion is named in the finding's `confidence_reasons`, so a WARN
+that used to be a BLOCK is always attributable from the report alone.
+
+> **This changes the exit code of an existing pipeline.** A job that gated on
+> `--fail-on` can now exit 0 where it exited 1 — most often on shape-match SAST
+> findings (including the semgrep-shim tier) that carry no corroborating signal.
+> A real hardcoded credential in production code still bands `HIGH` and still
+> exits 1. Pass `--enforce-confidence=false` (or set
+> `scan.enforce_confidence: false` in `.fendix.yaml`) to restore the pre-2.0
+> severity-only mapping byte-for-byte.
+
+A second, independent rule: `--deescalate-tests` (on by default) now holds an
+**uncorroborated** finding in test/fixture code at `WARN` even when it meets
+`--fail-on`. A corroborated one — a proven taint path, a provider-validated live
+credential — still blocks. `--deescalate-tests=false` turns that off; neither
+flag implies the other.
 
 ## Suppressing Known Issues
 

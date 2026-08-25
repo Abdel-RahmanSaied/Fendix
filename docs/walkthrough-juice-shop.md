@@ -96,14 +96,27 @@ Click any finding to expand its evidence, fix guidance, and CWE reference.
 Findings flagged `correlated` are the highest-confidence ones — both
 engines agreed on the same endpoint.
 
+Since v2.0 severity and confidence are separate axes here. A hardcoded token
+whose value or variable name is fixture-shaped (`FAKE_`/`TEST_`-prefixed key, a
+placeholder word in the value, a long identical run) keeps its CRITICAL severity
+but drops into the `LOW` confidence band, and so reports as `WARN` rather than
+blocking a build. Nothing is hidden — check `confidence_band` and
+`confidence_reasons` on a finding to see which of the two it is.
+
 ## 5. Interpret the output (90 seconds)
 
 Open the HTML report's "Summary" panel:
 
 - **By severity** — sort the table column. Triage CRITICAL → HIGH first.
+- **By status** — since v2.0 every finding carries a decision verdict.
+  `BLOCK` is what would fail a CI build (it met `--fail-on` *and* its
+  deterministic confidence band supported the claim); `WARN` is real output
+  that did not clear the evidence bar, with `confidence_reasons` naming the
+  missing signal. If you're wondering "where do I start?", start with `BLOCK`.
 - **By source** — `correlated` findings have the lowest false-positive rate
-  by design (they require both the live target and the source to agree). If
-  you're wondering "where do I start?", start there.
+  by design (they require both the live target and the source to agree).
+  Cross-engine agreement is one of the corroborating signals that lifts a
+  finding to `BLOCK`.
 - **Affected endpoints (N)** — when one finding type covers many endpoints
   (e.g. "Missing CSP" across 21 endpoints), Fendix collapses them into one
   finding with an `affected_endpoints` list. Fix the underlying control once,
@@ -114,7 +127,9 @@ For each finding the report shows:
 - **Title + severity badge** — what was detected.
 - **Endpoint** — URL or `file:line`.
 - **Evidence** — the response snippet or source line that triggered the
-  detection. Credentials are masked as `[REDACTED]`.
+  detection. Credentials you passed via `--auth` are masked as `[REDACTED]`;
+  credential material the secrets scanner *found* is redacted at capture time
+  as `[REDACTED len=N sha256:xxxxxxxx...]`, so no part of it reaches the report.
 - **Fix** — concrete remediation guidance.
 - **References** — CWE, OWASP, RFC IDs.
 

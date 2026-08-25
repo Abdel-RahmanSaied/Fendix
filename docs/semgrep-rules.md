@@ -140,6 +140,18 @@ cannot have `severity` higher than `MEDIUM`. The orchestrator will
 downgrade and warn. Tune `confidence` to match the rule's true precision —
 don't over-claim `HIGH` for pattern matches that have known false positives.
 
+> **Since v2.0, severity alone will not fail a build from a semgrep rule.** The
+> semgrep-shim tier is excluded from the `deterministic detection` confidence
+> bonus — it is a documented false-positive class — so a shape-match finding
+> scores `35 base + 10 static − 5 tier = 40`, lands in the `MEDIUM` band (which
+> starts at 40), and with no corroborating signal is held at `WARN` rather than
+> `BLOCK`. **A semgrep HIGH
+> with no taint chain no longer gates on its own.** What lifts one back to
+> blocking is corroboration: a proven taint path, a confirmed route, or
+> cross-engine agreement with the live scan. `--enforce-confidence=false`
+> restores the pre-2.0 severity-only gate for the whole scan, but that is a
+> blunt instrument — prefer writing rules whose findings can be corroborated.
+
 ---
 
 ## Worked examples

@@ -6,11 +6,13 @@ whether it is CI-gated, and the honest caveat. If you can't re-run it, we don't
 claim it (Product Constitution Rule 5). Scoring is deterministic Python/Go — no
 AI decides a score or a label (Rule 8).
 
-> Captured 2026-06-30 on the binary built from `v0.19.0-41-g17e8937`,
-> macOS/arm64, Go 1.x. (v0.26 changed only docs, the Python harness, and CI —
-> the scanner binary is unchanged, so these numbers stand for current `main`.)
-> Re-run any command below to reproduce. Numbers in the older `docs/accuracy.md`
-> are a historical snapshot pinned to **v0.11.0** — this page supersedes them.
+> Re-run 2026-08-24/25 on the binary built from **`v2.0.1`**, macOS/arm64.
+> Every track on this page was re-measured on that binary — the accuracy tracks
+> and the DAST suite alike — rather than carried forward from the previous
+> capture (`v0.19.0-41-g17e8937`, 2026-06-30). Two numbers moved; both are noted
+> where they appear. Re-run any command below to reproduce. Numbers in the older
+> `docs/accuracy.md` are a historical snapshot pinned to **v0.11.0** — this page
+> supersedes them.
 
 ---
 
@@ -25,7 +27,7 @@ cd python && PYTHONPATH=. python3 benchmark/run_benchmark.py
 | Precision | **1.000** |
 | Recall | **1.000** |
 | F1 | **1.000** |
-| Cases | 40 labeled (20 vulnerable / 20 safe), 10 categories |
+| Cases | 51 labeled (22 vulnerable / 29 safe), 10 categories |
 | Known gaps | 0 (HANDLED == HONEST) |
 
 - **Corpus:** `python/benchmark/corpus.json` (hand-authored, in-repo).
@@ -98,16 +100,35 @@ fendix benchmark run --target all      # requires Docker
 | Target | Found | Raw FP | Image |
 |---|---:|---:|---|
 | DVWA | 13 / 13 | 0 | `vulnerables/web-dvwa` |
-| OWASP Juice Shop | 12 / 12 | 5 | `bkimminich/juice-shop` (pinned **v17.1.1**) |
+| OWASP Juice Shop | 12 / 12 | 0 | `bkimminich/juice-shop` (pinned **v17.1.1**) |
 
 - **Source:** committed baseline `benchmarks/baselines/baseline.json`
-  (captured `v0.19.0-3-g5d999f6`, 2026-06-28).
+  (re-captured on `v2.0.1`, 2026-08-25).
+- **Juice Shop's raw FP count moved 5 → 0, and the reason is real.** The
+  2026-06-28 capture recorded 17 findings: 12 legitimate and 5 false positives,
+  where the config-file-exposure check flagged `/.DS_Store`, `/.env`,
+  `/.git/HEAD`, `/.htaccess` and `/.htpasswd` because Juice Shop's Express SPA
+  answers **any** unknown path with HTTP 200 and a byte-identical body. On
+  `v2.0.1` the same scan returns 12 findings and no false positives. The change
+  is not attributed to a specific release here: it happened somewhere between
+  `v0.19.0-3` and `v2.0.1` and was never bisected. It went unnoticed because
+  `fendix benchmark compare` gates on recall and duration — a precision
+  improvement passes silently, and so would a precision regression.
+- **`realworld/twiscope` is no longer in the committed baseline.** The previous
+  file carried a `v0.19.0-3` entry for it (1 TP / 2 FP). That target is a
+  private seed-tier corpus with no local path configured, so it is skipped on
+  any machine without it and could not be re-measured here. Rather than carry a
+  two-major-versions-old number forward inside a file stamped `v2.0.1`, the
+  entry was dropped; a missing target is treated as a first run by
+  `benchmark compare`, so nothing regresses silently. Re-baseline it on a
+  machine that has the corpus.
 - **Caveats (read these):**
   - **"Found" is regression coverage, NOT a detection rate.** Ground truth is
     the set Fendix detects on the **unauthenticated black-box surface**; FN = 0
     *by construction*, so this is not "100% recall" of all DVWA/Juice Shop bugs.
   - **Precision is a lower bound** — there is no labeled negative corpus, so we
-    report the **raw false-positive count** (5 on Juice Shop), never an
+    report the **raw false-positive count** (0 on both targets as of `v2.0.1`;
+    5 on Juice Shop in the 2026-06-28 capture), never an
     FP-*rate*.
   - Authenticated/deep flows (SQLi/XSS/CSRF behind login) are out of this
     target's scope.

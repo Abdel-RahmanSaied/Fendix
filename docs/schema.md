@@ -5,9 +5,19 @@ A machine-readable JSON Schema (draft-07) lives alongside this file at
 [`schema.json`](./schema.json) and is used by Fendix's own test suite to
 validate every report produced.
 
-The schema is **stable** for the 1.x line: within `1.x`, additive changes (new
-optional fields) are allowed in any release, and removals or type changes are
-reserved for a `2.0.0` major bump. v1.1.0 added no output fields.
+The report contract carries its **own** version — `metadata.schema_version`,
+today `1` — which is independent of the engine's release version. Additive
+changes (new optional fields) are allowed in any engine release and do not bump
+it; it is bumped only for a change a consumer must react to, such as a removal
+or a type change.
+
+**Engine v2.0.0 was a major bump for CLI behaviour, not for this contract.** It
+gated `--fail-on` on the confidence band (see below) and added
+`metadata.schema_version`; it removed and retyped nothing. Reports written by
+`1.x` and `0.x` builds still validate against this schema, and a consumer
+written against `1.x` still parses a `2.x` report. What did change is the
+**content** of several fields — see
+[What v2.0 changed in the values](#what-v20-changed-in-the-values).
 
 Reports produced by `0.x` builds validate against this schema too — every
 change across the `0.x` line was additive — but `0.x` is end of life (see
@@ -48,7 +58,7 @@ etc.) record when a field first appeared, not a support commitment.
   "target":            "https://api.example.com",
   "started_at":        "2026-04-29T10:00:00Z",
   "duration":          "12.5s",
-  "version":              "1.1.0",
+  "version":              "2.0.1",
   "mode":                 "hybrid",
   "endpoints_scanned":    21,
   "endpoints_discovered": 34,
@@ -65,11 +75,11 @@ etc.) record when a field first appeared, not a support commitment.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `schema_version` | integer | effectively yes | Version of this report contract. `RenderJSON` stamps it on **every** report it writes (overwriting whatever the caller set), so any report a current build produces carries it. It stays out of `schema.json`'s `required` set so pre-v1.2.2 archived reports still validate: those omit the key, and an absent key means "pre-versioned", **not** invalid. A consumer that does not recognise the value should warn, not fail — `ParseJSONReport` accepts any value, including 0 and unknown future ones. Bumped only for a change consumers must react to; purely additive keys do not bump it. |
+| `schema_version` | integer | effectively yes | Version of this report contract. `RenderJSON` stamps it on **every** report it writes (overwriting whatever the caller set), so any report a current build produces carries it. It stays out of `schema.json`'s `required` set so pre-2.0 archived reports still validate: those omit the key, and an absent key means "pre-versioned", **not** invalid. A consumer that does not recognise the value should warn, not fail — `ParseJSONReport` accepts any value, including 0 and unknown future ones. Bumped only for a change consumers must react to; purely additive keys do not bump it. |
 | `target` | string | yes | The `--url` value, or empty string for `--code`-only scans. |
 | `started_at` | string (RFC 3339 timestamp) | yes | When the scan started. |
 | `duration` | string (Go-formatted duration, e.g. `"12.5s"`) | yes | Wall-clock duration of the scan. |
-| `version` | string | yes | Fendix version, e.g. `"1.1.0"` or `"dev"`. |
+| `version` | string | yes | Fendix version, e.g. `"2.0.1"` or `"dev"`. **Docker images published before v2.0.1 report the literal `"docker"` here** — the image build hardcoded it — so a report from one of those cannot say which engine produced it. Images from v2.0.1 onward carry the git tag. |
 | `mode` | string enum | yes | One of `blackbox`, `whitebox`, `hybrid`. |
 | `endpoints_scanned` | integer | yes | Number of endpoints actually scanned — i.e. *after* the `--max-endpoints` cap was applied. May be 0 for `--code`-only. |
 | `endpoints_discovered` | integer | no | Number of endpoints found **before** `--max-endpoints` truncated the list. Omitted when zero. Without it, `endpoints_scanned: 500` cannot be distinguished from "found exactly 500" vs "found 801, capped to 500". When no cap fires, this equals `endpoints_scanned`. |
@@ -135,7 +145,7 @@ entry rather than inferring coverage from `total`.
 | `category` | string | yes | Taxonomy category (`auth_bypass`, `injection`, `secrets`, `idor`, `data_exposure`, `cors`, `headers`, `info_disclosure`, `auth`, ...). |
 | `endpoint` | string | yes | URL path or `file:line`. Primary endpoint for this finding. |
 | `affected_endpoints` | array of string | no | Populated only when dedup collapsed `N≥2` occurrences into one finding. Includes the primary `endpoint`. |
-| `evidence` | string | yes | Snippet showing what was detected. Credentials are masked as `[REDACTED]`. May end with the suffix `[Unconfirmed by live scan]` when correlation against a live scan ran but produced no match. |
+| `evidence` | string | yes | Snippet showing what was detected. Auth credentials passed via `--auth` are masked as `[REDACTED]`. Since v2.0 credential material **found by the secrets scanner** is redacted at capture time and rendered as `[REDACTED len=N sha256:xxxxxxxx...]` — deterministic and unsalted, so the same value renders identically in every report, but never carrying the value itself. May end with the suffix `[Unconfirmed by live scan]` when correlation against a live scan ran but produced no match. |
 | `fix` | string | yes | Remediation guidance. |
 | `references` | array of string | yes | CWE / OWASP / RFC identifiers. May be empty array. |
 | `confidence` | string enum | yes | One of `HIGH`, `MEDIUM`, `LOW`. |
@@ -147,7 +157,7 @@ entry rather than inferring coverage from `total`.
 | `route` | object | no | HTTP route binding `{method, pattern, handler, file, line}` (Proven Path v1). |
 | `route_confirmed` | boolean | no | A live blackbox scan hit the finding's `route.pattern`. |
 | `proven_path` | boolean | no | `route_confirmed` AND `reachable` — DAST hit + SAST taint path + exact route. |
-| `status` | string enum | no | **v0.24** decision verdict: `BLOCK`, `WARN`, `INFO`. Since v1.2.2 `BLOCK` additionally requires the confidence band to support the claim — see the decision-summary section below. |
+| `status` | string enum | no | **v0.24** decision verdict: `BLOCK`, `WARN`, `INFO`. Since v2.0.0 `BLOCK` additionally requires the confidence band to support the claim — see the decision-summary section below. |
 | `confidence_score` | integer (0–100) | no | **v0.24** deterministic confidence score (see Confidence Engine). |
 | `confidence_band` | string enum | no | **v0.24** score-derived band `HIGH`/`MEDIUM`/`LOW`. Distinct from `confidence` (the scanner/correlator enum, unchanged for back-compat). |
 | `confidence_reasons` | array of string | no | **v0.24** plain-text, per-rule breakdown of the score (no black boxes). |
@@ -162,7 +172,7 @@ score is deterministic and rule-based (no AI); see `internal/confidence`. All
 v0.24 fields are additive/optional — existing consumers are unaffected
 (minor-release additive policy above).
 
-**`BLOCK` is not "severity ≥ `--fail-on`" as of v1.2.2.** Meeting the threshold
+**`BLOCK` is not "severity ≥ `--fail-on`" as of v2.0.0.** Meeting the threshold
 is necessary but no longer sufficient: under the default `--enforce-confidence`
 a finding also needs its band to support the claim — HIGH always blocks, MEDIUM
 blocks only with at least one corroborating signal, LOW never blocks — and a
@@ -170,7 +180,7 @@ finding the correlator marked unconfirmed-by-live-scan never blocks
 uncorroborated. `--enforce-confidence=false` restores the severity-only mapping.
 `confidence_reasons` carries a `+0` line naming the reason whenever a
 threshold-crossing finding was held at WARN, so the demotion is always
-attributable from the report alone. See CHANGELOG `[Unreleased]` for the full
+attributable from the report alone. See CHANGELOG `[2.0.0]` for the full
 rule table.
 
 **SARIF level note:** as of v0.24 the SARIF result `level` follows the
@@ -202,7 +212,7 @@ The suffix is appended to a whitebox finding's `evidence` only when:
 Source-only findings (e.g. a hardcoded secret at `src/config.py:14`) never
 receive the suffix because a live scan cannot observe source files.
 
-As of v1.2.2 the suffix has an internal machine-readable counterpart
+As of v2.0.0 the suffix has an internal machine-readable counterpart
 (`evidence.Evidence.UnconfirmedByLiveScan`) produced at the same moment by the
 same code, which the decision layer reads: a finding carrying it cannot reach
 status `BLOCK` under the default policy unless a corroborating signal is also
@@ -241,12 +251,37 @@ enforcement gates on structure instead of on a published string.
 
 ---
 
+## What v2.0 changed in the values
+
+No field was added, removed or retyped for findings, so `schema_version` stayed
+at `1`. But v2.0 moved a lot of *content*, and a consumer that stored yesterday's
+report will see the difference:
+
+| Field | What moved | What it breaks |
+|---|---|---|
+| `status`, `confidence_score`, `confidence_band` | Two new deterministic confidence deltas (direct observation of a live response `+30`, deterministic pattern match in production source `+30`) and two new penalties (placeholder-shaped credential `-20`, advisory component never imported `-10`) move the score on almost every scan; `status` is then gated on the resulting band. | Nothing structurally — but a dashboard that charts these will show a step change, and `decisions.confirmed` / `decisions.blocking` step with them. |
+| `title`, `id`, `fingerprint` on **dependency** findings | Alias-linked OSV records merge into one finding per vulnerability, named after the canonical id (`CVE-*` > `GHSA-*` > `PYSEC-*` > other). `SEC-DEPS-PYSEC_2026_3552` becomes `SEC-DEPS-CVE_2026_69247`. | **Saved `--baseline` files and `.fendix-ignore` `fingerprint:` rules pinned to a dependency finding stop matching** and must be regenerated; a `--diff` scan reports the renamed finding as new. Every merged id is preserved in `references`, and `fendix verify` matches on `references` as well as the id, so re-verifying a pre-2.0 report does not call a still-installed vulnerability resolved. |
+| `title`, `severity`, `fingerprint` on the **CSRF-cookie** finding | A `csrftoken` / `XSRF-TOKEN` / `_csrf` cookie without `HttpOnly` is no longer "Session cookie missing HttpOnly flag" at MEDIUM; it is its own INFO finding describing the double-submit pattern. CWE-1004 is retained. | Same fingerprint caveat as above. A host setting both a session cookie and a CSRF cookie now produces two HttpOnly-class dedup groups where it produced one. |
+| `evidence` on **secrets** findings | Credential material is redacted at capture time as `[REDACTED len=N sha256:xxxxxxxx...]`, over the union of every pattern's spans on the line — not just the emitting pattern's. | A golden file or snapshot that pinned secrets evidence needs regenerating. Fingerprints are unaffected: `fingerprint` hashes `(category, endpoint, title)` and the dedup key hashes `(severity, category, title)`; neither reads `evidence`. |
+| Finding **count** on repos with Dockerfiles | A base image pinned to a tag rather than a digest (`python:3.14-slim`, `node:20-alpine`) is now an INFO finding. Build-stage aliases, existing digest pins, `FROM scratch`, build-arg references and numeric stage indexes are exempt. | Roughly one extra INFO finding per Dockerfile. It does not gate a build at that severity. |
+
+---
+
 ## Stability guarantees
 
-- New optional fields may be added in minor releases (`1.1.0` added none).
-- Existing field types and enum values do **not** change in minor releases.
-- A field marked optional may become required only in a major release.
-- Removing a field is reserved for major releases (next: `2.0.0`).
+These are guarantees about `metadata.schema_version` (today `1`), not about the
+engine's release version — engine v2.0.0 was a major release that left this
+contract at `1`.
+
+- New optional fields may be added at any time without bumping
+  `schema_version`; `1.1.0` added none, `2.0.0` added `metadata.schema_version`
+  itself.
+- Existing field types and enum values do **not** change without a
+  `schema_version` bump.
+- A field marked optional may become required only under a `schema_version` bump.
+- Removing a field is reserved for a `schema_version` bump.
+- A **value** moving inside an unchanged field is not a contract change and does
+  not bump `schema_version` — v2.0.0 moved a great many, see below.
 - "Optional" in `schema.json` means *this schema will validate a report that
   omits it*, not *current builds may omit it*. Fields whose Go struct tag
   carries no `omitempty` — `decisions` today — are always emitted by a current

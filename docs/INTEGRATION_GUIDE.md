@@ -202,7 +202,9 @@ Credentials are masked as `[REDACTED]` in all report output.
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--enable-active` | bool | `false` | Enable active injection probes (SQLi/cmd/header injection). Prints a legal disclaimer. |
-| `--fail-on` | string | `""` | Exit 1 if findings at this severity: `CRITICAL` / `HIGH` / `MEDIUM`. Invalid value → WARN + no gate (exit 0). |
+| `--fail-on` | string | `""` | Severity floor for the build gate: `CRITICAL` / `HIGH` / `MEDIUM`. Exit 1 when a finding at or above it reaches status `BLOCK` — since v2.0 that also requires the confidence band to support the claim, see [3.4](#34---fail-on-gating-and-exit-codes). Invalid value → WARN + no gate (exit 0). |
+| `--enforce-confidence` | bool | `true` | **v2.0.** `BLOCK` only when the deterministic confidence band supports the claim: `HIGH` always, `MEDIUM` with ≥ 1 corroborating signal, `LOW` never. `false` restores the pre-2.0 severity-only gate byte-for-byte. |
+| `--deescalate-tests` | bool | `true` | Findings in test/fixture code report as `INFO` instead of `WARN`, and an **uncorroborated** one at or above `--fail-on` is held at `WARN` instead of blocking. Evidence is always preserved. Independent of `--enforce-confidence`. |
 | `--fail-on-scanner-error` | bool | `false` | Exit 2 if any scanner ran and errored. Skipped scanners don't count. Checked before `--fail-on`. |
 | `--ignore` | string | `""` | Path to `.fendix-ignore`. An unparseable file is a hard error (exit 2). |
 | `--config` | string | `""` | Path to `.fendix.yaml` (default: auto-detect in cwd). |
@@ -319,7 +321,7 @@ Key facts:
 - **`metadata.schema_version`** is the contract version, currently `1`, and is present on every report a current build writes. An **absent** key means the report predates the field — treat that as "pre-versioned", not as invalid. An **unrecognised** value means the report is newer than your integration: warn and keep parsing rather than failing, since the versioned keys are additive by policy.
 - **`metadata.mode`** ∈ `blackbox` / `whitebox` / `hybrid`.
 - **`scanner_status[].state`** ∈ `ok` / `skipped` / `failed`. Only `failed` counts toward `--fail-on-scanner-error` and SARIF `executionSuccessful`; `skipped` does not. `name` ∈ govulncheck/pip/npm/secrets/semgrep/textscan.
-- **`findings[].severity`** ∈ `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`/`INFO`. Severity rank used by `--fail-on`: CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1, INFO=0; gate trips when `rank(finding) >= rank(threshold)`.
+- **`findings[].severity`** ∈ `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`/`INFO`. Severity rank used by `--fail-on`: CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1, INFO=0. `rank(finding) >= rank(threshold)` is **necessary but not sufficient** since v2.0 — the gate then reads `findings[].confidence_band` and `findings[].status`. Read `status == "BLOCK"` (or `decisions.blocking`) to know what actually fails the build; `confidence_reasons` names the rule behind any demotion.
 - **`findings[].source`** ∈ `blackbox`/`whitebox`/`correlated`. **`confidence`** ∈ `HIGH`/`MEDIUM`/`LOW`.
 - **`line`** is a nullable pointer — serialized even when `null` (no omitempty).
 - White-box extras: `taint_chain[]` (AST dataflow source→sink), `reachable`, `source_tier` (`native_go`/`tree_sitter_sidecar`/`semgrep_shim`), `route`, `route_confirmed`, and `proven_path` (set only when `route_confirmed` AND `reachable` — forces CRITICAL).
@@ -447,9 +449,29 @@ The build pass/fail is driven entirely by the exit code:
 
 | Exit code | Meaning |
 |---|---|
-| `0` | Completed; no findings at/above `--fail-on` (or no `--fail-on` set). |
-| `1` | Findings exist at/above the `--fail-on` severity threshold. |
+| `0` | Completed; nothing reached status `BLOCK` (or no `--fail-on` set). |
+| `1` | At least one finding reached status `BLOCK`. |
 | `2` | Scan error (engine unresolvable, discovery failed, render failure, or `--fail-on-scanner-error` + a scanner failed). |
+
+**Since v2.0, `BLOCK` is not "severity ≥ `--fail-on`".** Meeting the threshold is
+necessary but no longer sufficient: under the default `--enforce-confidence` a
+finding also needs its deterministic band to support the claim — `HIGH` always
+blocks, `MEDIUM` blocks only with at least one corroborating signal (cross-engine
+agreement, live runtime observation, direct observation of a live response,
+deterministic detection in production code, confirmed route, reachable taint
+path, proven path, payload-validated probe), `LOW` never blocks — and a finding
+the correlator marked unconfirmed-by-live-scan never blocks uncorroborated.
+Separately, `--deescalate-tests` holds an uncorroborated test-code finding at
+`WARN` even when it meets the threshold.
+
+> **A pipeline upgraded from 1.x can exit 0 where it exited 1.** The largest
+> affected class is chainless static findings — a whitebox finding scores
+> `35 base + 10 static = 45` (MEDIUM) and, absent a high-confidence pattern
+> match in production code or a proven taint path, nothing corroborates it, so
+> shape-match SAST (semgrep-shim tier included) no longer gates on its own. Pure
+> DAST findings are unaffected, and a real hardcoded credential in production
+> code still bands `HIGH` and still exits 1. `--enforce-confidence=false` (or
+> `scan.enforce_confidence: false`) restores the pre-2.0 mapping byte-for-byte.
 
 In a custom workflow, run the scan under `set +e`, capture `$?`, surface the report, **then** re-raise the exit code in a final `if: always()` step so the report is uploaded/posted even on a failing gate.
 
@@ -826,7 +848,7 @@ Approval (admin-only) flips the org's plan to the requested plan, sets `status=A
 
 5. **Private engine repo → Action may not resolve; SARIF may 403.** *Live-verified.* The engine repo is private, so `uses: abdel-rahmansaied/fendix@v1` is **unresolvable cross-repo from another private repo's runner** → use the **public GHCR image directly** (pin by digest). SARIF → Security-tab upload needs **GitHub Advanced Security**; on a private repo without GHAS it **403s** → use a `$GITHUB_STEP_SUMMARY` table or a PR comment instead.
 
-6. **Exit codes (memorize these for CI):** `0` = clean / no findings at-or-above `--fail-on`; `1` = `--fail-on` gate tripped; `2` = scan error (engine unresolvable, discovery failed, render failure, or `--fail-on-scanner-error` + a scanner failed). `fendix verify` uses its own scheme: `0` resolved, `1` still-present, `2` unknown/not-found.
+6. **Exit codes (memorize these for CI):** `0` = clean / nothing reached `BLOCK`; `1` = `--fail-on` gate tripped (severity **and**, since v2.0, a confidence band that supports the claim — `--enforce-confidence=false` restores the old severity-only gate); `2` = scan error (engine unresolvable, discovery failed, render failure, or `--fail-on-scanner-error` + a scanner failed). `fendix verify` uses its own scheme: `0` resolved, `1` still-present, `2` unknown/not-found.
 
 7. **`--enable-active` sends real attack payloads.** SQLi/command-injection/CRLF probes only run with this flag, and it prints a legal disclaimer. **Only target systems you own/control.** It is off by default in `.fendix.yaml` too.
 
@@ -887,7 +909,9 @@ Approval (admin-only) flips the org's plan to the requested plan, sets `status=A
 | `--diff` | `""` (bare=HEAD) | Scan only files changed vs git ref |
 | `--staged` | `false` | Staged-only diff (implies `--diff`) |
 | `--fast` | `false` | Native scanners only (secrets+textscan); sub-second |
-| `--fail-on` | `""` | Exit 1 at CRITICAL/HIGH/MEDIUM |
+| `--fail-on` | `""` | Severity floor for the gate: CRITICAL/HIGH/MEDIUM (band must also support it) |
+| `--enforce-confidence` | `true` | v2.0 confidence gate; `false` = pre-2.0 severity-only |
+| `--deescalate-tests` | `true` | Test-code findings demoted; uncorroborated ones held at WARN |
 | `--fail-on-scanner-error` | `false` | Exit 2 if a scanner errored |
 | `--enable-active` | `false` | Active attack probes (own targets only) |
 | `--auth` / `--auth-type` / `--auth-header` | `""` / auto / `Authorization` | Credentials for authed checks |
@@ -924,7 +948,7 @@ Approval (admin-only) flips the org's plan to the requested plan, sets `status=A
 | `code` | `.` | White-box source (empty to skip) |
 | `url` | `""` | Black-box target (empty skips DAST) |
 | `spec` | `""` | OpenAPI spec |
-| `fail-on` | `HIGH` | CRITICAL/HIGH/MEDIUM (empty never fails) |
+| `fail-on` | `HIGH` | Severity floor: CRITICAL/HIGH/MEDIUM (empty never fails). Confidence-gated since engine v2.0. |
 | `diff` | `auto` | auto/true/false |
 | `format` | `sarif` | sarif/json/html |
 | `output` | `fendix-results.sarif` | Report path |

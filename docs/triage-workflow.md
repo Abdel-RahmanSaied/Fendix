@@ -15,7 +15,8 @@ and how baseline diffs reduce ongoing noise.
 Process findings in this order. Don't try to read sequentially.
 
 ```
-1. Critical + correlated  →  fix this week
+0. status: BLOCK           →  these are what failed the build
+1. Critical + correlated   →  fix this week
 2. Critical (uncorrelated) →  verify, then fix
 3. High (correlated)       →  fix this sprint
 4. High (uncorrelated)     →  verify
@@ -25,8 +26,14 @@ Process findings in this order. Don't try to read sequentially.
 
 Why this order:
 
+- **`status: BLOCK` is the engine's own answer to "what needs action now".**
+  Since v2.0 a finding reaches `BLOCK` only when it meets `--fail-on` *and* its
+  deterministic `confidence_band` supports the claim. Everything held at `WARN`
+  is still real output worth reading — it just did not clear the evidence bar,
+  and `confidence_reasons` says which signal was missing.
 - **Correlated findings have the lowest false-positive rate.** Both
-  engines independently agreed on the same endpoint and category.
+  engines independently agreed on the same endpoint and category. Cross-engine
+  agreement is one of the eight corroborating signals the gate reads.
 - **Critical severity = direct exploitation.** Hardcoded production keys.
   Auth disabled. Don't let those age in a backlog.
 - **Lows and INFOs are best-read in aggregate.** A 30-finding INFO list
@@ -68,6 +75,17 @@ fendix scan --code ./src --url https://staging.example.com \
   --save-baseline .fendix/baseline.json
 ```
 
+> **Regenerate baselines saved before v2.0.** A baseline entry matches on
+> `sha1(category|endpoint|title)`. v2.0 renamed two classes of finding, so those
+> entries silently stop matching and a `--diff` scan reports them as new:
+> dependency findings now carry the **canonical CVE id** in their title
+> (`SEC-DEPS-PYSEC_2026_3552` → `SEC-DEPS-CVE_2026_69247`), and a
+> `csrftoken` / `XSRF-TOKEN` / `_csrf` cookie without `HttpOnly` is no longer
+> titled "Session cookie missing HttpOnly flag". The same applies to
+> `.fendix-ignore` `fingerprint:` rules pinned to either. Re-save the baseline
+> once against a 2.x binary. (`fendix verify` needs no action — it matches on
+> the preserved `references` id set as well as the id.)
+
 Subsequent runs comparing against this baseline only show *new* findings
 introduced by recent changes:
 
@@ -94,6 +112,21 @@ proxy, all 21 endpoints clear together. Don't open 21 tickets.
 Test fixtures often have intentional secrets (`API_KEY = "test-key-123"`).
 Add a fixture suppression rule once; don't fight it per-finding. See
 [`.fendix-ignore.example`](../.fendix-ignore.example).
+
+Reach for that less often than you used to. Since v2.0 the engine handles the
+two commonest cases itself, by de-escalation rather than suppression — the
+findings are still in the report, they just stop gating:
+
+- A **fixture-shaped value** (`FAKE_`/`TEST_`/`DUMMY_`-prefixed key, a
+  placeholder word inside the value, a long identical run, a too-short value)
+  loses 20 confidence points and forfeits the deterministic-detection bonus,
+  landing in the `LOW` band.
+- A finding in **test/fixture code** with no corroborating signal is held at
+  `WARN` even when it meets `--fail-on` (`--deescalate-tests`, on by default). A
+  corroborated one — a proven taint path, a provider-validated live credential —
+  still blocks.
+
+Suppress only what survives both.
 
 ---
 
@@ -177,6 +210,12 @@ jq '.findings[] | select(.severity == "CRITICAL")' findings.json
 # Group by category
 jq '.findings | group_by(.category) | map({category: .[0].category, count: length})' findings.json
 
+# What actually failed the build
+jq '.findings[] | select(.status == "BLOCK")' findings.json
+
+# Why a threshold-crossing finding was held at WARN instead
+jq -r '.findings[] | select(.status == "WARN") | "\(.id)\t\(.confidence_band)\t\(.confidence_reasons | join("; "))"' findings.json
+
 # Just the deduped + correlated set (highest signal)
 jq '.findings[] | select(.source == "correlated")' findings.json
 
@@ -184,8 +223,10 @@ jq '.findings[] | select(.source == "correlated")' findings.json
 jq -r '.findings[] | select(.category == "headers") | .id' findings.json
 ```
 
-The schema is stable across v0.x minor releases — see
-[`docs/schema.md`](./schema.md) for the contract.
+The report contract carries its own version, `metadata.schema_version`
+(today `1`), independent of the engine's release version — engine v2.0.0 left it
+at `1`. See [`docs/schema.md`](./schema.md) for the contract and for the field
+*values* v2.0 moved.
 
 ---
 

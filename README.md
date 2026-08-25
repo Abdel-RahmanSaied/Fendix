@@ -1,10 +1,10 @@
 # Fendix
 
-**DAST + SAST in one PR check. Fails only when both engines confirm.**
+**DAST + SAST in one PR check. Fails only when the evidence backs the finding.**
 
-Fendix runs a runtime probe and a static analyzer on every scan. Only findings where both engines independently flag the same vulnerability at the same endpoint become `correlated` — high-confidence results that earn a build-failing exit code. Everything else is downgraded so your triage queue stays small and every alert means something.
+Fendix runs a runtime probe and a static analyzer on every scan. When both engines independently flag the same vulnerability at the same endpoint the finding becomes `correlated` — the strongest signal Fendix produces. As of **v2.0** cross-engine agreement is no longer the only thing that can fail a build, and severity on its own is no longer enough: a finding at or above `--fail-on` blocks only when a deterministic confidence band supports the claim. Everything else is still reported, just downgraded, so your triage queue stays small and every build failure means something.
 
-- **Confirmed findings.** Both engines must agree on category and endpoint before the build fails.
+- **Confidence-gated builds.** A finding blocks only when its deterministic band supports it — `HIGH` always, `MEDIUM` with a corroborating signal, `LOW` never. See [`--enforce-confidence`](#scan-flags).
 - **Single binary.** Drop into CI in 30 seconds. Active probes off by default; opt in with `--enable-active`.
 - **Signed and silent.** Releases signed via [cosign keyless](#verifying-signed-releases) (Sigstore Fulcio). [No telemetry](#what-fendix-sends-to-the-network) — verify with `tcpdump`.
 - **Open source under MIT.** Read the source, audit the wedge, fork it, ship plugins. See [ADR-007](docs/adr/ADR-007-open-source.md) for the strategic posture.
@@ -13,19 +13,29 @@ Fendix runs a runtime probe and a static analyzer on every scan. Only findings w
 
 ## Accuracy
 
-Reproducible numbers, captured on the current binary (`v0.19.0-41-g17e8937`, 2026-06-30):
+Reproducible numbers, re-run on the current binary (`v2.0.1`, 2026-08-24):
 
 | Track | P / R / F1 | Reproduce |
 |---|---|---|
-| Python taint engine (40 cases, CI-gated) | 1.000 / 1.000 / 1.000 | `cd python && PYTHONPATH=. python3 benchmark/run_benchmark.py` |
-| SAST synthetic corpus (full binary) | 1.000 / 1.000 / **1.000** | `python3 scripts/accuracy/run.py --python-engine bin/fendix` |
-| DAST DVWA / Juice Shop (regression coverage) | 13 found · 0 FP / 12 found · 5 FP | `fendix benchmark run --target all` |
+| Python taint engine (51 cases, 0 known-gap, CI-gated) | 1.000 / 1.000 / 1.000 | `cd python && PYTHONPATH=. python3 benchmark/run_benchmark.py` |
+| SAST synthetic corpus (full binary, 38 TP / 0 FP / 0 FN / 18 TN) | 1.000 / 1.000 / **1.000** | `python3 scripts/accuracy/run.py --python-engine bin/fendix` |
+| DAST DVWA / Juice Shop (regression coverage) | 13 found · 0 FP / 12 found · 0 FP | `fendix benchmark run --target all` |
 
 The synthetic-corpus F1 is **1.000 — reproduced on the current binary and
 CI-gated** (the one multi-hop SSRF case v0.26 disclosed as a false negative was
 fixed in v0.27), not the stale v0.11.0 claim. Full methodology, caveats, and the
 OWASP/Java omission are in **[BENCHMARKS.md](BENCHMARKS.md)**. Every number there
 is re-runnable; a non-reproducing number is a bug.
+
+Juice Shop's precision changed with this re-run, and the number moved for a real
+reason rather than a relabel. The 2026-06-28 capture recorded 17 findings — 12
+legitimate and 5 false positives, where the config-file-exposure check flagged
+`/.env`, `/.git/HEAD`, `/.htaccess` and friends because Juice Shop's Express SPA
+answers **any** unknown path with HTTP 200 and a byte-identical body. On v2.0.1
+that scan returns 12 findings and no false positives. The committed baseline had
+not caught it: `fendix benchmark compare` gates on recall and duration, so a
+precision improvement passes silently. The baseline was re-captured on v2.0.1 at
+the same time as this table.
 
 ---
 
@@ -109,7 +119,7 @@ brew install fendix
 curl -fsSL https://get.fendix.dev/install.sh | sh
 ```
 
-Downloads the latest release binary, verifies its sha256 checksum, and installs to `/usr/local/bin/fendix`. Override the install directory with `FENDIX_DIR=$HOME/.local/bin` and the version with `FENDIX_VERSION=v0.6.0`.
+Downloads the latest release binary, verifies its sha256 checksum, and installs to `/usr/local/bin/fendix`. Override the install directory with `FENDIX_DIR=$HOME/.local/bin` and the version with `FENDIX_VERSION=v2.0.1`.
 
 `get.fendix.dev` is the engine repo's short URL — it's a CNAME to the [`homebrew-fendix`](https://github.com/Abdel-RahmanSaied/homebrew-fendix) mirror, served via GitHub Pages. To inspect the script before piping to a shell:
 
@@ -123,7 +133,7 @@ If `get.fendix.dev` is ever unreachable, the `raw.githubusercontent.com` URL is 
 
 ```bash
 ARCH=$(dpkg --print-architecture)   # amd64 or arm64
-VERSION=v0.5.0
+VERSION=v2.0.1
 URL="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${ARCH}.deb"
 curl -fsSL -o fendix.deb "${URL}"
 sudo dpkg -i fendix.deb && sudo apt-get install -f
@@ -139,7 +149,7 @@ case "$(uname -m)" in
   x86_64)  PKG_ARCH=amd64 ;;
   aarch64) PKG_ARCH=arm64 ;;
 esac
-VERSION=v0.5.0
+VERSION=v2.0.1
 sudo dnf install \
   "https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${PKG_ARCH}.rpm"
 ```
@@ -158,7 +168,7 @@ The Docker image includes Python and all static analysis dependencies, so hybrid
 Pick a binary for your platform from the [latest release](https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/latest) (linux/amd64, darwin/amd64, darwin/arm64), verify the matching `.sha256` file, and place it on your PATH:
 
 ```bash
-curl -fsSL -o fendix https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/v0.4.0/fendix-v0.4.0-darwin-arm64
+curl -fsSL -o fendix https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/v2.0.1/fendix-v2.0.1-darwin-arm64
 shasum -a 256 fendix  # compare against the .sha256 alongside the binary
 chmod +x fendix && sudo mv fendix /usr/local/bin/fendix
 ```
@@ -189,7 +199,7 @@ Every release artifact (binary, `.deb`, `.rpm`, multi-arch Docker manifest) ship
 Verify a binary:
 
 ```bash
-VERSION=v0.6.0
+VERSION=v2.0.1
 ASSET=fendix-${VERSION}-linux-amd64
 BASE="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}"
 
@@ -209,7 +219,7 @@ cosign verify-blob \
 Same pattern verifies a `.deb`, `.rpm`, or Docker image — swap the asset name. For Docker, use `cosign verify` (not `verify-blob`) against the image reference:
 
 ```bash
-cosign verify ghcr.io/abdel-rahmansaied/fendix:v0.6.0 \
+cosign verify ghcr.io/abdel-rahmansaied/fendix:v2.0.1 \
   --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
   --certificate-oidc-issuer     "https://token.actions.githubusercontent.com"
 ```
@@ -300,7 +310,15 @@ fendix scan \
   --output results.sarif
 ```
 
-Exit code `1` means findings were found at or above the threshold. Exit code `0` means the scan passed.
+Exit code `1` means at least one finding reached status `BLOCK`. Exit code `0` means the scan passed.
+
+> **Upgrading a pipeline from 1.x?** In v2.0 `--fail-on` stopped gating on
+> severity alone — a finding blocks only when its deterministic confidence band
+> supports the claim. **Builds that used to fail may now pass**, most often for
+> shape-match SAST findings with no corroborating signal. A real hardcoded
+> credential in production code still bands `HIGH` and still exits 1.
+> `--enforce-confidence=false` restores the pre-2.0 severity-only mapping
+> byte-for-byte. Full rule table in the [CHANGELOG](CHANGELOG.md).
 
 ### Baseline diff mode
 
@@ -386,7 +404,7 @@ Run `fendix <command> --help` for the flags of any subcommand.
 
 `BLOCK` means "at or above `--fail-on` **and** the confidence band supports the
 claim" — see `--enforce-confidence` above, and the rule table in the CHANGELOG.
-Pass `--enforce-confidence=false` for the pre-v1.2.2 severity-only mapping.
+Pass `--enforce-confidence=false` for the pre-2.0 severity-only mapping.
 
 ---
 
@@ -450,13 +468,39 @@ Standard format for static analysis results. Compatible with GitHub Code Scannin
 fendix scan --code ./src --format sarif --output results.sarif
 ```
 
-Severity mapping:
+**Result `level` follows the decision verdict, not raw severity** — `BLOCK` →
+`error`, `WARN` → `warning`, `INFO` → `note` — so an annotation's colour
+reflects what actually gates the build. A finding with no verdict stamped (a
+scan with no `--fail-on`) falls back to the severity mapping below, which is
+also what a *rule*'s `defaultConfiguration.level` uses:
 
-| Fendix Severity | SARIF Level |
-|---|---|
-| CRITICAL, HIGH | `error` |
-| MEDIUM | `warning` |
-| LOW, INFO | `note` |
+| Fendix Severity | SARIF Level | `security-severity` |
+|---|---|---|
+| CRITICAL | `error` | `9.5` |
+| HIGH | `error` | `8.0` |
+| MEDIUM | `warning` | `5.5` |
+| LOW | `note` | `3.0` |
+| INFO | `note` | `1.0` |
+
+Since v2.0 the SARIF output also carries three things GitHub Code Scanning
+needs:
+
+- `result.partialFingerprints["fendix/v1"]` — the same `sha1(Category|Endpoint|Title)`
+  token `.fendix-ignore` fingerprint rules pin to, so a re-ordered scan updates
+  alerts instead of closing and reopening them. Emitted only when the finding
+  carries a real engine fingerprint.
+- `rule.properties["security-severity"]` — the CVSS-style score GitHub ranks by
+  (table above). Without it GitHub files every alert as "medium". It is a pure
+  function of severity and never of confidence.
+- `run.automationDetails.id` = `"fendix/scan"` — the analysis category, so two
+  tools uploading SARIF for the same commit don't overwrite each other's alerts.
+  Treat the value as a one-way door: changing it re-partitions existing alerts.
+
+A rule shared by findings at several severities takes the **maximum** of them
+for `defaultConfiguration.level` (v2.0; it was first-seen before). A result's
+message is a description of the finding — `Hardcoded secret at src/config.py:14`
+— with the raw evidence line moved to `region.snippet.text` and preserved
+verbatim in `result.properties.evidence`.
 
 ---
 
@@ -617,7 +661,7 @@ the spec parser, the AST taint analyzer, and its dependency checker.
 - **Go** excels at concurrent HTTP scanning, compiles to a single binary, and provides fast CLI startup. It now also owns the secrets scan and the Semgrep shell-out, which is what removed the Python boot tax from the default path.
 - **Python** still has the strongest AST/dataflow tooling for the taint analyzer and OpenAPI spec parsing, so those analyzers stayed there.
 
-The **correlator** is the core differentiator. When the black-box scanner confirms a vulnerability that the static analyzer also flagged, the finding is elevated to `correlated` source with `HIGH` confidence — so you can gate the build on findings both engines independently confirm. (We describe this as a mechanism, not a measured false-positive reduction: no benchmark yet isolates the correlation effect — see [BENCHMARKS.md](BENCHMARKS.md).)
+The **correlator** is the core differentiator. When the black-box scanner confirms a vulnerability that the static analyzer also flagged, the finding is elevated to `correlated` source with `HIGH` confidence. Since v2.0 that elevation is one of eight corroborating signals the build gate reads rather than the gate itself — see [`--enforce-confidence`](#scan-flags) for the full list. (We describe this as a mechanism, not a measured false-positive reduction: no benchmark yet isolates the correlation effect — see [BENCHMARKS.md](BENCHMARKS.md).)
 
 **How severity is determined:**
 
@@ -698,7 +742,7 @@ Injection checks (last 3 rows) require `--enable-active`.
 | **Semgrep Rules** | 23 bundled rules across auth (Flask/Django/FastAPI missing decorators, JWT verification disabled), injection (SQL, command, eval/exec, Django ORM raw, SSTI, pickle.loads, yaml.load), secrets (hardcoded credentials/DB URLs, AWS keys, GCP service accounts, Slack webhooks, PEM private keys), and crypto (MD5/SHA1 for passwords, legacy ciphers, `random` used for token generation) |
 | **Spec Parser** | Missing security schemes in OpenAPI spec, API keys in query params, unauthenticated endpoints |
 | **AST Analysis** | Python and JavaScript security-relevant patterns via AST parsing |
-| **Dependencies** | Known CVEs in PyPI and npm packages |
+| **Dependencies** | Known CVEs in PyPI (`requirements.txt`, `poetry.lock`, `Pipfile.lock`), npm (`package-lock.json`) and Go modules. Since v2.0 alias-linked advisories merge into **one finding per vulnerability**, named after the canonical id (`CVE-*` > `GHSA-*` > `PYSEC-*`) — see [`docs/checks/deps.md`](docs/checks/deps.md) |
 
 ---
 

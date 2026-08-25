@@ -47,7 +47,7 @@ Downloads the latest release binary, verifies its sha256 checksum, and
 installs to `/usr/local/bin/fendix`. Override:
 
 - `FENDIX_DIR=$HOME/.local/bin` — install to a user-writable directory.
-- `FENDIX_VERSION=v0.6.0` — pin a specific version.
+- `FENDIX_VERSION=v2.0.1` — pin a specific version.
 - `FENDIX_REPO=...` — pull from a fork or private mirror.
 
 Sudo is requested only if `FENDIX_DIR` isn't writable.
@@ -74,7 +74,7 @@ curl -fsSL https://get.fendix.dev/install.sh | less
 ```bash
 # Pick the right architecture for your host
 ARCH=$(dpkg --print-architecture)         # amd64 or arm64
-VERSION=v0.5.0                            # latest release at time of install
+VERSION=v2.0.1                            # current release at time of writing
 URL="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${ARCH}.deb"
 
 # Download + verify + install
@@ -99,7 +99,7 @@ case "$ARCH" in
   x86_64)  PKG_ARCH=amd64 ;;
   aarch64) PKG_ARCH=arm64 ;;
 esac
-VERSION=v0.5.0
+VERSION=v2.0.1
 URL="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${PKG_ARCH}.rpm"
 
 curl -fsSL -o fendix.rpm "${URL}"
@@ -126,6 +126,15 @@ The image is multi-arch (linux/amd64 + linux/arm64); `docker pull` picks
 the right one. Python and the white-box analyzer are baked in, so hybrid
 mode works out of the box.
 
+> **Images published before v2.0.1 answer `fendix version docker`.** The image
+> build hardcoded that placeholder with no way to override it, so a report
+> produced by one of those cannot say which engine version wrote it — including
+> SARIF `driver.version`. From v2.0.1 the build takes the git tag, matching how
+> the platform binaries have always been stamped. Pin a tag
+> (`ghcr.io/abdel-rahmansaied/fendix:v2.0.1`) or a digest rather than `:latest`
+> if you need that to be reproducible. A locally built image still reports
+> `docker`, deliberately: a plain `docker build .` has no tag to claim.
+
 ## Manual binary download
 
 Pick a binary for your platform from the
@@ -134,7 +143,7 @@ Pick a binary for your platform from the
 matching `.sha256` file, and place it on your PATH:
 
 ```bash
-VERSION=v0.5.0
+VERSION=v2.0.1
 URL="https://github.com/Abdel-RahmanSaied/homebrew-fendix/releases/download/${VERSION}/fendix-${VERSION}-darwin-arm64"
 
 curl -fsSL -o fendix "${URL}"
@@ -176,28 +185,28 @@ Verify a binary:
 
 ```bash
 cosign verify-blob \
-  --certificate fendix-v0.6.0-linux-amd64.crt \
-  --signature   fendix-v0.6.0-linux-amd64.sig \
+  --certificate fendix-v2.0.1-linux-amd64.crt \
+  --signature   fendix-v2.0.1-linux-amd64.sig \
   --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  fendix-v0.6.0-linux-amd64
+  fendix-v2.0.1-linux-amd64
 ```
 
 Verify a `.deb` or `.rpm` package (same pattern, swap the asset name):
 
 ```bash
 cosign verify-blob \
-  --certificate fendix-v0.6.0-linux-amd64.deb.crt \
-  --signature   fendix-v0.6.0-linux-amd64.deb.sig \
+  --certificate fendix-v2.0.1-linux-amd64.deb.crt \
+  --signature   fendix-v2.0.1-linux-amd64.deb.sig \
   --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  fendix-v0.6.0-linux-amd64.deb
+  fendix-v2.0.1-linux-amd64.deb
 ```
 
 Verify the Docker image (signs the multi-arch manifest digest):
 
 ```bash
-cosign verify ghcr.io/abdel-rahmansaied/fendix:v0.6.0 \
+cosign verify ghcr.io/abdel-rahmansaied/fendix:v2.0.1 \
   --certificate-identity-regexp "^https://github.com/Abdel-RahmanSaied/Fendix/" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
