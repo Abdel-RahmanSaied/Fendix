@@ -232,3 +232,24 @@ func truncateEvidenceAround(redacted string, anchorStart, anchorEnd int) string 
 	}
 	return snippet
 }
+
+// RedactValue returns the opaque marker that stands in for one credential in
+// published evidence.
+//
+// Exported so that scanners OUTSIDE this package which carry secrets-category
+// rules render the SAME marker rather than inventing a second format. The
+// concrete case is textscan's GO_HARDCODED_AWS_KEY / JS_HARDCODED_AWS_KEY:
+// those rules match an `AKIA…` literal in Go/JS source and, before this
+// existed, emitted the raw source line as evidence — so a live AWS key reached
+// Finding.Evidence verbatim and travelled from there into SARIF, HTML, Jira
+// tickets and GitHub PR comments. FIX-13 redacted this package's own scanner
+// and missed that one.
+//
+// One format matters more than it looks: the marker embeds a length and a
+// digest so a human can tell two occurrences of the same credential apart, and
+// two competing formats would break that comparison exactly when it is needed.
+//
+// The same caveat as redactionMarker applies — this is a FINGERPRINT, not a
+// security boundary. A low-entropy value is recoverable from it by dictionary,
+// so never describe it to users as "the secret cannot be recovered".
+func RedactValue(value string) string { return redactionMarker(value) }

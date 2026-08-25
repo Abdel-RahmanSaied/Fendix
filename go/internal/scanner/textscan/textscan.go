@@ -52,6 +52,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/gitdiff"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/secrets"
 )
 
 // Rule describes one SAST pattern. A file matches a rule when its
@@ -66,6 +67,17 @@ type Rule struct {
 	Pattern    *regexp.Regexp
 	NegPattern *regexp.Regexp // optional: line must NOT also match
 	Fix        string
+	// RedactMatch replaces every Pattern match inside the emitted evidence
+	// snippet with the shared secrets marker. Set it on any rule whose
+	// Pattern matches CREDENTIAL MATERIAL itself — without it the raw source
+	// line is published, and textscan evidence travels into SARIF, HTML, Jira
+	// tickets and GitHub PR comments.
+	//
+	// Deliberately per-rule rather than keyed off Category == "secrets":
+	// GO_WEAK_HASH_PASSWORD is also a secrets-category rule, but its Pattern
+	// matches an md5/sha1 CALL, not a credential, and blanking that would
+	// destroy the only useful part of its evidence.
+	RedactMatch bool
 	// Applies returns true when path falls under this rule's
 	// language-extension set.
 	Applies func(path string) bool
@@ -465,6 +477,12 @@ func scanFile(rootDir, path string, rules []*Rule) ([]evidence.Evidence, error) 
 			endpoint := fmt.Sprintf("%s:%d", rel, lineNo)
 			endpointCopy := endpoint
 			snippet := strings.TrimSpace(line)
+			// Redact credential material BEFORE truncation, so a long line
+			// cannot smuggle a key past the 200-rune cut, and so the marker
+			// itself is never sliced in half.
+			if r.RedactMatch {
+				snippet = r.Pattern.ReplaceAllStringFunc(snippet, secrets.RedactValue)
+			}
 			if utf8.RuneCountInString(snippet) > 200 {
 				runes := []rune(snippet)
 				snippet = string(runes[:199]) + "…"

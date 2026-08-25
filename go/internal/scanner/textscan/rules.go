@@ -71,13 +71,14 @@ func GoRules() []Rule {
 			Fix:     "Use bcrypt, scrypt, argon2, or PBKDF2 for password hashing. Raw MD5/SHA1 is unsuitable — they're fast hashes with no work factor and no per-record salt.",
 		},
 		{
-			ID:         "GO_HARDCODED_AWS_KEY",
-			Title:      "AWS access-key ID literal embedded in source",
-			Severity:   models.SeverityCritical,
-			Confidence: models.ConfidenceHigh,
-			Category:   "secrets",
-			CWE:        "CWE-798",
-			Pattern:    regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
+			ID:          "GO_HARDCODED_AWS_KEY",
+			Title:       "AWS access-key ID literal embedded in source",
+			Severity:    models.SeverityCritical,
+			Confidence:  models.ConfidenceHigh,
+			Category:    "secrets",
+			CWE:         "CWE-798",
+			Pattern:     regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
+			RedactMatch: true, // Pattern matches the key itself — never publish it raw
 			// AWS's own documentation placeholders. Including them here
 			// would train users to ignore CRITICAL findings.
 			NegPattern: regexp.MustCompile(`AKIAIOSFODNN7EXAMPLE|AKIAI44QH8DHBEXAMPLE`),
@@ -156,16 +157,17 @@ func JSRules() []Rule {
 			Fix:        "Pass a string literal to require(). Dynamic require paths let an attacker load arbitrary modules.",
 		},
 		{
-			ID:         "JS_HARDCODED_AWS_KEY",
-			Title:      "AWS access-key ID literal embedded in JavaScript source",
-			Severity:   models.SeverityCritical,
-			Confidence: models.ConfidenceHigh,
-			Category:   "secrets",
-			CWE:        "CWE-798",
-			Pattern:    regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
-			NegPattern: regexp.MustCompile(`AKIAIOSFODNN7EXAMPLE|AKIAI44QH8DHBEXAMPLE`),
-			Applies:    HasJSExtension,
-			Fix:        "Load credentials from process.env or the AWS SDK's default chain. Rotate the exposed key.",
+			ID:          "JS_HARDCODED_AWS_KEY",
+			Title:       "AWS access-key ID literal embedded in JavaScript source",
+			Severity:    models.SeverityCritical,
+			Confidence:  models.ConfidenceHigh,
+			Category:    "secrets",
+			CWE:         "CWE-798",
+			Pattern:     regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
+			RedactMatch: true, // Pattern matches the key itself — never publish it raw
+			NegPattern:  regexp.MustCompile(`AKIAIOSFODNN7EXAMPLE|AKIAI44QH8DHBEXAMPLE`),
+			Applies:     HasJSExtension,
+			Fix:         "Load credentials from process.env or the AWS SDK's default chain. Rotate the exposed key.",
 		},
 	}
 }
