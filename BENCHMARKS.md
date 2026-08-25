@@ -112,8 +112,12 @@ fendix benchmark run --target all      # requires Docker
   `v2.0.1` the same scan returns 12 findings and no false positives. The change
   is not attributed to a specific release here: it happened somewhere between
   `v0.19.0-3` and `v2.0.1` and was never bisected. It went unnoticed because
-  `fendix benchmark compare` gates on recall and duration — a precision
-  improvement passes silently, and so would a precision regression.
+  it went unrecorded for two months simply because nobody re-ran the suite.
+  `fendix benchmark compare` does gate precision — `higherIsBetter["precision"]`
+  is true, and the same 5-FP delta in the *opposite* direction is a −29.4% move
+  that trips the 10% threshold. An improvement correctly never fails a gate, so
+  the only thing standing between a stale baseline and a current one is somebody
+  running it.
 - **`realworld/twiscope` is no longer in the committed baseline.** The previous
   file carried a `v0.19.0-3` entry for it (1 TP / 2 FP). That target is a
   private seed-tier corpus with no local path configured, so it is skipped on

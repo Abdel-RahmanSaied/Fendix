@@ -33,9 +33,11 @@ legitimate and 5 false positives, where the config-file-exposure check flagged
 `/.env`, `/.git/HEAD`, `/.htaccess` and friends because Juice Shop's Express SPA
 answers **any** unknown path with HTTP 200 and a byte-identical body. On v2.0.1
 that scan returns 12 findings and no false positives. The committed baseline had
-not caught it: `fendix benchmark compare` gates on recall and duration, so a
-precision improvement passes silently. The baseline was re-captured on v2.0.1 at
-the same time as this table.
+simply not been re-run since June. `fendix benchmark compare` does gate
+precision — the same delta in the opposite direction is a −29.4% move that trips
+its 10% threshold — but an improvement correctly never fails a gate, so a stale
+baseline stays stale until somebody runs it. The baseline was re-captured on
+v2.0.1 at the same time as this table.
 
 ---
 
