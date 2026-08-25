@@ -1,0 +1,67 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "semanticVersion": "1.90.0",
+          "rules": [
+            {
+              "id": "python.django.security.injection.sql.sql-injection-using-raw",
+              "shortDescription": { "text": "Detected user input used in a raw SQL statement" },
+              "fullDescription": { "text": "User input flowing into Model.objects.raw() can lead to SQL injection." },
+              "helpUri": "https://semgrep.dev/r/python.django.security.injection.sql.sql-injection-using-raw",
+              "defaultConfiguration": { "level": "error" },
+              "properties": {
+                "tags": ["security", "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"],
+                "precision": "medium"
+              }
+            },
+            {
+              "id": "python.flask.security.audit.debug-enabled",
+              "shortDescription": { "text": "Flask app run with debug=True" },
+              "helpUri": "https://semgrep.dev/r/python.flask.security.audit.debug-enabled",
+              "defaultConfiguration": { "level": "warning" },
+              "properties": {
+                "tags": ["security", "CWE-489: Active Debug Code"],
+                "precision": "high"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "python.django.security.injection.sql.sql-injection-using-raw",
+          "level": "error",
+          "message": { "text": "Detected user input used to manually construct a raw SQL statement." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/views.py" },
+                "region": { "startLine": 100, "endLine": 100, "snippet": { "text": "User.objects.raw(query)" } }
+              }
+            }
+          ],
+          "partialFingerprints": { "matchBasedId/v1": "5e6f7a8b9c0d1e2f" }
+        },
+        {
+          "ruleId": "python.flask.security.audit.debug-enabled",
+          "level": "warning",
+          "message": { "text": "Detected Flask app with debug=True." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "tools/devserver.py" },
+                "region": { "startLine": 12 }
+              }
+            }
+          ],
+          "suppressions": [{ "kind": "inSource" }]
+        }
+      ]
+    }
+  ]
+}

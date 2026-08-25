@@ -24,6 +24,7 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/offline"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/plugin"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/reporters"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/sarifimport"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/govulncheck"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner/deps/npm"
@@ -528,109 +529,35 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		evid = append(evid, o.runPlugins(ctx)...)
 	}
 
+	// 4.8. SARIF imports (`scan --import`): parse + normalize findings from
+	// other scanners and append them to the evidence stream BEFORE any
+	// correlation, so the cross-tool pass in finalize can weigh them.
+	// Fail-closed on a malformed file (exit 2): silently importing half a
+	// document would misrepresent coverage.
+	var importedTools []reporters.ImportedTool
+	if len(o.cfg.ImportPaths) > 0 {
+		imp, tools, err := loadImports(o.cfg.ImportPaths)
+		if err != nil {
+			slog.Error("failed to load SARIF import — the file must be a SARIF 2.1.0 document", "error", err)
+			fmt.Fprintln(os.Stderr, "fendix: "+err.Error())
+			return 2
+		}
+		evid = append(evid, imp...)
+		importedTools = tools
+	}
+
 	// 5. Correlate black-box and white-box evidence. v0.22: the whole scan
 	// now accumulates []evidence.Evidence, so correlation runs natively on
 	// Evidence (Correlation Service V2) — provenance + lineage thread through
-	// end-to-end for the future confidence engine. We project to
-	// models.Finding ONCE here for the downstream finalization pipeline
-	// (escalate → dedup → consistency → sort → IDs → ignore/baseline →
-	// render); that projection is byte-identical to the legacy output.
+	// end-to-end for the future confidence engine. Imported evidence is
+	// fenced out of this correlator (see correlateWithMarks) and handled by
+	// the cross-tool pass inside finalize. The finalize call projects to
+	// models.Finding for the downstream pipeline (escalate → dedup →
+	// consistency → sort → IDs → ignore/baseline → render); that projection
+	// is byte-identical to the legacy output.
 	findings := evidence.ToFindings(evid)
 	if hasWhitebox(findings) && hasBlackbox(findings) {
 		evid = CorrelateEvidence(evid)
-		findings = evidence.ToFindings(evid)
-	}
-
-	// The projection above is lossy BY DESIGN (models.Finding is the frozen
-	// public shape), but three confidence rules — payload-validated (+10),
-	// the B4 HTTP-response-context de-escalation (-15), and the lineage
-	// "evidence chain" reason — read fields that live only on Evidence.
-	// Scoring the projected Finding made all three dead code. Capture the
-	// internal half here, keyed by the render-stable finding identity, so
-	// step 10.5 can score the FULL evidence. Nothing in this index is ever
-	// serialized, so the public JSON/SARIF contract is untouched.
-	prov := evidence.NewProvenanceIndex(evid)
-
-	// 5.4. Escalate non-correlated reachable findings (TASK-125).
-	// The correlator already bumps correlated-reachable findings via
-	// mergeFindings's second escalateSeverity call. This step catches
-	// the pure-whitebox case: an AST-proven taint chain on a finding
-	// that didn't correlate to a blackbox match. Per docs/example_plan.md
-	// §3.5 the multiplier is 1.5x; on the discrete severity scale that's
-	// ~one level up. Saturates at CRITICAL.
-	findings = escalateNonCorrelatedReachable(findings)
-
-	// 5.45. Collapse cross-analyzer duplicates at a shared source location.
-	// Several static engines cover the same constructs, and Deduplicate groups
-	// on Title — so two engines describing one sink in different words never
-	// merged and the user saw the same vulnerability two or three times. Runs
-	// before Deduplicate, while each finding is still one (endpoint, title).
-	findings = CollapseDuplicateLocations(findings)
-
-	// 5.5. Deduplicate identical findings across endpoints (TASK-088).
-	// Runs after correlation so correlated findings are grouped too.
-	// "Missing CSP × 21 endpoints" → 1 finding with AffectedEndpoints[21].
-	findings = Deduplicate(findings)
-
-	// 5.6. Enforce severity↔confidence consistency (TASK-092). LOW confidence
-	// caps severity at MEDIUM; MEDIUM confidence caps at HIGH. Mismatched
-	// findings get their severity downgraded so the public JSON schema's
-	// consistency rule holds for every emitted report.
-	findings = enforceConsistency(findings)
-
-	// 6. Sort findings deterministically by endpoint+category for stable ID assignment
-	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].Endpoint != findings[j].Endpoint {
-			return findings[i].Endpoint < findings[j].Endpoint
-		}
-		if findings[i].Category != findings[j].Category {
-			return findings[i].Category < findings[j].Category
-		}
-		return findings[i].Title < findings[j].Title
-	})
-
-	// 7. Assign sequential IDs + stamp the run-stable fingerprint. The
-	// fingerprint (content hash of Category|Endpoint|Title) is computed here,
-	// BEFORE the ignore/baseline steps, so a `fingerprint:` ignore rule can
-	// match it. Unlike the positional SEC-NNN ID it does not drift between
-	// runs, so it is the durable key for suppressions.
-	for i := range findings {
-		findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)
-		findings[i].Fingerprint = models.Fingerprint(findings[i])
-	}
-
-	// 8. Apply ignore rules from .fendix-ignore.
-	//
-	// F-L14: an explicit-but-unparseable --ignore file is a HARD error
-	// (exit 2), consistent with --config policy parse failures in
-	// main.go. Pre-fix this logged at ERROR and continued — which meant a
-	// typo'd suppression file silently scanned with zero suppressions, the
-	// opposite of fail-closed for a security control.
-	if o.cfg.IgnorePath != "" {
-		ignoreFile, err := ParseIgnoreFile(o.cfg.IgnorePath)
-		if err != nil {
-			slog.Error("failed to parse ignore file — check YAML syntax and file path", "path", o.cfg.IgnorePath, "error", err)
-			fmt.Fprintf(os.Stderr, "fendix: cannot parse --ignore file %s: %v\n", o.cfg.IgnorePath, err)
-			return 2
-		}
-		findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
-	}
-
-	// 9. Apply baseline diff if --baseline provided.
-	//
-	// Fail-closed on a CORRUPT baseline (exit 2), consistent with the --ignore
-	// handling above: an explicit-but-unparseable baseline is a
-	// misconfiguration, and silently scanning without the diff would let every
-	// already-known finding re-block the gate (or, with --fail-on, flip a
-	// green run red for the wrong reason). A MISSING baseline is NOT an error —
-	// it's the legitimate first run before --save-baseline has written one.
-	if o.cfg.BaselinePath != "" {
-		diffed, err := ApplyBaselineDiffStrict(findings, o.cfg.BaselinePath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "fendix: cannot parse --baseline file %s: %v\n", o.cfg.BaselinePath, err)
-			return 2
-		}
-		findings = diffed
 	}
 
 	duration := time.Since(startTime)
@@ -667,71 +594,17 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 		ActiveProbes:        o.cfg.EnableActive,
 		ChecksRun:           checksRun,
 		ScannerStatus:       []reporters.ScannerStatus(scanStatus),
+		Imports:             importedTools,
 	}
 
-	// 10. Save baseline if requested (before sanitization, so credentials
-	// are available for future diff).
-	//
-	// F-L14: a requested-but-failed --save-baseline is a HARD error (exit
-	// 2). Pre-fix this logged at ERROR and continued, so a CI job that
-	// asked to capture a baseline could exit 0 having silently written
-	// nothing — the next diff run would then report every finding as
-	// "new". Consistent with the --ignore parse-failure handling above.
-	if o.cfg.SaveBaselinePath != "" {
-		if err := SaveBaseline(findings, o.cfg.SaveBaselinePath); err != nil {
-			slog.Error("failed to save baseline — check that the directory exists and is writable", "error", err)
-			fmt.Fprintf(os.Stderr, "fendix: cannot save --save-baseline to %s: %v\n", o.cfg.SaveBaselinePath, err)
-			return 2
-		}
+	// Steps 5.2–12 (cross-tool correlation → escalate → collapse → dedup →
+	// consistency → sort → IDs/fingerprints → ignore → baseline →
+	// save-baseline → decisions → sanitize → render) are shared with
+	// RunImport and live in finalize, so the two entry points cannot drift.
+	findings, decisions, ec := o.finalize(evid, meta)
+	if ec != 0 {
+		return ec
 	}
-
-	// 10.5. v0.24 Decision Reports: derive a decision + deterministic
-	// confidence score for every FINAL finding (post escalate/dedup/
-	// consistency/sort/IDs/ignore/baseline), and stamp them onto the findings
-	// so all reporters + the exit code read one source of truth.
-	//
-	// This runs BEFORE sanitization, not after: the provenance index is keyed
-	// on the finding's (Category, Endpoint, Title) identity and sanitization
-	// can redact a credential out of Title, which would silently break the
-	// lookup. Scoring off the pre-redaction projection cannot leak anything —
-	// the Evidence it scores is internal and never serialized, only the
-	// status/score/band/reasons are stamped back, and SanitizeFindings copies
-	// those four fields through unchanged.
-	if o.cfg.FailOn != "" && models.SeverityRank(models.Severity(o.cfg.FailOn)) == 0 {
-		// Preserve the legacy invalid-threshold WARN (was in checkFailOn).
-		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
-	}
-	decisions := stampDecisions(findings, prov, o.cfg.FailOn, o.decisionOptions())
-
-	// 11. Sanitize credentials from findings before rendering
-	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
-
-	// 12. Render report
-	if err := o.renderReport(findings, meta); err != nil {
-		slog.Error("report rendering failed — check --output path is writable and --format is json/html/sarif", "error", err)
-		return 2
-	}
-
-	counts := reporters.CountSeverities(findings)
-	slog.Info("scan complete",
-		"duration", duration.Round(time.Millisecond),
-		"total", len(findings),
-		"critical", counts.Critical,
-		"high", counts.High,
-		"medium", counts.Medium,
-		"low", counts.Low,
-		"info", counts.Info,
-	)
-
-	// v0.24: human-readable decision summary — engineers see decisions, not
-	// just findings. STDERR only, so stdout stays a pure machine-readable
-	// report (`fendix scan | jq` and SARIF-upload pipelines are unaffected).
-	// Reads the same CountStatuses the JSON/SARIF reports use, so the blocking
-	// count is consistent with the exit code.
-	sc := reporters.CountStatuses(findings)
-	fmt.Fprintf(os.Stderr,
-		"\nDecision summary: %d findings — %d blocking, %d warning, %d informational (%d high-confidence)\n",
-		sc.Total, sc.Blocking, sc.Warning, sc.Informational, sc.Confirmed)
 
 	// Opt-in product metric for this scan (FENDIX_METRICS). NoopCollector
 	// when disabled — no I/O, negligible overhead.
@@ -817,6 +690,266 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	// legacy checkFailOn (locked by decision.TestExitCodeMatchesLegacyCheckFailOn)
 	// because `decisions` were built from the same finalized findings + FailOn.
 	return decision.ExitCode(decisions)
+}
+
+// finalize is the shared post-evidence pipeline for Run and RunImport:
+// cross-tool correlation, reachable escalation, duplicate-location collapse,
+// dedup, severity↔confidence consistency, deterministic sort, ID +
+// fingerprint stamping, ignore rules, baseline diff, save-baseline,
+// decisions, credential sanitization, and report rendering.
+//
+// Returns the finalized findings, their decisions, and a hard-error exit
+// code: 0 on success, 2 when a fail-closed step failed (message already
+// printed). The caller derives the process exit from the decisions.
+func (o *Orchestrator) finalize(evid []evidence.Evidence, meta reporters.ScanMetadata) ([]models.Finding, []decision.Decision, int) {
+	// 5.2. Cross-tool correlation (SARIF import): stamps strong
+	// corroboration (independent tool + same normalized CWE + same
+	// normalized location) and collapses imported duplicates into their
+	// corroborated native representatives. Runs AFTER the blackbox↔whitebox
+	// correlator (imported evidence is fenced out of that one) and BEFORE
+	// the provenance index below, so the corroboration flags are captured
+	// for scoring. No-op when no imported evidence is present.
+	evid = CorrelateCrossTool(evid)
+	findings := evidence.ToFindings(evid)
+
+	// The projection above is lossy BY DESIGN (models.Finding is the frozen
+	// public shape), but several confidence rules — payload-validated (+10),
+	// the B4 HTTP-response-context de-escalation (-15), the lineage
+	// "evidence chain" reason, and the cross-tool corroboration signal —
+	// read fields that live only on Evidence. Scoring the projected Finding
+	// made them dead code. Capture the internal half here, keyed by the
+	// render-stable finding identity, so the decision step can score the
+	// FULL evidence. Nothing in this index is ever serialized, so the
+	// public JSON/SARIF contract is untouched.
+	prov := evidence.NewProvenanceIndex(evid)
+
+	// 5.4. Escalate non-correlated reachable findings (TASK-125).
+	// The correlator already bumps correlated-reachable findings via
+	// mergeFindings's second escalateSeverity call. This step catches
+	// the pure-whitebox case: an AST-proven taint chain on a finding
+	// that didn't correlate to a blackbox match. Per docs/example_plan.md
+	// §3.5 the multiplier is 1.5x; on the discrete severity scale that's
+	// ~one level up. Saturates at CRITICAL. Imported findings never carry
+	// Reachable, so this step cannot touch them.
+	findings = escalateNonCorrelatedReachable(findings)
+
+	// 5.45. Collapse cross-analyzer duplicates at a shared source location.
+	// Several static engines cover the same constructs, and Deduplicate groups
+	// on Title — so two engines describing one sink in different words never
+	// merged and the user saw the same vulnerability two or three times. Runs
+	// before Deduplicate, while each finding is still one (endpoint, title).
+	findings = CollapseDuplicateLocations(findings)
+
+	// 5.5. Deduplicate identical findings across endpoints (TASK-088).
+	// Runs after correlation so correlated findings are grouped too.
+	// "Missing CSP × 21 endpoints" → 1 finding with AffectedEndpoints[21].
+	findings = Deduplicate(findings)
+
+	// 5.6. Enforce severity↔confidence consistency (TASK-092). LOW confidence
+	// caps severity at MEDIUM; MEDIUM confidence caps at HIGH. Mismatched
+	// findings get their severity downgraded so the public JSON schema's
+	// consistency rule holds for every emitted report.
+	findings = enforceConsistency(findings)
+
+	// 6. Sort findings deterministically by endpoint+category for stable ID assignment
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].Endpoint != findings[j].Endpoint {
+			return findings[i].Endpoint < findings[j].Endpoint
+		}
+		if findings[i].Category != findings[j].Category {
+			return findings[i].Category < findings[j].Category
+		}
+		return findings[i].Title < findings[j].Title
+	})
+
+	// 7. Assign sequential IDs + stamp the run-stable fingerprint. The
+	// fingerprint (content hash of Category|Endpoint|Title) is computed here,
+	// BEFORE the ignore/baseline steps, so a `fingerprint:` ignore rule can
+	// match it. Unlike the positional SEC-NNN ID it does not drift between
+	// runs, so it is the durable key for suppressions.
+	for i := range findings {
+		findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)
+		findings[i].Fingerprint = models.Fingerprint(findings[i])
+	}
+
+	// 8. Apply ignore rules from .fendix-ignore.
+	//
+	// F-L14: an explicit-but-unparseable --ignore file is a HARD error
+	// (exit 2), consistent with --config policy parse failures in
+	// main.go. Pre-fix this logged at ERROR and continued — which meant a
+	// typo'd suppression file silently scanned with zero suppressions, the
+	// opposite of fail-closed for a security control.
+	if o.cfg.IgnorePath != "" {
+		ignoreFile, err := ParseIgnoreFile(o.cfg.IgnorePath)
+		if err != nil {
+			slog.Error("failed to parse ignore file — check YAML syntax and file path", "path", o.cfg.IgnorePath, "error", err)
+			fmt.Fprintf(os.Stderr, "fendix: cannot parse --ignore file %s: %v\n", o.cfg.IgnorePath, err)
+			return nil, nil, 2
+		}
+		findings = ApplyIgnoreRules(findings, ignoreFile.Ignore)
+	}
+
+	// 9. Apply baseline diff if --baseline provided.
+	//
+	// Fail-closed on a CORRUPT baseline (exit 2), consistent with the --ignore
+	// handling above: an explicit-but-unparseable baseline is a
+	// misconfiguration, and silently scanning without the diff would let every
+	// already-known finding re-block the gate (or, with --fail-on, flip a
+	// green run red for the wrong reason). A MISSING baseline is NOT an error —
+	// it's the legitimate first run before --save-baseline has written one.
+	if o.cfg.BaselinePath != "" {
+		diffed, err := ApplyBaselineDiffStrict(findings, o.cfg.BaselinePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fendix: cannot parse --baseline file %s: %v\n", o.cfg.BaselinePath, err)
+			return nil, nil, 2
+		}
+		findings = diffed
+	}
+
+	// 10. Save baseline if requested (before sanitization, so credentials
+	// are available for future diff).
+	//
+	// F-L14: a requested-but-failed --save-baseline is a HARD error (exit
+	// 2). Pre-fix this logged at ERROR and continued, so a CI job that
+	// asked to capture a baseline could exit 0 having silently written
+	// nothing — the next diff run would then report every finding as
+	// "new". Consistent with the --ignore parse-failure handling above.
+	if o.cfg.SaveBaselinePath != "" {
+		if err := SaveBaseline(findings, o.cfg.SaveBaselinePath); err != nil {
+			slog.Error("failed to save baseline — check that the directory exists and is writable", "error", err)
+			fmt.Fprintf(os.Stderr, "fendix: cannot save --save-baseline to %s: %v\n", o.cfg.SaveBaselinePath, err)
+			return nil, nil, 2
+		}
+	}
+
+	// 10.5. v0.24 Decision Reports: derive a decision + deterministic
+	// confidence score for every FINAL finding (post escalate/dedup/
+	// consistency/sort/IDs/ignore/baseline), and stamp them onto the findings
+	// so all reporters + the exit code read one source of truth.
+	//
+	// This runs BEFORE sanitization, not after: the provenance index is keyed
+	// on the finding's (Category, Endpoint, Title) identity and sanitization
+	// can redact a credential out of Title, which would silently break the
+	// lookup. Scoring off the pre-redaction projection cannot leak anything —
+	// the Evidence it scores is internal and never serialized, only the
+	// status/score/band/reasons are stamped back, and SanitizeFindings copies
+	// those four fields through unchanged.
+	if o.cfg.FailOn != "" && models.SeverityRank(models.Severity(o.cfg.FailOn)) == 0 {
+		// Preserve the legacy invalid-threshold WARN (was in checkFailOn).
+		slog.Warn("invalid --fail-on value — use CRITICAL, HIGH, or MEDIUM", "value", o.cfg.FailOn)
+	}
+	decisions := stampDecisions(findings, prov, o.cfg.FailOn, o.decisionOptions())
+
+	// 11. Sanitize credentials from findings before rendering
+	findings = reporters.SanitizeFindings(findings, o.cfg.Auth, o.cfg.AuthUser2)
+
+	// 12. Render report
+	if err := o.renderReport(findings, meta); err != nil {
+		slog.Error("report rendering failed — check --output path is writable and --format is json/html/sarif", "error", err)
+		return nil, nil, 2
+	}
+
+	counts := reporters.CountSeverities(findings)
+	slog.Info("scan complete",
+		"duration", meta.Duration,
+		"total", len(findings),
+		"critical", counts.Critical,
+		"high", counts.High,
+		"medium", counts.Medium,
+		"low", counts.Low,
+		"info", counts.Info,
+	)
+
+	// v0.24: human-readable decision summary — engineers see decisions, not
+	// just findings. STDERR only, so stdout stays a pure machine-readable
+	// report (`fendix scan | jq` and SARIF-upload pipelines are unaffected).
+	// Reads the same CountStatuses the JSON/SARIF reports use, so the blocking
+	// count is consistent with the exit code.
+	sc := reporters.CountStatuses(findings)
+	fmt.Fprintf(os.Stderr,
+		"\nDecision summary: %d findings — %d blocking, %d warning, %d informational (%d high-confidence)\n",
+		sc.Total, sc.Blocking, sc.Warning, sc.Informational, sc.Confirmed)
+
+	return findings, decisions, 0
+}
+
+// RunImport is the standalone `fendix import` entry point: normalize the
+// configured SARIF files into imported evidence and run the STANDARD
+// finalization chain — cross-tool correlation, dedup, ignore/baseline,
+// confidence-gated --fail-on decisions, reporters — with no scanning. The
+// exit contract matches Run: 0 clean, 1 when a decision BLOCKs, 2 on error.
+func (o *Orchestrator) RunImport(ctx context.Context) int {
+	startTime := time.Now()
+
+	if len(o.cfg.ImportPaths) == 0 {
+		fmt.Fprintln(os.Stderr, "fendix: import requires at least one SARIF file (or '-' for stdin)")
+		return 2
+	}
+	evid, importedTools, err := loadImports(o.cfg.ImportPaths)
+	if err != nil {
+		slog.Error("failed to load SARIF import — the file must be a SARIF 2.1.0 document", "error", err)
+		fmt.Fprintln(os.Stderr, "fendix: "+err.Error())
+		return 2
+	}
+	if ctx.Err() != nil {
+		return 2
+	}
+
+	meta := reporters.ScanMetadata{
+		// Target is the optional --target label — an import has no scanned
+		// target of its own.
+		Target:    o.cfg.URL,
+		StartedAt: startTime,
+		Duration:  time.Since(startTime).Round(time.Millisecond).String(),
+		Version:   reportVersion(o.version),
+		Mode:      "import",
+		Imports:   importedTools,
+	}
+
+	_, decisions, ec := o.finalize(evid, meta)
+	if ec != 0 {
+		return ec
+	}
+	return decision.ExitCode(decisions)
+}
+
+// loadImports reads, parses and normalizes every configured SARIF file.
+// "-" reads stdin. Any failure aborts the WHOLE import (the caller exits 2):
+// silently importing half a document would misrepresent coverage.
+func loadImports(paths []string) ([]evidence.Evidence, []reporters.ImportedTool, error) {
+	var evid []evidence.Evidence
+	var tools []reporters.ImportedTool
+	for _, p := range paths {
+		var data []byte
+		var err error
+		if p == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(p)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading SARIF import %s: %w", p, err)
+		}
+		doc, err := sarifimport.Parse(data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", p, err)
+		}
+		evs, stats, err := sarifimport.Normalize(doc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", p, err)
+		}
+		evid = append(evid, evs...)
+		for _, t := range stats.Tools {
+			tools = append(tools, reporters.ImportedTool{
+				Tool:       t.Tool,
+				Version:    t.Version,
+				Results:    t.Results,
+				Suppressed: t.Suppressed,
+				NoLocation: t.NoLocation,
+			})
+		}
+	}
+	return evid, tools, nil
 }
 
 // decisionOptions projects the scan config onto the decision layer's policy.

@@ -53,6 +53,22 @@ type ScanMetadata struct {
 	// can force a non-zero exit. SARIF derives invocations[].executionSuccessful
 	// from it. Empty for pure black-box scans that run no code scanners.
 	ScannerStatus []ScannerStatus `json:"scanner_status,omitempty"`
+	// Imports is the per-tool accounting for SARIF-imported findings
+	// (`fendix import` / `scan --import`): every result in the source
+	// document is either imported, skipped as suppressed, or imported with
+	// no usable location — the counts always reconcile. ADDITIVE: absent
+	// (omitempty) for scans with no imports, so schema_version stays 1.
+	Imports []ImportedTool `json:"imports,omitempty"`
+}
+
+// ImportedTool is one source tool's accounting block within
+// ScanMetadata.Imports.
+type ImportedTool struct {
+	Tool       string `json:"tool"`
+	Version    string `json:"version,omitempty"`
+	Results    int    `json:"results"`
+	Suppressed int    `json:"suppressed,omitempty"`
+	NoLocation int    `json:"no_location,omitempty"`
 }
 
 // ScannerStatusState enumerates the terminal state of one scanner pass.

@@ -148,6 +148,42 @@ type Evidence struct {
 	// it must be carried by ScoringProvenance AND restored by
 	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
 	ComponentNotImported bool
+	// Weakness is the normalized CWE identity of the claim ("CWE-89", …),
+	// the machine-readable input to cross-tool correlation. Producers:
+	// sarifimport extracts it from SARIF rule taxa/tags; StampWeakness
+	// derives it for native evidence from exact CWE-NNN reference tokens.
+	// The correlator reads ONLY this field — never free-form References —
+	// so weakness matching cannot drift with reference prose. INTERNAL —
+	// never projected onto Finding.
+	Weakness []string
+	// ToolID is the normalized identity of the effective engine that
+	// produced this evidence ("fendix", "semgrep", "codeql", …), used to
+	// decide independence during cross-tool correlation. Set by sarifimport
+	// for imports; derived for native evidence by engine.CorrelateCrossTool
+	// (fendix, except the semgrep shim tier which is "semgrep" so an
+	// imported semgrep SARIF is correctly NOT independent of it). SARIF
+	// filename is never identity. INTERNAL — never projected onto Finding.
+	ToolID string
+	// CrossToolCorroborated marks evidence that STRONG cross-tool
+	// correlation confirmed: an independent tool reported the same
+	// normalized CWE at the same normalized location (see
+	// engine.CorrelateCrossTool for the exact predicate). It is the ONLY
+	// signal by which imported evidence may strengthen a decision — the
+	// decision layer counts it as a corroborating signal and the confidence
+	// scorer awards crossToolCorroborated. Like the producer-set flags
+	// above it has NO fallback and must be carried by ScoringProvenance.
+	// INTERNAL — never projected onto Finding.
+	CrossToolCorroborated bool
+	// CorroboratingTools names the independent tools behind
+	// CrossToolCorroborated (sorted, deduped), for the explainability line.
+	// INTERNAL — never projected onto Finding.
+	CorroboratingTools []string
+	// LineEnd is the last line of the finding's source region when the
+	// producer knows a RANGE (SARIF region endLine). 0 means "no range" —
+	// only the rendered Line (start) is known. Cross-tool correlation
+	// prefers overlapping ranges over raw line proximity when BOTH sides
+	// carry one. INTERNAL — never projected onto Finding.
+	LineEnd int
 }
 
 // FromFinding lifts a models.Finding into Evidence, copying the render block

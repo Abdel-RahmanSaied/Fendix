@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Trivy",
+          "version": "0.55.0",
+          "rules": [
+            {
+              "id": "CVE-2026-15830",
+              "shortDescription": { "text": "django: SQL injection in QuerySet.annotate()" },
+              "fullDescription": { "text": "An issue was discovered in Django 5.2 before 5.2.17. QuerySet.annotate() is subject to SQL injection via a crafted dictionary." },
+              "helpUri": "https://avd.aquasec.com/nvd/cve-2026-15830",
+              "defaultConfiguration": { "level": "error" },
+              "properties": {
+                "tags": ["vulnerability", "security", "HIGH"],
+                "security-severity": "8.1",
+                "cwe": ["CWE-89"]
+              }
+            },
+            {
+              "id": "DS002",
+              "shortDescription": { "text": "Image user should not be 'root'" },
+              "helpUri": "https://avd.aquasec.com/misconfig/ds002",
+              "defaultConfiguration": { "level": "note" },
+              "properties": {
+                "tags": ["misconfiguration", "security"]
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2026-15830",
+          "level": "error",
+          "message": { "text": "Package: django, Installed Version: 5.2.16, Fixed Version: 5.2.17" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "requirements.txt" },
+                "region": { "startLine": 4 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "DS002",
+          "level": "note",
+          "message": { "text": "Specify at least 1 USER command in Dockerfile with non-root user as argument" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "Dockerfile" },
+                "region": { "startLine": 1 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

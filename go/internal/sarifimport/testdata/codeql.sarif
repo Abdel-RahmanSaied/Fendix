@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "semanticVersion": "2.19.0",
+          "rules": [
+            {
+              "id": "py/sql-injection",
+              "shortDescription": { "text": "SQL query built from user-controlled sources" },
+              "fullDescription": { "text": "Building a SQL query from user-controlled sources is vulnerable to insertion of malicious SQL code by the user." },
+              "help": { "text": "Use parameterized queries or an ORM instead of string concatenation." },
+              "helpUri": "https://codeql.github.com/codeql-query-help/python/py-sql-injection/",
+              "defaultConfiguration": { "level": "error" },
+              "properties": {
+                "tags": ["security", "external/cwe/cwe-089"],
+                "precision": "high",
+                "security-severity": "8.8"
+              }
+            },
+            {
+              "id": "py/clear-text-logging-sensitive-data",
+              "shortDescription": { "text": "Clear-text logging of sensitive information" },
+              "helpUri": "https://codeql.github.com/codeql-query-help/python/py-clear-text-logging-sensitive-data/",
+              "defaultConfiguration": { "level": "warning" },
+              "properties": {
+                "tags": ["security", "external/cwe/cwe-312"],
+                "precision": "medium",
+                "security-severity": "5.5"
+              }
+            }
+          ]
+        }
+      },
+      "originalUriBaseIds": {
+        "SRCROOT": { "uri": "file:///home/runner/work/app/app" }
+      },
+      "results": [
+        {
+          "ruleId": "py/sql-injection",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": { "text": "This SQL query depends on a user-provided value." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/views.py", "uriBaseId": "SRCROOT" },
+                "region": { "startLine": 102, "endLine": 104, "snippet": { "text": "cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")" } }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "8f1c9a2b7e3d4a5f:1" }
+        },
+        {
+          "ruleId": "py/clear-text-logging-sensitive-data",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": { "text": "This expression logs sensitive data (password) as clear text." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/auth.py", "uriBaseId": "SRCROOT" },
+                "region": { "startLine": 57 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "2a4b6c8d0e1f3a5b:1" }
+        }
+      ]
+    }
+  ]
+}

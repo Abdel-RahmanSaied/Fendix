@@ -135,8 +135,22 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 // the same finding. We don't include Source because the same vuln reported
 // by both black-box and white-box (without going through the correlator)
 // should still collapse.
+//
+// EXCEPTION: imported findings dedup in their OWN key-space. The group merge
+// takes the maximum Confidence across members, so a title/category collision
+// between a native finding and an imported one would let the imported tool's
+// self-declared HIGH confidence transfer onto the native representative —
+// which can flip HasDeterministicDetection and turn a WARN into a BLOCK.
+// Cross-tool agreement must only ever flow through the strong-corroboration
+// predicate in CorrelateCrossTool, never through string equality here.
+// Imported↔imported duplicates (same tool re-reporting one issue across
+// endpoints) still collapse with each other.
 func dedupKey(f models.Finding) string {
-	return string(f.Severity) + "|" + f.Category + "|" + f.Title
+	key := string(f.Severity) + "|" + f.Category + "|" + f.Title
+	if f.Source == models.SourceImported {
+		key += "|imported"
+	}
+	return key
 }
 
 // findingLess is the total order used to pick a group's primary

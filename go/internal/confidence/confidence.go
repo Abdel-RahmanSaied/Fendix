@@ -55,6 +55,25 @@ const (
 	// documented false-negative of the grep that backs it.
 	componentNotImported = -10
 
+	// ── SARIF import (Source=imported) ─────────────────────────────────────
+	// External tool output is INPUT EVIDENCE, not fendix verification, so the
+	// deltas are calibrated to land each precision tier in the band the
+	// import design promised: high-precision → 35+10+25 = 70, exactly
+	// bandHigh (blocks alone at/above --fail-on); medium → 45, MEDIUM band
+	// (blocks only with a corroborating signal); low → 35, LOW band (warns).
+	importedEvidence      = 10  // an external scanner reported this via SARIF import
+	importedHighPrecision = 25  // the source tool declares high precision / error level
+	importedLowPrecision  = -10 // the source tool declares low precision / note level
+	// crossToolCorroborated fires only on the STRONG predicate in
+	// engine.CorrelateCrossTool: a genuinely independent tool reported the
+	// same normalized CWE at the same normalized location. Deliberately
+	// smaller than crossEngineAgree (+25): DAST+SAST agreement inside fendix
+	// proves two different OBSERVATION MODES agree, while cross-tool
+	// agreement proves two implementations of (often) the same mode agree.
+	// The decision-layer corroboration signal, not this delta, is what lifts
+	// a MEDIUM-band finding to BLOCK.
+	crossToolCorroborated = 15
+
 	// Band thresholds on the 0–100 score.
 	bandHigh   = 70
 	bandMedium = 40
@@ -105,6 +124,19 @@ func Score(ev evidence.Evidence) Result {
 	if ev.Source == models.SourceCorrelated {
 		add(crossEngineAgree, "cross-engine agreement: DAST and SAST independently flagged this")
 	}
+	if ev.Source == models.SourceImported {
+		add(importedEvidence, "imported: an external scanner reported this finding (SARIF import)")
+		// The tool's self-declared precision (mapped onto the Confidence
+		// enum by sarifimport) sets the standalone band. It is the tool's
+		// claim about its own rule — never a fendix verification signal, and
+		// never a corroborator for any OTHER finding.
+		switch ev.Confidence {
+		case models.ConfidenceHigh:
+			add(importedHighPrecision, "the source tool declares high precision for this rule")
+		case models.ConfidenceLow:
+			add(importedLowPrecision, "the source tool declares low precision for this rule")
+		}
+	}
 	if ev.RouteConfirmed {
 		add(routeConfirmed, "live request confirmed the vulnerable route")
 	}
@@ -143,6 +175,20 @@ func Score(ev evidence.Evidence) Result {
 		add(tierTreeSitterBump, "high-trust analyzer tier (tree-sitter taint)")
 	case models.TierSemgrepShim:
 		add(tierSemgrepPenalty, "lower-trust analyzer tier (semgrep regex breadth)")
+	}
+
+	// Strong cross-tool corroboration (engine.CorrelateCrossTool): an
+	// INDEPENDENT tool reported the same normalized CWE at the same
+	// normalized location. This is the only channel by which imported
+	// evidence strengthens a score — title/category/fingerprint coincidence
+	// never reaches here.
+	if ev.CrossToolCorroborated {
+		why := "independent cross-tool corroboration: another engine reported the same weakness at the same location"
+		if len(ev.CorroboratingTools) > 0 {
+			why = "independent cross-tool corroboration: " + strings.Join(ev.CorroboratingTools, ", ") +
+				" reported the same weakness at the same location"
+		}
+		add(crossToolCorroborated, why)
 	}
 
 	// B4: de-escalate (not suppress) DAST findings that fired on a 4xx

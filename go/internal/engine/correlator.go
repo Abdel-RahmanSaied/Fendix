@@ -78,13 +78,23 @@ func Correlate(findings []models.Finding) []models.Finding {
 // The returned slice is always the same length as the returned findings, in the
 // same order, so callers can index them together.
 func correlateWithMarks(findings []models.Finding) ([]models.Finding, []bool) {
-	var blackbox, whitebox []models.Finding
+	var blackbox, whitebox, imported []models.Finding
 	for _, f := range findings {
 		switch f.Source {
 		case models.SourceBlackbox:
 			blackbox = append(blackbox, f)
 		case models.SourceWhitebox:
 			whitebox = append(whitebox, f)
+		case models.SourceImported:
+			// SECURITY FENCE: imported findings must never enter this
+			// correlator. Routed into the blackbox bucket (the old default
+			// arm) they could fuzzy-match a whitebox finding and mint a
+			// Source=correlated, confidence-HIGH, severity-escalated result
+			// — external evidence masquerading as fendix's own cross-engine
+			// confirmation. The ONLY way an import strengthens another
+			// finding is the strong-corroboration path in
+			// CorrelateCrossTool. Pass through untouched.
+			imported = append(imported, f)
 		default:
 			// Already correlated or unknown source — pass through
 			blackbox = append(blackbox, f)
@@ -120,11 +130,13 @@ func correlateWithMarks(findings []models.Finding) ([]models.Finding, []bool) {
 				}
 			}
 		}
-		result := make([]models.Finding, 0, len(blackbox)+len(whitebox))
+		result := make([]models.Finding, 0, len(blackbox)+len(whitebox)+len(imported))
 		result = append(result, blackbox...)
 		unconfirmed = append(unconfirmed, make([]bool, len(blackbox))...)
 		result = append(result, whitebox...)
 		unconfirmed = append(unconfirmed, wbUnconfirmed...)
+		result = append(result, imported...)
+		unconfirmed = append(unconfirmed, make([]bool, len(imported))...)
 		return result, unconfirmed
 	}
 
@@ -207,6 +219,10 @@ func correlateWithMarks(findings []models.Finding) ([]models.Finding, []bool) {
 			unconfirmed = append(unconfirmed, false)
 		}
 	}
+
+	// Imported findings pass through verbatim — never merged, never marked.
+	result = append(result, imported...)
+	unconfirmed = append(unconfirmed, make([]bool, len(imported))...)
 
 	return result, unconfirmed
 }

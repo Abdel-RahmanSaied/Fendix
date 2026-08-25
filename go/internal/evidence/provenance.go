@@ -74,6 +74,17 @@ type ScoringProvenance struct {
 	UnconfirmedByLiveScan bool
 	Placeholder           bool
 	ComponentNotImported  bool
+	// CrossToolCorroborated + CorroboratingTools are the outputs of strong
+	// cross-tool correlation (engine.CorrelateCrossTool): an INDEPENDENT
+	// tool reported the same normalized CWE at the same normalized location.
+	// The decision layer counts the flag as a corroborating signal and the
+	// scorer awards crossToolCorroborated, so like the four flags above they
+	// must survive the Finding projection. Same "agree or drop" fold: a
+	// dedup group is corroborated only when EVERY occurrence was — one
+	// corroborated occurrence must not lift a group that also contains
+	// uncorroborated ones.
+	CrossToolCorroborated bool
+	CorroboratingTools    []string
 }
 
 // ProvenanceIndex maps a render-stable finding identity to the scoring
@@ -122,6 +133,8 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			UnconfirmedByLiveScan: e.UnconfirmedByLiveScan,
 			Placeholder:           e.Placeholder,
 			ComponentNotImported:  e.ComponentNotImported,
+			CrossToolCorroborated: e.CrossToolCorroborated,
+			CorroboratingTools:    e.CorroboratingTools,
 		}
 		if prev, ok := ix[k]; ok {
 			p = mergeScoringProvenance(prev, p)
@@ -183,6 +196,12 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		if !out[i].ComponentNotImported {
 			out[i].ComponentNotImported = p.ComponentNotImported
 		}
+		if !out[i].CrossToolCorroborated {
+			out[i].CrossToolCorroborated = p.CrossToolCorroborated
+		}
+		if len(out[i].CorroboratingTools) == 0 {
+			out[i].CorroboratingTools = p.CorroboratingTools
+		}
 	}
 	return out
 }
@@ -227,7 +246,21 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		UnconfirmedByLiveScan: agreementOrBool(a.UnconfirmedByLiveScan, b.UnconfirmedByLiveScan),
 		Placeholder:           agreementOrBool(a.Placeholder, b.Placeholder),
 		ComponentNotImported:  agreementOrBool(a.ComponentNotImported, b.ComponentNotImported),
+		CrossToolCorroborated: agreementOrBool(a.CrossToolCorroborated, b.CrossToolCorroborated),
+		CorroboratingTools:    agreementOrStrings(a.CorroboratingTools, b.CorroboratingTools),
 	}
+}
+
+// agreementOrStrings is agreementOr for a string slice: the value survives
+// only when both sides carry the identical (order-sensitive) list. Producers
+// emit CorroboratingTools sorted and deduped, so order sensitivity cannot
+// cause spurious drops. Commutative, associative, idempotent — same fold
+// properties as the rest.
+func agreementOrStrings(a, b []string) []string {
+	if strings.Join(a, "\x00") == strings.Join(b, "\x00") {
+		return a
+	}
+	return nil
 }
 
 func agreementOr(a, b string) string {

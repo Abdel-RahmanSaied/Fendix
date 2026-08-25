@@ -30,6 +30,14 @@ const (
 	SourceBlackbox   Source = "blackbox"
 	SourceWhitebox   Source = "whitebox"
 	SourceCorrelated Source = "correlated"
+	// SourceImported marks a finding ingested from another scanner's SARIF
+	// report (`fendix import` / `scan --import`). Imported findings carry an
+	// empty SourceTier on purpose — the correlator scores unknown tiers most
+	// conservatively, so external evidence can never masquerade as a native
+	// high-trust analyzer. They are fenced out of the blackbox↔whitebox
+	// correlator entirely; the only way an import strengthens another finding
+	// is the strong-corroboration path in engine.CorrelateCrossTool.
+	SourceImported Source = "imported"
 )
 
 // SourceTier records WHICH analysis engine tier produced a whitebox

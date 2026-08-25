@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SARIF import.** `fendix import <file.sarif>` ingests SARIF 2.1.0 reports
+  from other scanners (CodeQL, semgrep, trivy, …) and runs them through the
+  full fendix flow — normalization, fingerprinting, deterministic confidence
+  scoring, dedup, `.fendix-ignore`/`--baseline`, confidence-gated `--fail-on`,
+  and every report format. `fendix scan --import <file.sarif>` (repeatable)
+  merges foreign findings into a native scan. Report `metadata` gains an
+  additive `imports` accounting block; `schema_version` stays 1.
+
+  Imported findings are input evidence, never fendix verification: `source` is
+  `"imported"`, the analyzer tier stays unknown (most-conservative correlator
+  treatment), and SARIF codeFlows are ignored — an import can never claim a
+  reachable/proven path. Finding identity (the fendix fingerprint) is separate
+  from cross-tool correlation identity: an imported finding strengthens a
+  fendix decision only through **strong corroboration** — an independent tool
+  (normalized tool identity, never SARIF filename or run multiplicity)
+  reporting the same normalized CWE at the same normalized location (≤5 lines
+  apart, or overlapping declared regions). Title similarity, category
+  equality, fingerprint collisions, same-file proximity, and the imported
+  tool's self-declared confidence never count. A strongly corroborated
+  native+imported pair collapses to the native representative with the
+  imported provenance folded in.
+
 ## [2.0.1] - 2026-08-24
 
 ### Fixed

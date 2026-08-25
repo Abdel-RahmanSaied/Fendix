@@ -196,6 +196,7 @@ Get started:
 	}
 
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newImportCmd())
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newNotifyCmd())
@@ -411,6 +412,7 @@ func newScanCmd() *cobra.Command {
 			deescalateTestsFlag, _ := flags.GetBool("deescalate-tests")
 			enforceConfidenceFlag, _ := flags.GetBool("enforce-confidence")
 			checksFlag, _ := flags.GetStringSlice("checks")
+			importFlag, _ := flags.GetStringSlice("import")
 
 			// Resolve --config: explicit path takes precedence; if
 			// absent and a .fendix.yaml exists in the cwd, pick it up
@@ -481,6 +483,7 @@ func newScanCmd() *cobra.Command {
 				DeescalateTests:       deescalateTestsFlag,
 				EnforceConfidence:     enforceConfidenceFlag,
 				Checks:                checksFlag,
+				ImportPaths:           importFlag,
 			}
 
 			// Apply policy file values to cfg for fields the user did
@@ -601,6 +604,7 @@ func newScanCmd() *cobra.Command {
 	flags.Lookup("diff").NoOptDefVal = "HEAD"
 	flags.Bool("staged", false, "Diff-aware scan over staged changes only (git diff --cached). Implies --diff. This is what the pre-commit hook runs.")
 	flags.Bool("fast", false, "Fast mode: run only the instant native scanners (secrets + textscan), skipping semgrep (~1.5s startup) and the network dep-CVE scanners. Sub-second on a real monorepo; pairs with --staged for the pre-commit hook.")
+	flags.StringSlice("import", nil, "Merge findings from another scanner's SARIF 2.1.0 file into this scan (repeatable). Imported findings go through the standard pipeline; a native fendix finding at the same weakness+location becomes strong cross-tool corroboration. See also the standalone 'fendix import' command.")
 
 	return cmd
 }

@@ -27,8 +27,13 @@ SaaS: `POST /api/scans/import` uploads a SARIF, creating a `Scan` with
 New engine package `go/internal/sarifimport` with one public entry point:
 
 ```go
-func Normalize(doc *Document) ([]models.Finding, ImportStats, error)
+func Normalize(doc *Document) ([]evidence.Evidence, ImportStats, error)
 ```
+
+It returns `evidence.Evidence` (the internal superset of `models.Finding`)
+rather than bare findings, because the correlation metadata below — weakness
+ids, tool identity — lives in Evidence's internal block and must reach the
+correlator without a detour through report-facing fields.
 
 `Document` is sarifimport's **own minimal SARIF 2.1.0 struct** — only the
 fields the normalization table below reads (runs, tool driver, rules,
@@ -72,6 +77,22 @@ by the orchestrator exactly as for native findings — so `.fendix-ignore` and
 `--baseline` work on imported findings with zero new code. The source tool's
 `partialFingerprints` are provenance only.
 
+**Finding identity ≠ cross-tool correlation identity.** The fingerprint
+answers "is this the same logical fendix finding across scans?" — it is NOT
+the mechanism that decides whether two independent engines confirmed the same
+vulnerability. Correlation uses its own normalized metadata (see the
+Cross-tool correlation section below); title, category, and fingerprint
+equality never count as cross-engine confirmation.
+
+The `Category` mapping is refined: when the imported rule carries a CWE that
+maps cleanly onto a category fendix already understands, the **native fendix
+category** is used (`CWE-89/78/77/95 → injection`, `CWE-79 → xss`,
+`CWE-918 → ssrf`, `CWE-798/259 → secrets`, `CWE-287/306/862/863 → auth`);
+`import/<tool>` is the fallback when no trustworthy mapping exists. The
+mapping is a small explicit table, not an attempt to cover the CWE catalog.
+Tool provenance is always recorded independently (`tool:<name>@<version>`,
+`rule:<ruleId>`).
+
 Suppressed results (accepted `suppressions`) are skipped and counted in
 `ImportStats`. Results with no location get `Endpoint: "unknown"` rather than
 being dropped, so counts always reconcile.
@@ -101,12 +122,74 @@ stays `1` — additive keys only.
 ### `fendix scan --import <file.sarif>` (repeatable)
 
 Runs the native scan, calls the same `Normalize`, appends imported findings
-**before** the orchestrator's dedup/correlation pass. That ordering is the
-point of merge mode: a fendix native finding at the same location is the
-corroborating signal that lifts a MEDIUM-confidence imported finding into
-blocking. When two tools report the same issue at the same place, trust-ranked
-dedup picks the representative — imports rank as unknown tier, so a native
-finding wins.
+**before** the cross-tool correlation pass (which itself runs before dedup).
+That ordering is the point of merge mode: a fendix native finding at the same
+normalized weakness + location is the strong corroboration that lifts a
+MEDIUM-band imported finding into blocking — and vice versa. When a native and
+an imported finding strongly match, the native finding remains the
+representative and the imported finding's provenance survives as corroboration
+(see Cross-tool correlation).
+
+## Cross-tool correlation (identity ≠ correlation)
+
+Imported findings must never strengthen a fendix decision through fingerprint,
+title, or category coincidence. A dedicated correlation pass —
+`engine.CorrelateCrossTool`, separate from both fingerprinting and the
+existing blackbox↔whitebox correlator — reasons over normalized weakness,
+normalized location, line proximity, and tool provenance.
+
+**Internal metadata (never serialized).** `evidence.Evidence` gains
+internal-only fields: `Weakness []string` (normalized `CWE-NNN` ids —
+extracted from SARIF rule taxa/tags for imports, and from exact `CWE-NNN`
+reference tokens for native findings, both at the normalization boundary so
+the correlator receives structured metadata and never parses free-form
+strings), `ToolID` (normalized tool identity), and the correlation outputs
+`CrossToolCorroborated` + `CorroboratingTools`. The outputs are carried
+through dedup by `ScoringProvenance` with the same "agree or drop" merge as
+every other producer-set flag. `models.Finding` is untouched.
+
+**Match levels.**
+
+- *Strong corroboration* — ALL of: different effective tool (see
+  independence), same normalized CWE, same normalized file/endpoint, and same
+  or very-near location: `abs(lineA−lineB) <= 5` when both carry valid lines,
+  with overlapping regions preferred over raw proximity when both sides have
+  ranges. Only strong corroboration counts as cross-engine confirmation.
+- *Medium similarity* (same weakness + same file but outside the threshold,
+  etc.) — never gates; not computed in v1.
+- *Weak similarity* (same category / similar titles / same file only) — never
+  affects anything.
+
+**Independence.** Tool identity is normalized: imported findings carry the
+lowercased driver name; native findings are `fendix` — except semgrep-shim
+findings, which are `semgrep`, so fendix's own semgrep pass and an imported
+semgrep SARIF are correctly NOT independent. The same external tool across
+multiple runs/files gains nothing by duplication. SARIF filename is never
+identity.
+
+**Effect of strong corroboration.** The decision layer's `corroborations()`
+gains one arm — independent cross-tool corroboration — and the confidence
+scorer a matching bonus. That is the ONLY channel by which imported evidence
+influences another finding: severity never escalates, `Reachable`/`Route`/
+`TaintChain`/`SourceTier` are never set on imports (empty tier keeps the F1
+escalation gate's most-conservative treatment), imports are fenced OUT of the
+blackbox↔whitebox correlator (no `SourceCorrelated`, no `mergeFindings`), and
+imported findings dedup in their own key-space so a title collision can never
+transfer a confidence enum onto a native finding. Uncertain → no escalation:
+missing CWE or missing location simply excludes a finding from strong
+corroboration.
+
+**Representative selection.** When a native finding and an imported finding
+strongly match, the imported row is collapsed into the native representative
+(references and tool provenance folded in, corroboration stamped) — the
+report shows one finding confirmed by two engines, not duplicate rows, and
+the corroborating evidence survives dedup via the provenance index.
+
+**Standalone imports** still gate on their own mapped severity/precision
+(`security-severity`, `level`, `precision`) — an imported HIGH-precision
+finding can block by itself under `--fail-on`; corroboration is only about
+lifting MEDIUM-band findings and never about masquerading as native
+verification.
 
 ## Backend API & pipeline
 

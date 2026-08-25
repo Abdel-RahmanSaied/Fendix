@@ -232,6 +232,16 @@ func corroborations(ev evidence.Evidence) []string {
 	if ev.Payload != "" && ev.Response != "" {
 		sigs = append(sigs, "payload-validated probe")
 	}
+	// Strong cross-tool corroboration only — stamped exclusively by
+	// engine.CorrelateCrossTool when an INDEPENDENT tool reported the same
+	// normalized CWE at the same normalized location. An imported finding
+	// that merely shares a title, category, fingerprint, or file with this
+	// one never sets the flag, so it can never satisfy this arm. Appended
+	// last so the existing signal order (and every string-locked test)
+	// stays byte-identical.
+	if ev.CrossToolCorroborated {
+		sigs = append(sigs, "independent cross-tool corroboration")
+	}
 	return sigs
 }
 

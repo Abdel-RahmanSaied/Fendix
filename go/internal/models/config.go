@@ -13,9 +13,15 @@ type AuthContext struct {
 // ScanConfig holds all configuration for a scan run.
 // It is populated from CLI flags and passed to the orchestrator.
 type ScanConfig struct {
-	URL          string
-	SpecPath     string
-	CodePath     string
+	URL      string
+	SpecPath string
+	CodePath string
+	// ImportPaths lists SARIF 2.1.0 files from OTHER scanners to normalize
+	// and merge into the evidence stream (`fendix scan --import`, repeatable)
+	// or to ingest standalone (`fendix import`, via Orchestrator.RunImport).
+	// "-" means stdin. A malformed file is a hard error (exit 2) — importing
+	// half a document would misrepresent coverage.
+	ImportPaths  []string
 	Auth         *AuthContext
 	AuthUser2    *AuthContext
 	EnableActive bool

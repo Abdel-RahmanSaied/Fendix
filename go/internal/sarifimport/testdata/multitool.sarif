@@ -1,0 +1,67 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "semanticVersion": "2.19.0",
+          "rules": [
+            {
+              "id": "py/sql-injection",
+              "shortDescription": { "text": "SQL query built from user-controlled sources" },
+              "properties": { "tags": ["external/cwe/cwe-089"], "precision": "high" },
+              "defaultConfiguration": { "level": "error" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "py/sql-injection",
+          "level": "error",
+          "message": { "text": "SQL built from user input." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/views.py" },
+                "region": { "startLine": 102 }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep",
+          "semanticVersion": "1.90.0",
+          "rules": [
+            {
+              "id": "sqli-raw",
+              "shortDescription": { "text": "Raw SQL with user input" },
+              "properties": { "tags": ["CWE-89"], "precision": "medium" },
+              "defaultConfiguration": { "level": "error" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "sqli-raw",
+          "level": "error",
+          "message": { "text": "Raw SQL statement uses request data." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/views.py" },
+                "region": { "startLine": 100 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

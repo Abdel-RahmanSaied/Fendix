@@ -275,6 +275,30 @@ func provenanceDriftFixtures() []provenanceFixture {
 			// 35 base + 10 static + 30 deterministic detection - 10 component.
 			wantValue: base + staticEvidence + deterministicDetn + componentNotImported,
 		},
+		{
+			// A SARIF-imported finding that CorrelateCrossTool strongly
+			// corroborated (an independent tool reported the same normalized
+			// CWE at the same location). CrossToolCorroborated and
+			// CorroboratingTools are stamped BEFORE the Finding projection
+			// and are observable by nothing downstream of it — the exact
+			// shape whose survival ScoringProvenance exists to guarantee. If
+			// they were dropped, the decision layer's cross-tool
+			// corroboration arm would be dead on every real scan while its
+			// unit tests stayed green.
+			name: "imported finding with strong cross-tool corroboration",
+			ev: evidence.Evidence{
+				Title:                 "SQL Injection",
+				Category:              "injection",
+				Endpoint:              "app/views.py:102",
+				Severity:              models.SeverityHigh,
+				Source:                models.SourceImported,
+				Confidence:            models.ConfidenceMedium,
+				CrossToolCorroborated: true,
+				CorroboratingTools:    []string{"fendix"},
+			},
+			// 35 base + 10 imported + 15 cross-tool corroboration.
+			wantValue: base + importedEvidence + crossToolCorroborated,
+		},
 	}
 }
 
