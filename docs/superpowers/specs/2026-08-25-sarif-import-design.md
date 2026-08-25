@@ -144,9 +144,21 @@ extracted from SARIF rule taxa/tags for imports, and from exact `CWE-NNN`
 reference tokens for native findings, both at the normalization boundary so
 the correlator receives structured metadata and never parses free-form
 strings), `ToolID` (normalized tool identity), and the correlation outputs
-`CrossToolCorroborated` + `CorroboratingTools`. The outputs are carried
-through dedup by `ScoringProvenance` with the same "agree or drop" merge as
-every other producer-set flag. `models.Finding` is untouched.
+`CrossToolCorroborated` + `CorroboratingTools`.
+
+**Corroboration survives dedup by proof union.** Correlation establishes
+trust; dedup only decides which occurrence represents the issue, and may
+only preserve or conservatively discard already-established trust — never
+create it. The correlation outputs are therefore carried through dedup by
+`ScoringProvenance` under a **proof-union** fold, a deliberate exception to
+the "agree or drop" rule the other producer-set flags use: when duplicate
+occurrences of one logical vulnerability merge, their `CorroboratingTools`
+records union (sorted, deduped) and the merged flag is derived from that
+union. An uncorroborated duplicate occurrence cannot erase a validly
+established independent-engine confirmation — and occurrences that were
+never stamped contribute an empty record, so grouping can never manufacture
+one. A bare flag without its tool-identity proof does not survive the merge.
+Only `CorrelateCrossTool` may ever write a tool into `CorroboratingTools`. `models.Finding` is untouched.
 
 **Match levels.**
 
@@ -156,9 +168,19 @@ every other producer-set flag. `models.Finding` is untouched.
   with overlapping regions preferred over raw proximity when both sides have
   ranges. Only strong corroboration counts as cross-engine confirmation.
 - *Medium similarity* (same weakness + same file but outside the threshold,
-  etc.) — never gates; not computed in v1.
+  etc.) — informational only, never blocking, never satisfies the F1 /
+  corroboration gate. Classified for tests; no product surface in v1.
 - *Weak similarity* (same category / similar titles / same file only) — never
   affects anything.
+
+**Exact-CWE equality is a deliberate trust boundary, not a bug.** Strong
+corroboration in v1 requires an exact intersection of normalized `CWE-N`
+identifiers. CWE parent/child relationships, taxonomy graph traversal, fuzzy
+weakness matching, title/category/message-based weakness inference, and any
+model-based classification are intentionally NOT resolved — `CWE-89` and its
+taxonomic child `CWE-564` do not corroborate each other. This produces false
+negatives by design: false non-correlation is preferable to taxonomy
+inference weakening the "both engines confirm" guarantee.
 
 **Independence.** Tool identity is normalized: imported findings carry the
 lowercased driver name; native findings are `fendix` — except semgrep-shim

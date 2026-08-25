@@ -29,7 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   equality, fingerprint collisions, same-file proximity, and the imported
   tool's self-declared confidence never count. A strongly corroborated
   native+imported pair collapses to the native representative with the
-  imported provenance folded in.
+  imported provenance folded in. Established corroboration survives later
+  deduplication by proof union (an uncorroborated duplicate occurrence cannot
+  erase it; unstamped occurrences cannot manufacture it), and exact-CWE
+  matching is a deliberate v1 trust boundary — CWE parent/child taxonomy is
+  intentionally not resolved.
 
 ## [2.0.1] - 2026-08-24
 

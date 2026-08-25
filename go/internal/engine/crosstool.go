@@ -44,11 +44,18 @@ import (
 //
 // Effect: strong corroboration stamps the INTERNAL flags
 // Evidence.CrossToolCorroborated + CorroboratingTools (carried past dedup by
-// ScoringProvenance), which the decision layer counts as one corroborating
-// signal and the confidence scorer rewards with a bonus. Severity is never
-// escalated, SourceCorrelated is never minted, and Reachable/Route/
-// TaintChain/SourceTier are never touched — the F1 escalation gate cannot be
-// reached through an import.
+// ScoringProvenance's proof-union fold), which the decision layer counts as
+// one corroborating signal and the confidence scorer rewards with a bonus.
+// Severity is never escalated, SourceCorrelated is never minted, and
+// Reachable/Route/TaintChain/SourceTier are never touched — the F1
+// escalation gate cannot be reached through an import.
+//
+// BOUNDARY: this function is the ONLY producer of cross-tool corroboration.
+// Correlation decides whether independent engines confirmed the issue; dedup
+// decides which occurrence represents it. Dedup and the provenance index may
+// only preserve or conservatively discard the records established here —
+// they must never mint a CorroboratingTools entry, and "same-looking
+// findings" is never grounds for corroboration downstream of this point.
 
 // strongLineDistance is the deliberately conservative maximum line distance
 // for strong location agreement when both findings carry a valid start line

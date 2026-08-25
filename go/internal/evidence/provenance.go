@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
@@ -79,10 +80,15 @@ type ScoringProvenance struct {
 	// tool reported the same normalized CWE at the same normalized location.
 	// The decision layer counts the flag as a corroborating signal and the
 	// scorer awards crossToolCorroborated, so like the four flags above they
-	// must survive the Finding projection. Same "agree or drop" fold: a
-	// dedup group is corroborated only when EVERY occurrence was — one
-	// corroborated occurrence must not lift a group that also contains
-	// uncorroborated ones.
+	// must survive the Finding projection.
+	//
+	// UNLIKE the four flags above, these two fold by PROOF UNION rather than
+	// agree-or-drop (see mergeScoringProvenance): corroboration is a fact
+	// about the logical vulnerability backed by an explicit tool-identity
+	// record, so an uncorroborated duplicate occurrence in the dedup group
+	// must not erase it — while occurrences with no record contribute
+	// nothing, so dedup can never manufacture it. Correlation establishes
+	// trust; everything after correlation only preserves it.
 	CrossToolCorroborated bool
 	CorroboratingTools    []string
 }
@@ -234,7 +240,28 @@ func (ix ProvenanceIndex) lookup(e Evidence) ScoringProvenance {
 // determinism property dedup enforces) — and it is the conservative reading:
 // a bonus is awarded only when every occurrence earned it, and a
 // de-escalation applies only when every occurrence was de-escalated.
+//
+// ONE DELIBERATE EXCEPTION: the cross-tool corroboration pair folds by
+// PROOF UNION, not agreement. The other flags describe the nature of each
+// occurrence ("this match is in test code", "this value is fixture-shaped"),
+// where one occurrence must not speak for the group. Corroboration is
+// different in kind: it is a positive fact about the LOGICAL VULNERABILITY,
+// established once by engine.CorrelateCrossTool's strong predicate and
+// carried with its proof — the independent tool identities in
+// CorroboratingTools. An uncorroborated duplicate occurrence joining the
+// group does not negate that proof, so agreement-folding it away would erase
+// a valid independent-engine confirmation (the exact regression
+// engine.TestCorroborationSurvivesUncorroboratedDuplicate pins).
+//
+// The union CANNOT manufacture trust: only CorrelateCrossTool ever writes a
+// tool into CorroboratingTools, so the union of records from occurrences
+// that were never stamped is empty, and the merged flag is derived from the
+// union — corroborated iff at least one validated tool-identity record
+// survives. Correlation establishes trust; this fold (and dedup around it)
+// only preserves it. Sorted-set union keeps the fold commutative,
+// associative and idempotent, so F-L6 determinism holds.
 func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
+	tools := unionSorted(a.CorroboratingTools, b.CorroboratingTools)
 	return ScoringProvenance{
 		Payload:         agreementOr(a.Payload, b.Payload),
 		Response:        agreementOr(a.Response, b.Response),
@@ -246,21 +273,34 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		UnconfirmedByLiveScan: agreementOrBool(a.UnconfirmedByLiveScan, b.UnconfirmedByLiveScan),
 		Placeholder:           agreementOrBool(a.Placeholder, b.Placeholder),
 		ComponentNotImported:  agreementOrBool(a.ComponentNotImported, b.ComponentNotImported),
-		CrossToolCorroborated: agreementOrBool(a.CrossToolCorroborated, b.CrossToolCorroborated),
-		CorroboratingTools:    agreementOrStrings(a.CorroboratingTools, b.CorroboratingTools),
+		// Derived from the surviving proof, never from the bare flags: a
+		// true flag with no tool record (which no producer emits) does not
+		// survive the merge — corroboration without its proof is not
+		// corroboration.
+		CrossToolCorroborated: len(tools) > 0,
+		CorroboratingTools:    tools,
 	}
 }
 
-// agreementOrStrings is agreementOr for a string slice: the value survives
-// only when both sides carry the identical (order-sensitive) list. Producers
-// emit CorroboratingTools sorted and deduped, so order sensitivity cannot
-// cause spurious drops. Commutative, associative, idempotent — same fold
-// properties as the rest.
-func agreementOrStrings(a, b []string) []string {
-	if strings.Join(a, "\x00") == strings.Join(b, "\x00") {
-		return a
+// unionSorted returns the sorted, deduped union of two tool-identity lists;
+// nil when both are empty. Commutative, associative, idempotent.
+func unionSorted(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
 	}
-	return nil
+	set := make(map[string]bool, len(a)+len(b))
+	for _, s := range a {
+		set[s] = true
+	}
+	for _, s := range b {
+		set[s] = true
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func agreementOr(a, b string) string {
