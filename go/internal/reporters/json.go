@@ -62,13 +62,19 @@ type ScanMetadata struct {
 }
 
 // ImportedTool is one source tool's accounting block within
-// ScanMetadata.Imports.
+// ScanMetadata.Imports — one entry per normalized tool, folded across every
+// run and every attached file that tool contributed.
 type ImportedTool struct {
 	Tool       string `json:"tool"`
 	Version    string `json:"version,omitempty"`
 	Results    int    `json:"results"`
 	Suppressed int    `json:"suppressed,omitempty"`
 	NoLocation int    `json:"no_location,omitempty"`
+	// Corroborated: imported findings that strong cross-tool correlation
+	// collapsed into a native representative. Lets a consumer explain why N
+	// uploaded findings produced fewer than N rows, instead of leaving the
+	// difference looking like data loss.
+	Corroborated int `json:"corroborated,omitempty"`
 }
 
 // ScannerStatusState enumerates the terminal state of one scanner pass.

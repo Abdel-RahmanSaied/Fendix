@@ -28,7 +28,7 @@ import (
 // Evidence the decision layer would actually see keeps these tests honest —
 // they exercise the REAL pipeline path, not a convenient shortcut.
 func runFinalizationSlice(evs []evidence.Evidence) []evidence.Evidence {
-	evid := CorrelateCrossTool(evs)
+	evid, _ := CorrelateCrossTool(evs)
 	prov := evidence.NewProvenanceIndex(evid)
 	findings := evidence.ToFindings(evid)
 	findings = CollapseDuplicateLocations(findings)

@@ -117,6 +117,30 @@ func TestRunImport_GoldenReport(t *testing.T) {
 	}
 }
 
+// TestRunImport_ConsolidatesAcrossFiles: the same tool attached twice must
+// produce ONE metadata block. Two identically-named blocks would leave a
+// per-tool corroborated count with no unambiguous home.
+func TestRunImport_ConsolidatesAcrossFiles(t *testing.T) {
+	cfg := importConfig(t, "", codeqlFixture, codeqlFixture)
+	if code := NewOrchestrator(cfg, "test").RunImport(context.Background()); code != 0 {
+		t.Fatalf("RunImport = %d, want 0", code)
+	}
+	data, err := os.ReadFile(cfg.OutputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := reporters.ParseJSONReport(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Metadata.Imports) != 1 {
+		t.Fatalf("one tool attached twice must consolidate to one block, got %d", len(report.Metadata.Imports))
+	}
+	if report.Metadata.Imports[0].Results != 4 {
+		t.Fatalf("results must sum across files, got %d want 4", report.Metadata.Imports[0].Results)
+	}
+}
+
 // TestRunImport_ExitCodes locks the gate contract for standalone imports:
 // a high-precision error-level finding blocks at --fail-on HIGH on its own
 // (score 70, HIGH band); the same document is clean at --fail-on CRITICAL.

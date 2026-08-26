@@ -709,7 +709,18 @@ func (o *Orchestrator) finalize(evid []evidence.Evidence, meta reporters.ScanMet
 	// correlator (imported evidence is fenced out of that one) and BEFORE
 	// the provenance index below, so the corroboration flags are captured
 	// for scoring. No-op when no imported evidence is present.
-	evid = CorrelateCrossTool(evid)
+	evid, collapsedByTool := CorrelateCrossTool(evid)
+	// Fold the collapsed counts into the per-tool import accounting so a
+	// report can explain why N uploaded findings produced fewer than N rows.
+	// meta.Imports is a slice, so mutating its elements is visible to
+	// renderReport below even though meta itself is passed by value.
+	// sarifimport.Normalize + loadImports guarantee exactly one block per
+	// tool, so each count has an unambiguous home.
+	for i := range meta.Imports {
+		if n, ok := collapsedByTool[meta.Imports[i].Tool]; ok {
+			meta.Imports[i].Corroborated = n
+		}
+	}
 	findings := evidence.ToFindings(evid)
 
 	// The projection above is lossy BY DESIGN (models.Finding is the frozen
@@ -918,7 +929,12 @@ func (o *Orchestrator) RunImport(ctx context.Context) int {
 // silently importing half a document would misrepresent coverage.
 func loadImports(paths []string) ([]evidence.Evidence, []reporters.ImportedTool, error) {
 	var evid []evidence.Evidence
-	var tools []reporters.ImportedTool
+	// Consolidate ACROSS files by normalized tool identity. Normalize already
+	// folds runs within one document; attaching the same tool twice must not
+	// reintroduce the duplicate-block ambiguity a per-tool corroborated count
+	// cannot resolve.
+	byTool := map[string]*reporters.ImportedTool{}
+	var order []string
 	for _, p := range paths {
 		var data []byte
 		var err error
@@ -940,14 +956,24 @@ func loadImports(paths []string) ([]evidence.Evidence, []reporters.ImportedTool,
 		}
 		evid = append(evid, evs...)
 		for _, t := range stats.Tools {
-			tools = append(tools, reporters.ImportedTool{
-				Tool:       t.Tool,
-				Version:    t.Version,
-				Results:    t.Results,
-				Suppressed: t.Suppressed,
-				NoLocation: t.NoLocation,
-			})
+			cur, seen := byTool[t.Tool]
+			if !seen {
+				cur = &reporters.ImportedTool{Tool: t.Tool, Version: t.Version}
+				byTool[t.Tool] = cur
+				order = append(order, t.Tool)
+			} else if cur.Version != t.Version {
+				// Same tool, different versions across files — the tool name
+				// carries the provenance, so drop the ambiguous version.
+				cur.Version = ""
+			}
+			cur.Results += t.Results
+			cur.Suppressed += t.Suppressed
+			cur.NoLocation += t.NoLocation
 		}
+	}
+	tools := make([]reporters.ImportedTool, 0, len(order))
+	for _, id := range order {
+		tools = append(tools, *byTool[id])
 	}
 	return evid, tools, nil
 }

@@ -212,7 +212,7 @@ func TestNativeRemainsRepresentative_ImportedProvenanceRetained(t *testing.T) {
 	native := nativeSQLi("app/views.py:100", "100")
 	imported := importedSQLi("codeql", "app/views.py:102", "102")
 
-	out := CorrelateCrossTool([]evidence.Evidence{native, imported})
+	out, _ := CorrelateCrossTool([]evidence.Evidence{native, imported})
 	if len(out) != 1 {
 		t.Fatalf("strong native+imported match must collapse to one representative, got %d rows", len(out))
 	}
@@ -242,7 +242,7 @@ func TestSameToolDuplicates_KeptButNeverStamped(t *testing.T) {
 	a := importedSQLi("codeql", "app/views.py:100", "100")
 	b := importedSQLi("codeql", "app/views.py:101", "101")
 
-	out := CorrelateCrossTool([]evidence.Evidence{a, b})
+	out, _ := CorrelateCrossTool([]evidence.Evidence{a, b})
 	if len(out) != 2 {
 		t.Fatalf("same-tool duplicates are dedup's business, not correlation's — got %d rows", len(out))
 	}
@@ -257,7 +257,7 @@ func TestImportedPairFromDifferentTools_BothKeptBothStamped(t *testing.T) {
 	a := importedSQLi("codeql", "app/views.py:100", "100")
 	b := importedSQLi("semgrep", "app/views.py:101", "101")
 
-	out := CorrelateCrossTool([]evidence.Evidence{a, b})
+	out, _ := CorrelateCrossTool([]evidence.Evidence{a, b})
 	if len(out) != 2 {
 		t.Fatalf("imported↔imported strong pairs keep both rows, got %d", len(out))
 	}
@@ -268,9 +268,37 @@ func TestImportedPairFromDifferentTools_BothKeptBothStamped(t *testing.T) {
 	}
 }
 
+// TestCorrelateCrossTool_ReturnsPerToolCollapsedCounts: the counts must be
+// keyed by tool. A scalar total cannot be attributed when two tools each
+// collapse findings — which block of metadata.imports would it belong to?
+func TestCorrelateCrossTool_ReturnsPerToolCollapsedCounts(t *testing.T) {
+	evs := []evidence.Evidence{
+		nativeSQLi("app/views.py:100", "100"),
+		nativeSQLi("app/db.py:200", "200"),
+		nativeSQLi("app/api.py:300", "300"),
+		importedSQLi("codeql", "app/views.py:102", "102"),
+		importedSQLi("codeql", "app/db.py:201", "201"),
+		importedSQLi("semgrep", "app/api.py:301", "301"),
+	}
+	_, counts := CorrelateCrossTool(evs)
+	if counts["codeql"] != 2 {
+		t.Fatalf("codeql collapsed count = %d, want 2", counts["codeql"])
+	}
+	if counts["semgrep"] != 1 {
+		t.Fatalf("semgrep collapsed count = %d, want 1", counts["semgrep"])
+	}
+}
+
+func TestCorrelateCrossTool_NoImportsReturnsNilCounts(t *testing.T) {
+	_, counts := CorrelateCrossTool([]evidence.Evidence{nativeSQLi("app/views.py:100", "100")})
+	if len(counts) != 0 {
+		t.Fatalf("no imports → no counts, got %v", counts)
+	}
+}
+
 func TestCorrelateCrossTool_NoImports_NoOp(t *testing.T) {
 	evs := []evidence.Evidence{nativeSQLi("app/views.py:100", "100"), nativeSQLi("app/db.py:5", "5")}
-	out := CorrelateCrossTool(evs)
+	out, _ := CorrelateCrossTool(evs)
 	if len(out) != 2 {
 		t.Fatalf("no imports → untouched, got %d rows", len(out))
 	}
@@ -336,7 +364,7 @@ func TestGate_CorroboratedImportBlocks_UncorroboratedWarns(t *testing.T) {
 		t.Fatalf("an uncorroborated MEDIUM-precision import above --fail-on must WARN, got %v (%s)", d.Status, d.Reason)
 	}
 
-	out := CorrelateCrossTool([]evidence.Evidence{
+	out, _ := CorrelateCrossTool([]evidence.Evidence{
 		nativeSQLi("app/views.py:100", "100"),
 		importedSQLi("codeql", "app/views.py:102", "102"),
 	})
@@ -359,7 +387,7 @@ func TestGate_WeakSimilaritySignalsNothing(t *testing.T) {
 	native := nativeSQLi("app/views.py:100", "100")
 	imported := importedSQLi("codeql", "app/views.py:400", "400") // same weakness, far away
 
-	out := CorrelateCrossTool([]evidence.Evidence{native, imported})
+	out, _ := CorrelateCrossTool([]evidence.Evidence{native, imported})
 	if len(out) != 2 {
 		t.Fatalf("a non-strong pair must not collapse, got %d rows", len(out))
 	}

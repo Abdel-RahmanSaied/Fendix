@@ -103,7 +103,12 @@ type corrMeta struct {
 // duplicate rows. Imported↔imported strong pairs (different tools) are both
 // kept and both stamped. Pure and deterministic; returns evs unchanged when
 // no imported evidence is present.
-func CorrelateCrossTool(evs []evidence.Evidence) []evidence.Evidence {
+//
+// The second return counts, per normalized ToolID, how many imported findings
+// were collapsed into a native representative. Keyed by tool rather than
+// totalled because report metadata carries one accounting block per tool: a
+// scalar could not be attributed when two tools each collapse findings.
+func CorrelateCrossTool(evs []evidence.Evidence) ([]evidence.Evidence, map[string]int) {
 	hasImported := false
 	for i := range evs {
 		if evs[i].Source == models.SourceImported {
@@ -112,7 +117,7 @@ func CorrelateCrossTool(evs []evidence.Evidence) []evidence.Evidence {
 		}
 	}
 	if !hasImported {
-		return evs
+		return evs, nil
 	}
 
 	// Normalization boundary: structured weakness + tool identity are
@@ -153,7 +158,7 @@ func CorrelateCrossTool(evs []evidence.Evidence) []evidence.Evidence {
 		}
 	}
 	if len(corroboratedBy) == 0 {
-		return evs
+		return evs, nil
 	}
 
 	// Stamp the flags on every strong participant.
@@ -168,10 +173,12 @@ func CorrelateCrossTool(evs []evidence.Evidence) []evidence.Evidence {
 	// references/tool provenance survive on it. Corroboration evidence is
 	// preserved via the stamps above, NOT by keeping duplicate rows.
 	drop := make([]bool, len(evs))
+	collapsedByTool := map[string]int{}
 	for imp, natives := range strongNative {
 		drop[imp] = true
 		rep := natives[0] // pairs were generated in index order → deterministic
 		evs[rep].References = mergeRefs(evs[rep].References, evs[imp].References)
+		collapsedByTool[metas[imp].tool]++
 	}
 
 	out := make([]evidence.Evidence, 0, len(evs))
@@ -186,7 +193,7 @@ func CorrelateCrossTool(evs []evidence.Evidence) []evidence.Evidence {
 	if dropped > 0 {
 		slog.Info("collapsed imported findings into corroborated native representatives", "collapsed", dropped)
 	}
-	return out
+	return out, collapsedByTool
 }
 
 // ClassifyCrossTool classifies one pair of Evidence. Exported for tests: the
