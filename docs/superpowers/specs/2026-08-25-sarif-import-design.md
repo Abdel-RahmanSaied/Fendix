@@ -1,7 +1,12 @@
 # SARIF Import — Design
 
 **Date:** 2026-08-25
-**Status:** Approved (brainstorm 2026-08-25)
+**Status:** Shipped (engine + backend + UI). Two decisions here are superseded
+by [2026-08-26-cross-tool-corroboration-design.md](2026-08-26-cross-tool-corroboration-design.md):
+`config["import_file"]` becomes the list `config["import_files"]`, and the
+structural upload gate gains a SARIF-version check (deferring it to the engine
+is safe for a standalone import, but would let one bad attachment kill an
+otherwise-good merged scan).
 **Scope:** Engine-first; backend follows in the same feature cycle.
 
 ## Purpose
