@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -146,6 +147,49 @@ func TestMultipleCorroboratingTools(t *testing.T) {
 	got := strings.Join(rep.CorroboratingTools, ",")
 	if got != "codeql,semgrep" {
 		t.Fatalf("CorroboratingTools = %q, want exactly \"codeql,semgrep\" (sorted, deduped)", got)
+	}
+}
+
+// ── The public contract ─────────────────────────────────────────────────────
+
+// TestPublicCorroborationSurvivesUncorroboratedDuplicate is the reason the
+// public fields are stamped in stampDecisions from the RESTORED evidence
+// rather than projected through evidence.ToFinding. Projecting would publish
+// whichever duplicate won findingLess in dedup — reintroducing exactly the
+// erasure the proof-union fold fixed, but on a public surface this time.
+func TestPublicCorroborationSurvivesUncorroboratedDuplicate(t *testing.T) {
+	a := nativeSQLi("app/views.py:100", "100")
+	aPrime := nativeSQLi("app/admin.py:50", "50") // dedup-equivalent, never stamped
+	b := importedSQLi("codeql", "app/views.py:102", "102")
+
+	evid, _ := CorrelateCrossTool([]evidence.Evidence{a, aPrime, b})
+	prov := evidence.NewProvenanceIndex(evid)
+	findings := evidence.ToFindings(evid)
+	findings = Deduplicate(findings)
+	stampDecisions(findings, prov, "HIGH", decision.Options{EnforceConfidence: true})
+
+	if len(findings) != 1 {
+		t.Fatalf("want one representative, got %d", len(findings))
+	}
+	if !findings[0].CrossToolCorroborated {
+		t.Fatal("the PUBLIC field must survive an uncorroborated dedup duplicate")
+	}
+	if strings.Join(findings[0].CorroboratingTools, ",") != "codeql" {
+		t.Fatalf("public tools = %v, want [codeql]", findings[0].CorroboratingTools)
+	}
+}
+
+// TestUncorroboratedFindingOmitsPublicFields keeps existing reports
+// byte-identical: both fields are omitempty and must not appear.
+func TestUncorroboratedFindingOmitsPublicFields(t *testing.T) {
+	f := nativeSQLi("app/views.py:100", "100").ToFinding()
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "cross_tool_corroborated") ||
+		strings.Contains(string(raw), "corroborating_tools") {
+		t.Fatalf("uncorroborated findings must omit both keys: %s", raw)
 	}
 }
 

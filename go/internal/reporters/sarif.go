@@ -137,6 +137,12 @@ type SARIFResultProperties struct {
 	// file:line it is ALSO mirrored into region.snippet.text; the duplication
 	// is intentional so a consumer reading either place sees the same string.
 	Evidence string `json:"evidence,omitempty"`
+	// CorroboratingTools names the INDEPENDENT tools that reported the same
+	// normalized weakness at the same location. Emitted so corroboration
+	// provenance survives re-export into GitHub code scanning rather than
+	// being lost at the boundary — a consumer can see that two engines
+	// agreed, not merely that fendix scored the finding highly.
+	CorroboratingTools []string `json:"corroborating_tools,omitempty"`
 }
 
 // SARIFCodeFlow groups one or more threadFlows (SARIF §3.36). A taint chain
@@ -274,16 +280,18 @@ func sarifResultProperties(f models.Finding) *SARIFResultProperties {
 	// finding — no tier, no route, no decision stamp — which is precisely the
 	// working-rule-3 violation FIX-13.4 exists to avoid.
 	evidence := NeutralizeText(f.Evidence)
-	if f.SourceTier == "" && !f.Reachable && f.Route == nil && f.Status == "" && f.ConfidenceScore == 0 && evidence == "" {
+	if f.SourceTier == "" && !f.Reachable && f.Route == nil && f.Status == "" && f.ConfidenceScore == 0 &&
+		evidence == "" && len(f.CorroboratingTools) == 0 {
 		return nil
 	}
 	p := &SARIFResultProperties{
-		SourceTier:      string(f.SourceTier),
-		Reachable:       f.Reachable,
-		Status:          f.Status,
-		ConfidenceScore: f.ConfidenceScore,
-		ConfidenceBand:  f.ConfidenceBand,
-		Evidence:        evidence,
+		SourceTier:         string(f.SourceTier),
+		Reachable:          f.Reachable,
+		Status:             f.Status,
+		ConfidenceScore:    f.ConfidenceScore,
+		ConfidenceBand:     f.ConfidenceBand,
+		Evidence:           evidence,
+		CorroboratingTools: f.CorroboratingTools,
 	}
 	if f.Route != nil {
 		p.RouteMethod = f.Route.Method

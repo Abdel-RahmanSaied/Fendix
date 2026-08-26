@@ -189,6 +189,24 @@ type Finding struct {
 	// ConfidenceReasons is the plain-text, per-rule breakdown of the score
 	// (the "no black boxes" contract).
 	ConfidenceReasons []string `json:"confidence_reasons,omitempty"`
+
+	// --- Cross-tool corroboration (SARIF import) ------------------------
+	// CrossToolCorroborated / CorroboratingTools publish the verdict of
+	// engine.CorrelateCrossTool: an INDEPENDENT tool reported the same
+	// normalized weakness at the same normalized location. Both omitempty,
+	// so a report with no corroboration is byte-identical to one produced
+	// before these fields existed and schema_version stays 1.
+	//
+	// STAMPED, NOT PROJECTED. evidence.ToFinding deliberately does NOT carry
+	// them; engine.stampDecisions writes them from the post-Restore evidence
+	// so the published value is the PROOF-UNION over the dedup group rather
+	// than whichever duplicate happened to win findingLess and become the
+	// group primary. Projecting them through the render block would silently
+	// reintroduce the erasure the proof-union fold exists to prevent — on a
+	// public surface. TestPublicCorroborationSurvivesUncorroboratedDuplicate
+	// locks this.
+	CrossToolCorroborated bool     `json:"cross_tool_corroborated,omitempty"`
+	CorroboratingTools    []string `json:"corroborating_tools,omitempty"`
 }
 
 // SeverityRank returns a numeric rank for severity comparison.

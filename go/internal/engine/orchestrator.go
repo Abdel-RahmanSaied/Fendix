@@ -1215,6 +1215,12 @@ func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, fa
 		findings[i].ConfidenceScore = d.Score.Value
 		findings[i].ConfidenceBand = string(d.Score.Band)
 		findings[i].ConfidenceReasons = d.Score.Reasons
+		// d.Evidence is post-Restore, so these carry the PROOF-UNION value
+		// over the dedup group — not whichever duplicate became the primary.
+		// See the field docs on models.Finding for why this must be stamped
+		// here rather than projected by evidence.ToFinding.
+		findings[i].CrossToolCorroborated = d.Evidence.CrossToolCorroborated
+		findings[i].CorroboratingTools = d.Evidence.CorroboratingTools
 	}
 	return decisions
 }

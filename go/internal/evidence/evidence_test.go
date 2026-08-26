@@ -43,6 +43,26 @@ func fullyPopulatedFinding() models.Finding {
 	}
 }
 
+// notRoundTripped names the Finding fields that are DELIBERATELY absent from
+// the Evidence↔Finding adapter, and therefore exempt from the sample-
+// completeness guard below.
+//
+// Only the cross-tool corroboration pair qualifies. Those two are stamped by
+// engine.stampDecisions from the POST-Restore evidence, so the published
+// value is the proof-union over the dedup group. Mapping them through
+// ToFinding would put a pre-dedup value on the projection, and mapping them
+// through FromFinding would let a pre-set value block ProvenanceIndex.Restore
+// (it only fills what is empty) — either way reintroducing the erasure the
+// proof-union fold exists to prevent, on a public surface.
+//
+// TestExemptFieldsAreGenuinelyNotMapped keeps this list honest: an entry here
+// must actually fail to round-trip, so a field cannot be parked here to
+// silence the guard while quietly being mapped.
+var notRoundTripped = map[string]string{
+	"CrossToolCorroborated": "stamped by engine.stampDecisions from restored evidence",
+	"CorroboratingTools":    "stamped by engine.stampDecisions from restored evidence",
+}
+
 // TestFindingSampleExercisesEveryField is the drift guard: it fails if any
 // exported field of the sample Finding is the zero value, forcing the sample
 // (and the adapter it backs) to stay complete as models.Finding evolves.
@@ -50,11 +70,40 @@ func TestFindingSampleExercisesEveryField(t *testing.T) {
 	v := reflect.ValueOf(fullyPopulatedFinding())
 	tp := v.Type()
 	for i := 0; i < v.NumField(); i++ {
+		name := tp.Field(i).Name
 		if !tp.Field(i).IsExported() {
 			continue
 		}
+		if _, exempt := notRoundTripped[name]; exempt {
+			continue
+		}
 		if v.Field(i).IsZero() {
-			t.Errorf("Finding.%s is zero in the round-trip sample — populate it AND map it in From/ToFinding", tp.Field(i).Name)
+			t.Errorf("Finding.%s is zero in the round-trip sample — populate it AND map it in From/ToFinding", name)
+		}
+	}
+}
+
+// TestExemptFieldsAreGenuinelyNotMapped turns the exemption list from a hole
+// into a positive assertion: each exempt field, when populated on a Finding,
+// must come back ZERO from a FromFinding→ToFinding round trip. If someone
+// later maps one through the adapter, this fails and the exemption has to be
+// removed rather than quietly becoming a lie.
+func TestExemptFieldsAreGenuinelyNotMapped(t *testing.T) {
+	f := fullyPopulatedFinding()
+	f.CrossToolCorroborated = true
+	f.CorroboratingTools = []string{"codeql"}
+
+	got := FromFinding(f).ToFinding()
+
+	v := reflect.ValueOf(got)
+	for name, why := range notRoundTripped {
+		field := v.FieldByName(name)
+		if !field.IsValid() {
+			t.Fatalf("notRoundTripped names %q, which is not a Finding field", name)
+		}
+		if !field.IsZero() {
+			t.Errorf("Finding.%s survived the round trip but is listed as not mapped (%s) — "+
+				"either stop mapping it or drop it from notRoundTripped", name, why)
 		}
 	}
 }
