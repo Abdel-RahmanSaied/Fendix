@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,6 +70,50 @@ func TestRunImport_EndToEnd(t *testing.T) {
 		if f.Status == "" || f.ConfidenceScore == 0 {
 			t.Fatalf("imported findings must carry decision status + score, got %q/%d", f.Status, f.ConfidenceScore)
 		}
+	}
+}
+
+// TestRunImport_GoldenReport locks the complete backend-facing JSON contract.
+// Wall-clock metadata is normalized because it is intentionally different on
+// every execution; every finding, score, fingerprint and accounting field is
+// compared byte-for-byte.
+func TestRunImport_GoldenReport(t *testing.T) {
+	cfg := importConfig(t, "", codeqlFixture)
+	if code := NewOrchestrator(cfg, "golden").RunImport(context.Background()); code != 0 {
+		t.Fatalf("RunImport = %d, want 0", code)
+	}
+	raw, err := os.ReadFile(cfg.OutputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	metadata := report["metadata"].(map[string]any)
+	metadata["started_at"] = "<normalized>"
+	metadata["duration"] = "<normalized>"
+	got, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+
+	golden := filepath.Join("testdata", "import_codeql.golden.json")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(golden, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden file (run UPDATE_GOLDEN=1 go test ./internal/engine -run TestRunImport_GoldenReport): %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("import JSON changed; run UPDATE_GOLDEN=1 go test ./internal/engine -run TestRunImport_GoldenReport after reviewing the contract")
 	}
 }
 

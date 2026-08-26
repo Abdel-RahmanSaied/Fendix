@@ -218,7 +218,7 @@ verification.
 ### Endpoint
 
 `POST /api/scans/import` — multipart upload (`file` = the SARIF, optional
-`target` label). Implemented as an `@action` on the existing `ScanViewSet`,
+`target_label`). Implemented as an `@action` on the existing `ScanViewSet`,
 inheriting auth (JWT + `X-API-Key`), the `scan_create` 10/hour throttle scope,
 and the `{detail, code}` error shape.
 
@@ -231,17 +231,17 @@ and the `{detail, code}` error shape.
    tier as API keys), added to the seeded plan matrix used by test fixtures.
 3. `check_scan_quota(user)` — consumes one scan from the monthly quota.
 4. Persist `Scan(mode="import", status=QUEUED)` (new mode choice); write the
-   uploaded SARIF to the shared media volume (already shared by `django` and
-   `celery-scans`); dispatch `execute_import_scan.delay(scan.id)`.
+   uploaded SARIF to the shared artifact volume mounted by `django` and
+   `celery-scans`; dispatch `execute_scan.delay(scan.id)`.
 
 ### Celery task
 
-Thin variant of `execute_scan`. `FendixEngine` gains
-`run_import(sarif_path, ...)` shelling out to
-`fendix import <file> --format json`. Because the import command emits the
-identical report shape, everything downstream is existing code: bulk-create
-`ScanFinding` rows, stamp terminal status + counters, `post_save` signal fires
-the completion email / critical-finding alert untouched. The uploaded SARIF is
+`build_command` selects `fendix import <file> --format json` for a Scan whose
+mode is `import`; the existing `execute_scan` task and `FendixEngine.run()` are
+reused unchanged. This avoids duplicating the compare-and-swap transition,
+timeout/error capture, report ingest, fingerprint handling, lifecycle sync,
+and notification dispatch. Because the import command emits the identical
+report shape, everything downstream is existing code. The uploaded SARIF is
 deleted after the task finishes (success or failure) — the normalized findings
 are persisted, not the foreign document.
 
@@ -299,8 +299,13 @@ finding `source: "imported"` → `make schema`, commit `openapi.json`, frontend
 ### Backend tests (pytest)
 
 - Serializer rejects oversize / non-JSON uploads.
-- Feature gate: 403 for Free plan; quota consumption and 429 at the limit.
-- Happy path with `FendixEngine.run_import` mocked: `ScanFinding` rows created,
-  notification fired.
+- Feature gate: 403 for Free plan; quota is debited on success and, at the
+  limit, refused with the backend's existing contract — 403 carrying
+  `code: QUOTA_EXCEEDED`, the same response launching a scan returns (it is
+  a plan entitlement, not a rate limit, so it is deliberately not a 429).
+- Happy path with the engine subprocess mocked: `ScanFinding` rows created and
+  imported provenance survives report ingest.
+- Heavy E2E: multipart API upload → eager Celery → real `fendix import` →
+  persisted imported finding → detail API, with quota debit and raw-file cleanup.
 - SARIF file removed from the media volume after task completion.
 - `make schema-check` green.

@@ -267,6 +267,32 @@ fendix scan \
 
 When the black-box scanner and static analyzer both identify the same vulnerability, Fendix merges them into a single `correlated` finding with elevated confidence.
 
+### Import findings from other scanners
+
+Normalize SARIF 2.1.0 from CodeQL, Semgrep, Trivy, or another scanner and run
+it through Fendix's fingerprinting, confidence, dedup, baseline, ignore, gate,
+and reporting pipeline:
+
+```bash
+# Foreign findings only
+fendix import codeql.sarif --fail-on HIGH --format json
+
+# Merge one or more foreign reports into a native scan
+fendix scan --code . --import codeql.sarif --import trivy.sarif --fail-on HIGH
+```
+
+`fendix import` accepts multiple files and `-` for stdin. It exits `0` when
+nothing blocks, `1` when a confidence-backed finding reaches `--fail-on`, and
+`2` when any input is unreadable, malformed, or not SARIF 2.1.0. A malformed
+file fails the entire import so partial coverage is never presented as complete.
+
+Imported findings remain external evidence: they carry `source: "imported"`
+and never gain native reachability, taint-chain, route, or analyzer-tier claims.
+An import can corroborate a native result only when a genuinely independent
+tool reports the exact same CWE at the same normalized location (within five
+lines). Titles, categories, fingerprints, and duplicate runs do not establish
+corroboration.
+
 ### Authenticated scan
 
 Provide credentials to test endpoints behind authentication.
@@ -351,6 +377,7 @@ fendix report --input findings.json --format html --output report.html
 | Command | Description |
 |---|---|
 | `fendix scan` | Run a security scan against an API, source code, or both |
+| `fendix import <file.sarif>...` | Normalize and gate on third-party SARIF 2.1.0 findings |
 | `fendix report` | Re-render a saved JSON findings file to another format |
 | `fendix verify <id>` | Re-run a single finding by ID to verify it still exists |
 | `fendix demo` | Spin up OWASP Juice Shop in Docker and scan it — a real report in <60s |
@@ -375,6 +402,7 @@ Run `fendix <command> --help` for the flags of any subcommand.
 | `--url` | string | | Target API base URL (black-box scanning) |
 | `--spec` | string | | Path to OpenAPI/Swagger YAML or JSON spec |
 | `--code` | string | | Path to source code directory (white-box scanning) |
+| `--import` | list | | Merge a third-party SARIF 2.1.0 report into this scan (repeatable) |
 | `--auth` | string | | Auth header value, e.g. `"Bearer token123"` |
 | `--auth-type` | string | auto-detect | Auth type: `bearer`, `apikey`, `basic`, `cookie` |
 | `--auth-header` | string | `Authorization` | Custom auth header name |

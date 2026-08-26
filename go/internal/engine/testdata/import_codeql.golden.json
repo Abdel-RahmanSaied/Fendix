@@ -1,0 +1,96 @@
+{
+  "decisions": {
+    "blocking": 0,
+    "confirmed": 1,
+    "informational": 0,
+    "total": 2,
+    "warning": 2
+  },
+  "findings": [
+    {
+      "category": "import/codeql",
+      "confidence": "MEDIUM",
+      "confidence_band": "MEDIUM",
+      "confidence_reasons": [
+        "+35 base: a scanner produced this finding",
+        "+10 imported: an external scanner reported this finding (SARIF import)"
+      ],
+      "confidence_score": 45,
+      "endpoint": "app/auth.py:57",
+      "evidence": "This expression logs sensitive data (password) as clear text.",
+      "fingerprint": "4985453a46d3f1acc976df431c325fad7adcac66",
+      "fix": "",
+      "id": "SEC-001",
+      "line": "57",
+      "references": [
+        "CWE-312",
+        "https://codeql.github.com/codeql-query-help/python/py-clear-text-logging-sensitive-data/",
+        "rule:py/clear-text-logging-sensitive-data",
+        "sarif-fingerprint:primaryLocationLineHash=2a4b6c8d0e1f3a5b:1",
+        "tool:codeql@2.19.0"
+      ],
+      "severity": "MEDIUM",
+      "source": "imported",
+      "status": "WARN",
+      "title": "Clear-text logging of sensitive information"
+    },
+    {
+      "category": "injection",
+      "confidence": "HIGH",
+      "confidence_band": "HIGH",
+      "confidence_reasons": [
+        "+35 base: a scanner produced this finding",
+        "+10 imported: an external scanner reported this finding (SARIF import)",
+        "+25 the source tool declares high precision for this rule"
+      ],
+      "confidence_score": 70,
+      "endpoint": "app/views.py:102",
+      "evidence": "This SQL query depends on a user-provided value. | Snippet: cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")",
+      "fingerprint": "177f68988e7db5d218825212a32333b6d5b5a464",
+      "fix": "Use parameterized queries or an ORM instead of string concatenation.",
+      "id": "SEC-002",
+      "line": "102",
+      "references": [
+        "CWE-89",
+        "https://codeql.github.com/codeql-query-help/python/py-sql-injection/",
+        "rule:py/sql-injection",
+        "sarif-fingerprint:primaryLocationLineHash=8f1c9a2b7e3d4a5f:1",
+        "tool:codeql@2.19.0"
+      ],
+      "severity": "HIGH",
+      "source": "imported",
+      "status": "WARN",
+      "title": "SQL query built from user-controlled sources"
+    }
+  ],
+  "metadata": {
+    "active_probes": false,
+    "duration": "\u003cnormalized\u003e",
+    "endpoints_scanned": 0,
+    "imports": [
+      {
+        "results": 2,
+        "tool": "codeql",
+        "version": "2.19.0"
+      }
+    ],
+    "mode": "import",
+    "schema_version": 1,
+    "started_at": "\u003cnormalized\u003e",
+    "target": "",
+    "version": "golden"
+  },
+  "sources": {
+    "blackbox": 0,
+    "correlated": 0,
+    "whitebox": 0
+  },
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "info": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "total": 2
+}
