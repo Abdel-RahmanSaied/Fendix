@@ -78,14 +78,32 @@ because an uncorroborated duplicate became the group primary).
 
 ### Collapsed-import accounting
 
-`CorrelateCrossTool` returns a per-tool count of imported findings it
-collapsed into native representatives, and `finalize` folds it into each
+`CorrelateCrossTool` returns the number of imported findings it collapsed into
+native representatives, and `finalize` folds it into the matching
 `metadata.imports` block as `corroborated: N`.
 
 Required because `ImportStats` is computed in `Normalize`, which runs *before*
 correlation: `metadata.imports[].results` counts what was imported, not what
 merged. Without this count the UI cannot explain why 50 uploaded findings
 produced 47 rows.
+
+**Stats consolidate by normalized tool identity.** `Normalize` currently emits
+one `ToolStat` per SARIF *run*, so two CodeQL runs — whether two attached
+files or one file with two runs — produce two blocks both named `codeql`. A
+count keyed by tool then has no unambiguous block to land in: it would either
+be duplicated across blocks or assigned arbitrarily.
+
+The fix is to consolidate `ImportStats` by normalized tool identity (folding
+across runs *and* across attached files) before correlation, so there is
+exactly one block per tool. This deliberately uses the **same key independence
+uses** — `ToolID`, not run and not version — so the accounting can never
+disagree with the trust model about what counts as one tool. `version` is
+retained when every run of that tool reports the same version and left empty
+when they differ; mixed-version uploads of one tool are pathological, and the
+tool name is what carries provenance.
+
+Locked by a test with two CodeQL runs (one consolidated block, correct
+`corroborated` count).
 
 ### SARIF reporter
 
@@ -119,6 +137,29 @@ populated from repeated multipart keys. Each entry runs the same
 chain the standalone endpoint uses, so verification and jail semantics are
 identical by construction.
 
+**Validation and writing are two phases, not interleaved.** Validating and
+writing per file in one loop means attachments 1–2 are already on disk when
+attachment 3 fails validation, leaving orphans with no Scan row to hang
+cleanup off — they survive until the hourly janitor sweep. So:
+
+1. **Phase one — validate everything, write nothing.** Read and structurally
+   validate every attachment, and validate every other field (artifact paths
+   included), holding the verified bytes in memory. The 5-attachment cap and
+   the per-file size cap bound that memory.
+2. **Phase two — write.** Only once nothing can still reject the request, write
+   all attachments to the jail.
+3. **Unwind on any later failure.** Every path accumulated so far is deleted if
+   a write fails midway, or if any subsequent step fails — quota, concurrency,
+   `serializer.save()`, or dispatch. The view wraps the whole create in a
+   try/except that unlinks the attachment list, rather than only handling the
+   dispatch case as it does today.
+
+This also fixes an **existing shipped defect** on the single-file path:
+`ImportScanSerializer.validate` writes the SARIF before validating the
+`baseline` / `ignore` / `save_baseline` artifact paths below it, so a bad
+artifact path already orphans an upload today. Reordering it to validate-then-
+write closes that, and the two paths then share one ordering rule.
+
 - **Bounded at 5 attachments**, each within the existing per-file cap — enough
   for a realistic CI fan-in (CodeQL + Semgrep + Trivy + two more) while
   bounding the synchronous parse cost on the web worker.
@@ -148,14 +189,51 @@ Quota and concurrency are unchanged: a scan with attachments is one scan.
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `cross_tool_corroborated` | boolean, indexed, default false | coerced in `_finding_defaults` exactly like `proven_path` |
+| `cross_tool_corroborated` | boolean, default false | coerced in `_finding_defaults` exactly like `proven_path` |
 | `corroborating_tools` | JSON list, default `[]` | tool identities, sorted |
 
 Exposed by `FindingSerializer`; `ScanFindingFilter` gains a `corroborated`
-boolean filter. The indexed boolean is the reason the design carries a
-boolean *and* a list: it makes "only cross-confirmed findings" a cheap
-indexed query rather than a JSON-array scan, and that filter is the feature's
-point on the findings page.
+boolean filter. Carrying a boolean *and* a list is deliberate: it makes "only
+cross-confirmed findings" a cheap indexed query rather than a JSON-array scan,
+and that filter is the feature's point on the findings page.
+
+**Composite index, not a bare boolean one.** A standalone index on a boolean
+is largely useless in Postgres — two distinct values over a large table has
+too little selectivity for the planner to prefer it. Findings are always
+queried within a scan or tenant scope, so the index must match the real query:
+
+```python
+models.Index(fields=["scan", "cross_tool_corroborated"], name="finding_scan_corrob_idx")
+```
+
+This matches the existing `finding_scan_severity_idx` on the same model, so it
+is the house pattern rather than a new one. (A partial index on `scan`
+`WHERE cross_tool_corroborated` would be smaller still; take it only if
+corroborated findings prove to be a small fraction at real volume — the
+composite is the safer default because it also serves the negative filter.)
+
+### Persisting the import accounting
+
+`metadata.imports` is currently **discarded** at ingest: `_finalize` copies
+only selected metadata keys onto `Scan` (`version`, `endpoints_scanned`,
+`checks_run`, `decisions`, `scanner_status`, the endpoint-discovery counts),
+and `reports.py` rebuilds a regenerated report's metadata from `Scan` columns —
+so nothing can restore it. The scan-detail collapse story therefore has no
+data path today, and this is a gap in the *shipped* feature too: which tool an
+import came from, and its version, are lost the moment the scan finishes.
+
+`Scan` gains an `imports` JSON column, mirroring how `decisions` and
+`scanner_status` already persist engine metadata blocks:
+
+- Coerced defensively at ingest, like `_coerce_scanner_status` — bounded list,
+  type-checked fields, unknown keys dropped.
+- Persisted in **both** ingestion paths: `scanning.services._finalize` and the
+  runner-ingest twin in `runners/ingest.py`, which is the pair that already
+  has to agree on `decisions` and `scanner_status`.
+- Exposed by the scan serializer and included in regenerated reports so a
+  re-rendered SARIF/HTML carries the same provenance as the original.
+
+The scan-detail collapse count reads `sum(block["corroborated"])` from it.
 
 ## Frontend
 
@@ -169,7 +247,9 @@ Three surfaces, each following an existing pattern:
   because the tool name is the substance.
 - **Scan detail** shows the collapse story near the By Source block —
   *"3 imported findings confirmed existing Fendix findings"* — turning missing
-  rows from a mystery into the headline.
+  rows from a mystery into the headline. Reads the persisted `Scan.imports`
+  blocks (see *Persisting the import accounting*), which this cycle has to add
+  before the copy has any data behind it.
 - **Findings page** gains a cross-confirmed filter (what the indexed column
   bought).
 - **New-scan form** gains an attach-SARIF section for the three scanning
@@ -218,6 +298,10 @@ feature's real-world hit rate should be measured, not assumed.
 - Merge fixture pair (native finding + CodeQL SARIF at the same CWE and
   location): corroboration fires, collapsed count reaches
   `metadata.imports[].corroborated`, SARIF re-export carries the tools.
+- **Two CodeQL runs** (two attached files, and one file with two runs):
+  `metadata.imports` consolidates to a single `codeql` block and the
+  `corroborated` count is correct — the ambiguity that a per-run block set
+  would create.
 - **The load-bearing regression:** a corroborated finding plus an
   uncorroborated dedup-equivalent duplicate must still publish
   `cross_tool_corroborated: true`. Putting the field on a public surface is
@@ -230,9 +314,16 @@ feature's real-world hit rate should be measured, not assumed.
 - `build_command` emits one `--import` per attachment, absolute paths.
 - 400s: malformed, oversized, too many, wrong SARIF version.
 - Mutual exclusivity with `mode=import`.
+- **Atomicity**, one test per unwind path: a malformed attachment N leaves
+  *zero* files on disk; a write that fails midway removes the ones already
+  written; a failure after writing (quota, concurrency, save, dispatch) removes
+  all of them. Plus the single-file regression: a bad `baseline` path must not
+  orphan the SARIF.
 - Cleanup deletes every attachment on all exit paths; janitor protects live
   entries and sweeps orphans.
-- New columns persisted from the report and filterable.
+- New columns persisted from the report and filterable; `Scan.imports`
+  persisted at ingest, exposed by the serializer, and present in a
+  regenerated report.
 - **Heavy real-engine E2E:** native + attached import → a corroborated finding
   visible through the detail API. Mocks structurally cannot catch this class.
 
