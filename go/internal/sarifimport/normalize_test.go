@@ -40,6 +40,61 @@ func loc(uri string, start, end int) []Location {
 	}}}
 }
 
+// ── Stats consolidation ─────────────────────────────────────────────────────
+//
+// One SARIF document may carry many runs of one tool, and the correlator
+// treats them as ONE tool for independence. The accounting must agree, or a
+// per-tool corroborated count has no unambiguous block to land in.
+
+func TestNormalize_ConsolidatesStatsByTool(t *testing.T) {
+	doc := &Document{Version: SupportedVersion, Runs: []Run{
+		{
+			Tool:    Tool{Driver: Driver{Name: "CodeQL", SemanticVersion: "2.19.0", Rules: []Rule{{ID: "r"}}}},
+			Results: []Result{{RuleID: "r", Level: "error", Message: Message{Text: "a"}, Locations: loc("a.py", 1, 0)}},
+		},
+		{
+			Tool:    Tool{Driver: Driver{Name: "CodeQL", SemanticVersion: "2.19.0", Rules: []Rule{{ID: "r"}}}},
+			Results: []Result{{RuleID: "r", Level: "error", Message: Message{Text: "b"}, Locations: loc("b.py", 2, 0)}},
+		},
+	}}
+	_, stats, err := Normalize(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Tools) != 1 {
+		t.Fatalf("two runs of one tool must consolidate to one block, got %d", len(stats.Tools))
+	}
+	if stats.Tools[0].Tool != "codeql" || stats.Tools[0].Results != 2 {
+		t.Fatalf("got %+v, want codeql with 2 results", stats.Tools[0])
+	}
+	if stats.Tools[0].Version != "2.19.0" {
+		t.Fatalf("agreeing versions must be retained, got %q", stats.Tools[0].Version)
+	}
+}
+
+func TestNormalize_MixedVersionsClearVersion(t *testing.T) {
+	doc := &Document{Version: SupportedVersion, Runs: []Run{
+		{
+			Tool:    Tool{Driver: Driver{Name: "CodeQL", SemanticVersion: "2.19.0", Rules: []Rule{{ID: "r"}}}},
+			Results: []Result{{RuleID: "r", Level: "error", Message: Message{Text: "a"}, Locations: loc("a.py", 1, 0)}},
+		},
+		{
+			Tool:    Tool{Driver: Driver{Name: "CodeQL", SemanticVersion: "2.20.0", Rules: []Rule{{ID: "r"}}}},
+			Results: []Result{{RuleID: "r", Level: "error", Message: Message{Text: "b"}, Locations: loc("b.py", 2, 0)}},
+		},
+	}}
+	_, stats, _ := Normalize(doc)
+	if len(stats.Tools) != 1 {
+		t.Fatalf("still one block per TOOL, got %d", len(stats.Tools))
+	}
+	if stats.Tools[0].Version != "" {
+		t.Fatalf("disagreeing versions must clear the field, got %q", stats.Tools[0].Version)
+	}
+	if stats.Tools[0].Results != 2 {
+		t.Fatalf("results still sum across runs, got %d", stats.Tools[0].Results)
+	}
+}
+
 // ── Parse validation ────────────────────────────────────────────────────────
 
 func TestParse_RejectsMalformedJSON(t *testing.T) {

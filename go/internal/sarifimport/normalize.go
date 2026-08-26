@@ -29,13 +29,20 @@ type ImportStats struct {
 	Tools []ToolStat
 }
 
-// ToolStat is the per-run accounting block surfaced in report metadata.
+// ToolStat is the per-TOOL accounting block surfaced in report metadata —
+// one entry per normalized tool identity, folded across every run that tool
+// contributed (see Normalize).
 type ToolStat struct {
 	Tool       string `json:"tool"`
 	Version    string `json:"version,omitempty"`
 	Results    int    `json:"results"`
 	Suppressed int    `json:"suppressed,omitempty"`
 	NoLocation int    `json:"no_location,omitempty"`
+	// Corroborated counts imported findings that strong cross-tool
+	// correlation collapsed into a native representative. Always 0 here —
+	// Normalize runs BEFORE correlation; the orchestrator stamps it in
+	// finalize once CorrelateCrossTool has reported its per-tool counts.
+	Corroborated int `json:"corroborated,omitempty"`
 }
 
 // cweToCategory maps CWE families fendix already understands onto the NATIVE
@@ -66,24 +73,45 @@ func Normalize(doc *Document) ([]evidence.Evidence, ImportStats, error) {
 		return nil, ImportStats{}, fmt.Errorf("nil SARIF document")
 	}
 	var out []evidence.Evidence
-	var stats ImportStats
+	// Accumulate by normalized tool identity — the SAME key independence uses
+	// in engine.CorrelateCrossTool. A document may carry several runs of one
+	// tool; the correlator treats them as one tool, so the accounting must
+	// too. Emitting one block per RUN would leave a per-tool corroborated
+	// count with two identically-named blocks and no way to choose between
+	// them. `order` preserves first-appearance order so output is stable.
+	byTool := map[string]*ToolStat{}
+	var order []string
 	for _, run := range doc.Runs {
 		toolID := NormalizeToolName(run.Tool.Driver.Name)
-		st := ToolStat{Tool: toolID, Version: driverVersion(run.Tool.Driver)}
+		version := driverVersion(run.Tool.Driver)
+		st, seen := byTool[toolID]
+		if !seen {
+			st = &ToolStat{Tool: toolID, Version: version}
+			byTool[toolID] = st
+			order = append(order, toolID)
+		} else if st.Version != version {
+			// Mixed versions of one tool are pathological; the tool name is
+			// what carries provenance, so drop the ambiguous version rather
+			// than assert one run's over another's.
+			st.Version = ""
+		}
 		rules := indexRules(run.Tool.Driver.Rules)
 		for _, res := range run.Results {
 			if isSuppressed(res) {
 				st.Suppressed++
 				continue
 			}
-			ev := normalizeResult(res, rules, run, toolID, st.Version)
+			ev := normalizeResult(res, rules, run, toolID, version)
 			if ev.Endpoint == "unknown" {
 				st.NoLocation++
 			}
 			st.Results++
 			out = append(out, ev)
 		}
-		stats.Tools = append(stats.Tools, st)
+	}
+	stats := ImportStats{Tools: make([]ToolStat, 0, len(order))}
+	for _, id := range order {
+		stats.Tools = append(stats.Tools, *byTool[id])
 	}
 	return out, stats, nil
 }
