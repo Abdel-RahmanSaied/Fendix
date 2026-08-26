@@ -78,9 +78,18 @@ because an uncorroborated duplicate became the group primary).
 
 ### Collapsed-import accounting
 
-`CorrelateCrossTool` returns the number of imported findings it collapsed into
-native representatives, and `finalize` folds it into the matching
-`metadata.imports` block as `corroborated: N`.
+`CorrelateCrossTool` returns a **per-tool** count of imported findings it
+collapsed into native representatives, keyed by normalized `ToolID`:
+
+```go
+map[string]int{"codeql": 2, "semgrep": 1}
+```
+
+Because import stats are consolidated to exactly one block per tool (below),
+`finalize` can fold each count unambiguously into the matching
+`metadata.imports` block as `corroborated: N`. A single scalar would not do:
+when two tools each collapse findings, there is no way to attribute the total
+to either block.
 
 Required because `ImportStats` is computed in `Normalize`, which runs *before*
 correlation: `metadata.imports[].results` counts what was imported, not what
@@ -302,6 +311,9 @@ feature's real-world hit rate should be measured, not assumed.
   `metadata.imports` consolidates to a single `codeql` block and the
   `corroborated` count is correct — the ambiguity that a per-run block set
   would create.
+- **Two different tools each collapsing** (CodeQL 2, Semgrep 1): each count
+  lands in its own block. This is the case a scalar return value gets wrong,
+  so it is the test that pins the map-keyed contract.
 - **The load-bearing regression:** a corroborated finding plus an
   uncorroborated dedup-equivalent duplicate must still publish
   `cross_tool_corroborated: true`. Putting the field on a public surface is
