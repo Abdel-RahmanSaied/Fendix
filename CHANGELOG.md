@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-tool corroboration is now visible.** Findings carry two additive
+  fields — `cross_tool_corroborated` and `corroborating_tools` — published
+  when an INDEPENDENT tool reported the same normalized weakness at the same
+  normalized location. Both are `omitempty`, so a report without corroboration
+  is byte-identical to one produced before they existed and `schema_version`
+  stays `1`. Fendix's own SARIF output carries `corroborating_tools` as a
+  result property, so the provenance survives re-export into GitHub code
+  scanning.
+
+  The fields are stamped from the evidence the decision layer scores, not
+  projected through the finding adapter: the stamped value is the proof-union
+  over a dedup group, so an uncorroborated duplicate occurrence cannot erase a
+  validly established confirmation.
+
+- **Report metadata reconciles imports.** `metadata.imports` consolidates to
+  one block per normalized tool (folded across runs *and* across attached
+  files) and each block gains `corroborated: N` — how many of that tool's
+  findings collapsed into a native representative. Without it, uploading 50
+  findings and seeing 47 rows looks like data loss rather than agreement.
+
 - **SARIF import.** `fendix import <file.sarif>` ingests SARIF 2.1.0 reports
   from other scanners (CodeQL, semgrep, trivy, …) and runs them through the
   full fendix flow — normalization, fingerprinting, deterministic confidence
