@@ -246,7 +246,7 @@ The scan-detail collapse count reads `sum(block["corroborated"])` from it.
 
 ## Frontend
 
-Three surfaces, each following an existing pattern:
+Four surfaces, each following an existing pattern:
 
 - **`CorroborationBadge`**, beside `ProvenPathBadge`, rendered in the same
   three places (scan detail, findings list, finding detail). Deliberately
