@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-08-28
+
+### Fixed
+
+- **A running scan now shows real progress while it scans endpoints.** The
+  worker pool logged only once, on completion, so anything watching the
+  engine's output saw nothing between "scanning endpoints" and "worker pool
+  complete" — the longest stretch of a black-box scan, and longer still with
+  active probing. A dashboard progress bar driven by those messages sat at one
+  checkpoint for most of the scan and looked frozen. The pool now reports
+  completions as it sweeps, throttled to roughly twenty lines per scan so the
+  output stays readable regardless of how many endpoints are in flight.
+
+  Detection, findings and exit codes are unchanged.
+
 ## [2.1.0] - 2026-08-26
 
 ### Added
