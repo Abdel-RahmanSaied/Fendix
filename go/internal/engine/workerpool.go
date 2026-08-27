@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/scanner"
 )
+
+// progressSteps is how many "worker pool progress" lines one sweep emits, at
+// most — one per 1/progressSteps of the work. 20 gives the UI a moving bar at
+// 5% granularity while keeping the log (and the backend database write it
+// triggers) bounded regardless of scan size.
+const progressSteps = 20
 
 // WorkerPool runs scanner checks concurrently across endpoints using a bounded goroutine pool.
 type WorkerPool struct {
@@ -94,6 +101,11 @@ func (wp *WorkerPool) RunEvidence(ctx context.Context, cfg *models.ScanConfig, e
 	jobs := make(chan scanJob, bufSize)
 	results := make(chan []evidence.Evidence, bufSize)
 
+	// Unit of work = one check against one endpoint; the producer below emits
+	// exactly this many jobs.
+	totalJobs := int64(len(endpoints) * len(wp.checks))
+	var completed atomic.Int64
+
 	var wg sync.WaitGroup
 	for i := 0; i < wp.workers; i++ {
 		wg.Add(1)
@@ -112,6 +124,26 @@ func (wp *WorkerPool) RunEvidence(ctx context.Context, cfg *models.ScanConfig, e
 					case results <- findings:
 					case <-ctx.Done():
 						return
+					}
+				}
+
+				// Report the sweep as it advances. Without this the pool logged
+				// only on completion, so a consumer watching stderr saw nothing
+				// between "scanning endpoints" and "worker pool complete" — the
+				// longest stretch of a black-box scan, and longer still with
+				// active probing. The backend interpolates these into the
+				// progress it shows the user.
+				//
+				// Throttled to one line per PROGRESS_STEP of the sweep: a
+				// 5,000-unit scan reports ~20 times, not 5,000. Each line costs
+				// the backend a database write, so volume here is not free.
+				done := completed.Add(1)
+				if totalJobs > 0 {
+					step := int64(progressSteps)
+					// Emit when this unit crosses a step boundary, and always
+					// on the final unit so the last line reads done == total.
+					if done*step/totalJobs != (done-1)*step/totalJobs || done == totalJobs {
+						slog.Info("worker pool progress", "done", done, "total", totalJobs)
 					}
 				}
 
