@@ -420,6 +420,16 @@ func methodTamperBypassFinding(ep Endpoint, bypassVerbs []string, canonNoAuthSta
 			"unlisted ones — and deny by default. Restrict each route to the methods it actually implements (405 for the rest).",
 		References: []string{"CWE-650", "CWE-285", "OWASP-A01"},
 		Confidence: models.ConfidenceHigh,
+		// This check's confirmation is a CONTROLLED DIFFERENTIAL, not a single
+		// response: the canonical verb without credentials was gated, the
+		// alternate verb without credentials was not. Preserving both halves is
+		// what justifies the claim — either half alone proves nothing, since a
+		// 2xx on POST is unremarkable unless GET was refused.
+		Payload: fmt.Sprintf("%s (unauthenticated) vs canonical %s (unauthenticated)",
+			strings.Join(bypassVerbs, ", "), strings.ToUpper(ep.Method)),
+		Response: ProbeExcerpt(fmt.Sprintf(
+			"canonical %s → HTTP %d (gated); %s → HTTP 2xx with body (not gated)",
+			strings.ToUpper(ep.Method), canonNoAuthStatus, strings.Join(bypassVerbs, ", "))),
 	}
 }
 
