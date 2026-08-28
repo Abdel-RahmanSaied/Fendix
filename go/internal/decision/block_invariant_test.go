@@ -214,3 +214,156 @@ func TestLegacyPolicyIgnoresCorroborationEntirely(t *testing.T) {
 		t.Errorf("legacy policy Status = %q, want BLOCK — --enforce-confidence=false must restore it", got.Status)
 	}
 }
+
+// ── Extended dimensions: applicability and policy override ──────────────────
+//
+// The base matrix above predates both. Each adds a dimension along which a
+// BLOCK can now be produced or withheld, so each needs its own invariant or the
+// property test would silently stop covering the whole decision surface.
+
+// No dependency finding may BLOCK under the shipped policy when Fendix has
+// credible evidence its vulnerable component is unused — at ANY band, from ANY
+// source, at ANY severity. This is the §5 case generalised: the previous
+// behaviour produced the right answer only where the band boundary happened to
+// fall.
+func TestNoDependencyBlockAgainstNonApplicabilityEvidence(t *testing.T) {
+	severities := []models.Severity{models.SeverityCritical, models.SeverityHigh, models.SeverityMedium}
+	sources := []models.Source{
+		models.SourceBlackbox, models.SourceWhitebox,
+		models.SourceCorrelated, models.SourceImported,
+	}
+	confidences := []models.Confidence{models.ConfidenceHigh, models.ConfidenceMedium, models.ConfidenceLow}
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+
+	checked := 0
+	for _, sev := range severities {
+		for _, src := range sources {
+			for _, conf := range confidences {
+				for _, corroborated := range []bool{false, true} {
+					for _, failOn := range []string{"MEDIUM", "HIGH", "CRITICAL"} {
+						ev := evidence.Evidence{
+							Title:    "Vulnerable dependency: pkg==1.0.0 (CVE-0000-0000)",
+							Category: "deps", Endpoint: "requirements.txt",
+							Severity: sev, Source: src, Confidence: conf,
+							Applicability: models.ApplicabilityEvidenceAgainst,
+						}
+						if corroborated {
+							ev.CrossToolCorroborated = true
+							ev.CorroboratingTools = []string{"osv-scanner"}
+						}
+						d := DecideWithOptions(ev, failOn, opts)
+						checked++
+						if d.Status == StatusBlock {
+							t.Errorf("dependency BLOCK against non-applicability evidence: "+
+								"severity=%s source=%s confidence=%s corroborated=%v failOn=%s "+
+								"score=%d band=%s reason=%q",
+								sev, src, conf, corroborated, failOn,
+								d.Score.Value, d.Score.Band, d.Reason)
+						}
+					}
+				}
+			}
+		}
+	}
+	t.Logf("checked %d dependency shapes carrying non-applicability evidence", checked)
+}
+
+// UNKNOWN IS NOT FALSE. A dependency whose applicability was never evaluated
+// must follow normal policy — the absence of an evaluation is not evidence that
+// the component is unused, and treating it as such would silence real risk on
+// every advisory the catalog does not cover.
+func TestUnknownApplicabilityIsNotTreatedAsEvidenceAgainst(t *testing.T) {
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+	unknown := evidence.Evidence{
+		Title: "Vulnerable dependency: pkg==1.0.0", Category: "deps",
+		Endpoint: "requirements.txt", Severity: models.SeverityHigh,
+		Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh,
+	}
+	against := unknown
+	against.Applicability = models.ApplicabilityEvidenceAgainst
+
+	du := DecideWithOptions(unknown, "HIGH", opts)
+	da := DecideWithOptions(against, "HIGH", opts)
+	if du.Status == da.Status {
+		t.Errorf("unevaluated and evidence-against produced the SAME verdict (%s) — the two "+
+			"states are not distinguished by the policy", du.Status)
+	}
+	if du.Status != StatusBlock {
+		t.Errorf("unevaluated applicability Status = %q, want BLOCK (normal policy)", du.Status)
+	}
+}
+
+// EXPLICIT NEGATIVE IS NOT UNKNOWN. Applicable (the component IS imported) must
+// behave differently from Unknown too — otherwise the positive verdict the old
+// bool could not express would still be doing nothing.
+func TestApplicableIsDistinguishableFromUnknown(t *testing.T) {
+	for _, a := range []models.Applicability{
+		models.ApplicabilityUnknown,
+		models.ApplicabilityApplicable,
+		models.ApplicabilityEvidenceAgainst,
+	} {
+		ev := evidence.Evidence{
+			Title: "Vulnerable dependency: pkg==1.0.0", Category: "deps",
+			Endpoint: "requirements.txt", Severity: models.SeverityHigh,
+			Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh,
+			Applicability: a,
+		}
+		d := DecideWithOptions(ev, "HIGH", Options{EnforceConfidence: true, DeescalateTests: true})
+		want := StatusBlock
+		if a == models.ApplicabilityEvidenceAgainst {
+			want = StatusWarn
+		}
+		if d.Status != want {
+			t.Errorf("applicability=%q Status = %q, want %q (reason=%q)", a, d.Status, want, d.Reason)
+		}
+	}
+}
+
+// EVERY relaxed-policy BLOCK that the shipped policy would have withheld must
+// carry the override marker. Swept across the same matrix, because an override
+// that is invisible for one category is invisible where it matters.
+func TestEveryRelaxedOnlyBlockIsMarkedAsAnOverride(t *testing.T) {
+	severities := []models.Severity{models.SeverityCritical, models.SeverityHigh}
+	sources := []models.Source{models.SourceBlackbox, models.SourceWhitebox, models.SourceImported}
+	confidences := []models.Confidence{models.ConfidenceHigh, models.ConfidenceMedium, models.ConfidenceLow}
+
+	relaxed := Options{DeescalateTests: true}
+	shipped := Options{EnforceConfidence: true, DeescalateTests: true}
+
+	checked, overrides := 0, 0
+	for _, cat := range blockCapableCategories {
+		for _, sev := range severities {
+			for _, src := range sources {
+				for _, conf := range confidences {
+					ev := evidence.Evidence{
+						Title: "synthetic " + cat, Category: cat, Endpoint: "GET /x",
+						Severity: sev, Source: src, Confidence: conf,
+					}
+					dr := DecideWithOptions(ev, "HIGH", relaxed)
+					ds := DecideWithOptions(ev, "HIGH", shipped)
+					checked++
+					if dr.Status != StatusBlock {
+						continue
+					}
+					if ds.Status != StatusBlock && !dr.PolicyOverride {
+						t.Errorf("relaxed-only BLOCK is NOT marked as an override: "+
+							"category=%s severity=%s source=%s confidence=%s (shipped=%s)",
+							cat, sev, src, conf, ds.Status)
+					}
+					if ds.Status == StatusBlock && dr.PolicyOverride {
+						t.Errorf("BLOCK marked as an override although the shipped policy "+
+							"would also have blocked: category=%s severity=%s source=%s confidence=%s",
+							cat, sev, src, conf)
+					}
+					if dr.PolicyOverride {
+						overrides++
+					}
+				}
+			}
+		}
+	}
+	t.Logf("checked %d shapes under both policies; %d were relaxed-only BLOCKs", checked, overrides)
+	if overrides == 0 {
+		t.Error("no relaxed-only BLOCK was produced at all — the override marker is untested")
+	}
+}

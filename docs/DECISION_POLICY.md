@@ -96,6 +96,17 @@ severity ≥ --fail-on
     otherwise                                            → BLOCK
 ```
 
+Then the dependency-applicability gate, for a threshold-crossing `deps` finding:
+
+```
+applicability = evidence_against, --block-on-inapplicable off  → WARN
+```
+
+It applies whether the confidence gate left the finding at BLOCK or already at
+WARN, so applicability is the STATED reason whenever it applies rather than a
+fact the reader has to correlate. The finding keeps its id, severity, CVE
+identity and full evidence text; the score never moves.
+
 Then the test-fixture de-escalation (`--deescalate-tests`, on by default):
 
 ```
@@ -194,6 +205,50 @@ is how an exporter drifts from the policy it claims to describe.
 **Invariant, enforced by `TestNoBlockWithoutCorroboration` over 20,400 evidence
 shapes:** no `BLOCK` exists without a corroborating signal, and no MEDIUM-band
 `BLOCK` exists without an independent one.
+
+---
+
+## Dependency applicability
+
+`models.Applicability` is three-state, and three is what the analyzer can
+produce (`scanner/deps/applicability.resolve`):
+
+| State | Meaning | Effect |
+|---|---|---|
+| `` (unknown) | no importable component known, or the grep failed open | normal policy |
+| `applicable` | an affected component IS imported | normal policy (eligible to BLOCK) |
+| `evidence_against` | no affected component is imported | held at WARN |
+
+There is deliberately no fourth "confirmed non-applicable" state. The backing
+evidence is a static import grep and dynamic import forms can defeat it, so
+absence of an import is *evidence* against applicability, never proof — the
+state is named after what it is. Symmetrically `applicable` means "imported",
+not "the vulnerable function is reached": Fendix builds no dependency call
+graph.
+
+`--block-on-inapplicable` restores blocking for teams whose policy is "no
+vulnerable version ships, applicable or not".
+
+---
+
+## Policy override
+
+`--enforce-confidence=false` restores the legacy severity-only gate, so an
+uncorroborated finding can fail a build again. Because a BLOCK then means
+something different, the decision records it:
+
+| Field | Meaning |
+|---|---|
+| `decision.policy` | `enforced` or `relaxed` |
+| `decision.policy_override` | present and `true` only when the relaxation CHANGED the outcome |
+
+`policy_override` is deliberately **not** "the relaxed policy was in effect". A
+relaxed run whose findings are all independently corroborated blocks identically
+under either policy; marking those would cry wolf until readers ignore the flag.
+`decide()` runs the shipped gate on a shadow copy and compares, and the reason
+string names what the shipped policy would have done.
+
+Both keys are omitted otherwise, so their presence is the signal.
 
 ---
 
