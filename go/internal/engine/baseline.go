@@ -105,11 +105,21 @@ func loadBaseline(path string) ([]models.Finding, error) {
 }
 
 // findingKey produces a stable key for baseline matching. It delegates to
-// models.Fingerprint (sha1 of Category|Endpoint|Title) so baseline identity,
-// the emitted finding.Fingerprint, and `fingerprint:` ignore rules all share
-// one definition of "the same finding across runs". Both sides of the diff
-// recompute it from the finding's fields, so baselines saved before the
-// fingerprint field existed continue to match.
+// models.Fingerprint so baseline identity, the emitted finding.Fingerprint and
+// `fingerprint:` ignore rules all share one definition of "the same finding
+// across runs".
+//
+// Both sides RECOMPUTE the key from the finding's fields rather than reading
+// the stored fingerprint, which is what let baselines saved before the
+// fingerprint field existed keep matching.
+//
+// That recomputation does NOT carry the fendix/v2 change across the upgrade,
+// and it is worth being precise about why. A baseline written by a pre-v2
+// build has no rule_id, dependency, secret, sink or symbol — those fields did
+// not exist — so recomputing v2 over it yields components the current scan's
+// findings do not produce. Measured on a 30-finding fixture, a genuine
+// pre-upgrade baseline matched 0 of 30. Baselines must be regenerated once,
+// which the changelog says plainly; a regenerated baseline matches 30 of 30.
 func findingKey(f models.Finding) string {
 	return models.Fingerprint(f)
 }

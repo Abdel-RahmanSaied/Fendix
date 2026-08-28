@@ -36,11 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | v1 | 30 | 30 | 22 (73.3%) | 8 | 8 |
   | v2 | 30 | 30 | 30 (100%) | 0 | 0 |
 
-  **What you must do.** v1 and v2 share no hash, so every saved `--baseline`
-  file must be regenerated, and every `.fendix-ignore` rule that pins a
-  `fingerprint:` must be rewritten against the new value. Rules that match by
-  path, category or rule id are unaffected. Without regenerating, the first v2
-  scan reports every finding as new. Across a 138-finding corpus from three
+  **What you must do.** Regenerate every saved `--baseline` file with
+  `--save-baseline`, and rewrite every `.fendix-ignore` rule that pins a
+  `fingerprint:` against the new value. Rules that match by path, category or
+  rule id are unaffected.
+
+  Baseline matching recomputes the key from each finding's fields rather than
+  reading the stored fingerprint, which is what let pre-fingerprint baselines
+  keep working in the past — but it does not rescue this upgrade. A baseline
+  written by a pre-v2 build has no `rule_id`, `dependency`, `secret`, `sink` or
+  `symbol`, so recomputing v2 over it yields components the current scan does
+  not produce. Measured on a 30-finding fixture: a genuine pre-upgrade baseline
+  matched **0 of 30**; a regenerated one matched 30 of 30. Until you
+  regenerate, the first v2 scan reports every finding as new. Across a 138-finding corpus from three
   real repositories the remap was 90.6% one-to-one with zero splits; the
   remaining cases merge one advisory affecting several installed copies of the
   same package in one lockfile into a single record.
