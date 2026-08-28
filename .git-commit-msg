@@ -1,51 +1,40 @@
-fix(auth): separate unauthenticated observation from confirmed bypass
+fix(engine): preserve proved evidence across deduplication
 
-checkUnauthenticated emitted CRITICAL "Missing authentication on endpoint" for
-ANY 2xx returned without credentials, and graded its confidence off response
-body length. scanner.Endpoint carried no auth-expectation field, so the check
-structurally could not tell a public endpoint from a bypassed one: docs pages,
-health checks and SPA routes each produced a CRITICAL that the decision layer
-then blocked on.
+Deduplicate accumulated only endpoints, references, Confidence and Source
+order-invariantly. Reachable, ProvenPath, RouteConfirmed, TaintChain, Route and
+SourceTier rode along with whichever member won findingLess — endpoint, then
+evidence, then fix, then line, lexicographic.
 
-The premise the claim needs — "authentication was expected here" — was never
-supplied by anything, and a status code cannot supply it. The knowledge existed
-and was discarded: python/analyzers/spec_parser.py already parses per-operation
-and global `security`.
+So a confirmed SSRF at "z/views.py:674" merged with an unconfirmed duplicate at
+"a/util.py:10" came out with Reachable=false, no taint chain, no bound route and
+the semgrep tier. decision.corroborate reads exactly those fields, so dedup
+could silently demote a genuinely confirmed finding to WARN.
 
-Now resolved in Go, where crawler.fromSpec already holds the parsed spec:
+This was NOT an arrival-order race. findingLess picks the same winner for every
+permutation, so the erasure was systematic — the lexicographically-first
+occurrence always won regardless of what it had proved. The new regression test
+fails identically on both input orderings, which is how that was established.
 
-  models.AuthExpectation  unknown ("") | public | required
-  Endpoint.AuthExpectation                 set by fromSpec
-  Evidence.AuthExpectation{,Source}        carried to the decision layer
+These six fields live in the RENDER BLOCK, so evidence.ProvenanceIndex could
+never have covered them: it exists to carry the Evidence-INTERNAL half across
+the ToFinding projection, and its own invariant comment scopes it that way. The
+gap was structural, not an omission.
 
-  required → "Authentication requirement bypassed", CRITICAL, and the
-             contradiction counts as INDEPENDENT corroboration
-  unknown  → "Unauthenticated endpoint observed", MEDIUM, never gates
-  public   → INFO
+They now fold by proof union — OR for the flags, max-trust for the tier,
+prefer-the-member-that-proved-it for the chain and route. Only members that
+CARRIED the evidence contribute, so the fold cannot manufacture it
+(TestDedupDoesNotManufactureEvidence), and each operation is commutative,
+associative and idempotent, so the merged finding stays a pure function of the
+member set (TestDedupProofUnionIsOrderIndependent walks all six permutations of
+a three-member group; F-L6).
 
-Unknown is a real third state. Collapsing it into public would suppress real
-bypasses; collapsing it into required is the bug being fixed. Evidence is
-preserved in all three cases (Rule 3) — only the claim's strength changes, and
-the evidence text now says WHY a finding is unconfirmed.
+This extends to the render block the same distinction mergeScoringProvenance
+already documents for its own fields: agree-or-drop describes the NATURE of each
+occurrence, proof-union preserves a positive fact about the logical
+vulnerability that one occurrence established.
 
-No path is hardcoded. TestClassificationIsSemanticNotPathBased probes the same
-/status twice and asserts the claim differs only with the declared expectation.
+Full suite: 39 packages ok, 0 failures. Determinism suites pass at -count=3.
 
-specAllowsAnon mirrors spec_parser._allows_anon including the `security: [{}]`
-form, where len([{}]) == 1 makes a naive truthiness check read an explicit
-opt-out as a requirement.
-
-ADJACENT DEFECT FIXED: correlator_v2 restores producer-set flags for
-pass-through findings because the ProvenanceIndex is built AFTER correlation.
-The AuthExpectation pair is the same shape as the four flags already listed
-there, so it is restored alongside them — otherwise the new signal would work
-on a pure-DAST scan and be silently dead on every --url + --code scan.
-
-The two auth titles are now named constants. Fourteen test sites carried their
-own copy of the literal, which is why changing the claim broke them all.
-
-Full suite: 39 packages ok, 0 failures.
-
-Refs RC-2.
+Refs RC-3.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
