@@ -158,8 +158,14 @@ type SARIFResultProperties struct {
 // confidence_score, confidence_band and source_tier and still not reconstruct
 // the verdict.
 type SARIFDecision struct {
-	Status             string   `json:"status"`
-	Reason             string   `json:"reason,omitempty"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+	// Policy is "enforced" or "relaxed"; PolicyOverride marks a BLOCK that
+	// exists ONLY because --enforce-confidence=false switched the evidence
+	// requirement off. Together they are what stop an operator-relaxed gate
+	// from being indistinguishable from an evidence-backed one.
+	Policy             string   `json:"policy,omitempty"`
+	PolicyOverride     bool     `json:"policy_override,omitempty"`
 	IndependentSignals []string `json:"independent_signals,omitempty"`
 	SelfEvidentSignals []string `json:"self_evident_signals,omitempty"`
 	// Evidence is a MAP, not a struct, and that is load-bearing — see
@@ -211,6 +217,8 @@ func decisionProperties(f models.Finding) *SARIFDecision {
 	out := &SARIFDecision{
 		Status:             f.Status,
 		Reason:             NeutralizeText(f.DecisionReason),
+		Policy:             NeutralizeText(f.DecisionPolicy),
+		PolicyOverride:     f.PolicyOverride,
 		IndependentSignals: neutralizeTags(f.IndependentSignals),
 		SelfEvidentSignals: neutralizeTags(f.SelfEvidentSignals),
 	}

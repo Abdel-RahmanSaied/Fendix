@@ -38,6 +38,24 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
+// Policy names which decision policy produced a verdict.
+//
+// It is published because a BLOCK means two different things under the two
+// policies, and a consumer that cannot tell them apart cannot verify Fendix's
+// central claim — that a normal BLOCK is an auditable, evidence-backed
+// decision rather than a severe scanner observation.
+type Policy string
+
+const (
+	// PolicyEnforced is the shipped policy: a finding at or above --fail-on
+	// blocks only when the confidence band supports it AND something
+	// corroborates the claim.
+	PolicyEnforced Policy = "enforced"
+	// PolicyRelaxed is the legacy severity-only mapping, restored by
+	// --enforce-confidence=false. Corroboration is ignored entirely.
+	PolicyRelaxed Policy = "relaxed"
+)
+
 // Status is the verdict for one piece of evidence.
 type Status string
 
@@ -68,6 +86,18 @@ type Decision struct {
 	// the orchestrator can stamp it onto the finding without re-deriving — and
 	// therefore drifting from — the predicate the gate actually used.
 	Corroboration corroboration
+	// Policy names which policy produced this verdict (enforced / relaxed).
+	Policy Policy
+	// PolicyOverride is true ONLY when the relaxed policy produced a BLOCK that
+	// the shipped policy would NOT have produced. That is the precise condition
+	// worth flagging: an unconfirmed finding gated a build because the operator
+	// turned the evidence requirement off.
+	//
+	// Deliberately NOT "the relaxed policy was in effect". A relaxed run whose
+	// findings are all independently corroborated would block identically under
+	// either policy; marking those would cry wolf and teach readers to ignore
+	// the flag, which is worse than not having it.
+	PolicyOverride bool
 
 	// aboveThreshold records that this finding's severity met --fail-on,
 	// independent of what the confidence policy then did with it. It is the
@@ -113,6 +143,10 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 		Corroboration: corroborate(ev),
 	}
 	d.aboveThreshold = threshold > 0 && rank >= threshold
+	d.Policy = PolicyRelaxed
+	if opts.EnforceConfidence {
+		d.Policy = PolicyEnforced
+	}
 	switch {
 	case d.aboveThreshold:
 		if opts.EnforceConfidence {
@@ -120,6 +154,22 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 		} else {
 			d.Status = StatusBlock
 			d.Reason = "severity at or above the --fail-on threshold"
+			// Would the SHIPPED policy have blocked this too? Run the same gate
+			// on a throwaway copy and compare. If it would have warned, this
+			// BLOCK exists only because the evidence requirement was switched
+			// off, and that fact has to travel with the finding all the way to
+			// SARIF — otherwise an operator-relaxed gate is indistinguishable
+			// from an evidence-backed one.
+			//
+			// Cheap and exact: applyConfidenceGate is a pure function of the
+			// score and the corroboration, both already computed above.
+			shadow := d
+			applyConfidenceGate(&shadow, ev)
+			d.PolicyOverride = shadow.Status != StatusBlock
+			if d.PolicyOverride {
+				d.Reason += " (relaxed policy: --enforce-confidence=false; the shipped policy " +
+					"would have held this at " + string(shadow.Status) + " — " + shadow.Reason + ")"
+			}
 		}
 	case rank >= models.SeverityRank(models.SeverityMedium):
 		d.Status = StatusWarn

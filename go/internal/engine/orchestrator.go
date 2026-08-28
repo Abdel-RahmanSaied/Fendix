@@ -1219,6 +1219,8 @@ func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, fa
 		// actually produced — never re-derived — so the exported explanation
 		// cannot disagree with the verdict it explains.
 		findings[i].DecisionReason = d.Reason
+		findings[i].DecisionPolicy = string(d.Policy)
+		findings[i].PolicyOverride = d.PolicyOverride
 		findings[i].IndependentSignals = d.Corroboration.Independent
 		findings[i].SelfEvidentSignals = d.Corroboration.SelfEvident
 		// d.Evidence is post-Restore, so this is the merged group's declared

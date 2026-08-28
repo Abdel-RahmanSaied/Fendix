@@ -73,6 +73,8 @@ var notRoundTripped = map[string]string{
 	// still stamped rather than projected, so the published value is the
 	// group's agreed expectation rather than the primary member's.
 	"DecisionReason":     "stamped by engine.stampDecisions from the Decision the gate produced",
+	"DecisionPolicy":     "stamped by engine.stampDecisions from the Decision the gate produced",
+	"PolicyOverride":     "stamped by engine.stampDecisions from the Decision the gate produced",
 	"IndependentSignals": "stamped by engine.stampDecisions from the Decision the gate produced",
 	"SelfEvidentSignals": "stamped by engine.stampDecisions from the Decision the gate produced",
 	"AuthExpectation":    "stamped by engine.stampDecisions from restored evidence",
@@ -111,6 +113,8 @@ func TestExemptFieldsAreGenuinelyNotMapped(t *testing.T) {
 	f.IndependentSignals = []string{"reachable taint path"}
 	f.SelfEvidentSignals = []string{"direct observation of a live response"}
 	f.AuthExpectation = models.AuthExpectationRequired
+	f.DecisionPolicy = "relaxed"
+	f.PolicyOverride = true
 
 	got := FromFinding(f).ToFinding()
 

@@ -84,7 +84,7 @@ func newImportCmd() *cobra.Command {
 	flags.String("target", "", "Optional label stamped into report metadata (an import has no scanned target of its own)")
 	flags.String("lang", "en", "HTML report language: en (default), ar (Arabic, RTL). Other formats stay English.")
 	flags.Bool("deescalate-tests", true, "Report findings in test/fixture code as INFO instead of WARN (evidence is preserved, never suppressed). Pass --deescalate-tests=false to treat test-code findings like production ones.")
-	flags.Bool("enforce-confidence", true, "Only BLOCK a finding at or above --fail-on when the deterministic confidence band supports it. Pass --enforce-confidence=false to restore the legacy severity-only gate.")
+	flags.Bool("enforce-confidence", true, "Only BLOCK a finding at or above --fail-on when the confidence band supports it AND something corroborates the claim. Pass --enforce-confidence=false to restore the legacy severity-only gate — findings that block only because of that relaxation are marked policy_override in the report.")
 
 	// Reject an unknown format early with the same wording style as scan.
 	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {

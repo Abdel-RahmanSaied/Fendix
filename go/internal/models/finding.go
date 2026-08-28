@@ -217,6 +217,19 @@ type Finding struct {
 	// DecisionReason is the plain-text justification for Status, verbatim from
 	// decision.Decision.Reason.
 	DecisionReason string `json:"decision_reason,omitempty"`
+	// DecisionPolicy names which policy produced Status: "enforced" (the
+	// shipped evidence-gated policy) or "relaxed" (the legacy severity-only
+	// mapping restored by --enforce-confidence=false).
+	DecisionPolicy string `json:"decision_policy,omitempty"`
+	// PolicyOverride is true only when the relaxed policy produced a BLOCK the
+	// shipped policy would NOT have produced — i.e. an unconfirmed finding
+	// gated the build because the operator switched the evidence requirement
+	// off.
+	//
+	// omitempty is deliberate: the marker's PRESENCE is the signal. Publishing
+	// "policy_override": false on every normal result would be noise, and noise
+	// is how a genuine override goes unnoticed.
+	PolicyOverride bool `json:"policy_override,omitempty"`
 	// IndependentSignals / SelfEvidentSignals are the two corroboration classes
 	// behind Status (decision.corroborate). Only Independent may lift a band to
 	// BLOCK; both are published so a reader can reconstruct the verdict without
