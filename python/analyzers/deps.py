@@ -505,6 +505,13 @@ class DepsAnalyzer:
                 emit_fn(
                     {
                         "id": f"SEC-DEPS-{canonical.replace('-', '_')}",
+                        "rule_id": canonical,
+                        "dependency": {
+                            "ecosystem": "PyPI",
+                            "package": pkg,
+                            "version": ver,
+                            "manifest": req_file.name,
+                        },
                         "title": f"Vulnerable dependency: {pkg}=={ver} ({canonical})",
                         "severity": "HIGH",
                         "source": "whitebox",
@@ -536,6 +543,13 @@ class DepsAnalyzer:
                 emit_fn(
                     {
                         "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
+                        "rule_id": vuln.cve,
+                        "dependency": {
+                            "ecosystem": "PyPI",
+                            "package": vuln.package,
+                            "version": pinned,
+                            "manifest": req_file.name,
+                        },
                         "title": f"Vulnerable dependency: {vuln.package}=={pinned} ({vuln.cve})",
                         "severity": vuln.severity,
                         "source": "whitebox",
@@ -555,6 +569,16 @@ class DepsAnalyzer:
                 emit_fn(
                     {
                         "id": f"SEC-DEPS-UNPINNED-{vuln.package.upper().replace('-', '_')}",
+                        # A distinct rule from the vulnerable-pin one above:
+                        # "this dependency is unpinned" and "this pinned
+                        # version is vulnerable" are different claims about
+                        # different states, and must not share an identity.
+                        "rule_id": f"deps.unpinned/{vuln.cve}",
+                        "dependency": {
+                            "ecosystem": "PyPI",
+                            "package": vuln.package,
+                            "manifest": req_file.name,
+                        },
                         "title": (
                             f"Dependency {vuln.package!r} is not pinned — "
                             f"known vulnerable versions exist ({vuln.cve})"
@@ -686,6 +710,15 @@ class DepsAnalyzer:
             emit_fn(
                 {
                     "id": f"SEC-DEPS-NPM-{pkg_name.upper().replace('-', '_').replace('@', '').replace('/', '_')}",
+                    # npm audit reports per PACKAGE, not per advisory, so the
+                    # package IS the rule identity here. Saying so explicitly
+                    # beats letting identity fall back to the positional id.
+                    "rule_id": f"deps.npm-audit/{pkg_name}",
+                    "dependency": {
+                        "ecosystem": "npm",
+                        "package": pkg_name,
+                        "manifest": pkg_file.name,
+                    },
                     "title": f"Vulnerable npm package: {pkg_name} (severity: {severity})",
                     "severity": sev_map.get(severity, "MEDIUM"),
                     "source": "whitebox",
@@ -730,6 +763,13 @@ class DepsAnalyzer:
                 emit_fn(
                     {
                         "id": f"SEC-DEPS-{vuln.cve.replace('-', '_')}",
+                        "rule_id": vuln.cve,
+                        "dependency": {
+                            "ecosystem": "npm",
+                            "package": vuln.package,
+                            "version": pinned,
+                            "manifest": pkg_file.name,
+                        },
                         "title": f"Vulnerable npm package: {vuln.package}@{pinned} ({vuln.cve})",
                         "severity": severity,
                         "source": "whitebox",
@@ -881,6 +921,15 @@ def _parse_govulncheck_json(stdout: str) -> list[dict]:
         summary = osv.get("summary") or osv_id
         details = (osv.get("details") or "")[:200]
         affected = osv.get("affected") or []
+        # The affected Go module name — the package half of this finding's
+        # identity. OSV puts it at affected[].package.name; absent records
+        # leave it empty rather than inventing one.
+        module = ""
+        for a in affected:
+            name = ((a.get("package") or {}).get("name") or "").strip()
+            if name:
+                module = name
+                break
         # First "ranges" entry's first "fixed" event is the canonical fix
         # version per OSV schema (https://ossf.github.io/osv-schema/).
         fix_version = ""
@@ -901,6 +950,8 @@ def _parse_govulncheck_json(stdout: str) -> list[dict]:
         findings.append(
             {
                 "id": f"SEC-DEPS-GO-{osv_id.replace('-', '_')}",
+                "rule_id": osv_id,
+                "dependency": {"ecosystem": "Go", "package": module},
                 "title": f"Vulnerable Go module: {summary} ({osv_id})",
                 "severity": "HIGH",  # govulncheck reports a real call trace
                 "source": "whitebox",

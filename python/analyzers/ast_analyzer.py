@@ -350,6 +350,12 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
     ) -> None:
         finding: dict = {
             "id": f"SEC-{pat_id}",
+            # The rule that fired, stated explicitly. It used to live only
+            # inside `id`, which the identity layer had to parse — and that
+            # worked only because "SEC-PY_SSRF" happens not to look like the
+            # orchestrator's positional "SEC-001" counter. Identity should not
+            # rest on a naming coincidence.
+            "rule_id": f"python.ast/{pat_id}",
             "title": title,
             "severity": severity,
             "source": "whitebox",
