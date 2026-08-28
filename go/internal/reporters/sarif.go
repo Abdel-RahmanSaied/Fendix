@@ -14,20 +14,11 @@ import (
 // SARIF 2.1.0 structures — see https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 
 const (
-	// sarifFingerprintKey versions the fingerprint SCHEME. It is bound to
-	// models.FingerprintAlgorithm rather than written out, so the key can
-	// never claim to be one algorithm while carrying another: a consumer that
-	// baselined on v1 hashes must not silently match them against v2 hashes,
-	// and the only way to guarantee that is for the producer of the hash to
-	// name the key.
-	//
-	// One producer, one meaning (DECISIONS.md D4): only an engine-scheme
-	// fingerprint — the same token `.fendix-ignore` fingerprint rules pin to —
-	// may be published under this key. A finding that arrives without one gets
-	// NO partialFingerprints at all rather than an invented value; two
-	// producers hashing differently under one key would flip a finding's
-	// identity depending on which path rendered the SARIF.
-	sarifFingerprintKey = models.FingerprintAlgorithm
+	// sarifLegacyFingerprintKey is the scheme a report that announces NO
+	// algorithm was produced under. Every engine build before v3.0.0 omitted
+	// `metadata.fingerprint_algorithm` and hashed sha1(Category|Endpoint|Title),
+	// so absent means v1 — never "this build's algorithm".
+	sarifLegacyFingerprintKey = "fendix/v1"
 
 	// sarifAutomationID is the category a run with no declared mode is grouped
 	// under, and the prefix every moded category is built from. Keep it
@@ -648,6 +639,26 @@ func sarifLevelForStatus(status string, sev models.Severity) string {
 	}
 }
 
+// fingerprintKeyFor names the algorithm that PRODUCED the fingerprints in a
+// report — read from the report, never from this build's constant.
+//
+// `fendix report --input` re-renders an ARCHIVED report: the findings and their
+// fingerprints come out of the file, and this build's algorithm says nothing
+// about how they were computed. Keying them off the constant published a v1
+// value under `fendix/v2`, so a v2 consumer would match it against real v2
+// identities — the wrong namespace, silently. That is the "one key, two
+// meanings" hazard the key was versioned to prevent, arriving from the other
+// direction.
+//
+// An absent announcement means v1, which is load-bearing: every engine build
+// before v3.0.0 omitted the field, so every archived report is a v1 report.
+func fingerprintKeyFor(meta ScanMetadata) string {
+	if meta.FingerprintAlgorithm != "" {
+		return meta.FingerprintAlgorithm
+	}
+	return sarifLegacyFingerprintKey
+}
+
 // automationIDFor is the analysis category GitHub Code Scanning partitions
 // alerts by (SARIF §3.17.3 runAutomationDetails; GitHub reads it as the
 // "category" of an upload).
@@ -926,6 +937,10 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 	// empty severity, so a rank-0 tie keeps the first-seen value — but sarifLevel
 	// and sarifSecuritySeverity map INFO and "" to the same outputs ("note" /
 	// "1.0"), so the emitted JSON is order-independent regardless.
+	// Resolved once per report: the algorithm is a property of the run that
+	// produced these fingerprints, not of any one finding.
+	fingerprintKey := fingerprintKeyFor(meta)
+
 	ruleSeverity := make(map[string]models.Severity, len(findings))
 	for _, f := range findings {
 		key := ruleKeyFor(f)
@@ -1115,7 +1130,7 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		// this value comes from an operator-supplied JSON file, i.e. it is
 		// untrusted like every other field in this loop.
 		if fp := strings.TrimSpace(NeutralizeText(f.Fingerprint)); fp != "" {
-			result.PartialFingerprints = map[string]string{sarifFingerprintKey: fp}
+			result.PartialFingerprints = map[string]string{fingerprintKey: fp}
 		}
 
 		results = append(results, result)

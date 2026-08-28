@@ -583,18 +583,23 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	}
 
 	meta := reporters.ScanMetadata{
-		Target:              o.cfg.URL,
-		StartedAt:           startTime,
-		Duration:            duration.Round(time.Millisecond).String(),
-		Version:             reportVersion(o.version),
-		Mode:                scanMode,
-		EndpointsCount:      len(endpoints),
-		EndpointsDiscovered: crawler.Discovered,
-		EndpointsTruncated:  crawler.Discovered > len(endpoints),
-		ActiveProbes:        o.cfg.EnableActive,
-		ChecksRun:           checksRun,
-		ScannerStatus:       []reporters.ScannerStatus(scanStatus),
-		Imports:             importedTools,
+		Target:    o.cfg.URL,
+		StartedAt: startTime,
+		Duration:  duration.Round(time.Millisecond).String(),
+		Version:   reportVersion(o.version),
+		// The algorithm these findings' fingerprints were stamped with. Set
+		// here rather than left to RenderJSON, because the SARIF renderer
+		// keys partialFingerprints off it too — and an unset value means
+		// "archived v1 report", which a live scan is not.
+		FingerprintAlgorithm: models.FingerprintAlgorithm,
+		Mode:                 scanMode,
+		EndpointsCount:       len(endpoints),
+		EndpointsDiscovered:  crawler.Discovered,
+		EndpointsTruncated:   crawler.Discovered > len(endpoints),
+		ActiveProbes:         o.cfg.EnableActive,
+		ChecksRun:            checksRun,
+		ScannerStatus:        []reporters.ScannerStatus(scanStatus),
+		Imports:              importedTools,
 	}
 
 	// Steps 5.2–12 (cross-tool correlation → escalate → collapse → dedup →
@@ -911,10 +916,12 @@ func (o *Orchestrator) RunImport(ctx context.Context) int {
 		// target of its own.
 		Target:    o.cfg.URL,
 		StartedAt: startTime,
-		Duration:  time.Since(startTime).Round(time.Millisecond).String(),
-		Version:   reportVersion(o.version),
-		Mode:      "import",
-		Imports:   importedTools,
+		// Imported findings go through the same fingerprint pass as a scan's.
+		FingerprintAlgorithm: models.FingerprintAlgorithm,
+		Duration:             time.Since(startTime).Round(time.Millisecond).String(),
+		Version:              reportVersion(o.version),
+		Mode:                 "import",
+		Imports:              importedTools,
 	}
 
 	_, decisions, ec := o.finalize(evid, meta)
@@ -987,7 +994,7 @@ func loadImports(paths []string) ([]evidence.Evidence, []reporters.ImportedTool,
 // nothing observed the two being connected.
 func (o *Orchestrator) decisionOptions() decision.Options {
 	return decision.Options{
-		DeescalateTests:   o.cfg.DeescalateTests,
+		DeescalateTests:     o.cfg.DeescalateTests,
 		EnforceConfidence:   o.cfg.EnforceConfidence,
 		BlockOnInapplicable: o.cfg.BlockOnInapplicable,
 	}

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-08-28
+
+### Fixed
+
+- **A re-rendered archived report no longer mislabels its fingerprints.** The
+  SARIF `partialFingerprints` key was bound to the algorithm this build
+  computes, but `fendix report --input` re-renders a report whose findings —
+  and whose fingerprints — come out of the file. A pre-3.0.0 report was
+  therefore published with v1 values under the `fendix/v2` key, so a v2
+  consumer would match them against real v2 identities: the wrong namespace,
+  silently. The key now names the algorithm the report announces
+  (`metadata.fingerprint_algorithm`), and an absent announcement means
+  `fendix/v1` — every engine build before 3.0.0 omitted the field, so every
+  archived report is a v1 report. A live scan stamps the algorithm it used, so
+  its own SARIF is unaffected.
+
 ## [3.0.0] - 2026-08-28
 
 ### Changed

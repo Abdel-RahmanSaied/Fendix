@@ -1215,8 +1215,11 @@ func TestRenderSARIF_PartialFingerprints(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	results := log.Runs[0].Results
-	if got := results[0].PartialFingerprints[sarifFingerprintKey]; got != "a1b2c3d4" {
-		t.Errorf("partialFingerprints[%q] = %q, want a1b2c3d4", sarifFingerprintKey, got)
+	// The metadata here announces no algorithm, so the key is the archived-report
+	// default — see fingerprintKeyFor.
+	key := sarifLegacyFingerprintKey
+	if got := results[0].PartialFingerprints[key]; got != "a1b2c3d4" {
+		t.Errorf("partialFingerprints[%q] = %q, want a1b2c3d4", key, got)
 	}
 	if results[1].PartialFingerprints != nil {
 		t.Errorf("a finding without a fingerprint must get no key, got %v", results[1].PartialFingerprints)
