@@ -7,6 +7,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (baselines): findings now have a stable identity that survives
+  irrelevant code changes.** The fingerprint was `sha1(Category|Endpoint|Title)`,
+  and `Endpoint` for a whitebox finding is `path:line`. Inserting one unrelated
+  line above a vulnerability therefore gave it a new identity — which silently
+  broke baseline tracking, new-vs-existing detection, `.fendix-ignore`
+  `fingerprint:` rules and PR annotations, because every one of those asks
+  "have I seen this before?" and the answer flipped to no whenever the file was
+  edited above the finding.
+
+  Identity is now semantic and versioned as `fendix/v2`: which rule fired,
+  about which artifact, concerning which operation — built per finding family
+  and tolerant of partial evidence. Location (endpoint, line, taint-chain line
+  numbers) is reporting; it may change freely. Title, evidence prose, severity,
+  confidence, decision and applicability are excluded: every one of them is
+  expected to change over a finding's life without making it a different
+  vulnerability.
+
+  Measured on a fixture repository scanned before and after a purely cosmetic
+  edit — licence header, unrelated imports and helper, comments above each
+  finding, internal reformatting, a reordered `requirements.txt`, moving every
+  line of both source files:
+
+  | scheme | findings | identities | matched | vanished | new |
+  |---|---|---|---|---|---|
+  | v1 | 30 | 30 | 22 (73.3%) | 8 | 8 |
+  | v2 | 30 | 30 | 30 (100%) | 0 | 0 |
+
+  **What you must do.** v1 and v2 share no hash, so every saved `--baseline`
+  file must be regenerated, and every `.fendix-ignore` rule that pins a
+  `fingerprint:` must be rewritten against the new value. Rules that match by
+  path, category or rule id are unaffected. Without regenerating, the first v2
+  scan reports every finding as new. Across a 138-finding corpus from three
+  real repositories the remap was 90.6% one-to-one with zero splits; the
+  remaining cases merge one advisory affecting several installed copies of the
+  same package in one lockfile into a single record.
+
+  `metadata.schema_version` moves `1` -> `2` and
+  `metadata.fingerprint_algorithm` names the scheme, so a consumer comparing
+  archived reports can tell whether their identities are comparable. SARIF
+  publishes identities under the `fendix/v2` partialFingerprints key; a
+  consumer keyed on `fendix/v1` will not match them by mistake.
+
+- **A finding's wording now follows the evidence it holds.** A chainless
+  path-traversal match reported "user input flows to filesystem path" while
+  holding no evidence of any flow, and "Open redirect — user-controlled
+  redirect target" asserted user control that was never established. In the
+  other direction a fully proven SSRF still reported "Potential SSRF",
+  understating the finding a reader most needs to act on. Three families now
+  use one vocabulary — `Potential X — dynamic …` when only the sink was
+  observed, `X — user-controlled …` when the source→sink path was proven.
+  Presentation only: identity does not move when a finding is retitled.
+
+- **SARIF rule ids key on the rule, not the title.** They were
+  `fendix.<category>.<title-slug>`, so with evidence-aware titles one check's
+  results would have scattered across two rules the moment a taint chain was
+  proven. Rules now key on the rule id where there is one and fall back to the
+  old title slug where there is not, so findings that never carried a rule id
+  keep their existing GitHub alerts and suppressions. Findings that did will
+  appear under a new rule id once.
+
+- **`run.automationDetails.id` is derived from the scan mode.** It was the
+  constant `fendix/scan`, and GitHub partitions alerts by that category and
+  reads an upload with no findings as "everything in this category is fixed" —
+  so a code-only scan and a live DAST scan of one repository were clearing each
+  other's alerts. It is now `fendix/scan/<mode>` for whitebox, blackbox, hybrid
+  and import. A run with no declared mode keeps the original constant, so
+  existing alert sets are not re-partitioned. **Repositories that upload more
+  than one scan mode will see their alerts re-partitioned once.**
+
+- **Rate limiting is probed with the operation's own method, or reported as
+  untested.** The check sent a hardcoded GET and labelled the finding with the
+  operation's method, so Fendix reported "No rate limiting observed" against
+  `POST /login` having never sent a POST. GET, HEAD and OPTIONS are probed as
+  themselves. POST, PUT and PATCH are probed as themselves only under
+  `--active`. DELETE is never burst-probed at any level — twenty deletions is
+  data loss, not scanning. Anything not probed emits an INFO "not tested"
+  record rather than silence, which would read as "tested, nothing found".
+
+  **This changes finding counts.** A passive scan of an API whose operations
+  are mostly writes will report far fewer rate-limit findings and a
+  corresponding number of INFO not-tested records.
+
+### Added
+
+- **SARIF separates intrinsic severity, confidence, effective risk and
+  decision.** A synthetic `FAKE_API_KEY` scored 25, banded LOW and held at WARN
+  was published under a rule ranked High with nothing to say Fendix disagreed.
+  `security-severity` stays intrinsic and now declares `severity_model:
+  "intrinsic"`; it is a rule-level property shared by results whose confidence
+  differs, so it cannot honestly carry a per-instance assessment. Effective
+  risk goes on `result.rank`, SARIF's own per-result priority field. Each
+  concept is also published by name on the result. Because GitHub renders
+  `security-severity` rather than `rank`, a materially downgraded assessment is
+  also named in the result message — only when the two genuinely disagree.
+
+- **`rule_id`, `dependency`, `secret`, `sink` and `symbol` are published on
+  findings.** All additive and `omitempty`. They are what the v2 identity is
+  computed from, and a fingerprint whose inputs the report withholds is the
+  black box the decision-integrity work removed for decisions. Probe payloads,
+  responses and detection timestamps remain internal.
+
+### Fixed
+
+- **Four CVEs across three packages no longer share one identity.** The Python
+  dependency analyzer sent neither `rule_id` nor a dependency block, so all its
+  findings reduced to `deps` + the manifest name. A `fingerprint:` ignore rule
+  written against any one of them would silently have suppressed the others.
+
+- **Proving a flow no longer re-files the finding.** A chainless finding fell
+  back to its evidence text for the vulnerable operation while the same finding
+  with a chain used the chain's sink, and a symbol read off the bound route
+  appeared only once a chain existed — so an analyzer improvement turned into a
+  new vulnerability. The analyzer now states the sink and the enclosing symbol
+  whether or not it proved the flow.
+
+- **A committed credential is named after its binding, not its own contents.**
+  `DATABASE_URL = "postgres://appuser:pw@host/db"` was identified as `appuser`,
+  so rotating the credential — the correct response to the finding — filed it
+  as a different vulnerability.
+
+- **A rate-limit sweep no longer emits hundreds of SARIF locations.** One
+  deduplicated result carried roughly 883 `logicalLocations` on a large API.
+  The list is capped at 10; the full set, the true count and an explicit
+  truncation marker move to result properties, so nothing is lost and a
+  truncated result cannot be mistaken for a complete one.
+
+### Security
+
+- **Fingerprints never derive from credential material.** A secret's identity
+  is the non-sensitive identifier it is bound to, never the credential and
+  never a digest of it. The redaction marker already published in evidence is
+  an unsalted, 4-byte truncated SHA-256 that `redact.go` itself calls
+  dictionary-recoverable; a fingerprint is persisted into ignore files,
+  baselines and GitHub Code Scanning, which is the wrong lifetime for a
+  reversible function of a secret. Any redaction marker reaching a normalizer
+  is collapsed to a constant first, so no credential-derived byte can enter an
+  identity by another route.
+
+  Trade-off, stated rather than hidden: material with no binding identifier — a
+  bare `-----BEGIN … KEY-----` block — has an empty identifier, so two such
+  blocks in one file share one record. Merging two key blocks is a reporting
+  imprecision; persisting a credential oracle would be a security defect.
+
+
 ## [2.1.1] - 2026-08-28
 
 ### Fixed
