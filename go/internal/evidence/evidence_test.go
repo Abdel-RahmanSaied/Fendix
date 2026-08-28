@@ -43,6 +43,8 @@ func fullyPopulatedFinding() models.Finding {
 		RuleID:            "python.sqli.cursor-execute",
 		Dependency:        &models.DependencyRef{Ecosystem: "PyPI", Package: "requests", Version: "2.28.0", Manifest: "requirements.txt"},
 		Secret:            &models.SecretRef{Identifier: "AWS_KEY", File: "config/settings.py"},
+		Sink:              "cursor.execute(q)",
+		Symbol:            "list_users",
 	}
 }
 

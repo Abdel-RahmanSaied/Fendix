@@ -108,3 +108,73 @@ def test_ast_findings_carry_an_explicit_rule_id():
     assert findings, "fixture produced no findings"
     for f in findings:
         assert f.get("rule_id"), f"no rule_id on {f['title']!r}"
+
+
+SINK_ONLY_SSRF_SRC = """
+import os
+import requests
+from flask import Flask, request
+
+app = Flask(__name__)
+
+
+@app.route("/thumb")
+def make_thumb():
+    src = os.environ.get("THUMB_SOURCE", "")
+    return requests.get(src).content
+"""
+
+PROVEN_SSRF_SRC = SINK_ONLY_SSRF_SRC.replace(
+    'src = os.environ.get("THUMB_SOURCE", "")', 'src = request.args.get("src")'
+)
+
+
+def _injection(source: str) -> dict:
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "svc.py").write_text(source)
+        findings: list[dict] = []
+        ASTAnalyzer(td).run(findings.append)
+    inj = [f for f in findings if f["category"] == "injection"]
+    assert inj, f"no injection finding: {[f['id'] for f in findings]}"
+    return inj[0]
+
+
+def test_sink_is_emitted_even_without_a_proven_chain():
+    """Identity keys on the vulnerable operation, and a chainless finding still
+    HAS one — the analyzer builds the sink string either way. Withholding it
+    when the chain is unproven forced identity to fall back to the evidence
+    text, so proving a flow later re-identified the finding."""
+    f = _injection(SINK_ONLY_SSRF_SRC)
+    assert not f.get("taint_chain"), "fixture is meant to be chainless"
+    assert f.get("sink"), f"no sink on a chainless finding: {f['title']!r}"
+
+
+def test_the_sink_is_identical_with_and_without_a_proven_chain():
+    """The operation `requests.get(src)` is the same operation whether or not
+    the analyzer can prove where `src` came from."""
+    sink_only = _injection(SINK_ONLY_SSRF_SRC)
+    proven = _injection(PROVEN_SSRF_SRC)
+
+    assert proven.get("taint_chain"), "fixture is meant to prove a chain"
+    assert sink_only.get("sink") == proven.get("sink"), (
+        f"the same operation reported two sinks: "
+        f"{sink_only.get('sink')!r} vs {proven.get('sink')!r}"
+    )
+
+
+def test_symbol_is_emitted_with_and_without_a_proven_chain():
+    """The enclosing function is the same function either way.
+
+    It must not be read off the bound route: a route is attached only when a
+    chain was proven, so a symbol taken from there appears exactly when the
+    proof does — and identity would move on an evidence improvement.
+    """
+    sink_only = _injection(SINK_ONLY_SSRF_SRC)
+    proven = _injection(PROVEN_SSRF_SRC)
+
+    assert sink_only.get("symbol") == "make_thumb", (
+        f"chainless finding has no symbol: {sink_only.get('symbol')!r}"
+    )
+    assert proven.get("symbol") == sink_only.get("symbol"), (
+        f"symbol changed with the proof: {sink_only.get('symbol')!r} vs {proven.get('symbol')!r}"
+    )

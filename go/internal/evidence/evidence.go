@@ -74,6 +74,10 @@ type Evidence struct {
 	// reconstructed by parsing a rendered Title.
 	Dependency *models.DependencyRef
 	Secret     *models.SecretRef
+	// Sink is the normalized vulnerable operation — see models.Finding.Sink.
+	Sink string
+	// Symbol is the enclosing function — see models.Finding.Symbol.
+	Symbol string
 
 	// --- v0.22 provenance: INTERNAL ONLY, never serialized into Finding ---
 	// ToFinding drops every field below. Anything here that confidence.Score
@@ -278,6 +282,8 @@ func FromFinding(f models.Finding) Evidence {
 		RuleID:            f.RuleID,
 		Dependency:        f.Dependency,
 		Secret:            f.Secret,
+		Sink:              f.Sink,
+		Symbol:            f.Symbol,
 	}
 }
 
@@ -313,6 +319,8 @@ func (e Evidence) ToFinding() models.Finding {
 		RuleID:            e.RuleID,
 		Dependency:        e.Dependency,
 		Secret:            e.Secret,
+		Sink:              e.Sink,
+		Symbol:            e.Symbol,
 	}
 }
 

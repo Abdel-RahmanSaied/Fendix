@@ -73,14 +73,25 @@ func TestFingerprintIgnoresApplicability(t *testing.T) {
 
 // §9 — evidence enrichment. A sink-only observation that later gains a proven
 // source→sink path is the SAME vulnerability, better understood.
+//
+// The sink-only half is modelled the way a real chainless finding arrives: NO
+// TaintChain, and evidence that is the raw source line. An earlier version of
+// this test gave it a chain, which put both halves on the same code path and
+// hid a genuine defect — when a chain appeared the operation switched from the
+// evidence text to the chain's sink, and those are different strings. The
+// end-to-end fixture caught what this test missed.
 func TestFingerprintSurvivesEvidenceEnrichment(t *testing.T) {
 	sinkOnly := whiteboxSSRF("app/views.py", 100)
 	sinkOnly.Title = "Potential SSRF — dynamic URL reaches HTTP client"
-	sinkOnly.TaintChain = []TaintLink{{File: "app/views.py", Line: 100, Expr: "requests.get(url)"}}
+	sinkOnly.TaintChain = nil // a real chainless finding has NO chain at all
 	sinkOnly.Reachable = false
+	sinkOnly.Evidence = "    return requests.get(url).content"
+	sinkOnly.Sink = "requests.get(url)"
 
 	proven := whiteboxSSRF("app/views.py", 100)
 	proven.Reachable = true
+	proven.Evidence = "    return requests.get(url).content"
+	proven.Sink = "requests.get(url)"
 
 	if Fingerprint(sinkOnly) != Fingerprint(proven) {
 		t.Errorf("proving the source→sink path re-identified the finding:\n  sink-only = %s\n  proven    = %s",
@@ -134,5 +145,38 @@ func TestTwoDistinctSecretsInOneFileStaySeparate(t *testing.T) {
 
 	if Fingerprint(aws) == Fingerprint(stripe) {
 		t.Errorf("two different secrets in one file collapsed to one identity: %s", Fingerprint(aws))
+	}
+}
+
+// The same invariant over the ANALYZER's real output shape: a chainless
+// finding carries a Sink and no chain, a proven one carries both. Identity has
+// to read the sink either way, or an analyzer that gets better at proving
+// flows re-files every finding it newly proves.
+func TestSinkIdentityIsReadTheSameWayWithAndWithoutAChain(t *testing.T) {
+	// Modelled on the analyzer's REAL output. The chainless half has no
+	// Route: the analyzer binds one only when it proved a chain, so route
+	// availability tracks proof rather than tracking the code. Identity must
+	// not inherit that dependency — the enclosing symbol is the same symbol
+	// either way.
+	chainless := Finding{
+		Category: "injection", RuleID: "python.ast/PY_SSRF", Source: SourceWhitebox,
+		Title:    "Potential SSRF — dynamic URL passed to HTTP client",
+		Endpoint: "svc.py:11",
+		Symbol:   "make_thumb",
+		Evidence: "    return requests.get(src).content",
+		Sink:     "requests.get(src)",
+	}
+	proven := chainless
+	proven.Title = "SSRF — user-controlled URL reaches HTTP client"
+	proven.Reachable = true
+	proven.Route = &Route{Method: "GET", Pattern: "/thumb", Handler: "make_thumb", File: "svc.py"}
+	proven.TaintChain = []TaintLink{
+		{File: "svc.py", Line: 10, Expr: `request.args.get("src")`},
+		{File: "svc.py", Line: 11, Expr: "requests.get(src)"},
+	}
+
+	if Fingerprint(chainless) != Fingerprint(proven) {
+		t.Errorf("an analyzer that learned to prove the flow re-identified the finding:\n  before = %s\n  after  = %s",
+			Fingerprint(chainless), Fingerprint(proven))
 	}
 }

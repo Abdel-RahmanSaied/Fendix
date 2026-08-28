@@ -178,18 +178,48 @@ func codeFile(f Finding) string {
 	return normalizePath(stripLineSuffix(f.Endpoint))
 }
 
+// codeSymbol is the enclosing function or method.
+//
+// Symbol leads, and Route.Handler is only a fallback for producers that do not
+// set one. A Route is bound only when the analyzer PROVED a taint chain and
+// the enclosing function is a registered handler, so reading the symbol off
+// the route made it appear and disappear with the proof — and a finding whose
+// flow became provable changed identity because it suddenly had a symbol. The
+// enclosing function is the same function either way.
 func codeSymbol(f Finding) string {
+	if f.Symbol != "" {
+		return f.Symbol
+	}
 	if f.Route != nil {
 		return f.Route.Handler
 	}
 	return ""
 }
 
-// codeOperation is the normalized vulnerable operation: the taint sink where
-// one was proven, else the matched construct. Both are code, not prose — the
-// exclusion on Evidence in the doc comment is about narrative text, and a
-// pattern match's captured construct is the operation itself.
+// codeOperation is the normalized vulnerable operation.
+//
+// The ladder is ordered so that GAINING evidence never changes the answer:
+//
+//	Sink            the analyzer's own statement of the operation, present
+//	                whether or not a flow was proven — so it reads the same
+//	                before and after the flow becomes provable.
+//	TaintChain sink for producers that prove a chain but do not name a sink.
+//	Evidence        the matched construct, for pattern-match rules that have
+//	                neither. Code, not prose: the exclusion on Evidence in
+//	                the package doc is about narrative text, and a pattern
+//	                match's captured construct IS the operation.
+//
+// Sink leads for a reason found by experiment, not by reasoning. With the
+// chain checked first, a chainless finding fell through to its evidence text
+// while the same finding WITH a chain used the chain's sink — two different
+// strings for one operation. Identity therefore moved the moment an analyzer
+// learned to prove a flow it had previously only observed, which turns an
+// evidence improvement into a brand-new vulnerability. That is precisely the
+// enrichment invariance §9 exists to protect.
 func codeOperation(f Finding) string {
+	if f.Sink != "" {
+		return normalizeExpr(f.Sink)
+	}
 	if n := len(f.TaintChain); n > 0 {
 		return normalizeExpr(f.TaintChain[n-1].Expr)
 	}

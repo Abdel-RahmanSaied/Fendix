@@ -264,7 +264,29 @@ type Finding struct {
 	// Secret is the safe identity of a committed credential behind a
 	// `secrets` finding. Nil for every other family. Never holds credential
 	// material — see SecretRef.
-	Secret            *SecretRef  `json:"secret,omitempty"`
+	Secret *SecretRef `json:"secret,omitempty"`
+	// Sink is the normalized vulnerable OPERATION a code finding is about —
+	// "requests.get(url)", "cursor.execute(q)", "open(name)". It is the
+	// operation's identity, and it is what separates two vulnerabilities of
+	// the same rule in the same symbol.
+	//
+	// Carried explicitly rather than read off the end of TaintChain, because a
+	// chainless finding has no chain to read and would otherwise fall back to
+	// its evidence text. Those are different strings, so the fallback made
+	// identity move the moment an analyzer learned to PROVE a flow it had only
+	// observed — turning an evidence improvement into a new vulnerability. The
+	// analyzer knows the sink either way; this is where it says so.
+	Sink string `json:"sink,omitempty"`
+	// Symbol is the enclosing function or method a code finding sits in.
+	//
+	// Distinct from Route.Handler on purpose. A Route is bound only when the
+	// analyzer PROVED a taint chain and the enclosing function is a registered
+	// handler, so route availability tracks how much was proven rather than
+	// tracking the code. Identity must not inherit that dependency: the
+	// symbol is the same symbol whether or not the flow was proven, and
+	// keying on Route.Handler made a finding change identity the moment its
+	// chain became provable.
+	Symbol            string      `json:"symbol,omitempty"`
 	Title             string      `json:"title"`
 	Severity          Severity    `json:"severity"`
 	Source            Source      `json:"source"`
