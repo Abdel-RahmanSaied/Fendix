@@ -35,6 +35,22 @@ const (
 	// already ingested a Fendix SARIF, which makes it an effectively one-way
 	// door.
 	sarifAutomationID = "fendix/scan"
+
+	// sarifMaxLogicalLocations caps how many endpoints one result lists as
+	// SARIF locations.
+	//
+	// A rate-limit sweep over a large API deduplicates into ONE finding whose
+	// AffectedEndpoints holds every operation it covered — ~883 on a real
+	// target — and each of those became a logicalLocation. That is expressive
+	// and unusable: no consumer renders 883 locations legibly, and every
+	// consumer pays to parse them.
+	//
+	// The cap governs the LOCATION LIST only, which exists for a human to
+	// navigate. The full set moves to result.properties.affected_endpoints
+	// with an explicit count and a truncation marker, so nothing is lost and a
+	// truncated result can never be mistaken for a complete one (working rule
+	// 3: de-escalate evidence, never delete it).
+	sarifMaxLogicalLocations = 10
 )
 
 // SARIFLog is the top-level SARIF 2.1.0 object.
@@ -154,6 +170,14 @@ type SARIFResultProperties struct {
 	// the difference instead of inferring it.
 	IntrinsicSeverity string `json:"intrinsic_severity,omitempty"`
 	EffectiveRisk     string `json:"effective_risk,omitempty"`
+	// AffectedEndpointCount / AffectedEndpoints / LocationsTruncated carry the
+	// FULL accounting when the location list was capped at
+	// sarifMaxLogicalLocations. The locations a reader navigates are a sample;
+	// these are the record. All three are omitempty, so a result inside the
+	// cap is byte-identical to one produced before the cap existed.
+	AffectedEndpointCount int      `json:"affected_endpoint_count,omitempty"`
+	AffectedEndpoints     []string `json:"affected_endpoints,omitempty"`
+	LocationsTruncated    bool     `json:"locations_truncated,omitempty"`
 	// Evidence is the raw finding evidence, moved here when result.message.text
 	// became a human description (FIX-13.4). Kept verbatim — working rule 3:
 	// evidence is DE-ESCALATED, never deleted. For a finding with a real
@@ -852,6 +876,11 @@ func buildResultMessage(f models.Finding, locCtx string) string {
 	if locCtx != "" {
 		title = title + " at " + locCtx
 	}
+	// State the scale explicitly for a sweep-style finding. "(+882 more)"
+	// inside locCtx names a remainder; a reader triaging wants the total.
+	if n := len(f.AffectedEndpoints); n > sarifMaxLogicalLocations {
+		title = fmt.Sprintf("%s — %d operations affected", title, n)
+	}
 	// GitHub ranks alerts by the RULE's security-severity, which is
 	// necessarily the intrinsic score — so when Fendix's own assessment of
 	// this instance is lower, the message is the only field a human reads that
@@ -967,6 +996,10 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		// normalizeArtifactURI is what deletes the scheme and hides the
 		// URL-ness.
 		var locCtx string
+		// truncatedEndpoints is non-nil only when the location list was
+		// capped; it carries the FULL set so the property block below can
+		// record what the locations no longer show.
+		var truncatedEndpoints []string
 		filePath, lineNum := parseLine(f.Line) // handles nil / "" itself
 		artifactURI := ""
 		if filePath != "" && !looksLikeURLPath(filePath) {
@@ -1013,8 +1046,16 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				endpoints = []string{filePath}
 			}
 			if len(endpoints) > 0 {
-				locs := make([]SARIFLocation, 0, len(endpoints))
-				for _, ep := range endpoints {
+				// Cap the navigable list; the full set is recorded in
+				// properties below. See sarifMaxLogicalLocations.
+				shown := endpoints
+				truncated := false
+				if len(shown) > sarifMaxLogicalLocations {
+					shown = shown[:sarifMaxLogicalLocations]
+					truncated = true
+				}
+				locs := make([]SARIFLocation, 0, len(shown))
+				for _, ep := range shown {
 					locs = append(locs, SARIFLocation{
 						LogicalLocations: []SARIFLogicalLocation{{
 							// Endpoint string is an untrusted logical
@@ -1028,6 +1069,12 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				locCtx = NeutralizeText(endpoints[0])
 				if len(endpoints) > 1 {
 					locCtx = fmt.Sprintf("%s (+%d more)", locCtx, len(endpoints)-1)
+				}
+				if truncated {
+					// Recorded here, stamped after the property block below —
+					// sarifResultProperties REPLACES result.Properties, so
+					// writing it now would be silently overwritten.
+					truncatedEndpoints = endpoints
 				}
 			}
 		}
@@ -1048,6 +1095,17 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		}
 		if props := sarifResultProperties(f); props != nil {
 			result.Properties = props
+		}
+		// A truncated result must never read as a complete one. The count, the
+		// full endpoint set and an explicit marker go on after the property
+		// block, which replaces result.Properties wholesale.
+		if len(truncatedEndpoints) > 0 {
+			if result.Properties == nil {
+				result.Properties = &SARIFResultProperties{}
+			}
+			result.Properties.AffectedEndpointCount = len(truncatedEndpoints)
+			result.Properties.AffectedEndpoints = neutralizeAll(truncatedEndpoints)
+			result.Properties.LocationsTruncated = true
 		}
 
 		// FIX-13.1 / DECISIONS.md D4: emit the key only when a real
@@ -1111,4 +1169,16 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		return fmt.Errorf("encoding SARIF report: %w", err)
 	}
 	return nil
+}
+
+// neutralizeAll strips control/bidi characters from every entry of an
+// untrusted string slice. Endpoint names reach the report from crawled targets
+// and spec files, so they are neutralized wherever they are emitted — the
+// property copy is no different from the logicalLocation copy.
+func neutralizeAll(in []string) []string {
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = NeutralizeText(s)
+	}
+	return out
 }

@@ -39,6 +39,87 @@ var rateLimitHeaders = []string{
 	"RateLimit-Reset",
 }
 
+// rateLimitProbeMethod decides which verb this check may burst at an
+// operation, and whether it may burst at all.
+//
+// The check used to send a hardcoded GET and then label the finding with the
+// operation's own method, so Fendix reported "No rate limiting observed" for
+// "POST /login" having never sent a POST — a claim about a test that did not
+// happen. Probing the labelled verb is the fix, but it cannot be unconditional:
+// this check is TierPassive ("always on") and it sends a BURST of
+// rateLimitProbeCount requests, so probing the real verb everywhere would make
+// a passive scan issue twenty writes against a production target.
+//
+// The policy, therefore:
+//
+//	GET / HEAD / OPTIONS   safe and side-effect free by definition
+//	                       (RFC 9110 §9.2.1). Probed as themselves, always.
+//	POST / PUT / PATCH     state-changing. Probed as themselves only under
+//	                       --active, where the operator has accepted that
+//	                       Fendix sends real traffic. POST matters most here:
+//	                       an unlimited login endpoint is the canonical
+//	                       rate-limiting defect, and it cannot be tested with
+//	                       a GET.
+//	DELETE                 never. Twenty deletions is data loss, not
+//	                       scanning, and the active tier's licence is to send
+//	                       attack payloads — not to destroy the target's data.
+//	                       No opt-in short of a dedicated one covers this.
+//
+// An operation this returns ok=false for is REPORTED as not tested. Silence
+// would read as "tested, nothing found" to anyone counting findings, which is
+// the same misrepresentation in a quieter form.
+func rateLimitProbeMethod(endpoint Endpoint, active bool) (method string, ok bool) {
+	m := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+	if m == "" {
+		// Discovery sources that observe a path without an operation (crawl,
+		// robots.txt, JS extraction) leave Method empty. GET is the honest
+		// read of "an unspecified request to this URL", and it is what the
+		// finding will be labelled with.
+		return http.MethodGet, true
+	}
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return m, true
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return m, active
+	default: // DELETE, and any verb whose side effects are unknown to us
+		return m, false
+	}
+}
+
+// rateLimitNotTested records an operation Fendix declined to burst-probe.
+//
+// INFO, because it is not a security observation about the target — it is a
+// coverage statement about the scan. It exists so a reader can tell "this
+// operation has no rate limiting" from "nobody looked", which the previous
+// behaviour made indistinguishable.
+func rateLimitNotTested(endpoint Endpoint, method string, active bool) ev.Evidence {
+	reason := "state-changing method — rerun with --active to probe it"
+	if method == http.MethodDelete {
+		reason = "destructive method — never burst-probed, at any scan level"
+	} else if active {
+		reason = "method not eligible for burst probing"
+	}
+	label := fmt.Sprintf("%s %s", method, endpoint.Path)
+	return ev.Evidence{
+		Title:    "Rate limiting not tested for this operation",
+		Severity: models.SeverityInfo,
+		Source:   models.SourceBlackbox,
+		Category: "rate_limiting",
+		RuleID:   "ratelimit.not-tested",
+		Endpoint: label,
+		Evidence: fmt.Sprintf(
+			"No rate-limit probe was sent to %s: %s. This is a statement about scan "+
+				"coverage, not about the target — nothing is claimed here in either "+
+				"direction about whether %s is rate limited.",
+			label, reason, label),
+		Fix:               "Probe this operation from a staging environment, or rerun with --active if the target tolerates write traffic.",
+		References:        []string{"CWE-770"},
+		Confidence:        models.ConfidenceHigh,
+		DirectObservation: true,
+	}
+}
+
 // rateLimitCheck implements the Check interface for the rate-limit
 // detector. Structural adapter — Run holds the unchanged body of the
 // historical CheckRateLimit free function.
@@ -81,6 +162,14 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 		return nil
 	}
 
+	// RC-8: probe the operation's OWN method, or do not probe it and say so.
+	// The one thing that must not happen is a GET being sent and reported
+	// under another verb's name.
+	probeMethod, probeOK := rateLimitProbeMethod(endpoint, cfg.EnableActive)
+	if !probeOK {
+		return []ev.Evidence{rateLimitNotTested(endpoint, probeMethod, cfg.EnableActive)}
+	}
+
 	client := cc.Client
 
 	throttledCount := 0
@@ -98,7 +187,7 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 		default:
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "GET", endpoint.FullURL, nil)
+		req, err := http.NewRequestWithContext(ctx, probeMethod, endpoint.FullURL, nil)
 		if err != nil {
 			continue
 		}
@@ -127,7 +216,9 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 		}
 	}
 
-	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
+	// Labelled with the verb that was ACTUALLY sent, which after the policy
+	// above is the operation's own verb wherever one was probed.
+	epLabel := fmt.Sprintf("%s %s", probeMethod, endpoint.Path)
 
 	if throttledCount > 0 || rateLimitHeaderSeen {
 		slog.Debug("rate limiting detected", "endpoint", epLabel)
@@ -160,10 +251,14 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 			Category: "rate_limiting",
 			Endpoint: epLabel,
 			Evidence: fmt.Sprintf(
-				"Sent %d rapid requests with no 429 response and no rate-limit headers (%s). "+
+				"Sent %d rapid %s requests with no 429 response and no rate-limit headers (%s). "+
 					"Scope note: this bounded burst cannot prove the absence of slower per-minute/per-hour limiters — "+
-					"it only shows no limiting within %d requests.",
-				successfulProbes, strings.Join(headerList, ", "), successfulProbes),
+					"it only shows no limiting within %d requests. "+
+					"Granularity note: the probe observes only whether THIS operation answered with a limit. "+
+					"It cannot tell a missing per-operation limiter from a shared gateway or perimeter limiter "+
+					"whose threshold this burst never reached, so nothing here establishes where a limit would "+
+					"have to be added.",
+				successfulProbes, probeMethod, strings.Join(headerList, ", "), successfulProbes),
 			Fix:        "Implement rate limiting. Return 429 Too Many Requests with Retry-After header.",
 			References: []string{"CWE-770"},
 			Confidence: models.ConfidenceMedium,
