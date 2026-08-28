@@ -73,9 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fendix.<category>.<title-slug>`, so with evidence-aware titles one check's
   results would have scattered across two rules the moment a taint chain was
   proven. Rules now key on the rule id where there is one and fall back to the
-  old title slug where there is not, so findings that never carried a rule id
-  keep their existing GitHub alerts and suppressions. Findings that did will
-  appear under a new rule id once.
+  old title slug where there is not.
+
+  **GitHub alerts will be re-partitioned once.** Every blackbox check gained a
+  rule id in this release (see below), so its SARIF rule id changes from the
+  title slug to the rule slug. Existing alerts under the old rule ids close and
+  reopen under the new ones on the first v2 upload. This is a one-time cost,
+  taken now rather than split across two releases.
 
 - **`run.automationDetails.id` is derived from the scan mode.** It was the
   constant `fendix/scan`, and GitHub partitions alerts by that category and
@@ -119,6 +123,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   responses and detection timestamps remain internal.
 
 ### Fixed
+
+- **Eleven header checks at one endpoint no longer share one identity.** A
+  blackbox identity is category + rule + endpoint, and no blackbox scanner
+  emitted a rule — so every check in a category collapsed onto its endpoint.
+  Measured against a bare test server, eleven header checks on `GET /api/data`
+  produced ONE record: suppressing "missing CSP" silently suppressed "missing
+  HSTS", "X-Frame-Options" and every sibling with it. A collision hides
+  findings, where a split merely duplicates them. Every blackbox check now
+  carries its own rule id.
+
+  `auth` is deliberately one rule across both its titles: "Unauthenticated
+  endpoint observed" and "Authentication requirement bypassed" are the same
+  observation about the same endpoint, differing only in whether a source of
+  truth established that authentication was expected — evidence enrichment, not
+  a different vulnerability.
 
 - **Four CVEs across three packages no longer share one identity.** The Python
   dependency analyzer sent neither `rule_id` nor a dependency block, so all its
