@@ -210,6 +210,9 @@ func decisionProperties(f models.Finding) *SARIFDecision {
 	if f.AuthExpectation != models.AuthExpectationUnknown {
 		evi["auth_expectation"] = string(f.AuthExpectation)
 	}
+	if f.Applicability != models.ApplicabilityUnknown {
+		evi["applicability"] = string(f.Applicability)
+	}
 	if f.CrossToolCorroborated {
 		evi["cross_tool_corroborated"] = true
 	}

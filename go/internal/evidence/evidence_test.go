@@ -78,6 +78,7 @@ var notRoundTripped = map[string]string{
 	"IndependentSignals": "stamped by engine.stampDecisions from the Decision the gate produced",
 	"SelfEvidentSignals": "stamped by engine.stampDecisions from the Decision the gate produced",
 	"AuthExpectation":    "stamped by engine.stampDecisions from restored evidence",
+	"Applicability":      "stamped by engine.stampDecisions from restored evidence",
 }
 
 // TestFindingSampleExercisesEveryField is the drift guard: it fails if any
@@ -113,6 +114,7 @@ func TestExemptFieldsAreGenuinelyNotMapped(t *testing.T) {
 	f.IndependentSignals = []string{"reachable taint path"}
 	f.SelfEvidentSignals = []string{"direct observation of a live response"}
 	f.AuthExpectation = models.AuthExpectationRequired
+	f.Applicability = models.ApplicabilityEvidenceAgainst
 	f.DecisionPolicy = "relaxed"
 	f.PolicyOverride = true
 

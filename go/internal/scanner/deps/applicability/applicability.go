@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/evidence"
+	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
 // importGrepMaxFiles bounds the walk. On overrun the whole pass is
@@ -107,21 +108,41 @@ func resolve(root string, evs []evidence.Evidence) ([]evidence.Evidence, int) {
 	// Phase 3 — apply. A finding is de-escalated only when NONE of its
 	// components is imported: if the advisory touches two components and the
 	// project imports one of them, the advisory applies in full.
+	//
+	// Three outcomes are recorded, not two. The old code set a single bool and
+	// left it false for BOTH "the component is imported" and "we never
+	// evaluated this finding" — two states that must drive different decisions,
+	// and a downstream reader could not tell them apart. Only findings that
+	// reached this loop were evaluated at all; everything else keeps
+	// ApplicabilityUnknown, which is the honest default.
 	out := make([]evidence.Evidence, len(evs))
 	copy(out, evs)
 	for idx, comps := range byFinding {
 		var missing []string
+		imported := false
 		for _, c := range comps {
 			if found[c] {
+				imported = true
 				missing = nil
 				break
 			}
 			missing = append(missing, c.Import)
 		}
+		if imported {
+			// Evidence FOR applicability: the advisory's component is present
+			// in the tree. Not proof the vulnerable FUNCTION is reached — that
+			// would need a dependency call graph — so this restores normal
+			// policy rather than escalating beyond it.
+			out[idx].Applicability = models.ApplicabilityApplicable
+			continue
+		}
 		if len(missing) == 0 {
 			continue
 		}
 		sort.Strings(missing)
+		out[idx].Applicability = models.ApplicabilityEvidenceAgainst
+		// Kept in lockstep for one release: an out-of-tree consumer reading the
+		// old bool sees the same de-escalation it always did.
 		out[idx].ComponentNotImported = true
 		out[idx].Evidence += " — affected component not imported (" +
 			strings.Join(missing, ", ") + "); effective risk reduced"

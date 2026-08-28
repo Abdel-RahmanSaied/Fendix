@@ -300,6 +300,12 @@ func provenanceDriftFixtures() []provenanceFixture {
 				Source:               models.SourceWhitebox,
 				Confidence:           models.ConfidenceHigh,
 				ComponentNotImported: true,
+				// The three-state verdict that supersedes the bool. Both are set
+				// here because the scanner keeps them in lockstep for one
+				// release, and BOTH must survive the projection: the bool feeds
+				// the scorer's -10 delta, the enum feeds the decision layer's
+				// applicability gate.
+				Applicability: models.ApplicabilityEvidenceAgainst,
 			},
 			// 35 base + 10 static + 30 deterministic detection - 10 component.
 			wantValue: base + staticEvidence + deterministicDetn + componentNotImported,

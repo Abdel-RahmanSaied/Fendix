@@ -379,6 +379,50 @@ func corroborate(ev evidence.Evidence) corroboration {
 	return c
 }
 
+// applyApplicabilityGate holds a dependency finding at WARN when Fendix has
+// credible evidence that the advisory's affected component is unused.
+//
+// WHY THIS IS A DECISION ARM AND NOT A CONFIDENCE DELTA. Before this, the only
+// consequence of non-applicability was componentNotImported (-10) on the score.
+// That produced the right answer for the django case by arithmetic accident —
+// 75 - 10 = 65 happens to cross the HIGH→MEDIUM boundary — and the wrong answer
+// for any dependency finding whose score sat higher, e.g. one an independent
+// tool also reported (+15 crossToolCorroborated). A ten-point nudge is not a
+// policy; it is a coincidence that holds until the numbers move.
+//
+// The finding is fully PRESERVED (Rule 3): same id, severity, CVE identity and
+// evidence text, and the score is untouched. Only enforcement moves, and one
+// 0-point line records why.
+//
+// SCOPE. Deliberately restricted to category "deps". Applicability is a
+// statement about a vulnerable dependency's affected component; it has no
+// meaning for an injection or auth finding, and a stray value on one must not
+// silence it.
+//
+// CONSERVATISM. ApplicabilityEvidenceAgainst is backed by a static import grep,
+// which dynamic import forms can defeat. That is exactly why it de-escalates to
+// WARN — visible, actionable, non-gating — rather than suppressing, and why
+// Options.BlockOnInapplicable exists for teams whose policy is "no vulnerable
+// version ships, applicable or not".
+func applyApplicabilityGate(d *Decision, ev evidence.Evidence, opts Options) {
+	if d.Status != StatusBlock || opts.BlockOnInapplicable {
+		return
+	}
+	if !strings.EqualFold(ev.Category, "deps") {
+		return
+	}
+	if evidence.ApplicabilityOf(ev) != models.ApplicabilityEvidenceAgainst {
+		return
+	}
+	const reason = "the vulnerable package is installed but Fendix found no import of the " +
+		"advisory's affected component, so the vulnerable code path is not applicable to this " +
+		"project on the available evidence — finding preserved, held at WARN " +
+		"(override with --block-on-inapplicable)"
+	d.Status = StatusWarn
+	d.Reason = "severity at or above the --fail-on threshold, but " + reason
+	d.Score.Reasons = appendReason(d.Score.Reasons, "+0 held at WARN: "+reason)
+}
+
 // appendReason appends one explainability line to a fresh copy of the reason
 // slice. Copying is not optional: confidence.Score builds Reasons once per
 // call, and appending in place could write into a backing array another
@@ -418,6 +462,20 @@ type Options struct {
 	// restores the legacy severity-only mapping BYTE-FOR-BYTE; it does not
 	// also disable the test-fixture rule, which is gated on DeescalateTests.
 	EnforceConfidence bool
+
+	// BlockOnInapplicable makes a dependency finding gate the build even when
+	// Fendix has credible evidence the vulnerable component is unused.
+	//
+	// Default false: evidence of non-applicability holds such a finding at WARN
+	// (the finding, its severity, its CVE identity and its full evidence text
+	// are all preserved — this is de-escalation, never suppression). A team with
+	// a policy of "no vulnerable version ships, applicable or not" — common
+	// under regulatory constraints where the SBOM is what is audited, not the
+	// call graph — sets this to restore blocking.
+	//
+	// It is an explicit policy choice, not a confidence knob, which is why it
+	// lives here rather than as another delta in the scorer.
+	BlockOnInapplicable bool
 }
 
 // testFixtureReason is the 0-point explainability line appended to the score
@@ -468,6 +526,7 @@ const testFixtureBlockReason = "+0 de-escalated to WARN: finding is in test/fixt
 // occurrences. The index's "agree or drop" fold is the only correct source.
 func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decision {
 	d := decide(ev, failOn, opts)
+	applyApplicabilityGate(&d, ev, opts)
 	if !opts.DeescalateTests || !ev.InTest {
 		return d
 	}

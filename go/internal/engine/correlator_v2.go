@@ -89,6 +89,10 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			// silently dead on every --url + --code scan.
 			o.AuthExpectation = src.AuthExpectation
 			o.AuthExpectationSource = src.AuthExpectationSource
+			// Seven. Applicability is a fact about the SCANNED TREE observed by
+			// the import grep; nothing downstream can re-observe it, and the
+			// decision layer now reads it directly.
+			o.Applicability = src.Applicability
 			// UnconfirmedByLiveScan is OR-ed rather than assigned because THIS
 			// function is also a producer for it — the correlator is what
 			// discovers that a whitebox finding had no live match. A plain

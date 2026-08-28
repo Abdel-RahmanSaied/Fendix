@@ -103,6 +103,11 @@ type ScoringProvenance struct {
 	// and keeps the fold commutative.
 	AuthExpectation       models.AuthExpectation
 	AuthExpectationSource string
+	// Applicability is the three-state dependency-applicability verdict. It
+	// supersedes ComponentNotImported (kept alongside for one release) and, like
+	// it, is observed by the scanner walking the source tree — nothing
+	// downstream of the projection can re-observe it.
+	Applicability models.Applicability
 }
 
 // ProvenanceIndex maps a render-stable finding identity to the scoring
@@ -155,6 +160,7 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			CorroboratingTools:    e.CorroboratingTools,
 			AuthExpectation:       e.AuthExpectation,
 			AuthExpectationSource: e.AuthExpectationSource,
+			Applicability:         e.Applicability,
 		}
 		if prev, ok := ix[k]; ok {
 			p = mergeScoringProvenance(prev, p)
@@ -227,6 +233,9 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		}
 		if out[i].AuthExpectationSource == "" {
 			out[i].AuthExpectationSource = p.AuthExpectationSource
+		}
+		if out[i].Applicability == models.ApplicabilityUnknown {
+			out[i].Applicability = p.Applicability
 		}
 	}
 	return out
@@ -302,6 +311,11 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		AuthExpectation: models.AuthExpectation(
 			agreementOr(string(a.AuthExpectation), string(b.AuthExpectation))),
 		AuthExpectationSource: agreementOr(a.AuthExpectationSource, b.AuthExpectationSource),
+		// Agree-or-drop: two dependency findings in one group that disagree
+		// about applicability collapse to Unknown, which is the conservative
+		// reading — the group no longer supports either claim.
+		Applicability: models.Applicability(
+			agreementOr(string(a.Applicability), string(b.Applicability))),
 	}
 }
 

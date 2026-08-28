@@ -115,6 +115,44 @@ const (
 	AuthExpectationRequired AuthExpectation = "required"
 )
 
+// Applicability is what Fendix established about whether a vulnerable
+// dependency's AFFECTED COMPONENT is actually used by the scanned project — as
+// distinct from whether the vulnerable VERSION is installed, which is what the
+// finding itself asserts.
+//
+// Three states, and exactly three, because three is what the analyzer can
+// actually produce (scanner/deps/applicability.resolve):
+//
+//	Unknown         the advisory names no importable component, or the import
+//	                grep overran its budget and failed open. NOT a claim.
+//	Applicable      at least one affected component IS imported by the tree.
+//	EvidenceAgainst no affected component is imported anywhere in the tree.
+//
+// The previous model was a single bool, ComponentNotImported, whose false
+// conflated "the component IS imported" with "we never evaluated this" — two
+// states that must drive different decisions.
+//
+// DELIBERATELY NOT a fourth "ConfirmedNonApplicable" state. The backing
+// evidence is a static import grep, and dynamic import forms
+// (importlib.import_module, plugin registries, reflection) mean absence of an
+// import is EVIDENCE against applicability, never proof of it. Naming the state
+// after what it is — evidence — keeps that honest at every call site.
+//
+// Symmetrically, Applicable means "the component is imported", not "the
+// vulnerable function is reached": Fendix does not build a dependency call
+// graph. It is evidence FOR applicability, which is why it restores normal
+// policy rather than escalating beyond it.
+type Applicability string
+
+const (
+	// ApplicabilityUnknown — not evaluated, or evaluation was incomplete.
+	ApplicabilityUnknown Applicability = ""
+	// ApplicabilityApplicable — an affected component is imported.
+	ApplicabilityApplicable Applicability = "applicable"
+	// ApplicabilityEvidenceAgainst — no affected component is imported.
+	ApplicabilityEvidenceAgainst Applicability = "evidence_against"
+)
+
 // Route binds a finding to the HTTP route that reaches its sink (Proven
 // Path v1). Populated by the Python route extractor for whitebox findings
 // whose enclosing function is a registered Django/Flask/FastAPI handler;
@@ -247,6 +285,11 @@ type Finding struct {
 	// field the report withholds. Empty (unknown) is omitted, which is the
 	// honest encoding — see the type doc.
 	AuthExpectation AuthExpectation `json:"auth_expectation,omitempty"`
+	// Applicability is the dependency-applicability verdict. Published for the
+	// same reason as AuthExpectation: the decision policy reads it, and an
+	// auditable verdict cannot cite a field the report withholds. Unknown is
+	// omitted, which is the honest encoding of "not evaluated".
+	Applicability Applicability `json:"applicability,omitempty"`
 
 	// --- Cross-tool corroboration (SARIF import) ------------------------
 	// CrossToolCorroborated / CorroboratingTools publish the verdict of

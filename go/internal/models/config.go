@@ -217,6 +217,13 @@ type ScanConfig struct {
 	// test-fixture rule, which is gated on DeescalateTests.
 	EnforceConfidence bool
 
+	// BlockOnInapplicable makes a dependency finding gate the build even when
+	// Fendix has credible evidence its vulnerable component is unused. Default
+	// false: such a finding is preserved in full and held at WARN. Set by
+	// --block-on-inapplicable for teams whose policy is "no vulnerable version
+	// ships, applicable or not".
+	BlockOnInapplicable bool
+
 	// Fast runs only the instant native scanners (secrets + textscan),
 	// skipping semgrep (whose process startup is ~1.5s) and the dep-CVE
 	// scanners (which make network calls). This is the <1s budget the
