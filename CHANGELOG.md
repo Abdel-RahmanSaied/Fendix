@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-08-28
+
+### Fixed
+
+- **Semgrep findings had unstable and colliding identities.** Neither is
+  visible on a machine without semgrep installed, so the whole family went
+  untested until a scan through the released image exercised it.
+
+  The rule id carried the temporary directory the rule files are written to —
+  `tmp.fendix-semgrep-rules-1072928901.flask-route-no-auth-decorator` — with a
+  fresh number every run. Harmless while the id was decoration; once 3.0.0 made
+  it an identity input it meant **every semgrep finding got a new identity on
+  every scan**, churning without the file changing at all.
+
+  Separately, nothing distinguished two matches of one rule in one file, so
+  **five unprotected Flask routes collapsed into one finding** and suppressing
+  any one of them silently suppressed the other four.
+
+- **Semgrep findings showed "requires login" as their evidence.** Semgrep OSS
+  without a logged-in account replaces `extra.lines` with that literal string,
+  and it was passed through verbatim — so the field a user reads to judge a
+  finding said nothing about the code. The matched line is now read from disk,
+  at the path and line number semgrep does supply.
+
+  Credential-shaped literals are masked before that line reaches identity: a
+  rule matching a hardcoded secret matches the line the secret is on, and a
+  fingerprint outlives any report. Route paths and config keys are left intact,
+  because for a route-shaped rule the path is the identity — masking every
+  literal traded a credential leak for a collision.
+
+  Measured on the same before/after fixture, scanned through the released image
+  with semgrep present: 40 findings, **40 identities** (was 32), 100% matched
+  across the cosmetic edit, 0 vanished, 0 new.
+
 ## [3.0.1] - 2026-08-28
 
 ### Fixed

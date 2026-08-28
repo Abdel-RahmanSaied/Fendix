@@ -30,6 +30,7 @@
 package semgrep
 
 import (
+	"bufio"
 	"context"
 	"embed"
 	"encoding/json"
@@ -40,6 +41,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -241,6 +244,13 @@ type semgrepResult struct {
 	Extra   semgrepExtra   `json:"extra"`
 }
 
+// semgrepMetavar is one metavariable binding. Only AbstractContent is decoded
+// — the rest of semgrep's binding shape (byte offsets, propagated values) is
+// location data, which identity must not read.
+type semgrepMetavar struct {
+	AbstractContent string `json:"abstract_content"`
+}
+
 type semgrepLineCol struct {
 	Line int `json:"line"`
 	Col  int `json:"col"`
@@ -251,6 +261,11 @@ type semgrepExtra struct {
 	Severity string                 `json:"severity"`
 	Lines    string                 `json:"lines"`
 	Metadata map[string]interface{} `json:"metadata"`
+	// Metavars is what the rule actually CAPTURED — `$FUNC` -> "fetch_image".
+	// It is the only structured thing distinguishing two matches of one rule
+	// in one file, and semgrep has been sending it all along; we simply never
+	// decoded it. Without it, five unprotected Flask routes were one finding.
+	Metavars map[string]semgrepMetavar `json:"metavars"`
 }
 
 // semgrepOutput wraps a top-level Semgrep --json document.
@@ -316,12 +331,24 @@ func mapResult(r *semgrepResult, absRoot string) (evidence.Evidence, bool) {
 		title = "Semgrep finding"
 	}
 
+	// Semgrep OSS without a logged-in account replaces `extra.lines` with the
+	// literal "requires login". That made every semgrep finding show that
+	// phrase as its EVIDENCE — the field a user reads to decide whether the
+	// finding is real — and left nothing to tell two matches of one rule in
+	// one file apart, so five unprotected Flask routes shared one identity.
+	//
+	// The line is on disk, at a path and line number semgrep does send, so we
+	// read it rather than depending on what semgrep chose to hand back.
 	snippet := strings.TrimSpace(r.Extra.Lines)
+	if snippet == "" || snippet == semgrepRedactedLines {
+		snippet = readSourceLine(r.Path, r.Start.Line)
+	}
 	if len(snippet) > evidenceMaxLen {
 		snippet = snippet[:evidenceMaxLen] + "..."
 	}
 
-	id := "SEC-" + strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(r.CheckID), "-", "_"), ".", "_")
+	ruleID := normalizeCheckID(r.CheckID)
+	id := "SEC-" + strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(ruleID), "-", "_"), ".", "_")
 
 	return evidence.Evidence{
 		ID:         id,
@@ -336,8 +363,190 @@ func mapResult(r *semgrepResult, absRoot string) (evidence.Evidence, bool) {
 		References: resolveCWE(r),
 		Confidence: resolveConfidence(r),
 		Line:       &endpointCopy,
-		RuleID:     r.CheckID,
+		RuleID:     ruleID,
+		// What the rule captured, when semgrep sends it. Absent from OSS
+		// output, which is why the sink below carries the discriminator.
+		Symbol: identifierMetavars(r.Extra.Metavars),
+		// The matched construct, with string literals masked, as the finding's
+		// vulnerable operation. This is what makes two matches of one rule in
+		// one file two findings — see maskStringLiterals for why the masking
+		// is a security boundary and not tidiness.
+		Sink: maskStringLiterals(snippet),
 	}, true
+}
+
+// semgrepRedactedLines is what semgrep OSS puts in `extra.lines` (and
+// `extra.fingerprint`) instead of the matched source when no account is
+// logged in. It is a sentinel, not source code.
+const semgrepRedactedLines = "requires login"
+
+// readSourceLine returns line n of a file, trimmed, or "" if it cannot be
+// read. Best-effort by design: a missing or unreadable file leaves the finding
+// with empty evidence, exactly as before, rather than failing the scan.
+func readSourceLine(path string, n int) string {
+	if path == "" || n <= 0 {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), maxSourceLineLen)
+	for i := 1; sc.Scan(); i++ {
+		if i == n {
+			return strings.TrimSpace(sc.Text())
+		}
+	}
+	return ""
+}
+
+// maxSourceLineLen bounds a single recovered line, so a minified bundle cannot
+// pull an unbounded string into a finding.
+const maxSourceLineLen = 64 * 1024
+
+// stringLiteral matches a single- or double-quoted literal, including an empty
+// one. Escapes are not handled: over-masking a line is harmless here, since the
+// result is a discriminator rather than something a reader parses.
+var stringLiteral = regexp.MustCompile(`"[^"]*"|'[^']*'`)
+
+// maskStringLiterals replaces CREDENTIAL-SHAPED quoted literals in a line with
+// `"…"`, leaving structural ones intact.
+//
+// A SECURITY BOUNDARY, not tidiness. The line recovered above is raw source,
+// and a rule that matches a hardcoded credential matches the line the
+// credential is on. This value becomes an identity input, and identity is
+// persisted into `.fendix-ignore` files, baselines and GitHub Code Scanning —
+// the wrong lifetime for a credential by a wide margin.
+//
+// TARGETED, though, and that half is equally load-bearing. Masking every
+// literal removed the only thing telling five Flask routes apart: for a
+// route-shaped rule the route path IS the identity, exactly as the endpoint is
+// for a blackbox finding, and it is a string literal. Blanket masking traded a
+// credential leak for a collision that hides four findings out of five.
+//
+// The line between them is credential SHAPE — see looksLikeCredential. A route
+// path, a config key and a format string keep discriminating;
+// `sk_live_51H8xQe…` and `xoxb-9999…` do not survive.
+func maskStringLiterals(line string) string {
+	return stringLiteral.ReplaceAllStringFunc(line, func(lit string) string {
+		if looksLikeCredential(strings.Trim(lit, `"'`)) {
+			return `"…"`
+		}
+		return lit
+	})
+}
+
+// looksLikeCredential reports whether a string literal is shaped like a secret
+// rather than like structure.
+//
+// The signal is the LONGEST UNBROKEN ALPHANUMERIC RUN, not length and not
+// character variety. Both of those were tried and both were wrong:
+// `/api/v1/organizations/members` is 29 characters and mixes lower-case,
+// digits and separators, so length-plus-variety masked it and collapsed every
+// long route into one identity.
+//
+// What actually separates the two is that human-written structure breaks into
+// short words — `api`, `v1`, `organizations`, `members`, `database_url` — while
+// a token is a single dense run: `51H8xQeLkdIwHu7ix0aBcDeFgHiJkLmNoPqRs`,
+// `aAaAaAaAaAaAaAaAaAaA`, a base64 blob. Sixteen characters without a
+// separator is not a word anyone typed.
+//
+// Erring toward masking is correct where it is ambiguous — masking a
+// structural literal costs one discriminator and risks a collision, while
+// missing a credential persists it into ignore files, baselines and GitHub
+// Code Scanning forever. This is NOT a secrets detector; scanner/secrets is,
+// with real patterns. This only decides what may enter a fingerprint.
+func looksLikeCredential(v string) bool {
+	run := 0
+	for _, r := range v {
+		switch {
+		// '/' is deliberately NOT a run character even though it is in the
+		// base64 alphabet: it is also the path separator, and counting it
+		// made `/api/v1/organizations/members` one 29-character run. Base64
+		// survives the exclusion easily — '/' occurs about once every 64
+		// characters there, so the runs between slashes stay far above the
+		// threshold.
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '+':
+			run++
+			if run >= credentialRunLen {
+				return true
+			}
+		default:
+			run = 0
+		}
+	}
+	return false
+}
+
+// credentialRunLen is the unbroken alphanumeric run at which a literal is
+// treated as token-shaped. Above the longest ordinary word or path segment,
+// below every real key shape.
+const credentialRunLen = 16
+
+// rulesDirPrefix is the temp-directory prefix this scanner writes its rule
+// files into. Shared with normalizeCheckID so the two can never drift: change
+// it in one place and the id-stripping follows.
+const rulesDirPrefix = "fendix-semgrep-rules-"
+
+// rulesDirSegment matches the namespace segment semgrep derives from the
+// temporary directory this scanner writes its rule files into.
+var rulesDirSegment = regexp.MustCompile(`^.*?` + regexp.QuoteMeta(rulesDirPrefix) + `[^.]*\.`)
+
+// normalizeCheckID strips the temporary rules directory out of a semgrep rule
+// id, leaving the rule's own name.
+//
+// Semgrep namespaces a rule by the PATH it was loaded from, and this scanner
+// writes its rules to os.MkdirTemp(…, "fendix-semgrep-rules-"). So every check
+// id arrived as "tmp.fendix-semgrep-rules-1072928901.flask-route-no-auth-decorator",
+// with a fresh number every run. Harmless while the id was only decoration;
+// once it became an identity input it meant every semgrep finding got a new
+// identity on every scan — RC-5 again, and worse, because it churned without
+// the file changing at all.
+//
+// A rule id that never passed through our temp directory is returned
+// unchanged: a registry rule's namespace is part of its real name.
+func normalizeCheckID(checkID string) string {
+	return rulesDirSegment.ReplaceAllString(checkID, "")
+}
+
+// metavarIdentifier matches a binding that is a plain identifier.
+var metavarIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// identifierMetavars renders a rule's captured metavariables as a stable,
+// ordered symbol — "$FUNC=fetch_image" — for the finding's identity.
+//
+// IDENTIFIERS ONLY, and that restriction is a security boundary rather than
+// tidiness. A metavariable binds to whatever the rule matched, and a rule that
+// matches a hardcoded credential binds one to the credential. Identity is
+// persisted into ignore files, baselines and GitHub Code Scanning, so a
+// binding that is a string literal or an expression must never reach it. A
+// plain identifier — a function or variable name — cannot be a credential and
+// is exactly the discriminator that separates two matches of one rule.
+//
+// Sorted by metavariable name so the value is order-independent; semgrep hands
+// these back as a map.
+func identifierMetavars(metavars map[string]semgrepMetavar) string {
+	if len(metavars) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(metavars))
+	for name := range metavars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		content := strings.TrimSpace(metavars[name].AbstractContent)
+		if content == "" || len(content) > 128 || !metavarIdentifier.MatchString(content) {
+			continue
+		}
+		parts = append(parts, name+"="+content)
+	}
+	return strings.Join(parts, ",")
 }
 
 // validFendixSeverities is the allowed set for the metadata.fendix_severity
@@ -444,7 +653,7 @@ func ensureRules() (string, error) {
 // ensureRulesLocked is ensureRules with rulesMu already held.
 func ensureRulesLocked() (string, error) {
 	rulesOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "fendix-semgrep-rules-")
+		dir, err := os.MkdirTemp("", rulesDirPrefix)
 		if err != nil {
 			rulesErr = err
 			return
