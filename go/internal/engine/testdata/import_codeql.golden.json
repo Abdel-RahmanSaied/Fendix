@@ -76,6 +76,7 @@
     "active_probes": false,
     "duration": "\u003cnormalized\u003e",
     "endpoints_scanned": 0,
+    "fingerprint_algorithm": "fendix/v2",
     "imports": [
       {
         "results": 2,
@@ -84,7 +85,7 @@
       }
     ],
     "mode": "import",
-    "schema_version": 1,
+    "schema_version": 2,
     "started_at": "\u003cnormalized\u003e",
     "target": "",
     "version": "golden"

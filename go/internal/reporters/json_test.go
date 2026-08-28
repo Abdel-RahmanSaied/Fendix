@@ -245,9 +245,11 @@ func TestRenderJSON_NoDecisionFieldsByDefault(t *testing.T) {
 // (a typed decode cannot tell an absent key from a zero, so the raw map is
 // checked first), and it round-trips back through ParseJSONReport as 1.
 //
-// The expected value is pinned to the literal 1 rather than to the
+// The expected value is pinned to the literal rather than to the
 // SchemaVersion const on purpose — bumping the const is a contract change
-// consumers have to be told about, so it should fail here first.
+// consumers have to be told about, so it fails here first. It did: 1 -> 2 for
+// the fendix/v2 fingerprint algorithm, which invalidates every saved baseline
+// and every `.fendix-ignore` fingerprint: rule written under v1.
 func TestRenderJSON_StampsSchemaVersion(t *testing.T) {
 	var buf bytes.Buffer
 	// SchemaVersion deliberately left unset by the caller: RenderJSON is
@@ -270,7 +272,7 @@ func TestRenderJSON_StampsSchemaVersion(t *testing.T) {
 	if !present {
 		t.Fatalf("metadata.schema_version missing from rendered report: %v", rawMeta)
 	}
-	if got != float64(1) {
+	if got != float64(2) {
 		t.Errorf("metadata.schema_version = %v, want 1", got)
 	}
 
@@ -278,7 +280,7 @@ func TestRenderJSON_StampsSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a freshly written report must parse: %v", err)
 	}
-	if report.Metadata.SchemaVersion != 1 {
+	if report.Metadata.SchemaVersion != 2 {
 		t.Errorf("round-tripped Metadata.SchemaVersion = %d, want 1", report.Metadata.SchemaVersion)
 	}
 }
@@ -299,7 +301,7 @@ func TestRenderJSON_RestampsSchemaVersionOnRerender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-rendered report must parse: %v", err)
 	}
-	if report.Metadata.SchemaVersion != 1 {
+	if report.Metadata.SchemaVersion != 2 {
 		t.Errorf("Metadata.SchemaVersion = %d, want 1 — the writer stamps, it does not propagate", report.Metadata.SchemaVersion)
 	}
 	// The caller's copy must not be mutated: meta is passed by value.
