@@ -113,3 +113,31 @@ func TestApplicabilityOnlyGovernsDependencyFindings(t *testing.T) {
 			"held back by a dependency-scoped concept (reason=%q)", d.Status, d.Reason)
 	}
 }
+
+// §3's actual complaint: for the common dependency shape the confidence-band
+// arm fires FIRST and the finding lands at WARN with a reason that never
+// mentions applicability. The outcome is right, but a reader is told "confidence
+// MEDIUM with no corroborating signal" — which is true and useless — rather than
+// "the vulnerable component is not used here", which is the actionable fact and
+// the one that will still hold when the score moves.
+//
+// Applicability must be the STATED reason whenever it applies to a
+// threshold-crossing dependency finding, not merely a field a reader can
+// correlate for themselves.
+func TestApplicabilityIsTheStatedReasonNotAnIncidentalOutcome(t *testing.T) {
+	// The real django shape: 35 base + 10 static + 30 deterministic - 10
+	// component = 65, MEDIUM band, no independent signal. The band arm would
+	// claim this one first.
+	ev := depFinding(models.ApplicabilityEvidenceAgainst)
+	ev.ComponentNotImported = true
+
+	d := DecideWithOptions(ev, "HIGH", depEnforced)
+	if d.Status != StatusWarn {
+		t.Fatalf("Status = %q, want WARN", d.Status)
+	}
+	if !strings.Contains(d.Reason, "affected component") {
+		t.Errorf("Reason = %q\n  want it to lead with the applicability finding, not the "+
+			"confidence band — the band is where the number happened to land, applicability "+
+			"is why this does not gate", d.Reason)
+	}
+}

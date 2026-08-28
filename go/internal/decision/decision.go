@@ -405,7 +405,20 @@ func corroborate(ev evidence.Evidence) corroboration {
 // Options.BlockOnInapplicable exists for teams whose policy is "no vulnerable
 // version ships, applicable or not".
 func applyApplicabilityGate(d *Decision, ev evidence.Evidence, opts Options) {
-	if d.Status != StatusBlock || opts.BlockOnInapplicable {
+	// Applies to any THRESHOLD-CROSSING dependency finding, not only one the
+	// confidence gate left at BLOCK.
+	//
+	// Scoping it to BLOCK alone was not enough: for the common django shape the
+	// band arm fires first (65 → MEDIUM, no independent signal) and the finding
+	// lands at WARN with a reason that never mentions applicability. The outcome
+	// is right but the explanation is an accident — "confidence MEDIUM with no
+	// corroborating signal" is true and useless, and it stops being true the
+	// moment the score moves. Applicability is the durable, actionable fact, so
+	// it becomes the stated reason whenever it applies.
+	if !d.aboveThreshold || opts.BlockOnInapplicable {
+		return
+	}
+	if d.Status != StatusBlock && d.Status != StatusWarn {
 		return
 	}
 	if !strings.EqualFold(ev.Category, "deps") {
