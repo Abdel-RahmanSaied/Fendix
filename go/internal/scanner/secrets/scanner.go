@@ -624,6 +624,16 @@ func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 					References: []string{pat.cwe},
 					Confidence: models.ConfidenceHigh,
 					Line:       &lineCopy,
+					// The SAFE identity the v2 fingerprint keys on: which
+					// identifier this credential is bound to, and where it
+					// lives. Never the credential, never a digest of it — see
+					// models.SecretRef. lastAssignmentKey is reused rather
+					// than re-derived so identity and the placeholder
+					// classifier always agree on what the key is.
+					Secret: &models.SecretRef{
+						Identifier: secretIdentifier(line, vStart, hasValue),
+						File:       rel,
+					},
 					// Deterministic fixture-credential classification. An
 					// EVIDENCE ANNOTATION, not a filter — the finding is
 					// emitted either way, at the same ID, severity and
@@ -757,4 +767,19 @@ func isEnvFile(name string) bool {
 		return true
 	}
 	return false
+}
+
+// secretIdentifier returns the non-sensitive identifier a credential is bound
+// to — the assignment key or config name to its left.
+//
+// Empty when the match has no binding identifier (a bare `-----BEGIN … KEY-----`
+// block). That is reported honestly as "no identifier" rather than
+// substituted with the line number, which would put location back into
+// identity, or with a digest of the credential, which would persist a
+// credential oracle. See models.SecretRef for the consequence.
+func secretIdentifier(line string, valueStart int, hasValue bool) string {
+	if !hasValue || valueStart <= 0 || valueStart > len(line) {
+		return ""
+	}
+	return lastAssignmentKey(line[:valueStart])
 }
