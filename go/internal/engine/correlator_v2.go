@@ -66,11 +66,12 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			// on a hybrid scan — the 4xx/static-asset penalty then couldn't
 			// fire even once the scorer was given the Evidence.
 			o.ResponseContext = src.ResponseContext
-			// The same trap, four more times. DirectObservation (the scorer's
+			// The same trap, six more times. DirectObservation (the scorer's
 			// deterministic-read bonus), UnconfirmedByLiveScan (the decision
 			// layer's needs-corroboration marker), Placeholder (the
-			// fixture-credential de-escalation) and ComponentNotImported (the
-			// dep-applicability de-escalation) are all producer-set, and none
+			// fixture-credential de-escalation), ComponentNotImported (the
+			// dep-applicability de-escalation) and the AuthExpectation pair
+			// (the RC-2 auth-confirmation signals) are all producer-set, and none
 			// of them has the endpoint-derived fallback that lets InTest
 			// survive being omitted here. Dropping one would leave its rule
 			// working on a pure-DAST or pure-SAST scan and silently dead on
@@ -79,6 +80,19 @@ func CorrelateEvidence(evs []evidence.Evidence) []evidence.Evidence {
 			o.DirectObservation = src.DirectObservation
 			o.Placeholder = src.Placeholder
 			o.ComponentNotImported = src.ComponentNotImported
+			// Six now. AuthExpectation / AuthExpectationSource (RC-2) are the
+			// same shape: set by the auth check from the spec-derived endpoint
+			// inventory, with no endpoint-derived fallback — nothing downstream
+			// can re-observe "the specification required auth here". Dropped
+			// here, the decision layer's "contradicted authentication
+			// requirement" signal would work on a pure-DAST scan and be
+			// silently dead on every --url + --code scan.
+			o.AuthExpectation = src.AuthExpectation
+			o.AuthExpectationSource = src.AuthExpectationSource
+			// Seven. Applicability is a fact about the SCANNED TREE observed by
+			// the import grep; nothing downstream can re-observe it, and the
+			// decision layer now reads it directly.
+			o.Applicability = src.Applicability
 			// UnconfirmedByLiveScan is OR-ed rather than assigned because THIS
 			// function is also a producer for it — the correlator is what
 			// discovers that a whitebox finding had no live match. A plain

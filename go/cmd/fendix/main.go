@@ -411,6 +411,7 @@ func newScanCmd() *cobra.Command {
 			fastFlag, _ := flags.GetBool("fast")
 			deescalateTestsFlag, _ := flags.GetBool("deescalate-tests")
 			enforceConfidenceFlag, _ := flags.GetBool("enforce-confidence")
+			blockOnInapplicableFlag, _ := flags.GetBool("block-on-inapplicable")
 			checksFlag, _ := flags.GetStringSlice("checks")
 			importFlag, _ := flags.GetStringSlice("import")
 
@@ -482,6 +483,7 @@ func newScanCmd() *cobra.Command {
 				Fast:                  fastFlag,
 				DeescalateTests:       deescalateTestsFlag,
 				EnforceConfidence:     enforceConfidenceFlag,
+				BlockOnInapplicable:   blockOnInapplicableFlag,
 				Checks:                checksFlag,
 				ImportPaths:           importFlag,
 			}
@@ -592,8 +594,9 @@ func newScanCmd() *cobra.Command {
 	flags.Bool("offline", false, "Air-gapped mode: consult the local offline-db snapshot for dep CVEs instead of osv.dev/vuln.go.dev. The pip and npm scanners run against the snapshot (create it with `fendix db update`); govulncheck needs vuln.go.dev and is recorded SKIPPED. No outbound network call is made.")
 	flags.String("offline-db", "", "Path to the offline-db snapshot (default: ~/.fendix/offline-db.json). Only effective with --offline.")
 	flags.Bool("fail-on-scanner-error", false, "Exit non-zero (2) if any scanner (govulncheck/pip/npm/secrets/semgrep/textscan) ran and errored. CI-friendly: turns a silent coverage gap into a build failure. Skipped scanners do not count.")
+	flags.Bool("block-on-inapplicable", false, "Gate the build on a vulnerable dependency even when Fendix found no import of the advisory's affected component. Default false: such a finding is reported in full and held at WARN, because the vulnerable code path is not applicable to this project on the available evidence. Set this when policy is \"no vulnerable version ships, applicable or not\" — e.g. where the SBOM is what gets audited rather than the call graph.")
 	flags.Bool("deescalate-tests", true, "Report findings in test/fixture code as INFO instead of WARN (evidence is preserved, never suppressed). A finding at or above --fail-on still blocks when a corroborating signal backs it (e.g. a provider-validated live credential); an uncorroborated test-code match is held at WARN. Pass --deescalate-tests=false to treat test-code findings like production ones.")
-	flags.Bool("enforce-confidence", true, "Only BLOCK a finding at or above --fail-on when the deterministic confidence band supports it: LOW band warns instead of blocking, MEDIUM band blocks only with a corroborating signal (live observation, cross-engine agreement, deterministic detection in production code, confirmed route, reachable taint path, payload-validated probe), HIGH band always blocks. Evidence is never suppressed. Pass --enforce-confidence=false to restore the legacy severity-only gate.")
+	flags.Bool("enforce-confidence", true, "Only BLOCK a finding at or above --fail-on when the confidence band supports it AND something corroborates the claim: LOW band warns; a finding with no corroborating signal at all warns; MEDIUM band blocks only with an INDEPENDENT signal (cross-engine agreement, confirmed route, reachable taint path, proven path, payload-validated probe, cross-tool corroboration, contradicted authentication requirement); self-evident signals (direct response read, deterministic detection in production source, imported high-precision rule) gate at HIGH. Evidence is never suppressed. Pass --enforce-confidence=false to restore the legacy severity-only gate — findings that block only because of that relaxation are marked policy_override in the report.")
 	flags.StringSlice("checks", nil, "Override which checks the Python whitebox engine runs (default: auth,injection,deps). Only effective with --python-engine; the native Go scanners (secrets/semgrep/textscan/deps) always run when --code is set.")
 	// Diff-aware scanning (90-day cut, item 1). `--diff` alone diffs the
 	// working tree against HEAD; `--diff=origin/main` against that ref;

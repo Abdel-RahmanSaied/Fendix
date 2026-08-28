@@ -38,6 +38,24 @@ import (
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 )
 
+// Policy names which decision policy produced a verdict.
+//
+// It is published because a BLOCK means two different things under the two
+// policies, and a consumer that cannot tell them apart cannot verify Fendix's
+// central claim — that a normal BLOCK is an auditable, evidence-backed
+// decision rather than a severe scanner observation.
+type Policy string
+
+const (
+	// PolicyEnforced is the shipped policy: a finding at or above --fail-on
+	// blocks only when the confidence band supports it AND something
+	// corroborates the claim.
+	PolicyEnforced Policy = "enforced"
+	// PolicyRelaxed is the legacy severity-only mapping, restored by
+	// --enforce-confidence=false. Corroboration is ignored entirely.
+	PolicyRelaxed Policy = "relaxed"
+)
+
 // Status is the verdict for one piece of evidence.
 type Status string
 
@@ -64,6 +82,22 @@ type Decision struct {
 	Score confidence.Result
 	// Evidence is the supporting evidence this verdict was derived from.
 	Evidence evidence.Evidence
+	// Corroboration is the partitioned signal set behind Status. Exported so
+	// the orchestrator can stamp it onto the finding without re-deriving — and
+	// therefore drifting from — the predicate the gate actually used.
+	Corroboration corroboration
+	// Policy names which policy produced this verdict (enforced / relaxed).
+	Policy Policy
+	// PolicyOverride is true ONLY when the relaxed policy produced a BLOCK that
+	// the shipped policy would NOT have produced. That is the precise condition
+	// worth flagging: an unconfirmed finding gated a build because the operator
+	// turned the evidence requirement off.
+	//
+	// Deliberately NOT "the relaxed policy was in effect". A relaxed run whose
+	// findings are all independently corroborated would block identically under
+	// either policy; marking those would cry wolf and teach readers to ignore
+	// the flag, which is worse than not having it.
+	PolicyOverride bool
 
 	// aboveThreshold records that this finding's severity met --fail-on,
 	// independent of what the confidence policy then did with it. It is the
@@ -98,8 +132,21 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 	}
 	rank := models.SeverityRank(ev.Severity)
 
-	d := Decision{Confidence: ev.Confidence, Score: confidence.Score(ev), Evidence: ev}
+	d := Decision{
+		Confidence: ev.Confidence,
+		Score:      confidence.Score(ev),
+		Evidence:   ev,
+		// Computed once here so the gate, the reason string and the exported
+		// justification all read the SAME partition. Deriving it a second time
+		// downstream is how an exporter drifts from the policy it claims to
+		// describe.
+		Corroboration: corroborate(ev),
+	}
 	d.aboveThreshold = threshold > 0 && rank >= threshold
+	d.Policy = PolicyRelaxed
+	if opts.EnforceConfidence {
+		d.Policy = PolicyEnforced
+	}
 	switch {
 	case d.aboveThreshold:
 		if opts.EnforceConfidence {
@@ -107,6 +154,22 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 		} else {
 			d.Status = StatusBlock
 			d.Reason = "severity at or above the --fail-on threshold"
+			// Would the SHIPPED policy have blocked this too? Run the same gate
+			// on a throwaway copy and compare. If it would have warned, this
+			// BLOCK exists only because the evidence requirement was switched
+			// off, and that fact has to travel with the finding all the way to
+			// SARIF — otherwise an operator-relaxed gate is indistinguishable
+			// from an evidence-backed one.
+			//
+			// Cheap and exact: applyConfidenceGate is a pure function of the
+			// score and the corroboration, both already computed above.
+			shadow := d
+			applyConfidenceGate(&shadow, ev)
+			d.PolicyOverride = shadow.Status != StatusBlock
+			if d.PolicyOverride {
+				d.Reason += " (relaxed policy: --enforce-confidence=false; the shipped policy " +
+					"would have held this at " + string(shadow.Status) + " — " + shadow.Reason + ")"
+			}
 		}
 	case rank >= models.SeverityRank(models.SeverityMedium):
 		d.Status = StatusWarn
@@ -118,23 +181,47 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 	return d
 }
 
-// applyConfidenceGate is FIX-08: a finding whose severity met --fail-on BLOCKs
-// only when the deterministic confidence band supports the claim.
+// applyConfidenceGate is FIX-08, tightened by RC-1: a finding whose severity met
+// --fail-on BLOCKs only when the deterministic confidence band supports the
+// claim AND something actually corroborates it.
 //
 // The rule table, in evaluation order:
 //
-//	marked unconfirmed-by-live-scan, no corroboration → WARN
-//	band LOW                                          → WARN
-//	band MEDIUM, no corroborating signal              → WARN
-//	band MEDIUM, ≥1 corroborating signal              → BLOCK
-//	band HIGH                                         → BLOCK
+//	marked unconfirmed-by-live-scan, no independent signal → WARN
+//	band LOW                                               → WARN
+//	NO signal of any class                                 → WARN   ← RC-1
+//	band MEDIUM, no INDEPENDENT signal                     → WARN
+//	otherwise                                              → BLOCK
+//
+// RC-1 CHANGE, and the shape of it matters. The old table's third arm read
+// "band MEDIUM, no corroborating signal → WARN", and the signal list counted
+// "live runtime observation" — true for every Source ∈ {blackbox, correlated}.
+// So a bare DAST finding (35 base + 10 runtime = 45, MEDIUM) supplied its own
+// required signal and any scanner-assigned CRITICAL blocked the build.
+//
+// The fix is NOT "self-evident signals can never block". That was tried and it
+// broke the case deterministicDetn exists for: a hardcoded credential in
+// production source, found by a deterministic pattern match on a code-only scan,
+// where no second observation is even possible. The difference is whether the
+// observation ESTABLISHES the claim:
+//
+//   - secrets: the observation ("this regex matched a credential in non-test
+//     source") substantially IS the claim. Self-evident, and sufficient at HIGH.
+//   - auth_bypass: the observation ("HTTP 200 with no Authorization header") is
+//     NOT the claim ("authentication was bypassed"). It is missing the premise
+//     "authentication was expected here", which nothing supplied. It now scores
+//     no signal at all and is held at WARN — and Task 3/4 of the plan gives it a
+//     real independent signal when a spec declares the requirement.
+//
+// So the tautology is deleted, self-evident signals still count at HIGH, and a
+// MEDIUM band still requires something independent.
 //
 // The unconfirmed arm runs FIRST and is band-independent: the correlator set
 // that marker because a live scan ran and did NOT confirm this finding, which
 // is a direct contradiction of the claim rather than merely weak support for
 // it. Reporting "[Unconfirmed by live scan]" in the evidence text and failing
 // the build on the same finding is the specific incoherence FIX-08 exists to
-// remove, so no band alone lifts it — only an actual corroborating signal does.
+// remove, so no band alone lifts it — only an actual independent signal does.
 //
 // Every WARN arm appends one 0-point line to the score breakdown. It must be
 // 0-point and carry an explicit "+0 " prefix: confidence_reasons is published
@@ -143,7 +230,8 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 // parse the leading signed delta). The score itself never moves; a demotion is
 // an ENFORCEMENT decision, not a re-scoring of the evidence.
 func applyConfidenceGate(d *Decision, ev evidence.Evidence) {
-	sigs := corroborations(ev)
+	c := d.Corroboration
+	sigs := c.Independent
 
 	hold := func(reason string) {
 		d.Status = StatusWarn
@@ -154,95 +242,198 @@ func applyConfidenceGate(d *Decision, ev evidence.Evidence) {
 	switch {
 	case ev.UnconfirmedByLiveScan && len(sigs) == 0:
 		hold("severity at or above the --fail-on threshold but the finding is unconfirmed " +
-			"by live scan and uncorroborated — needs corroboration to block")
+			"by live scan and uncorroborated — needs independent corroboration to block")
 	case d.Score.Band == models.ConfidenceLow:
 		hold("severity above threshold but confidence LOW — needs corroboration to block")
+	case !c.Any():
+		// RC-1's core arm. Reaching a band without ANY signal means the score
+		// came from source/tier deltas alone — i.e. from what kind of scanner
+		// ran, not from anything it established. A scanner-assigned severity
+		// constant must not gate a build on its own.
+		hold("severity above threshold but nothing corroborates the claim — " +
+			"needs corroboration to block")
 	case d.Score.Band == models.ConfidenceMedium && len(sigs) == 0:
+		// A MEDIUM band supported only by self-evident signals: the observation
+		// was clean, but nothing independent of it agrees. Held at WARN.
 		hold("severity above threshold but confidence MEDIUM with no corroborating signal — " +
 			"needs corroboration to block")
-	case d.Score.Band == models.ConfidenceMedium:
+	default:
 		d.Status = StatusBlock
-		d.Reason = "severity at or above the --fail-on threshold; corroborated by: " + strings.Join(sigs, ", ")
-	default: // ConfidenceHigh
-		d.Status = StatusBlock
-		d.Reason = "severity at or above the --fail-on threshold; confidence HIGH"
-		if len(sigs) > 0 {
-			d.Reason += "; corroborated by: " + strings.Join(sigs, ", ")
-		}
+		d.Reason = "severity at or above the --fail-on threshold; corroborated by: " +
+			strings.Join(append(append([]string(nil), sigs...), c.SelfEvident...), ", ")
 	}
 }
 
-// corroborations names every corroborating signal present on ev, in a FIXED
-// order. Pure and deterministic (Rule 8): a fixed sequence of ifs, never a map
-// or a set, because the result is joined into Decision.Reason and the
-// order-independence locks compare those strings verbatim.
+// corroboration partitions the signals supporting a claim into two classes.
 //
-// Returns nil (not an empty slice) when nothing fires, so `len(...) == 0` is
-// the single corroboration predicate everywhere.
+// INDEPENDENT signals come from an observation DISTINCT from the one that
+// produced the claim: another engine agreed, a taint path was proved, a route
+// was confirmed live, a probe payload elicited a predicted response, an external
+// tool reported the same weakness at the same location. These are the only
+// signals that may lift a band to BLOCK.
 //
-// On the two "observation" signals — DECISIONS.md D7 is binding here, and the
-// distinction is easy to collapse by accident:
+// SELF-EVIDENT signals restate the observation that produced the claim: a
+// deterministic read of a live response, a deterministic pattern match in
+// production source. They are strong — they carry the largest confidence deltas
+// in the scorer (+30 each) — but they are not CONFIRMATION, because there is no
+// second observation that could have disagreed. They are published so a reader
+// sees the full support, and they never substitute for an independent signal.
 //
-//   - liveRuntimeObservation is keyed on Source (blackbox or correlated): the
-//     finding came from a live probe against a running target at all. It is
-//     deliberately WIDER than evidence.Evidence.DirectObservation.
-//   - Evidence.DirectObservation is the narrow deterministic-read flag the
-//     header/cookie/CORS checks set, and it is scored separately by
-//     confidence.directObservation.
+// RC-1, REMOVED IN THIS CHANGE: "live runtime observation", which fired for
+// every Source ∈ {blackbox, correlated}. It was a restatement of a field the
+// report already exports, so every blackbox finding corroborated ITSELF: a
+// bare DAST finding sits at 35 base + 10 runtime = 45 (MEDIUM band), the
+// tautology supplied the one required signal, and any scanner-assigned CRITICAL
+// then blocked the build. Severity is a constant in the scanner; that made
+// "BLOCK" a function of a constant.
 //
-// If this predicate were "unified" onto the narrow field, every active-probe
-// DAST finding (injection, XSS, SSRF, GraphQL) would lose its ONLY corroborator
-// — those scanners do not set DirectObservation — and a pure-blackbox finding
-// sits at 35 base + 10 runtime = 45, MEDIUM band. The whole live-scan gate would
-// silently disappear. Hence both, OR-ed.
+// The prior comment defended the signal on the grounds that removing it would
+// strip every active-probe DAST finding (injection, XSS, SSRF, GraphQL) of its
+// only corroborator. That was TRUE, and the reason is recorded in confidence.go:
+// payloadValidated requires Payload AND Response, and no production producer set
+// Response, so the honest signal for those scanners was dead code. The fix is to
+// make that signal real (the active-probe checks now record a bounded response
+// excerpt), not to keep a tautology standing in for it.
 //
-// confidence.HasDeterministicDetection is the static mirror of the same idea and
-// is called rather than re-derived, so the corroboration predicate cannot drift
-// from the delta that pays for it.
+// confidence.HasDeterministicDetection is the static mirror of DirectObservation
+// and is called rather than re-derived, so the classification cannot drift from
+// the delta that pays for it.
 //
-// Note on payload validation: it mirrors confidence.go's rule exactly (Payload
-// AND Response), and evidence.Evidence.Response has no production producer
-// today, so this arm is forward-compatibility only. Do not build a test or a
-// gating expectation on it.
-func corroborations(ev evidence.Evidence) []string {
-	liveRuntimeObservation := ev.Source == models.SourceBlackbox || ev.Source == models.SourceCorrelated
+// Both slices are built by a FIXED sequence of ifs, never a map or a set: they
+// are joined into Decision.Reason and exported into SARIF, so their order must
+// be a pure function of the evidence (Rule 8). Each is nil when nothing fires,
+// so `len(...) == 0` is the single predicate everywhere.
+type corroboration struct {
+	Independent []string
+	SelfEvident []string
+}
 
-	var sigs []string
+// Any reports whether any signal at all fired, in either class.
+func (c corroboration) Any() bool {
+	return len(c.Independent) > 0 || len(c.SelfEvident) > 0
+}
+
+func corroborate(ev evidence.Evidence) corroboration {
+	var c corroboration
+
 	if ev.Source == models.SourceCorrelated {
-		sigs = append(sigs, "cross-engine agreement")
-	}
-	if liveRuntimeObservation {
-		sigs = append(sigs, "live runtime observation")
-	}
-	if ev.DirectObservation {
-		sigs = append(sigs, "direct observation of a live response")
-	}
-	if confidence.HasDeterministicDetection(ev) {
-		sigs = append(sigs, "deterministic detection in production code")
+		c.Independent = append(c.Independent, "cross-engine agreement")
 	}
 	if ev.RouteConfirmed {
-		sigs = append(sigs, "confirmed route")
+		c.Independent = append(c.Independent, "confirmed route")
 	}
 	if ev.Reachable {
-		sigs = append(sigs, "reachable taint path")
+		c.Independent = append(c.Independent, "reachable taint path")
 	}
 	if ev.ProvenPath {
-		sigs = append(sigs, "proven path")
+		c.Independent = append(c.Independent, "proven path")
 	}
+	// Payload AND Response — mirrors confidence.payloadValidated exactly. The
+	// pair is the differential: "we sent something" is not evidence, "the
+	// target answered the way the check predicted" is.
 	if ev.Payload != "" && ev.Response != "" {
-		sigs = append(sigs, "payload-validated probe")
+		c.Independent = append(c.Independent, "payload-validated probe")
 	}
 	// Strong cross-tool corroboration only — stamped exclusively by
 	// engine.CorrelateCrossTool when an INDEPENDENT tool reported the same
-	// normalized CWE at the same normalized location. An imported finding
-	// that merely shares a title, category, fingerprint, or file with this
-	// one never sets the flag, so it can never satisfy this arm. Appended
-	// last so the existing signal order (and every string-locked test)
-	// stays byte-identical.
+	// normalized CWE at the same normalized location. An imported finding that
+	// merely shares a title, category, fingerprint, or file with this one never
+	// sets the flag, so it can never satisfy this arm.
 	if ev.CrossToolCorroborated {
-		sigs = append(sigs, "independent cross-tool corroboration")
+		c.Independent = append(c.Independent, "independent cross-tool corroboration")
 	}
-	return sigs
+	// A live unauthenticated success that contradicts a DECLARED requirement is
+	// two observations disagreeing: the specification says protected, the wire
+	// says open. The declaration comes from a source entirely separate from the
+	// probe that produced the claim, which is what makes it independent — and
+	// it is the premise the auth_bypass claim was missing (RC-2).
+	//
+	// Unknown and Public contribute NOTHING. Unknown is not evidence in either
+	// direction, and Public is evidence AGAINST the claim, which the scanner
+	// already reflects by emitting the finding at INFO.
+	if ev.AuthExpectation == models.AuthExpectationRequired {
+		c.Independent = append(c.Independent, "contradicted authentication requirement")
+	}
+
+	if ev.DirectObservation {
+		c.SelfEvident = append(c.SelfEvident, "direct observation of a live response")
+	}
+	if confidence.HasDeterministicDetection(ev) {
+		c.SelfEvident = append(c.SelfEvident, "deterministic detection in production code")
+	}
+	// An imported finding whose SOURCE TOOL declares the rule high-precision.
+	// Self-evident, not independent: it is one engine's own claim about its own
+	// rule, and nothing has agreed with it — cross-tool agreement is a separate
+	// signal that only engine.CorrelateCrossTool may stamp.
+	//
+	// It must be classified rather than omitted. The SARIF-import design
+	// (docs/superpowers/specs/2026-08-25-sarif-import-design.md) calibrated the
+	// import deltas so a high-precision rule lands at exactly bandHigh (35 base
+	// + 10 imported + 25 high-precision = 70) and gates on its own, while medium
+	// lands at 45 and low at 35. Leaving it unclassified would silently revoke
+	// that contract via the "no signal of any class" arm, turning an intentional
+	// design decision into an accident of taxonomy.
+	if ev.Source == models.SourceImported && ev.Confidence == models.ConfidenceHigh {
+		c.SelfEvident = append(c.SelfEvident, "imported high-precision rule")
+	}
+	return c
+}
+
+// applyApplicabilityGate holds a dependency finding at WARN when Fendix has
+// credible evidence that the advisory's affected component is unused.
+//
+// WHY THIS IS A DECISION ARM AND NOT A CONFIDENCE DELTA. Before this, the only
+// consequence of non-applicability was componentNotImported (-10) on the score.
+// That produced the right answer for the django case by arithmetic accident —
+// 75 - 10 = 65 happens to cross the HIGH→MEDIUM boundary — and the wrong answer
+// for any dependency finding whose score sat higher, e.g. one an independent
+// tool also reported (+15 crossToolCorroborated). A ten-point nudge is not a
+// policy; it is a coincidence that holds until the numbers move.
+//
+// The finding is fully PRESERVED (Rule 3): same id, severity, CVE identity and
+// evidence text, and the score is untouched. Only enforcement moves, and one
+// 0-point line records why.
+//
+// SCOPE. Deliberately restricted to category "deps". Applicability is a
+// statement about a vulnerable dependency's affected component; it has no
+// meaning for an injection or auth finding, and a stray value on one must not
+// silence it.
+//
+// CONSERVATISM. ApplicabilityEvidenceAgainst is backed by a static import grep,
+// which dynamic import forms can defeat. That is exactly why it de-escalates to
+// WARN — visible, actionable, non-gating — rather than suppressing, and why
+// Options.BlockOnInapplicable exists for teams whose policy is "no vulnerable
+// version ships, applicable or not".
+func applyApplicabilityGate(d *Decision, ev evidence.Evidence, opts Options) {
+	// Applies to any THRESHOLD-CROSSING dependency finding, not only one the
+	// confidence gate left at BLOCK.
+	//
+	// Scoping it to BLOCK alone was not enough: for the common django shape the
+	// band arm fires first (65 → MEDIUM, no independent signal) and the finding
+	// lands at WARN with a reason that never mentions applicability. The outcome
+	// is right but the explanation is an accident — "confidence MEDIUM with no
+	// corroborating signal" is true and useless, and it stops being true the
+	// moment the score moves. Applicability is the durable, actionable fact, so
+	// it becomes the stated reason whenever it applies.
+	if !d.aboveThreshold || opts.BlockOnInapplicable {
+		return
+	}
+	if d.Status != StatusBlock && d.Status != StatusWarn {
+		return
+	}
+	if !strings.EqualFold(ev.Category, "deps") {
+		return
+	}
+	if evidence.ApplicabilityOf(ev) != models.ApplicabilityEvidenceAgainst {
+		return
+	}
+	const reason = "the vulnerable package is installed but Fendix found no import of the " +
+		"advisory's affected component, so the vulnerable code path is not applicable to this " +
+		"project on the available evidence — finding preserved, held at WARN " +
+		"(override with --block-on-inapplicable)"
+	d.Status = StatusWarn
+	d.Reason = "severity at or above the --fail-on threshold, but " + reason
+	d.Score.Reasons = appendReason(d.Score.Reasons, "+0 held at WARN: "+reason)
 }
 
 // appendReason appends one explainability line to a fresh copy of the reason
@@ -284,6 +475,20 @@ type Options struct {
 	// restores the legacy severity-only mapping BYTE-FOR-BYTE; it does not
 	// also disable the test-fixture rule, which is gated on DeescalateTests.
 	EnforceConfidence bool
+
+	// BlockOnInapplicable makes a dependency finding gate the build even when
+	// Fendix has credible evidence the vulnerable component is unused.
+	//
+	// Default false: evidence of non-applicability holds such a finding at WARN
+	// (the finding, its severity, its CVE identity and its full evidence text
+	// are all preserved — this is de-escalation, never suppression). A team with
+	// a policy of "no vulnerable version ships, applicable or not" — common
+	// under regulatory constraints where the SBOM is what is audited, not the
+	// call graph — sets this to restore blocking.
+	//
+	// It is an explicit policy choice, not a confidence knob, which is why it
+	// lives here rather than as another delta in the scorer.
+	BlockOnInapplicable bool
 }
 
 // testFixtureReason is the 0-point explainability line appended to the score
@@ -334,6 +539,7 @@ const testFixtureBlockReason = "+0 de-escalated to WARN: finding is in test/fixt
 // occurrences. The index's "agree or drop" fold is the only correct source.
 func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decision {
 	d := decide(ev, failOn, opts)
+	applyApplicabilityGate(&d, ev, opts)
 	if !opts.DeescalateTests || !ev.InTest {
 		return d
 	}
@@ -342,7 +548,13 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 		// A corroborated finding in test code still gates the build: a live
 		// credential that a provider validated is a real leak wherever the
 		// file happens to live.
-		if len(corroborations(ev)) == 0 {
+		//
+		// RC-1: reads the INDEPENDENT class only. Not a behaviour change for
+		// this arm — confidence.HasDeterministicDetection is gated on !InTest,
+		// so the only self-evident signal reachable here is DirectObservation,
+		// which no secrets/fixture producer sets. Keeping it on the independent
+		// class is the conservative reading and matches the gate above.
+		if len(d.Corroboration.Independent) == 0 {
 			d.Status = StatusWarn
 			d.Reason = "de-escalated to WARN: finding is in test/fixture code with no corroborating " +
 				"signal beyond the pattern match (rule: test-fixture; evidence preserved; " +

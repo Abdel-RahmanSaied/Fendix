@@ -24,14 +24,24 @@ import (
 // Rule deltas. Exposed as consts so the scoring policy is auditable at a
 // glance and a future release can tune it without spelunking the logic.
 //
-// NOTE on payloadValidated, recorded because it changes how the rest of the
-// table should be read: the rule requires BOTH ev.Payload and ev.Response, and
-// evidence.Evidence.Response has no production producer anywhere in the module
-// — every active-probe scanner sets Payload, none sets Response, and the only
-// other occurrences are provenance/correlator plumbing that copies it. So the
-// +10 has never fired outside tests, and the real DAST-only ceiling before
-// directObservation was 45, not 55. Do not re-derive the calibration from the
-// nominal sum.
+// NOTE on payloadValidated — CORRECTED, and the correction matters for how the
+// rest of the table reads.
+//
+// The previous note said the rule was dead because "every active-probe scanner
+// sets Payload, none sets Response". BOTH halves were wrong: every `Payload:`
+// site in internal/scanner populated a ProbeRecord (the probe audit log), never
+// an ev.Evidence, so production evidence carried NEITHER field. The rule was
+// doubly dead, and nothing in the type system said so.
+//
+// As of the RC-1 decision-integrity change the confirmed active-probe checks
+// (error-based SQLi, time-based blind SQLi, command injection, CRLF, reflected
+// XSS, open redirect) set both fields on the Evidence they emit, so the +10
+// fires in production and the DAST-only ceiling before directObservation is 55.
+//
+// This matters beyond the score: decision.corroborate counts "payload-validated
+// probe" as an INDEPENDENT corroborating signal, and it is what active-probe
+// findings gate on now that the tautological "live runtime observation" signal
+// is gone. A scanner that records only what it SENT confirms nothing.
 const (
 	base               = 35  // a scanner flagged this at all
 	staticEvidence     = 10  // SAST (whitebox/correlated) saw it in source

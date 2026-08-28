@@ -61,6 +61,24 @@ func fullyPopulatedFinding() models.Finding {
 var notRoundTripped = map[string]string{
 	"CrossToolCorroborated": "stamped by engine.stampDecisions from restored evidence",
 	"CorroboratingTools":    "stamped by engine.stampDecisions from restored evidence",
+	// The decision-justification fields joined them for the SAME reason. Each
+	// is written by engine.stampDecisions from the POST-Restore evidence — the
+	// merged view of the dedup group — so projecting them would publish a
+	// pre-dedup value, and mapping them through FromFinding would let a pre-set
+	// value block ProvenanceIndex.Restore, which only fills what is empty.
+	//
+	// AuthExpectation is the subtle one: it exists on BOTH Evidence (internal
+	// provenance, carried by ScoringProvenance) and Finding (published, because
+	// an auditable decision cannot cite a field the report withholds). It is
+	// still stamped rather than projected, so the published value is the
+	// group's agreed expectation rather than the primary member's.
+	"DecisionReason":     "stamped by engine.stampDecisions from the Decision the gate produced",
+	"DecisionPolicy":     "stamped by engine.stampDecisions from the Decision the gate produced",
+	"PolicyOverride":     "stamped by engine.stampDecisions from the Decision the gate produced",
+	"IndependentSignals": "stamped by engine.stampDecisions from the Decision the gate produced",
+	"SelfEvidentSignals": "stamped by engine.stampDecisions from the Decision the gate produced",
+	"AuthExpectation":    "stamped by engine.stampDecisions from restored evidence",
+	"Applicability":      "stamped by engine.stampDecisions from restored evidence",
 }
 
 // TestFindingSampleExercisesEveryField is the drift guard: it fails if any
@@ -92,6 +110,13 @@ func TestExemptFieldsAreGenuinelyNotMapped(t *testing.T) {
 	f := fullyPopulatedFinding()
 	f.CrossToolCorroborated = true
 	f.CorroboratingTools = []string{"codeql"}
+	f.DecisionReason = "severity at or above the --fail-on threshold; corroborated by: reachable taint path"
+	f.IndependentSignals = []string{"reachable taint path"}
+	f.SelfEvidentSignals = []string{"direct observation of a live response"}
+	f.AuthExpectation = models.AuthExpectationRequired
+	f.Applicability = models.ApplicabilityEvidenceAgainst
+	f.DecisionPolicy = "relaxed"
+	f.PolicyOverride = true
 
 	got := FromFinding(f).ToFinding()
 

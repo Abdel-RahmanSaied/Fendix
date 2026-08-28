@@ -361,10 +361,37 @@ func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param st
 				"resolve+pin the IP and reject private/link-local/metadata ranges, and disable redirects on the server-side fetcher.",
 			References: []string{"CWE-918", "OWASP-A10"},
 			Confidence: models.ConfidenceHigh,
+			// The differential that confirms the claim: we injected a URL for a
+			// host that cannot resolve, and the response came back carrying a
+			// fetch-stack error ABOUT that host. Reflection alone never
+			// produces an error signature, which is precisely why this pair —
+			// and not the mere presence of the marker — is the evidence.
+			Payload:  injectURL,
+			Response: ProbeExcerpt(ssrfErrorContext(body, sig)),
 		}, true
 	}
 
 	return ev.Evidence{}, false
+}
+
+// ssrfErrorContext returns the region of the response body around the matched
+// fetch-stack error signature, so the stored differential is the sentence that
+// proves the server dialled our canary rather than an arbitrary body prefix.
+// Falls back to the body head when the signature cannot be located.
+func ssrfErrorContext(body, sig string) string {
+	idx := strings.Index(body, sig)
+	if idx < 0 {
+		return body
+	}
+	start := idx - 80
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(sig) + 160
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[start:end]
 }
 
 // ssrfRedirectProbe sends the canary URL via the NON-following client and fires
@@ -440,6 +467,12 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 					"and disable redirect following on the server-side fetcher.",
 				References: []string{"CWE-918", "OWASP-A10"},
 				Confidence: models.ConfidenceMedium,
+				// The differential: the canary URL we injected, and the raw
+				// Location that came back carrying its HOST (exact match, not
+				// substring — see the comment above). The body is irrelevant
+				// here; the header is the confirming observation.
+				Payload:  injectURL,
+				Response: ProbeExcerpt(fmt.Sprintf("HTTP %d Location: %s", resp.StatusCode, location)),
 			}, true
 		}
 	}
@@ -539,6 +572,11 @@ func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param s
 				"bounded connect timeout on the server-side fetcher.",
 			References: []string{"CWE-918", "OWASP-A10"},
 			Confidence: models.ConfidenceMedium,
+			// A TIMING check's confirming observation is the measured
+			// differential, not a body — this probe never reads one. Recording
+			// the medians is the truthful response observation.
+			Payload:  hangURL,
+			Response: ProbeTimingExcerpt(probe, baseline+ssrfTimingThreshold),
 		}, true
 	}
 

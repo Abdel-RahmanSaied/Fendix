@@ -488,6 +488,7 @@ Create `internal/scanner/authexpectation_test.go`:
 package scanner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -518,7 +519,7 @@ func TestSpecEndpointsCarryAuthExpectation(t *testing.T) {
 	}
 
 	c := &Crawler{cfg: &models.ScanConfig{SpecPath: path}}
-	endpoints, err := c.fromSpec()
+	endpoints, err := c.fromSpec(context.Background())
 	if err != nil {
 		t.Fatalf("fromSpec: %v", err)
 	}
@@ -557,7 +558,7 @@ func TestSpecWithoutSecurityLeavesExpectationUnknown(t *testing.T) {
 	}
 
 	c := &Crawler{cfg: &models.ScanConfig{SpecPath: path}}
-	endpoints, err := c.fromSpec()
+	endpoints, err := c.fromSpec(context.Background())
 	if err != nil {
 		t.Fatalf("fromSpec: %v", err)
 	}
@@ -1361,9 +1362,37 @@ In `stampDecisions`, add:
 		findings[i].SelfEvidentSignals = d.Corroboration.SelfEvident
 ```
 
-In `internal/reporters/sarif.go`, extend `sarifResultProperties` to build the
-block. Use `map[string]interface{}` for the evidence sub-object specifically so
-an unevaluated field can be **omitted**, which a `bool` field cannot express:
+In `internal/reporters/sarif.go`, `sarifResultProperties` returns the typed
+`*SARIFResultProperties` (struct, not a map), so add one field to it:
+
+```go
+	// Decision is the machine-readable justification for Status. Pointer +
+	// omitempty so a report produced without the decision pass stays
+	// byte-identical.
+	Decision *SARIFDecision `json:"decision,omitempty"`
+```
+
+and declare:
+
+```go
+// SARIFDecision is the auditable justification for one finding's verdict.
+type SARIFDecision struct {
+	Status             string `json:"status"`
+	Reason             string `json:"reason,omitempty"`
+	IndependentSignals []string `json:"independent_signals,omitempty"`
+	SelfEvidentSignals []string `json:"self_evident_signals,omitempty"`
+	// Evidence is a MAP, not a struct, on purpose — see decisionProperties.
+	Evidence map[string]interface{} `json:"evidence,omitempty"`
+}
+```
+
+Note the early-return guard at `sarifResultProperties`'s top already tests
+`f.Status == ""`, so any finding carrying a decision passes it unchanged; no
+guard edit is needed.
+
+Build the block with a helper. Use `map[string]interface{}` for the evidence
+sub-object specifically so an unevaluated field can be **omitted**, which a
+`bool` field cannot express:
 
 ```go
 // decisionProperties renders the machine-readable justification for a finding's
@@ -1374,7 +1403,7 @@ an unevaluated field can be **omitted**, which a `bool` field cannot express:
 // ABSENT means "not evaluated" — never "evaluated and false". Rendering unknown
 // as false is the single most misleading thing this exporter could do, because
 // a consumer cannot tell a cleared check from a check that never ran.
-func decisionProperties(f models.Finding) map[string]interface{} {
+func decisionProperties(f models.Finding) *SARIFDecision {
 	if f.Status == "" {
 		return nil // no decision pass ran; emit nothing rather than a hollow block
 	}
@@ -1394,24 +1423,20 @@ func decisionProperties(f models.Finding) map[string]interface{} {
 		evi["auth_expectation"] = string(f.AuthExpectation)
 	}
 
-	out := map[string]interface{}{"status": f.Status}
-	if f.DecisionReason != "" {
-		out["reason"] = NeutralizeText(f.DecisionReason)
-	}
-	if len(f.IndependentSignals) > 0 {
-		out["independent_signals"] = neutralizeTags(f.IndependentSignals)
-	}
-	if len(f.SelfEvidentSignals) > 0 {
-		out["self_evident_signals"] = neutralizeTags(f.SelfEvidentSignals)
+	out := &SARIFDecision{
+		Status:             f.Status,
+		Reason:             NeutralizeText(f.DecisionReason),
+		IndependentSignals: neutralizeTags(f.IndependentSignals),
+		SelfEvidentSignals: neutralizeTags(f.SelfEvidentSignals),
 	}
 	if len(evi) > 0 {
-		out["evidence"] = evi
+		out.Evidence = evi
 	}
 	return out
 }
 ```
 
-and attach it in `sarifResultProperties` under the key `decision`.
+and attach it in `sarifResultProperties` with `p.Decision = decisionProperties(f)`.
 
 Note: `AuthExpectation` must be added to the `models.Finding` render block for
 this to compile — it is exported here because the *decision* depends on it, and

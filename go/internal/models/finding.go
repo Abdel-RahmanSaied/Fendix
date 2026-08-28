@@ -90,6 +90,69 @@ func (t SourceTier) TrustRank() int {
 	}
 }
 
+// AuthExpectation is what Fendix ESTABLISHED about whether an endpoint is
+// supposed to require authentication — independently of what it actually did
+// when probed.
+//
+// The zero value is UNKNOWN and that is load-bearing. A target scanned with no
+// spec and no static route analysis has no expectation, and "we never
+// established one" must never render as "this endpoint is declared public".
+// Collapsing unknown into public would silently suppress real bypasses;
+// collapsing it into required would flag every public endpoint as CRITICAL,
+// which is the RC-2 defect. It is its own state, and the decision layer treats
+// it as evidence in neither direction.
+type AuthExpectation string
+
+const (
+	// AuthExpectationUnknown — never evaluated. NOT a claim in either direction.
+	AuthExpectationUnknown AuthExpectation = ""
+	// AuthExpectationPublic — a source of truth declares anonymous access
+	// intentional (OpenAPI `security: []` or `security: [{}]`).
+	AuthExpectationPublic AuthExpectation = "public"
+	// AuthExpectationRequired — a source of truth declares authentication
+	// required: an operation-level `security` requirement, or an inherited
+	// global one the operation does not override.
+	AuthExpectationRequired AuthExpectation = "required"
+)
+
+// Applicability is what Fendix established about whether a vulnerable
+// dependency's AFFECTED COMPONENT is actually used by the scanned project — as
+// distinct from whether the vulnerable VERSION is installed, which is what the
+// finding itself asserts.
+//
+// Three states, and exactly three, because three is what the analyzer can
+// actually produce (scanner/deps/applicability.resolve):
+//
+//	Unknown         the advisory names no importable component, or the import
+//	                grep overran its budget and failed open. NOT a claim.
+//	Applicable      at least one affected component IS imported by the tree.
+//	EvidenceAgainst no affected component is imported anywhere in the tree.
+//
+// The previous model was a single bool, ComponentNotImported, whose false
+// conflated "the component IS imported" with "we never evaluated this" — two
+// states that must drive different decisions.
+//
+// DELIBERATELY NOT a fourth "ConfirmedNonApplicable" state. The backing
+// evidence is a static import grep, and dynamic import forms
+// (importlib.import_module, plugin registries, reflection) mean absence of an
+// import is EVIDENCE against applicability, never proof of it. Naming the state
+// after what it is — evidence — keeps that honest at every call site.
+//
+// Symmetrically, Applicable means "the component is imported", not "the
+// vulnerable function is reached": Fendix does not build a dependency call
+// graph. It is evidence FOR applicability, which is why it restores normal
+// policy rather than escalating beyond it.
+type Applicability string
+
+const (
+	// ApplicabilityUnknown — not evaluated, or evaluation was incomplete.
+	ApplicabilityUnknown Applicability = ""
+	// ApplicabilityApplicable — an affected component is imported.
+	ApplicabilityApplicable Applicability = "applicable"
+	// ApplicabilityEvidenceAgainst — no affected component is imported.
+	ApplicabilityEvidenceAgainst Applicability = "evidence_against"
+)
+
 // Route binds a finding to the HTTP route that reaches its sink (Proven
 // Path v1). Populated by the Python route extractor for whitebox findings
 // whose enclosing function is a registered Django/Flask/FastAPI handler;
@@ -189,6 +252,44 @@ type Finding struct {
 	// ConfidenceReasons is the plain-text, per-rule breakdown of the score
 	// (the "no black boxes" contract).
 	ConfidenceReasons []string `json:"confidence_reasons,omitempty"`
+	// DecisionReason is the plain-text justification for Status, verbatim from
+	// decision.Decision.Reason.
+	DecisionReason string `json:"decision_reason,omitempty"`
+	// DecisionPolicy names which policy produced Status: "enforced" (the
+	// shipped evidence-gated policy) or "relaxed" (the legacy severity-only
+	// mapping restored by --enforce-confidence=false).
+	DecisionPolicy string `json:"decision_policy,omitempty"`
+	// PolicyOverride is true only when the relaxed policy produced a BLOCK the
+	// shipped policy would NOT have produced — i.e. an unconfirmed finding
+	// gated the build because the operator switched the evidence requirement
+	// off.
+	//
+	// omitempty is deliberate: the marker's PRESENCE is the signal. Publishing
+	// "policy_override": false on every normal result would be noise, and noise
+	// is how a genuine override goes unnoticed.
+	PolicyOverride bool `json:"policy_override,omitempty"`
+	// IndependentSignals / SelfEvidentSignals are the two corroboration classes
+	// behind Status (decision.corroborate). Only Independent may lift a band to
+	// BLOCK; both are published so a reader can reconstruct the verdict without
+	// re-running the engine.
+	//
+	// STAMPED, NOT PROJECTED — same reasoning as the corroboration pair below:
+	// engine.stampDecisions writes them from the post-Restore evidence, so they
+	// reflect the merged group rather than whichever duplicate won findingLess.
+	IndependentSignals []string `json:"independent_signals,omitempty"`
+	SelfEvidentSignals []string `json:"self_evident_signals,omitempty"`
+	// AuthExpectation is what a source of truth declared about authentication
+	// for this endpoint (unknown / public / required). Published because the
+	// DECISION depends on it: a "contradicted authentication requirement" is an
+	// independent corroborating signal, and an auditable decision cannot cite a
+	// field the report withholds. Empty (unknown) is omitted, which is the
+	// honest encoding — see the type doc.
+	AuthExpectation AuthExpectation `json:"auth_expectation,omitempty"`
+	// Applicability is the dependency-applicability verdict. Published for the
+	// same reason as AuthExpectation: the decision policy reads it, and an
+	// auditable verdict cannot cite a field the report withholds. Unknown is
+	// omitted, which is the honest encoding of "not evaluated".
+	Applicability Applicability `json:"applicability,omitempty"`
 
 	// --- Cross-tool corroboration (SARIF import) ------------------------
 	// CrossToolCorroborated / CorroboratingTools publish the verdict of

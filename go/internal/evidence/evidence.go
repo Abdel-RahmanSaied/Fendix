@@ -148,6 +148,33 @@ type Evidence struct {
 	// it must be carried by ScoringProvenance AND restored by
 	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
 	ComponentNotImported bool
+	// Applicability is the three-state dependency-applicability verdict
+	// (unknown / applicable / evidence_against). It SUPERSEDES
+	// ComponentNotImported, whose false conflated "the component is imported"
+	// with "we never evaluated this".
+	//
+	// ComponentNotImported is retained for one release as a derived alias so an
+	// out-of-tree producer that still sets it keeps working; ApplicabilityOf
+	// resolves the pair. Set by scanner/deps/applicability, which is the only
+	// thing that can know it — like the flags above it has NO endpoint-derived
+	// fallback and must be carried by ScoringProvenance.
+	Applicability models.Applicability
+	// AuthExpectation is what a source of truth DECLARED about authentication
+	// for this endpoint, and AuthExpectationSource names that source
+	// ("openapi", "static-route", "differential"). They are what let the
+	// decision layer treat a contradicted requirement as INDEPENDENT
+	// corroboration — the spec says protected, the wire says open, and those
+	// are two observations that could have agreed — while an unauthenticated
+	// 200 on an endpoint of unknown expectation stays observational.
+	//
+	// Unknown ("") is a real third state, not a default standing in for
+	// Public: see models.AuthExpectation.
+	//
+	// Like DirectObservation these have NO endpoint-derived fallback — nothing
+	// on a projected Finding can reconstruct them — so they must be carried by
+	// ScoringProvenance and restored before scoring, or the rule is dead.
+	AuthExpectation       models.AuthExpectation
+	AuthExpectationSource string
 	// Weakness is the normalized CWE identity of the claim ("CWE-89", …),
 	// the machine-readable input to cross-tool correlation. Producers:
 	// sarifimport extracts it from SARIF rule taxa/tags; StampWeakness
@@ -184,6 +211,24 @@ type Evidence struct {
 	// prefers overlapping ranges over raw line proximity when BOTH sides
 	// carry one. INTERNAL — never projected onto Finding.
 	LineEnd int
+}
+
+// ApplicabilityOf resolves the effective applicability verdict for ev, honouring
+// the deprecated ComponentNotImported alias.
+//
+// The alias resolves to EvidenceAgainst and NEVER to Applicable: a producer
+// that only knows the old bool can assert "no affected component is imported"
+// but cannot assert the converse — its false has always meant "either imported
+// or never checked". Reading it as Applicable would manufacture a claim the
+// producer never made, which is the exact conflation the enum exists to end.
+func ApplicabilityOf(ev Evidence) models.Applicability {
+	if ev.Applicability != models.ApplicabilityUnknown {
+		return ev.Applicability
+	}
+	if ev.ComponentNotImported {
+		return models.ApplicabilityEvidenceAgainst
+	}
+	return models.ApplicabilityUnknown
 }
 
 // FromFinding lifts a models.Finding into Evidence, copying the render block

@@ -91,6 +91,23 @@ type ScoringProvenance struct {
 	// trust; everything after correlation only preserves it.
 	CrossToolCorroborated bool
 	CorroboratingTools    []string
+	// AuthExpectation / AuthExpectationSource are the RC-2 fields: what a
+	// source of truth declared about authentication for this endpoint. Like
+	// the producer-set flags above they have NO endpoint-derived fallback —
+	// only the spec parse knows them — so a missed hop here is permanent and
+	// silent, which is why they are carried explicitly.
+	//
+	// They fold by agree-or-drop: two endpoints in one dedup group that
+	// disagree about whether auth was expected collapse to Unknown. That is
+	// the conservative reading (the group no longer supports either claim)
+	// and keeps the fold commutative.
+	AuthExpectation       models.AuthExpectation
+	AuthExpectationSource string
+	// Applicability is the three-state dependency-applicability verdict. It
+	// supersedes ComponentNotImported (kept alongside for one release) and, like
+	// it, is observed by the scanner walking the source tree — nothing
+	// downstream of the projection can re-observe it.
+	Applicability models.Applicability
 }
 
 // ProvenanceIndex maps a render-stable finding identity to the scoring
@@ -141,6 +158,9 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			ComponentNotImported:  e.ComponentNotImported,
 			CrossToolCorroborated: e.CrossToolCorroborated,
 			CorroboratingTools:    e.CorroboratingTools,
+			AuthExpectation:       e.AuthExpectation,
+			AuthExpectationSource: e.AuthExpectationSource,
+			Applicability:         e.Applicability,
 		}
 		if prev, ok := ix[k]; ok {
 			p = mergeScoringProvenance(prev, p)
@@ -207,6 +227,15 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		}
 		if len(out[i].CorroboratingTools) == 0 {
 			out[i].CorroboratingTools = p.CorroboratingTools
+		}
+		if out[i].AuthExpectation == models.AuthExpectationUnknown {
+			out[i].AuthExpectation = p.AuthExpectation
+		}
+		if out[i].AuthExpectationSource == "" {
+			out[i].AuthExpectationSource = p.AuthExpectationSource
+		}
+		if out[i].Applicability == models.ApplicabilityUnknown {
+			out[i].Applicability = p.Applicability
 		}
 	}
 	return out
@@ -279,6 +308,14 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		// corroboration.
 		CrossToolCorroborated: len(tools) > 0,
 		CorroboratingTools:    tools,
+		AuthExpectation: models.AuthExpectation(
+			agreementOr(string(a.AuthExpectation), string(b.AuthExpectation))),
+		AuthExpectationSource: agreementOr(a.AuthExpectationSource, b.AuthExpectationSource),
+		// Agree-or-drop: two dependency findings in one group that disagree
+		// about applicability collapse to Unknown, which is the conservative
+		// reading — the group no longer supports either claim.
+		Applicability: models.Applicability(
+			agreementOr(string(a.Applicability), string(b.Applicability))),
 	}
 }
 

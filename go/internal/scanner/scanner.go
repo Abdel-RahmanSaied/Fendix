@@ -27,6 +27,17 @@ type Endpoint struct {
 	Params     []string
 	Headers    []string
 	BodyParams []string
+	// AuthExpectation is what a source of truth (today: the OpenAPI spec)
+	// declares about authentication for this operation. Zero value = unknown,
+	// which is what every non-spec discovery source (crawl, brute-force,
+	// robots.txt, JS extraction) leaves it as — correctly, since those observe
+	// that a path EXISTS and nothing about whether it should be gated.
+	//
+	// The auth check reads it to distinguish "this endpoint is public" from
+	// "this endpoint's authentication requirement was bypassed"; without it,
+	// checkUnauthenticated could only see a status code and called every 2xx
+	// CRITICAL (RC-2).
+	AuthExpectation models.AuthExpectation
 }
 
 // CheckFn is the signature for all scanner check functions.

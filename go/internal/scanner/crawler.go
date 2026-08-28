@@ -257,6 +257,62 @@ func (c *Crawler) CrawlEndpoints(ctx context.Context) ([]Endpoint, error) {
 	return deduped, nil
 }
 
+// specAllowsAnon reports whether an OpenAPI `security` value permits anonymous
+// access. Mirrors python/analyzers/spec_parser.py:_allows_anon so the two
+// analyzers cannot drift.
+//
+// In OpenAPI 3.x BOTH `security: []` and a list containing the empty object
+// `security: [{}]` make auth optional. The second form is the trap: len([{}])
+// is 1, so "a non-empty list means a requirement" reads an explicit opt-out as
+// a requirement. Checked explicitly for that reason.
+//
+// An absent or malformed value returns false — it is not a claim of anonymity,
+// and the caller resolves it to Unknown rather than Public.
+func specAllowsAnon(security interface{}) bool {
+	list, ok := security.([]interface{})
+	if !ok {
+		return false
+	}
+	if len(list) == 0 {
+		return true // `security: []`
+	}
+	for _, req := range list {
+		if m, ok := req.(map[string]interface{}); ok && len(m) == 0 {
+			return true // `security: [{}]`
+		}
+	}
+	return false
+}
+
+// authExpectationFor resolves the declared authentication expectation for one
+// operation. opSecurity is the operation's own `security` value (nil = inherits
+// the global one); globalSecurity is the spec's top-level value.
+//
+// Returns Unknown when NEITHER level declares anything. Spec silence is not a
+// declaration of public access — see models.AuthExpectation on why that
+// distinction is load-bearing rather than pedantic.
+func authExpectationFor(opSecurity, globalSecurity interface{}) models.AuthExpectation {
+	resolve := func(v interface{}) (models.AuthExpectation, bool) {
+		if v == nil {
+			return models.AuthExpectationUnknown, false
+		}
+		if specAllowsAnon(v) {
+			return models.AuthExpectationPublic, true
+		}
+		if list, ok := v.([]interface{}); ok && len(list) > 0 {
+			return models.AuthExpectationRequired, true
+		}
+		// Present but malformed (not a list): no usable declaration.
+		return models.AuthExpectationUnknown, true
+	}
+
+	if exp, declared := resolve(opSecurity); declared {
+		return exp
+	}
+	exp, _ := resolve(globalSecurity)
+	return exp
+}
+
 // fromSpec parses an OpenAPI 2.0/3.x spec and extracts all path+method combinations.
 // Accepts both local file paths and HTTP/HTTPS URLs. URL form is needed because
 // many real services publish their spec at /openapi.json or /swagger.json — users
@@ -285,6 +341,9 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 	}
 
 	baseURL := c.specBaseURL(spec)
+	// The spec's top-level security requirement, inherited by every operation
+	// that does not declare its own. Read once — it is the same for all paths.
+	globalSecurity := spec["security"]
 	var endpoints []Endpoint
 
 	httpMethods := map[string]bool{
@@ -336,6 +395,12 @@ func (c *Crawler) fromSpec(ctx context.Context) ([]Endpoint, error) {
 				Params:     mergeParams(extractPathParams(path), pathLevelParams, opParams),
 				Headers:    mergeParams(pathLevelHeaders, opHeaders),
 				BodyParams: mergeParams(pathLevelBodyParams, opBodyParams),
+				// RC-2: the spec is the only source that knows whether this
+				// operation is SUPPOSED to be authenticated. Capturing it here
+				// is what lets the auth check tell a public endpoint from a
+				// bypassed one; opMap may be nil for a malformed operation,
+				// which indexes to nil and resolves to Unknown.
+				AuthExpectation: authExpectationFor(opMap["security"], globalSecurity),
 			}
 			endpoints = append(endpoints, ep)
 		}

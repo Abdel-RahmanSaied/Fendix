@@ -162,6 +162,10 @@ func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpo
 	if looksLikeHTML(resp.Header.Get("Content-Type"), head) {
 		return nil
 	}
+	// Same guard, second shape: a JSON API catch-all. See looksLikeJSONCatchAll.
+	if looksLikeJSONCatchAll(resp.Header.Get("Content-Type"), head) {
+		return nil
+	}
 
 	line := endpoint.Path
 	return []ev.Evidence{{
@@ -175,6 +179,18 @@ func (configLeakCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpo
 		References: []string{"CWE-538"}, // Insertion of Sensitive Information into Externally-Accessible File
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
+		// The claim IS the wire read: a 2xx on this path, a non-HTML non-JSON
+		// content type, and a body size — all taken from the response with no
+		// inference step between the bytes and the assertion. That is exactly
+		// what DirectObservation denotes, and the check deliberately stops
+		// there: persisting the body of a leaked secret file would itself be a
+		// leak, so "the 200 + path is the proof" is a design decision, not
+		// missing evidence.
+		//
+		// Without this the finding carries no corroborating signal of any class
+		// and, after the tautological blackbox signal was removed, silently
+		// stopped being able to gate a build.
+		DirectObservation: true,
 	}}
 }
 
@@ -241,4 +257,34 @@ func looksLikeHTML(contentType string, head []byte) bool {
 		return false
 	}
 	return strings.Contains(http.DetectContentType(head), "text/html")
+}
+
+// looksLikeJSONCatchAll reports whether the response is a JSON document, which
+// for these paths means a framework fallback rather than a served config file.
+//
+// The HTML guard above was written against SPA servers, and it misses the shape
+// that is far more common among the targets Fendix actually scans: a JSON API
+// whose router answers 200 with a generic body for every unknown path. Found
+// end-to-end — a fixture returning application/json for every path produced five
+// phantom CRITICALs (.env, .git/HEAD, .htaccess, .htpasswd, .DS_Store), the same
+// soft-404 class the HTML guard exists to stop.
+//
+// None of the paths this check probes is ever legitimately a JSON document: a
+// real .env is key=value text, .git/HEAD is a ref line, .htpasswd is
+// colon-separated, .DS_Store is binary. A JSON body is therefore positive
+// evidence of a catch-all, not weak evidence of a leak.
+//
+// Content-Type is authoritative when present; DetectContentType does not sniff
+// JSON, so a bare `{`/`[` prefix is the fallback for a server that sends no
+// type at all.
+func looksLikeJSONCatchAll(contentType string, head []byte) bool {
+	if ct := strings.ToLower(contentType); strings.Contains(ct, "application/json") ||
+		strings.Contains(ct, "+json") {
+		return true
+	}
+	if contentType != "" {
+		return false
+	}
+	trimmed := strings.TrimLeft(string(head), " \t\r\n")
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }

@@ -236,6 +236,11 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 			"known-safe paths/hosts, or only permit relative same-origin paths.",
 		References: []string{"CWE-601", "OWASP-A01"},
 		Confidence: confidence,
+		// The differential: the destination we injected, and the raw Location
+		// header that came back carrying it. The body is irrelevant here and is
+		// closed unread — the header IS the confirming observation.
+		Payload:  p.Value,
+		Response: ProbeExcerpt(fmt.Sprintf("HTTP %d Location: %s", resp.StatusCode, location)),
 	}, true
 }
 

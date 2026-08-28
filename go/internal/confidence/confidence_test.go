@@ -255,6 +255,35 @@ func provenanceDriftFixtures() []provenanceFixture {
 			wantValue: base + staticEvidence,
 		},
 		{
+			// A live auth finding on an endpoint the OpenAPI spec declares
+			// protected. AuthExpectation / AuthExpectationSource are stamped by
+			// the auth check from the spec-derived endpoint inventory and are
+			// unobservable downstream of the projection — nothing on a
+			// models.Finding can reconstruct "the spec required auth here".
+			//
+			// The scorer does not read them (they are decision-layer signals,
+			// like UnconfirmedByLiveScan above), but they must be CARRIED, and
+			// the coverage guard below is what enforces that. If they were
+			// dropped, the decision layer's "contradicted authentication
+			// requirement" arm would be dead on every real scan while its unit
+			// tests stayed green — the exact failure mode this fixture set
+			// exists to prevent.
+			name: "live auth finding on a spec-declared protected endpoint",
+			ev: evidence.Evidence{
+				Title:                 "Authentication requirement bypassed",
+				Category:              "auth_bypass",
+				Endpoint:              "GET /api/users",
+				Severity:              models.SeverityCritical,
+				Source:                models.SourceBlackbox,
+				Confidence:            models.ConfidenceHigh,
+				AuthExpectation:       models.AuthExpectationRequired,
+				AuthExpectationSource: "openapi",
+			},
+			// 35 base + 10 runtime. The auth-expectation fields carry no
+			// confidence delta — they change the DECISION, not the score.
+			wantValue: base + runtimeEvidence,
+		},
+		{
 			// A dependency finding whose advisory is scoped to an importable
 			// sub-component the scanned tree never imports. It gets its own
 			// fixture rather than riding on one of the above because the flag
@@ -271,6 +300,12 @@ func provenanceDriftFixtures() []provenanceFixture {
 				Source:               models.SourceWhitebox,
 				Confidence:           models.ConfidenceHigh,
 				ComponentNotImported: true,
+				// The three-state verdict that supersedes the bool. Both are set
+				// here because the scanner keeps them in lockstep for one
+				// release, and BOTH must survive the projection: the bool feeds
+				// the scorer's -10 delta, the enum feeds the decision layer's
+				// applicability gate.
+				Applicability: models.ApplicabilityEvidenceAgainst,
 			},
 			// 35 base + 10 static + 30 deterministic detection - 10 component.
 			wantValue: base + staticEvidence + deterministicDetn + componentNotImported,

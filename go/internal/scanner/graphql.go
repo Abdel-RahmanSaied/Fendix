@@ -464,6 +464,14 @@ func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) ev.
 			"Introspection should only be enabled in development. Combine with field-level authorization and query depth/complexity limits.",
 		References: []string{"CWE-200", "OWASP-A05"},
 		Confidence: models.ConfidenceHigh,
+		// The differential: we POSTed the standard introspection query, and the
+		// server answered with a parsed schema. A server with introspection
+		// disabled returns an error for the SAME payload, so the pair is the
+		// evidence — not the fact that a GraphQL endpoint exists.
+		Payload: graphqlIntrospectionQuery,
+		Response: ProbeExcerpt(fmt.Sprintf(
+			"Content-Type: %s; data.__schema.queryType=%q mutationType=%q",
+			res.contentType, res.queryType, res.mutationType)),
 	}
 }
 

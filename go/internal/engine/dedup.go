@@ -29,6 +29,13 @@ import (
 //     (includes the primary so consumers can iterate one field)
 //   - References = union of all groups' References, deduped, sorted
 //   - Confidence = highest in the group (HIGH > MEDIUM > LOW)
+//   - Reachable / ProvenPath / RouteConfirmed = PROOF UNION (OR) across the
+//     group; SourceTier = the most-trusted tier; TaintChain / Route = taken
+//     from the member that proved one (ties on the same total order). RC-3:
+//     these are render-block fields, so ProvenanceIndex cannot carry them, and
+//     before this they were taken from the findingLess winner — which erased a
+//     confirmed occurrence's proof whenever an unconfirmed duplicate sorted
+//     earlier. The fold preserves evidence and can never manufacture it.
 //   - Source = SourceCorrelated if any member is correlated, else most-trusted
 //     (correlated > blackbox > whitebox); a mix of black + white without an
 //     existing correlated entry would have been merged by Correlate already,
@@ -94,6 +101,33 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 			mergedConfidence = f.Confidence
 		}
 		mergedSource := mergeSource(g.primary.Source, f.Source)
+		// RC-3: positive render-block evidence folds by PROOF UNION rather than
+		// riding along with whichever member wins findingLess.
+		//
+		// These six fields live in the render block, so evidence.ProvenanceIndex
+		// cannot reach them — it exists to carry the Evidence-INTERNAL half
+		// across the projection. Before this fold they were taken from the
+		// lexicographic minimum, so a confirmed occurrence at "z/views.py:674"
+		// merged with an unconfirmed one at "a/util.py:10" lost its taint chain,
+		// its Reachable flag and its tier. That was not an ordering race: the
+		// same member wins for every permutation, so the proof was erased
+		// SYSTEMATICALLY. decision.corroborate reads exactly these fields, so
+		// dedup could demote a genuinely confirmed finding to WARN.
+		//
+		// OR / max-trust / prefer-the-member-that-proved-it is safe in both
+		// directions: only members that CARRIED the evidence contribute, so the
+		// fold can never manufacture it, and each operation is commutative,
+		// associative and idempotent, so the result is a pure function of the
+		// member set (F-L6).
+		mergedReachable := g.primary.Reachable || f.Reachable
+		mergedProvenPath := g.primary.ProvenPath || f.ProvenPath
+		mergedRouteConfirmed := g.primary.RouteConfirmed || f.RouteConfirmed
+		mergedTier := g.primary.SourceTier
+		if f.SourceTier.TrustRank() > mergedTier.TrustRank() {
+			mergedTier = f.SourceTier
+		}
+		mergedChain := preferChain(g.primary, f)
+		mergedRoute := preferRoute(g.primary, f)
 		// Deterministic primary: adopt f's identity fields only when it
 		// sorts strictly before the current primary. This makes the kept
 		// Evidence/Fix/Endpoint/Line a pure function of the group's member
@@ -103,6 +137,12 @@ func Deduplicate(findings []models.Finding) []models.Finding {
 		}
 		g.primary.Confidence = mergedConfidence
 		g.primary.Source = mergedSource
+		g.primary.Reachable = mergedReachable
+		g.primary.ProvenPath = mergedProvenPath
+		g.primary.RouteConfirmed = mergedRouteConfirmed
+		g.primary.SourceTier = mergedTier
+		g.primary.TaintChain = mergedChain
+		g.primary.Route = mergedRoute
 	}
 
 	// Order groups by first-occurrence, with the dedupKey as a total-order
@@ -171,6 +211,42 @@ func findingLess(a, b models.Finding) bool {
 		return a.Fix < b.Fix
 	}
 	return derefLine(a.Line) < derefLine(b.Line)
+}
+
+// preferChain picks the taint chain to keep for a merged group (RC-3).
+//
+// A member that PROVED a chain always beats one that did not — that is the
+// whole point: an unconfirmed duplicate must not erase a proof. When both
+// proved one, the deterministic minimum under findingLess wins, so the result
+// is independent of arrival order (F-L6).
+//
+// Never synthesizes: with no chain on either side the result is nil.
+func preferChain(a, b models.Finding) []models.TaintLink {
+	switch {
+	case len(a.TaintChain) == 0:
+		return b.TaintChain
+	case len(b.TaintChain) == 0:
+		return a.TaintChain
+	case findingLess(b, a):
+		return b.TaintChain
+	default:
+		return a.TaintChain
+	}
+}
+
+// preferRoute is preferChain for the bound route: a known route beats an
+// unknown one, ties break on the same total order, nil+nil stays nil.
+func preferRoute(a, b models.Finding) *models.Route {
+	switch {
+	case a.Route == nil:
+		return b.Route
+	case b.Route == nil:
+		return a.Route
+	case findingLess(b, a):
+		return b.Route
+	default:
+		return a.Route
+	}
 }
 
 // derefLine flattens a *string Line into a comparable value; a nil pointer

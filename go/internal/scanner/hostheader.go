@@ -366,6 +366,12 @@ func hostHeaderRedirectFinding(ep Endpoint, v hostHeaderVector, status int, loca
 			"canonical/allow-listed host for redirects, links and emails, and reject requests whose Host is not in the allow-list.",
 		References: []string{"CWE-644", "CWE-601", "OWASP-A03"},
 		Confidence: models.ConfidenceHigh,
+		// The differential: the header we poisoned, and the Location that came
+		// back built from it. A server that ignores the client Host returns its
+		// own canonical host for the SAME poisoned request, so the pair — not
+		// the redirect alone — is what confirms the claim.
+		Payload:  fmt.Sprintf("%s: %s", v.Name, v.Value),
+		Response: ProbeExcerpt(fmt.Sprintf("HTTP %d Location: %s", status, location)),
 	}
 }
 
@@ -398,6 +404,10 @@ func hostHeaderLinkFinding(ep Endpoint, v hostHeaderVector, body string) ev.Evid
 			"server-configured canonical host, and validate/allow-list the Host on every request.",
 		References: []string{"CWE-644", "CWE-601", "OWASP-A03"},
 		Confidence: confidence,
+		// The differential: the poisoned header, and the URL the body emitted
+		// in a host position built from it.
+		Payload:  fmt.Sprintf("%s: %s", v.Name, v.Value),
+		Response: ProbeExcerpt(match),
 	}
 }
 

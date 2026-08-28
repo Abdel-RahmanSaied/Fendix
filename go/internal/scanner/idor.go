@@ -136,6 +136,16 @@ func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 					Fix:        "Enforce object-level authorization: verify the authenticated principal owns or may access the requested object id before returning it.",
 					References: []string{"CWE-639", "OWASP-A01"},
 					Confidence: models.ConfidenceHigh,
+					// A two-account controlled differential — the strongest
+					// confirmation this scanner can produce. Both halves are
+					// required: user2 receiving a 2xx is unremarkable on its
+					// own; it is a bypass only relative to the object being
+					// user1's. Preserving the comparison is what justifies the
+					// claim.
+					Payload: "user2 credentials replayed against user1's object id",
+					Response: ProbeExcerpt(fmt.Sprintf(
+						"user1 HTTP %d (%d bytes); user2 HTTP %d (%d bytes) — user2 authorized for user1's id",
+						resp1Status, len(resp1Body), resp2Status, len(resp2Body))),
 				},
 			}
 		}
@@ -176,6 +186,16 @@ func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 			Fix:        "Implement object-level authorization. Ensure each user can only access their own resources.",
 			References: []string{"CWE-639", "OWASP-A01"},
 			Confidence: models.ConfidenceMedium,
+			// The same two-account differential, but the INFERENCE is weaker:
+			// with no detectable object id this shape also matches a genuinely
+			// shared/global resource. The observation is real evidence and is
+			// recorded as such; the weakness lives in Confidence=MEDIUM, which
+			// is where the decision layer already accounts for it — not in
+			// withholding the comparison.
+			Payload: "same URL requested with two different accounts' credentials",
+			Response: ProbeExcerpt(fmt.Sprintf(
+				"user1 HTTP %d (%d bytes); user2 HTTP %d (%d bytes) — structurally identical",
+				resp1Status, len(resp1Body), resp1Status, len(resp2Body))),
 		},
 	}
 }
