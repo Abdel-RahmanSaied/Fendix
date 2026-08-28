@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-28
+
 ### Changed
 
 - **BREAKING (baselines): findings now have a stable identity that survives
