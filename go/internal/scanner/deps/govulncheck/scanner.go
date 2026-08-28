@@ -244,6 +244,15 @@ func buildFinding(osv *osvRecord, modName string) evidence.Evidence {
 		References: refs,
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
+		// The v2 fingerprint keys this finding on advisory + ecosystem +
+		// package. The Go module IS the package here, and govulncheck reports
+		// against the module graph rather than a single manifest file, so
+		// Manifest is left empty rather than asserting a file that was never
+		// read.
+		Dependency: &models.DependencyRef{
+			Ecosystem: "Go",
+			Package:   modName,
+		},
 	}
 }
 

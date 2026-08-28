@@ -353,6 +353,7 @@ func hostHeaderLocationHost(location string) string {
 // hostHeaderRedirectFinding builds the HIGH/High redirect-host reflection finding.
 func hostHeaderRedirectFinding(ep Endpoint, v hostHeaderVector, status int, location string) ev.Evidence {
 	return ev.Evidence{
+		RuleID:   "hostheader/redirect-host",
 		Title:    "Host Header Injection — attacker-controlled redirect host",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -391,6 +392,7 @@ func hostHeaderLinkFinding(ep Endpoint, v hostHeaderVector, body string) ev.Evid
 
 	match := hostHeaderURLPositionRe.FindString(body)
 	return ev.Evidence{
+		RuleID:   "hostheader/absolute-link",
 		Title:    "Host Header Injection — attacker-controlled absolute link in body",
 		Severity: severity,
 		Source:   models.SourceBlackbox,

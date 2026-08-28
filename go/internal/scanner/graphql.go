@@ -454,6 +454,7 @@ func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) ev.
 		evidence += fmt.Sprintf(" Mutations are also exposed (data.__schema.mutationType=%q), revealing every state-changing operation available.", res.mutationType)
 	}
 	return ev.Evidence{
+		RuleID:   "graphql/introspection-enabled",
 		Title:    "GraphQL introspection enabled",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -479,6 +480,7 @@ func graphqlIntrospectionFinding(url string, res graphqlIntrospectionResult) ev.
 // sub-finding.
 func graphqlGETExecutionFinding(url string) ev.Evidence {
 	return ev.Evidence{
+		RuleID:   "graphql/get-execution",
 		Title:    "GraphQL query execution via GET (CSRF surface)",
 		Severity: models.SeverityMedium,
 		Source:   models.SourceBlackbox,

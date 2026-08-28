@@ -178,6 +178,53 @@ type TaintLink struct {
 	Expr string `json:"expr"`
 }
 
+// DependencyRef is the semantic identity of the package a dependency finding
+// is about: which ecosystem, which package, which manifest declared it.
+//
+// It exists because that identity used to live only in the rendered Title
+// ("Vulnerable dependency: requests==2.28.0 (CVE-…)"), which made the
+// dependency's identity a substring of a human-readable string. Version is
+// carried for reporting but is deliberately NOT an identity input — a package
+// bumped from one vulnerable version to another is the same unresolved
+// vulnerability, and churning its fingerprint would file it as "fixed, plus a
+// new one" on every patch release.
+type DependencyRef struct {
+	Ecosystem string `json:"ecosystem,omitempty"` // PyPI, npm, Go, …
+	Package   string `json:"package,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Manifest  string `json:"manifest,omitempty"` // requirements.txt, package-lock.json, …
+}
+
+// SecretRef is the SAFE identity of a committed credential: which
+// non-sensitive identifier it was bound to and which file it lives in.
+//
+// Identifier is the assignment key or config name the credential sits behind
+// — AWS_SECRET_ACCESS_KEY, stripe_api_key, the JSON/YAML path. It is
+// deliberately NOT the credential, and deliberately NOT a digest of the
+// credential.
+//
+// A digest was the obvious alternative and is rejected on purpose. The
+// redaction marker already published in evidence is an unsalted, 4-byte
+// truncated SHA-256 — the redact.go doc says outright that a low-entropy
+// value is "trivially recoverable from it by dictionary". Evidence is one
+// report; a fingerprint is forever: it is committed into .fendix-ignore
+// files, saved into baselines, and uploaded to GitHub Code Scanning, where it
+// would stand as a permanent, greppable oracle for the credential's value.
+// Long-lived identity is exactly the wrong place to persist a reversible
+// function of a secret. The identifier distinguishes two credentials in one
+// file just as well and carries no credential material.
+//
+// The residual trade-off, documented rather than hidden: when a pattern
+// matches material with no binding identifier (a bare `-----BEGIN … KEY-----`
+// block), Identifier is empty and two such blocks in one file share an
+// identity — reported as one "private key material in this file" record.
+// Merging two key blocks is a reporting imprecision; persisting a credential
+// oracle would be a security defect.
+type SecretRef struct {
+	Identifier string `json:"identifier,omitempty"`
+	File       string `json:"file,omitempty"`
+}
+
 // Finding represents a single security finding produced by either engine.
 // This struct is the shared data contract between Go and Python.
 //
@@ -201,7 +248,45 @@ type Finding struct {
 	// drift, so .fendix-ignore rules and baselines can pin a finding by
 	// `fingerprint:` and keep matching across scans. Stamped centrally in the
 	// orchestrator before ID assignment.
-	Fingerprint       string      `json:"fingerprint,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// RuleID is the precise rule/check that fired (e.g. "python.ssrf.taint",
+	// "secrets/aws-access-key", or a CVE id for a dependency advisory). It is
+	// the single most stable identity input a finding has: unlike Title it is
+	// not prose, and unlike Endpoint it does not move when the code does.
+	//
+	// It has always existed on evidence.Evidence; it was dropped by
+	// ToFinding, which is precisely why fingerprinting had nothing semantic
+	// left to hash and fell back on Category|Endpoint|Title.
+	RuleID string `json:"rule_id,omitempty"`
+	// Dependency is the package identity behind a `deps` finding. Nil for
+	// every other family.
+	Dependency *DependencyRef `json:"dependency,omitempty"`
+	// Secret is the safe identity of a committed credential behind a
+	// `secrets` finding. Nil for every other family. Never holds credential
+	// material — see SecretRef.
+	Secret *SecretRef `json:"secret,omitempty"`
+	// Sink is the normalized vulnerable OPERATION a code finding is about —
+	// "requests.get(url)", "cursor.execute(q)", "open(name)". It is the
+	// operation's identity, and it is what separates two vulnerabilities of
+	// the same rule in the same symbol.
+	//
+	// Carried explicitly rather than read off the end of TaintChain, because a
+	// chainless finding has no chain to read and would otherwise fall back to
+	// its evidence text. Those are different strings, so the fallback made
+	// identity move the moment an analyzer learned to PROVE a flow it had only
+	// observed — turning an evidence improvement into a new vulnerability. The
+	// analyzer knows the sink either way; this is where it says so.
+	Sink string `json:"sink,omitempty"`
+	// Symbol is the enclosing function or method a code finding sits in.
+	//
+	// Distinct from Route.Handler on purpose. A Route is bound only when the
+	// analyzer PROVED a taint chain and the enclosing function is a registered
+	// handler, so route availability tracks how much was proven rather than
+	// tracking the code. Identity must not inherit that dependency: the
+	// symbol is the same symbol whether or not the flow was proven, and
+	// keying on Route.Handler made a finding change identity the moment its
+	// chain became provable.
+	Symbol            string      `json:"symbol,omitempty"`
 	Title             string      `json:"title"`
 	Severity          Severity    `json:"severity"`
 	Source            Source      `json:"source"`

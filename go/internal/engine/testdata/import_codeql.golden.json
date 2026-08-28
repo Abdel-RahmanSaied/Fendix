@@ -20,7 +20,7 @@
       "decision_reason": "actionable finding below the --fail-on threshold",
       "endpoint": "app/auth.py:57",
       "evidence": "This expression logs sensitive data (password) as clear text.",
-      "fingerprint": "4985453a46d3f1acc976df431c325fad7adcac66",
+      "fingerprint": "6f60ddce8b794132c0d7335da0dc64fa019a733a",
       "fix": "",
       "id": "SEC-001",
       "line": "57",
@@ -31,6 +31,7 @@
         "sarif-fingerprint:primaryLocationLineHash=2a4b6c8d0e1f3a5b:1",
         "tool:codeql@2.19.0"
       ],
+      "rule_id": "py/clear-text-logging-sensitive-data",
       "severity": "MEDIUM",
       "source": "imported",
       "status": "WARN",
@@ -50,7 +51,7 @@
       "decision_reason": "actionable finding below the --fail-on threshold",
       "endpoint": "app/views.py:102",
       "evidence": "This SQL query depends on a user-provided value. | Snippet: cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")",
-      "fingerprint": "177f68988e7db5d218825212a32333b6d5b5a464",
+      "fingerprint": "c10aaed2762a35fce3434da254de8321dabf19b4",
       "fix": "Use parameterized queries or an ORM instead of string concatenation.",
       "id": "SEC-002",
       "line": "102",
@@ -61,6 +62,7 @@
         "sarif-fingerprint:primaryLocationLineHash=8f1c9a2b7e3d4a5f:1",
         "tool:codeql@2.19.0"
       ],
+      "rule_id": "py/sql-injection",
       "self_evident_signals": [
         "imported high-precision rule"
       ],
@@ -74,6 +76,7 @@
     "active_probes": false,
     "duration": "\u003cnormalized\u003e",
     "endpoints_scanned": 0,
+    "fingerprint_algorithm": "fendix/v2",
     "imports": [
       {
         "results": 2,
@@ -82,7 +85,7 @@
       }
     ],
     "mode": "import",
-    "schema_version": 1,
+    "schema_version": 2,
     "started_at": "\u003cnormalized\u003e",
     "target": "",
     "version": "golden"

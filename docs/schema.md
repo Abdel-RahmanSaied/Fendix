@@ -152,8 +152,13 @@ entry rather than inferring coverage from `total`.
 | `line` | string \| null | yes | File and line for whitebox findings, e.g. `"src/config.py:14"`. Always serialised; `null` when not applicable. |
 | `taint_chain` | array of `TaintLink` | no | Whitebox dataflow proof: ordered chain from source (e.g. `request.args.get`) through intermediate assignments to the sink. Each link is `{file, line, expr}`. Emitted by the Python AST analyzer for SQLi / SSRF / open-redirect / XSS / command-injection findings when intra-function dataflow resolves end-to-end. Inherited onto the merged `source: "correlated"` finding. Omitted when no chain was proven. |
 | `reachable` | boolean | no | Whitebox-proven that user input reaches the sink. Currently implies `taint_chain` is non-empty. Used by the correlator to apply a *second* severity escalation on top of the standard correlated-bonus (so MEDIUM × MEDIUM × reachable → CRITICAL). Omitted (treat as `false`) when not proven. |
-| `fingerprint` | string | no | Content-derived stable identity `sha1(category\|endpoint\|title)`; survives across scans for suppressions/baselines. |
+| `fingerprint` | string | no | Semantic stable identity, hex, 20 bytes. **v3.0.0 changed how it is computed** — see the algorithm section below. Survives across scans for suppressions/baselines; survives line movement, reformatting, retitling, and any change of severity/confidence/decision. |
 | `source_tier` | string enum | no | Analyzer tier that produced a whitebox finding: `native_go`, `tree_sitter_sidecar`, `semgrep_shim`. |
+| `rule_id` | string | no | **v3.0.0** The precise check that fired — a semgrep rule id, a DAST check name, a CVE for an advisory. Finer-grained than `category`, and the primary input to `fingerprint`. |
+| `dependency` | object | no | **v3.0.0** Package identity behind a `deps` finding: `{ecosystem, package, version, manifest}`. Absent on every other family. `version` is reported but is **not** an identity input. |
+| `secret` | object | no | **v3.0.0** Safe identity of a committed credential: `{identifier, file}`. `identifier` is the non-sensitive name the credential is bound to. Never contains credential material or a digest of it. |
+| `sink` | string | no | **v3.0.0** The normalized vulnerable operation for a code finding, e.g. `requests.get(url)`. Emitted whether or not a taint chain was proven. |
+| `symbol` | string | no | **v3.0.0** Enclosing function or method for a code finding. Distinct from `route.handler`, which exists only when a route was bound. |
 | `route` | object | no | HTTP route binding `{method, pattern, handler, file, line}` (Proven Path v1). |
 | `route_confirmed` | boolean | no | A live blackbox scan hit the finding's `route.pattern`. |
 | `proven_path` | boolean | no | `route_confirmed` AND `reachable` — DAST hit + SAST taint path + exact route. |
@@ -262,16 +267,59 @@ report will see the difference:
 | `status`, `confidence_score`, `confidence_band` | Two new deterministic confidence deltas (direct observation of a live response `+30`, deterministic pattern match in production source `+30`) and two new penalties (placeholder-shaped credential `-20`, advisory component never imported `-10`) move the score on almost every scan; `status` is then gated on the resulting band. | Nothing structurally — but a dashboard that charts these will show a step change, and `decisions.confirmed` / `decisions.blocking` step with them. |
 | `title`, `id`, `fingerprint` on **dependency** findings | Alias-linked OSV records merge into one finding per vulnerability, named after the canonical id (`CVE-*` > `GHSA-*` > `PYSEC-*` > other). `SEC-DEPS-PYSEC_2026_3552` becomes `SEC-DEPS-CVE_2026_69247`. | **Saved `--baseline` files and `.fendix-ignore` `fingerprint:` rules pinned to a dependency finding stop matching** and must be regenerated; a `--diff` scan reports the renamed finding as new. Every merged id is preserved in `references`, and `fendix verify` matches on `references` as well as the id, so re-verifying a pre-2.0 report does not call a still-installed vulnerability resolved. |
 | `title`, `severity`, `fingerprint` on the **CSRF-cookie** finding | A `csrftoken` / `XSRF-TOKEN` / `_csrf` cookie without `HttpOnly` is no longer "Session cookie missing HttpOnly flag" at MEDIUM; it is its own INFO finding describing the double-submit pattern. CWE-1004 is retained. | Same fingerprint caveat as above. A host setting both a session cookie and a CSRF cookie now produces two HttpOnly-class dedup groups where it produced one. |
-| `evidence` on **secrets** findings | Credential material is redacted at capture time as `[REDACTED len=N sha256:xxxxxxxx...]`, over the union of every pattern's spans on the line — not just the emitting pattern's. | A golden file or snapshot that pinned secrets evidence needs regenerating. Fingerprints are unaffected: `fingerprint` hashes `(category, endpoint, title)` and the dedup key hashes `(severity, category, title)`; neither reads `evidence`. |
+| `evidence` on **secrets** findings | Credential material is redacted at capture time as `[REDACTED len=N sha256:xxxxxxxx...]`, over the union of every pattern's spans on the line — not just the emitting pattern's. | A golden file or snapshot that pinned secrets evidence needs regenerating. Fingerprints were unaffected at the time: the v1 `fingerprint` hashed `(category, endpoint, title)` and the dedup key hashes `(severity, category, title)`; neither read `evidence`. Under the v3.0.0 algorithm a redaction marker reaching a normalizer is collapsed to a constant before hashing, so this remains true. |
 | Finding **count** on repos with Dockerfiles | A base image pinned to a tag rather than a digest (`python:3.14-slim`, `node:20-alpine`) is now an INFO finding. Build-stage aliases, existing digest pins, `FROM scratch`, build-arg references and numeric stage indexes are exempt. | Roughly one extra INFO finding per Dockerfile. It does not gate a build at that severity. |
+
+---
+
+## What v3.0 changed in the values
+
+`schema_version` moves `1` → `2`. The report SHAPE is only additively extended
+(`rule_id`, `dependency`, `secret`, `sink`, `symbol`, all optional), but the
+MEANING of `fingerprint` changed, and that is a change a consumer must react to.
+
+`metadata.fingerprint_algorithm` names the scheme that produced a report's
+fingerprints (`fendix/v2` today), so two archived reports can be compared for
+whether their identities are comparable at all.
+
+| Field | What moved | What it breaks |
+|---|---|---|
+| `fingerprint` on **every** finding | Identity is computed from semantics rather than from `sha1(category\|endpoint\|title)`. v1 and v2 share no hash. | **Every saved `--baseline` file must be regenerated and every `.fendix-ignore` `fingerprint:` rule rewritten.** Measured on a 30-finding fixture: a genuine pre-upgrade baseline matched **0 of 30**; a regenerated one matched 30 of 30. Rules matching by path, category or rule id are unaffected. Baseline matching recomputes the key from each finding's fields, but a pre-v3 baseline carries none of the fields v2 identity reads, so recomputation does not rescue the upgrade. |
+| `fingerprint` on **dependency** findings | The installed version is no longer an identity input. | One advisory affecting several installed copies of one package in one lockfile is now ONE identity rather than several. A `fingerprint:` suppression covers all copies of that advisory for that package. In exchange, a package bumped from one vulnerable version to another keeps its record instead of reporting "1 fixed, 1 new". |
+| `title` on **path-traversal**, **open-redirect** and **SSRF** findings | Wording now follows the evidence the finding holds: `Potential X — dynamic …` when only the sink was observed, `X — user-controlled …` when the source→sink path was proven. | Nothing structurally — titles are not identity inputs as of v3.0.0. A snapshot pinning the old strings needs regenerating. |
+| SARIF `partialFingerprints` key | `fendix/v1` → `fendix/v2`, bound to the algorithm constant so the key can never name one scheme while carrying another. | A consumer keyed on `fendix/v1` stops matching — deliberately, so v1 and v2 identities are never confused. |
+| SARIF rule ids | Derived from `rule_id` where one exists, instead of from the title slug. Every blackbox check gained a `rule_id` in this release. | **GitHub alerts re-partition once.** Existing alerts under the old title-slug rule ids close and reopen under the new rule-slug ids on the first v3 upload. |
+| SARIF `run.automationDetails.id` | `fendix/scan` → `fendix/scan/<mode>`. | A repository that uploads more than one scan mode had those modes clearing each other's alerts; they now hold separate alert sets, which re-partitions once. A run with no declared mode keeps the original constant. |
+| Finding **count** on rate-limit checks | A non-safe operation is probed with its own verb under `--active`, or reported as an INFO "not tested" record. It is never probed with a substituted GET. | A passive scan of a write-heavy API reports far fewer rate-limit findings and a corresponding number of INFO not-tested records. |
+
+### The fingerprint algorithm (`fendix/v2`)
+
+Identity is an ordered list of labelled `key=value` components joined on `\0`
+and hashed with SHA-256, truncated to 20 bytes so it is the same width as the
+v1 SHA-1 it replaces. Every component is optional and labelled, so an absent
+component cannot impersonate a present one.
+
+| Family | Components |
+|---|---|
+| all | `alg`, `cat`, `rule` |
+| whitebox code | `file`, `sym`, `op` — normalized path, enclosing symbol, normalized sink |
+| dependencies | `eco`, `pkg`, `manifest` (advisory rides in `rule`; version excluded) |
+| secrets | `file`, `ident` (the non-sensitive binding name; never the credential) |
+| blackbox / config | `ep` — normalized method + path |
+
+Excluded on purpose: title, evidence prose, fix and reference text
+(presentation); severity, confidence, score, band, status, decision reason,
+policy and applicability (evolving judgements *about* a finding); line and
+column numbers, absolute paths, worktree and temp prefixes, timestamps and run
+ids (the machine and the moment); and credential material, raw or digested.
 
 ---
 
 ## Stability guarantees
 
-These are guarantees about `metadata.schema_version` (today `1`), not about the
+These are guarantees about `metadata.schema_version` (today `2`), not about the
 engine's release version — engine v2.0.0 was a major release that left this
-contract at `1`.
+contract at `1`, and engine v3.0.0 moved it to `2`.
 
 - New optional fields may be added at any time without bumping
   `schema_version`; `1.1.0` added none, `2.0.0` added `metadata.schema_version`
@@ -281,7 +329,11 @@ contract at `1`.
 - A field marked optional may become required only under a `schema_version` bump.
 - Removing a field is reserved for a `schema_version` bump.
 - A **value** moving inside an unchanged field is not a contract change and does
-  not bump `schema_version` — v2.0.0 moved a great many, see below.
+  not bump `schema_version` — v2.0.0 moved a great many, see below. The one
+  exception is a value whose meaning changes such that a consumer's stored copy
+  silently stops matching: v3.0.0 bumped to `2` for exactly that reason, because
+  a stale baseline matching *nothing* is the failure this field exists to warn
+  about.
 - "Optional" in `schema.json` means *this schema will validate a report that
   omits it*, not *current builds may omit it*. Fields whose Go struct tag
   carries no `omitempty` — `decisions` today — are always emitted by a current

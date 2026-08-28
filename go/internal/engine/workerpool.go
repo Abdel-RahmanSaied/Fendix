@@ -200,6 +200,11 @@ func runCheck(ctx context.Context, cc *scanner.CheckContext, cfg *models.ScanCon
 			slog.Error("scanner check panicked — job contained, scan continues",
 				"worker", workerID, "endpoint", epLabel, "check", job.check.Name(), "panic", r)
 			findings = []evidence.Evidence{{
+				// The rule is the CHECK that panicked, not "something
+				// panicked": two different checks failing at one endpoint are
+				// two incidents, and a shared identity would let suppressing
+				// one hide the other.
+				RuleID:     "scanstatus/check-panicked/" + job.check.Name(),
 				Title:      "Scanner check panicked",
 				Severity:   models.SeverityInfo,
 				Source:     models.SourceBlackbox,

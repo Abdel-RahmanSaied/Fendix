@@ -24,11 +24,13 @@
       "additionalProperties": false,
       "properties": {
         "schema_version":    { "type": "integer", "minimum": 1 },
+        "fingerprint_algorithm": { "type": "string" },
+        "imports":           { "type": "array", "items": { "$ref": "#/definitions/ImportedTool" } },
         "target":            { "type": "string" },
         "started_at":        { "type": "string", "format": "date-time" },
         "duration":          { "type": "string" },
         "version":           { "type": "string" },
-        "mode":              { "type": "string", "enum": ["blackbox", "whitebox", "hybrid"] },
+        "mode":              { "type": "string", "enum": ["blackbox", "whitebox", "hybrid", "import"] },
         "endpoints_scanned": { "type": "integer", "minimum": 0 },
         "endpoints_discovered": { "type": "integer", "minimum": 0 },
         "endpoints_truncated":  { "type": "boolean" },
@@ -93,6 +95,37 @@
         "line":    { "type": "integer", "minimum": 0 }
       }
     },
+    "ImportedTool": {
+      "type": "object",
+      "required": ["tool", "results"],
+      "additionalProperties": false,
+      "properties": {
+        "tool":         { "type": "string" },
+        "version":      { "type": "string" },
+        "results":      { "type": "integer", "minimum": 0 },
+        "suppressed":   { "type": "integer", "minimum": 0 },
+        "no_location":  { "type": "integer", "minimum": 0 },
+        "corroborated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "DependencyRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": { "type": "string" },
+        "package":   { "type": "string" },
+        "version":   { "type": "string" },
+        "manifest":  { "type": "string" }
+      }
+    },
+    "SecretRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identifier": { "type": "string" },
+        "file":       { "type": "string" }
+      }
+    },
     "TaintLink": {
       "type": "object",
       "required": ["file", "line", "expr"],
@@ -130,7 +163,21 @@
         "status":             { "type": "string", "enum": ["BLOCK", "WARN", "INFO"] },
         "confidence_score":   { "type": "integer", "minimum": 0, "maximum": 100 },
         "confidence_band":    { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
-        "confidence_reasons": { "type": "array", "items": { "type": "string" } }
+        "confidence_reasons": { "type": "array", "items": { "type": "string" } },
+        "rule_id":            { "type": "string" },
+        "dependency":         { "$ref": "#/definitions/DependencyRef" },
+        "secret":             { "$ref": "#/definitions/SecretRef" },
+        "sink":               { "type": "string" },
+        "symbol":             { "type": "string" },
+        "decision_reason":       { "type": "string" },
+        "decision_policy":       { "type": "string", "enum": ["enforced", "relaxed"] },
+        "policy_override":       { "type": "boolean" },
+        "independent_signals":   { "type": "array", "items": { "type": "string" } },
+        "self_evident_signals":  { "type": "array", "items": { "type": "string" } },
+        "auth_expectation":      { "type": "string", "enum": ["public", "required"] },
+        "applicability":         { "type": "string", "enum": ["applicable", "evidence_against"] },
+        "cross_tool_corroborated": { "type": "boolean" },
+        "corroborating_tools":     { "type": "array", "items": { "type": "string" } }
       },
       "allOf": [
         {

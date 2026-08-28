@@ -14,24 +14,43 @@ import (
 // SARIF 2.1.0 structures — see https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 
 const (
-	// sarifFingerprintKey versions the fingerprint SCHEME, so a future change
-	// to models.Fingerprint can ship a "fendix/v2" alongside v1 without
-	// silently re-identifying every alert a consumer already keyed on v1.
+	// sarifFingerprintKey versions the fingerprint SCHEME. It is bound to
+	// models.FingerprintAlgorithm rather than written out, so the key can
+	// never claim to be one algorithm while carrying another: a consumer that
+	// baselined on v1 hashes must not silently match them against v2 hashes,
+	// and the only way to guarantee that is for the producer of the hash to
+	// name the key.
 	//
 	// One producer, one meaning (DECISIONS.md D4): only an engine-scheme
-	// fingerprint — sha1(Category|Endpoint|Title), the same token
-	// `.fendix-ignore` fingerprint rules pin to — may be published under this
-	// key. A finding that arrives without one gets NO partialFingerprints at
-	// all rather than an invented value; two producers hashing differently
-	// under one key would flip a finding's identity depending on which path
-	// rendered the SARIF.
-	sarifFingerprintKey = "fendix/v1"
+	// fingerprint — the same token `.fendix-ignore` fingerprint rules pin to —
+	// may be published under this key. A finding that arrives without one gets
+	// NO partialFingerprints at all rather than an invented value; two
+	// producers hashing differently under one key would flip a finding's
+	// identity depending on which path rendered the SARIF.
+	sarifFingerprintKey = models.FingerprintAlgorithm
 
-	// sarifAutomationID is the analysis category GitHub Code Scanning groups
-	// this run under. Keep it STABLE: changing it re-partitions every alert in
-	// every repo that has already ingested a Fendix SARIF, which makes it an
-	// effectively one-way door.
+	// sarifAutomationID is the category a run with no declared mode is grouped
+	// under, and the prefix every moded category is built from. Keep it
+	// STABLE: changing it re-partitions every alert in every repo that has
+	// already ingested a Fendix SARIF, which makes it an effectively one-way
+	// door.
 	sarifAutomationID = "fendix/scan"
+
+	// sarifMaxLogicalLocations caps how many endpoints one result lists as
+	// SARIF locations.
+	//
+	// A rate-limit sweep over a large API deduplicates into ONE finding whose
+	// AffectedEndpoints holds every operation it covered — ~883 on a real
+	// target — and each of those became a logicalLocation. That is expressive
+	// and unusable: no consumer renders 883 locations legibly, and every
+	// consumer pays to parse them.
+	//
+	// The cap governs the LOCATION LIST only, which exists for a human to
+	// navigate. The full set moves to result.properties.affected_endpoints
+	// with an explicit count and a truncation marker, so nothing is lost and a
+	// truncated result can never be mistaken for a complete one (working rule
+	// 3: de-escalate evidence, never delete it).
+	sarifMaxLogicalLocations = 10
 )
 
 // SARIFLog is the top-level SARIF 2.1.0 object.
@@ -114,8 +133,15 @@ type SARIFResult struct {
 	// runs even when file/line drifts, so a re-ordered scan does not
 	// close-and-reopen every GitHub alert. Key form is "name/version", per the
 	// spec's own "stableResultHash/v1" example.
-	PartialFingerprints map[string]string      `json:"partialFingerprints,omitempty"`
-	Properties          *SARIFResultProperties `json:"properties,omitempty"`
+	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
+	// Rank is SARIF's own per-result priority (§3.27.16): 0.0 lowest, 100.0
+	// highest. It carries EFFECTIVE RISK — intrinsic severity tempered by how
+	// confident Fendix is in this particular instance — which is the one of
+	// the four concepts that is genuinely per-result and has no home on the
+	// rule. Using the standard field means nothing non-standard is invented
+	// for consumers to special-case.
+	Rank       *float64               `json:"rank,omitempty"`
+	Properties *SARIFResultProperties `json:"properties,omitempty"`
 }
 
 // SARIFResultProperties carries fendix-specific provenance on a result so
@@ -131,6 +157,27 @@ type SARIFResultProperties struct {
 	Status          string `json:"status,omitempty"`
 	ConfidenceScore int    `json:"confidence_score,omitempty"`
 	ConfidenceBand  string `json:"confidence_band,omitempty"`
+	// IntrinsicSeverity / EffectiveRisk publish the two severity concepts that
+	// used to be indistinguishable in the report. IntrinsicSeverity is the
+	// finding's own severity — how bad this kind of issue is when real, the
+	// same axis the rule's security-severity scores. EffectiveRisk is that
+	// severity after Fendix's confidence in THIS instance is applied, and is
+	// the band form of SARIFResult.Rank.
+	//
+	// Published side by side on purpose: the gap between them is the whole
+	// point. A HIGH rule firing on a LOW-confidence placeholder reads
+	// intrinsic_severity=HIGH, effective_risk=LOW, and a consumer can act on
+	// the difference instead of inferring it.
+	IntrinsicSeverity string `json:"intrinsic_severity,omitempty"`
+	EffectiveRisk     string `json:"effective_risk,omitempty"`
+	// AffectedEndpointCount / AffectedEndpoints / LocationsTruncated carry the
+	// FULL accounting when the location list was capped at
+	// sarifMaxLogicalLocations. The locations a reader navigates are a sample;
+	// these are the record. All three are omitempty, so a result inside the
+	// cap is byte-identical to one produced before the cap existed.
+	AffectedEndpointCount int      `json:"affected_endpoint_count,omitempty"`
+	AffectedEndpoints     []string `json:"affected_endpoints,omitempty"`
+	LocationsTruncated    bool     `json:"locations_truncated,omitempty"`
 	// Evidence is the raw finding evidence, moved here when result.message.text
 	// became a human description (FIX-13.4). Kept verbatim — working rule 3:
 	// evidence is DE-ESCALATED, never deleted. For a finding with a real
@@ -327,6 +374,17 @@ type SARIFProperties struct {
 	// of the struct on purpose: encoding/json emits fields in declaration
 	// order, so appending leaves every pre-existing key where it was.
 	SecuritySeverity string `json:"security-severity,omitempty"`
+	// SeverityModel names WHICH of the four severity concepts SecuritySeverity
+	// expresses, so a consumer never has to guess. Always "intrinsic": the
+	// score describes how bad this KIND of issue is when it is real.
+	//
+	// It cannot express effective risk, because security-severity is a
+	// RULE-level property shared by every result under the rule, and the
+	// results under one rule legitimately differ in confidence. Ranking the
+	// rule down to match its weakest instance would hide the next instance
+	// that IS real. Effective risk is per-result and lives on the result — see
+	// SARIFResult.Rank.
+	SeverityModel string `json:"severity_model,omitempty"`
 }
 
 // taintChainToCodeFlow converts a finding's taint chain into a SARIF
@@ -376,6 +434,8 @@ func sarifResultProperties(f models.Finding) *SARIFResultProperties {
 		Status:             f.Status,
 		ConfidenceScore:    f.ConfidenceScore,
 		ConfidenceBand:     f.ConfidenceBand,
+		IntrinsicSeverity:  string(f.Severity),
+		EffectiveRisk:      effectiveRiskBand(f),
 		Evidence:           evidence,
 		CorroboratingTools: f.CorroboratingTools,
 	}
@@ -402,11 +462,23 @@ func sarifResultProperties(f models.Finding) *SARIFResultProperties {
 func ruleKeyFor(f models.Finding) string {
 	// Neutralize first: the category is embedded verbatim in the rule ID
 	// (consumers group/suppress by it), so a zero-width or control char
-	// must not leak through even though slug() sanitizes the title half.
+	// must not leak through even though slug() sanitizes the other half.
 	cat := strings.ToLower(strings.TrimSpace(NeutralizeText(f.Category)))
 	if cat == "" {
 		cat = "uncategorized"
 	}
+	// RuleID names the check itself. Prefer it over the title for the same
+	// reason the v2 fingerprint does: a title is presentation, and titles now
+	// follow the evidence a finding holds. Keying rules on the title meant one
+	// check's results scattered across two rules the moment a taint chain was
+	// proven and "Potential SSRF" became "SSRF" — a rule split caused purely
+	// by wording, on the surface GitHub groups and suppresses by.
+	if ruleSlug := slug(NeutralizeText(f.RuleID)); ruleSlug != "" {
+		return "fendix." + cat + "." + ruleSlug
+	}
+	// Findings from before RuleID was projected, and emitters that never set
+	// one, keep the original category+title key so their existing GitHub
+	// alerts and suppressions are undisturbed.
 	titleSlug := slug(f.Title)
 	if titleSlug == "" {
 		titleSlug = "unnamed"
@@ -477,6 +549,86 @@ func sarifSecuritySeverity(s models.Severity) string {
 	}
 }
 
+// --- the four severity concepts -----------------------------------------
+//
+// A Fendix finding carries four things a reader routinely conflates:
+//
+//	intrinsic severity  how bad this KIND of issue is when it is real
+//	confidence          how sure Fendix is that THIS instance is real
+//	effective risk      the two combined — how much this alert deserves now
+//	decision            what Fendix DID (BLOCK / WARN / INFO)
+//
+// SARIF has a natural home for three of them: security-severity on the rule
+// (intrinsic), rank on the result (effective risk), level on the result
+// (decision). Confidence has none, so it is published as an explicit result
+// property alongside the other three rather than being folded into one of
+// them. RC-7 was the consequence of folding: a synthetic FAKE_API_KEY scored
+// 25 in the LOW band and held at WARN was published under a rule ranked High,
+// with nothing in the result to say Fendix disagreed.
+
+// effectiveRisk is intrinsic severity tempered by confidence, on SARIF's
+// 0.0–100.0 rank scale (§3.27.16, 0.0 lowest priority).
+//
+// An UNSTAMPED finding — no decision pass, no confidence score — is NOT
+// tempered. Absent confidence is "never assessed", not "assessed as low", and
+// quietly down-ranking every finding from a producer that does not score would
+// bury real issues behind a missing field.
+func effectiveRisk(f models.Finding) float64 {
+	base := map[models.Severity]float64{
+		models.SeverityCritical: 100,
+		models.SeverityHigh:     80,
+		models.SeverityMedium:   55,
+		models.SeverityLow:      30,
+	}[f.Severity]
+	if base == 0 {
+		base = 10 // INFO, and any unrecognised or empty severity
+	}
+	switch f.ConfidenceBand {
+	case "HIGH":
+		return base
+	case "MEDIUM":
+		return base * 0.7
+	case "LOW":
+		return base * 0.35
+	default:
+		return base
+	}
+}
+
+// effectiveRiskBand is the human-readable form of effectiveRisk, bucketed on
+// the same boundaries GitHub uses for security-severity so the two numbers are
+// read on one scale.
+func effectiveRiskBand(f models.Finding) string {
+	if f.ConfidenceBand == "" && f.Status == "" {
+		return "" // never assessed — say nothing rather than guess
+	}
+	switch r := effectiveRisk(f); {
+	case r >= 90:
+		return "CRITICAL"
+	case r >= 70:
+		return "HIGH"
+	case r >= 40:
+		return "MEDIUM"
+	default:
+		return "LOW"
+	}
+}
+
+// assessmentIsDowngraded reports whether Fendix ranks this instance materially
+// below the rule it fired under.
+//
+// It exists because GitHub renders security-severity, not rank, and
+// security-severity is necessarily the rule's intrinsic score. The gap has to
+// reach the one field a human actually reads, which is the message.
+func assessmentIsDowngraded(f models.Finding) bool {
+	band := effectiveRiskBand(f)
+	if band == "" {
+		return false
+	}
+	rank := map[string]int{"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+	return rank[band] < rank[string(f.Severity)]
+}
+
 // sarifLevelForStatus drives the SARIF level (and thus the GitHub annotation
 // color) from the v0.24 decision verdict: BLOCK→error, WARN→warning,
 // INFO→note. When no decision is stamped (status==""), it falls back to the
@@ -493,6 +645,37 @@ func sarifLevelForStatus(status string, sev models.Severity) string {
 		return "note"
 	default:
 		return sarifLevel(sev)
+	}
+}
+
+// automationIDFor is the analysis category GitHub Code Scanning partitions
+// alerts by (SARIF §3.17.3 runAutomationDetails; GitHub reads it as the
+// "category" of an upload).
+//
+// It must separate analyses that cover DIFFERENT ground, because an upload
+// carrying no findings for a category means "everything in this category is
+// fixed". A single constant put a code-only scan and a live DAST scan of the
+// same repository in one bucket, so whichever ran last cleared the other's
+// alerts — a scheduled whitebox job silently closing every finding a nightly
+// blackbox scan had opened, and the reverse.
+//
+// It must equally NOT separate two runs of the same analysis, or GitHub can
+// never match this run's alerts to the last one's and nothing is ever marked
+// fixed. So it is derived from the scan MODE and from nothing else: not the
+// engine version (an upgrade must not re-partition), not the duration or
+// endpoint count (those vary run to run by design), and never a timestamp or
+// UUID — an id made unique per run is the same defect wearing the opposite
+// mask.
+//
+// An empty mode keeps the original constant, so reports that predate the mode
+// field — and `fendix report --input` replays of them — stay in the bucket
+// their alerts already live in.
+func automationIDFor(mode string) string {
+	switch mode {
+	case "whitebox", "blackbox", "hybrid", "import":
+		return sarifAutomationID + "/" + mode
+	default:
+		return sarifAutomationID
 	}
 }
 
@@ -690,10 +873,27 @@ func buildResultMessage(f models.Finding, locCtx string) string {
 		// message.text "", and GitHub rejects that.
 		title = ruleKeyFor(f)
 	}
-	if locCtx == "" {
-		return title
+	if locCtx != "" {
+		title = title + " at " + locCtx
 	}
-	return title + " at " + locCtx
+	// State the scale explicitly for a sweep-style finding. "(+882 more)"
+	// inside locCtx names a remainder; a reader triaging wants the total.
+	if n := len(f.AffectedEndpoints); n > sarifMaxLogicalLocations {
+		title = fmt.Sprintf("%s — %d operations affected", title, n)
+	}
+	// GitHub ranks alerts by the RULE's security-severity, which is
+	// necessarily the intrinsic score — so when Fendix's own assessment of
+	// this instance is lower, the message is the only field a human reads that
+	// can say so. Without it the FAKE_API_KEY case reads as a High alert with
+	// no hint that Fendix scored it 25.
+	//
+	// Only emitted when the two genuinely disagree. A caveat on every alert is
+	// a caveat on none.
+	if assessmentIsDowngraded(f) {
+		title = fmt.Sprintf("%s — %s confidence (%d/100): effective risk %s, below this rule's %s severity",
+			title, f.ConfidenceBand, f.ConfidenceScore, effectiveRiskBand(f), f.Severity)
+	}
+	return title
 }
 
 // RenderSARIF writes a SARIF 2.1.0 report to the writer.
@@ -761,6 +961,7 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				Tags:             neutralizeTags(f.References),
 				Confidence:       string(f.Confidence),
 				SecuritySeverity: sarifSecuritySeverity(ruleSeverity[key]),
+				SeverityModel:    "intrinsic",
 			},
 		}
 		rules = append(rules, rule)
@@ -795,6 +996,10 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		// normalizeArtifactURI is what deletes the scheme and hides the
 		// URL-ness.
 		var locCtx string
+		// truncatedEndpoints is non-nil only when the location list was
+		// capped; it carries the FULL set so the property block below can
+		// record what the locations no longer show.
+		var truncatedEndpoints []string
 		filePath, lineNum := parseLine(f.Line) // handles nil / "" itself
 		artifactURI := ""
 		if filePath != "" && !looksLikeURLPath(filePath) {
@@ -841,8 +1046,16 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				endpoints = []string{filePath}
 			}
 			if len(endpoints) > 0 {
-				locs := make([]SARIFLocation, 0, len(endpoints))
-				for _, ep := range endpoints {
+				// Cap the navigable list; the full set is recorded in
+				// properties below. See sarifMaxLogicalLocations.
+				shown := endpoints
+				truncated := false
+				if len(shown) > sarifMaxLogicalLocations {
+					shown = shown[:sarifMaxLogicalLocations]
+					truncated = true
+				}
+				locs := make([]SARIFLocation, 0, len(shown))
+				for _, ep := range shown {
 					locs = append(locs, SARIFLocation{
 						LogicalLocations: []SARIFLogicalLocation{{
 							// Endpoint string is an untrusted logical
@@ -857,9 +1070,22 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				if len(endpoints) > 1 {
 					locCtx = fmt.Sprintf("%s (+%d more)", locCtx, len(endpoints)-1)
 				}
+				if truncated {
+					// Recorded here, stamped after the property block below —
+					// sarifResultProperties REPLACES result.Properties, so
+					// writing it now would be silently overwritten.
+					truncatedEndpoints = endpoints
+				}
 			}
 		}
 		result.Message = SARIFMessage{Text: buildResultMessage(f, locCtx)}
+		// Effective risk on SARIF's own per-result priority field. Stamped
+		// only for a finding that was actually assessed — see effectiveRiskBand
+		// on why an unassessed finding is not silently down-ranked.
+		if effectiveRiskBand(f) != "" {
+			rank := effectiveRisk(f)
+			result.Rank = &rank
+		}
 
 		// Proven Path v1: render the taint chain as a codeFlow so GitHub
 		// shows the source→sink step-through, and stamp provenance
@@ -869,6 +1095,17 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		}
 		if props := sarifResultProperties(f); props != nil {
 			result.Properties = props
+		}
+		// A truncated result must never read as a complete one. The count, the
+		// full endpoint set and an explicit marker go on after the property
+		// block, which replaces result.Properties wholesale.
+		if len(truncatedEndpoints) > 0 {
+			if result.Properties == nil {
+				result.Properties = &SARIFResultProperties{}
+			}
+			result.Properties.AffectedEndpointCount = len(truncatedEndpoints)
+			result.Properties.AffectedEndpoints = neutralizeAll(truncatedEndpoints)
+			result.Properties.LocationsTruncated = true
 		}
 
 		// FIX-13.1 / DECISIONS.md D4: emit the key only when a real
@@ -919,7 +1156,7 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 				// Emitted unconditionally, zero-findings runs included: GitHub
 				// needs the category on a clean run too, otherwise the "no
 				// alerts" upload cannot clear the previous run's alerts for it.
-				AutomationDetails: &SARIFRunAutomationDetails{ID: sarifAutomationID},
+				AutomationDetails: &SARIFRunAutomationDetails{ID: automationIDFor(meta.Mode)},
 				Results:           results,
 				Invocations:       []SARIFInvocation{invocation},
 			},
@@ -932,4 +1169,16 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 		return fmt.Errorf("encoding SARIF report: %w", err)
 	}
 	return nil
+}
+
+// neutralizeAll strips control/bidi characters from every entry of an
+// untrusted string slice. Endpoint names reach the report from crawled targets
+// and spec files, so they are neutralized wherever they are emitted — the
+// property copy is no different from the logicalLocation copy.
+func neutralizeAll(in []string) []string {
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = NeutralizeText(s)
+	}
+	return out
 }

@@ -108,6 +108,7 @@ func (o *Orchestrator) recordNpmScanResult(status *scannerStatusList, findings *
 		slog.Info("npm deps scan: package.json present but lock file missing — emitting advisory finding")
 		*findings = append(*findings, evidence.Evidence{
 			ID:         "SEC-NPM_LOCKFILE_MISSING",
+			RuleID:     "scanstatus/npm-lockfile-missing",
 			Title:      "npm dep-CVE scan skipped — package-lock.json missing",
 			Severity:   models.SeverityInfo,
 			Source:     models.SourceWhitebox,

@@ -127,6 +127,7 @@ func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 				resp1Status, len(resp1Body), resp2Status, len(resp2Body))
 			return []ev.Evidence{
 				{
+					RuleID:     "idor/cross-tenant-access",
 					Title:      "IDOR — cross-tenant object access (id mutation)",
 					Severity:   models.SeverityHigh,
 					Source:     models.SourceBlackbox,
@@ -177,6 +178,7 @@ func (idorCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 
 	return []ev.Evidence{
 		{
+			RuleID:     "idor/identical-responses",
 			Title:      "Potential IDOR — identical responses for different users",
 			Severity:   models.SeverityHigh,
 			Source:     models.SourceBlackbox,

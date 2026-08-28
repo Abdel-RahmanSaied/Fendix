@@ -18,7 +18,16 @@ import (
 // — the way `decisions`, `scanner_status` and `endpoints_discovered` all
 // landed — do NOT bump it: a reader that ignores an unknown key still reads
 // a v1 report correctly.
-const SchemaVersion = 1
+//
+// 2 — the fingerprint algorithm changed from sha1(Category|Endpoint|Title) to
+// the semantic fendix/v2 scheme. The report SHAPE is only additively extended
+// (rule_id, dependency, secret, sink, symbol, all omitempty), but the meaning
+// of an existing field changed: v1 and v2 fingerprints share no hash, so a
+// saved baseline or a `.fendix-ignore` `fingerprint:` rule written under v1
+// matches nothing and every finding reads as new. Matching nothing SILENTLY is
+// precisely the failure this field exists to warn about, so it is the bump the
+// rule above asks for.
+const SchemaVersion = 2
 
 // ScanMetadata contains metadata about the scan run for report output.
 type ScanMetadata struct {
@@ -28,13 +37,23 @@ type ScanMetadata struct {
 	// field existed omits the key entirely and decodes to 0 — consumers
 	// must read 0 as "pre-versioned", never as invalid, and
 	// ParseJSONReport deliberately does not gate on it.
-	SchemaVersion  int       `json:"schema_version"`
-	Target         string    `json:"target"`
-	StartedAt      time.Time `json:"started_at"`
-	Duration       string    `json:"duration"`
-	Version        string    `json:"version"`
-	Mode           string    `json:"mode"`
-	EndpointsCount int       `json:"endpoints_scanned"`
+	SchemaVersion int `json:"schema_version"`
+	// FingerprintAlgorithm names the identity scheme that produced this
+	// report's fingerprints. RenderJSON overwrites whatever the caller set,
+	// like SchemaVersion, so it always describes the build that wrote the
+	// bytes.
+	//
+	// The version number says something changed; this says WHAT the
+	// fingerprints are, so a consumer comparing two archived reports can tell
+	// whether their identities are even comparable. SARIF carries the same
+	// fact in its partialFingerprints key; JSON had nowhere to put it.
+	FingerprintAlgorithm string    `json:"fingerprint_algorithm,omitempty"`
+	Target               string    `json:"target"`
+	StartedAt            time.Time `json:"started_at"`
+	Duration             string    `json:"duration"`
+	Version              string    `json:"version"`
+	Mode                 string    `json:"mode"`
+	EndpointsCount       int       `json:"endpoints_scanned"`
 	// EndpointsDiscovered is the number of endpoints found BEFORE the
 	// --max-endpoints cap truncated the list; EndpointsTruncated is true when
 	// the cap actually dropped some. Without these, endpoints_scanned=500 is
@@ -219,6 +238,9 @@ func RenderJSON(w io.Writer, findings []models.Finding, meta ScanMetadata) error
 	// json` re-render path, where meta was decoded from a report that
 	// predates the field and carries 0.
 	meta.SchemaVersion = SchemaVersion
+	// Same reasoning: the report must describe the build that wrote it, not
+	// whatever a re-render path decoded from an older file.
+	meta.FingerprintAlgorithm = models.FingerprintAlgorithm
 	report := JSONReport{
 		Metadata:  meta,
 		Summary:   CountSeverities(findings),

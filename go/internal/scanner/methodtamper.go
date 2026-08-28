@@ -409,6 +409,7 @@ func methodTamperBypassFinding(ep Endpoint, bypassVerbs []string, canonNoAuthSta
 		evidence += " (A HEAD 2xx that advertised a non-empty Content-Length was also observed but is not itself treated as the bypass — HEAD returns no body by contract.)"
 	}
 	return ev.Evidence{
+		RuleID:   "methodtamper/access-control-bypass",
 		Title:    "HTTP method tampering — verb-based access-control bypass",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -444,6 +445,7 @@ func methodTamperDangerousFinding(ep Endpoint, enabled []string, traceXST bool) 
 		xstNote = " TRACE is enabled and echoes the request (Cross-Site Tracing / XST — a vector for stealing HttpOnly cookies via a separate client-side flaw)."
 	}
 	return ev.Evidence{
+		RuleID:   "methodtamper/dangerous-method",
 		Title:    "HTTP method tampering — dangerous method enabled",
 		Severity: models.SeverityMedium,
 		Source:   models.SourceBlackbox,

@@ -1331,6 +1331,15 @@ func buildMergedFinding(pkg pinnedPackage, members []osvVuln, manifestName strin
 		References: refs,
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
+		// The v2 fingerprint keys this finding on advisory + ecosystem +
+		// package. Carried structurally so identity never has to be parsed
+		// back out of the rendered Title.
+		Dependency: &models.DependencyRef{
+			Ecosystem: "PyPI",
+			Package:   pkg.name,
+			Version:   pkg.version,
+			Manifest:  manifestName,
+		},
 		// INTERNAL handoff to scanner/deps/applicability (FIX-14), which
 		// needs the ecosystem/package/version this finding is about in a
 		// form it can look up without re-parsing the title. Metadata is

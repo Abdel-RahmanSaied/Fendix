@@ -346,9 +346,17 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         lineno: int,
         category: str = "injection",
         taint_chain=_CHAIN_NOT_ATTEMPTED,
+        proven_title: str | None = None,
+        sink: str | None = None,
     ) -> None:
         finding: dict = {
             "id": f"SEC-{pat_id}",
+            # The rule that fired, stated explicitly. It used to live only
+            # inside `id`, which the identity layer had to parse — and that
+            # worked only because "SEC-PY_SSRF" happens not to look like the
+            # orchestrator's positional "SEC-001" counter. Identity should not
+            # rest on a naming coincidence.
+            "rule_id": f"python.ast/{pat_id}",
             "title": title,
             "severity": severity,
             "source": "whitebox",
@@ -395,6 +403,41 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         chain = None if not attempted_chain else taint_chain
         if attempted_chain and not chain and finding["confidence"] == "HIGH":
             finding["confidence"] = "MEDIUM"
+
+        # RC-6: the wording is a function of the evidence, decided here rather
+        # than at each call site, because here is the only place that knows
+        # whether the chain was proven. A reachability-dependent finding
+        # arrives with the HEDGED title in `title` and, when it has one, the
+        # proven wording in `proven_title`; the hedged form is what ships
+        # unless a chain was actually collected.
+        #
+        # Both forms are pure presentation. Identity is keyed on rule, file,
+        # symbol and sink (models.Fingerprint), so a finding that strengthens
+        # from "Potential SSRF" to "SSRF" keeps the record it already had
+        # instead of being filed as a new vulnerability.
+        if chain and proven_title:
+            finding["title"] = proven_title
+
+        # The vulnerable OPERATION, emitted whether or not the flow was
+        # proven. It is what the fingerprint keys on, and the analyzer builds
+        # the same string in both cases — withholding it on the unproven half
+        # forced identity to fall back to the evidence text, so an analyzer
+        # that later proved the flow re-filed the finding as a new
+        # vulnerability. Falls back to the chain's own sink for callers that
+        # prove a chain without naming one.
+        if sink:
+            finding["sink"] = sink
+        elif chain:
+            finding["sink"] = chain[-1].get("expr", "")
+
+        # The enclosing function, emitted unconditionally. It is the other
+        # half of the operation's identity, and it must NOT be read off the
+        # bound route below: a route is bound only when a chain was proven AND
+        # the function is a registered handler, so a symbol taken from there
+        # appears and disappears with the proof. The function stack knows the
+        # enclosing function either way.
+        if self._func_stack:
+            finding["symbol"] = self._func_stack[-1].name
 
         if chain:
             # TASK-114: when the visitor proves user input flows from a
@@ -1235,15 +1278,20 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         #          HttpResponseRedirect(request.GET['next'])
         elif self._is_open_redirect(node):
             chain = None
+            # Built once, OUTSIDE the chain attempt, so the operation is named
+            # whether or not the flow can be proven — see _emit_finding's sink.
+            sink_expr = (
+                f"redirect({_ast_expr_text(node.args[0])})" if node.args else ""
+            )
             if node.args:
                 chain = self._collect_taint_chain(
                     node.args[0],
                     node.lineno,
-                    f"redirect({_ast_expr_text(node.args[0])})",
+                    sink_expr,
                 )
             self._emit_finding(
                 "PY_OPEN_REDIRECT",
-                "Open redirect — user-controlled redirect target",
+                "Potential open redirect — dynamic redirect target",
                 "HIGH",
                 "MEDIUM",
                 "CWE-601",
@@ -1253,6 +1301,8 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 ),
                 node.lineno,
                 taint_chain=chain,
+                proven_title="Open redirect — user-controlled redirect target",
+                sink=sink_expr,
             )
 
         # XSS HTML-render sinks (TASK-120). Three patterns:
@@ -1277,12 +1327,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             # Markup(escape(x) + '<br>')) — is already safe HTML. Only fall
             # through to emit when the arg is NOT fully escaped.
             chain = None
+            sink_expr = ""
             if node.args:
                 sink_name = self._xss_sink_name(node)
+                sink_expr = f"{sink_name}({_ast_expr_text(node.args[0])})"
                 chain = self._collect_taint_chain(
                     node.args[0],
                     node.lineno,
-                    f"{sink_name}({_ast_expr_text(node.args[0])})",
+                    sink_expr,
                 )
             self._emit_finding(
                 "PY_XSS_HTML_SINK",
@@ -1298,6 +1350,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 ),
                 node.lineno,
                 taint_chain=chain,
+                sink=sink_expr,
             )
 
         # HTTP-client sink with non-literal first arg → potential SSRF.
@@ -1315,12 +1368,14 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 if ctor_arg is not None
                 else (node.args[0] if node.args else None)
             )
+            sink_expr = ""
             if url_arg is not None:
                 label = sink_name if ctor_arg is None else "http_client(base_url=…)"
+                sink_expr = f"{label}({_ast_expr_text(url_arg)})"
                 chain = self._collect_taint_chain(
                     url_arg,
                     node.lineno,
-                    f"{label}({_ast_expr_text(url_arg)})",
+                    sink_expr,
                 )
             self._emit_finding(
                 "PY_SSRF",
@@ -1335,6 +1390,8 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 ),
                 node.lineno,
                 taint_chain=chain,
+                proven_title="SSRF — user-controlled URL reaches HTTP client",
+                sink=sink_expr,
             )
 
         # Path-traversal sinks (TASK-134 / Phase 17d). Recognises:
@@ -1359,6 +1416,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         #     escalates the non-correlated-reachable case (TASK-125).
         elif self._is_path_traversal_sink(node):
             chain = None
+            sink_expr = ""
             sink_name = self._path_traversal_sink_name(node)
             if node.args:
                 # The user-controlled arg is usually the FIRST positional
@@ -1367,10 +1425,11 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 # _path_traversal_arg_index handles that.
                 arg_idx = self._path_traversal_arg_index(node)
                 if arg_idx < len(node.args):
+                    sink_expr = f"{sink_name}({_ast_expr_text(node.args[arg_idx])})"
                     chain = self._collect_taint_chain(
                         node.args[arg_idx],
                         node.lineno,
-                        f"{sink_name}({_ast_expr_text(node.args[arg_idx])})",
+                        sink_expr,
                     )
             # `os.path.*` sinks (join/abspath/expanduser/expandvars) only
             # become path-traversal vulns when the argument actually
@@ -1387,7 +1446,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             else:
                 self._emit_finding(
                     "PY_PATH_TRAVERSAL",
-                    "Path traversal — user input flows to filesystem path",
+                    "Potential path traversal — dynamic path reaches filesystem sink",
                     "HIGH",
                     "MEDIUM",
                     "CWE-22",
@@ -1399,6 +1458,8 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     ),
                     node.lineno,
                     taint_chain=chain,
+                    proven_title="Path traversal — user-controlled input reaches filesystem path",
+                    sink=sink_expr,
                 )
 
         # LLM prompt-injection sink (Sanad A1/A2). An untrusted value reaching

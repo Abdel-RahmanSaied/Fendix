@@ -226,6 +226,7 @@ func probeOpenRedirect(ctx context.Context, cc *CheckContext, ep Endpoint, param
 	)
 
 	return ev.Evidence{
+		RuleID:   "openredirect/confirmed",
 		Title:    "Open Redirect",
 		Severity: severity,
 		Source:   models.SourceBlackbox,

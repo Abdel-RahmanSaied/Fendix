@@ -987,6 +987,15 @@ func buildMergedFinding(pkg resolvedPackage, members []osvVuln, manifestName str
 		Confidence: models.ConfidenceHigh,
 		Line:       &line,
 		RuleID:     canonical,
+		// The v2 fingerprint keys this finding on advisory + ecosystem +
+		// package. Carried structurally so identity never has to be parsed
+		// back out of the rendered Title.
+		Dependency: &models.DependencyRef{
+			Ecosystem: "npm",
+			Package:   pkg.name,
+			Version:   pkg.version,
+			Manifest:  manifestName,
+		},
 		// INTERNAL handoff to scanner/deps/applicability (FIX-14). Metadata
 		// is dropped by ToFinding, which is fine: Resolve runs inside this
 		// package, before any projection.
