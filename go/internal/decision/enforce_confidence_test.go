@@ -40,11 +40,14 @@ func TestDecideEnforcedRuleTable(t *testing.T) {
 	}{
 		{
 			// 35 base + 10 static + 10 runtime + 25 cross-engine = 80 → HIGH.
-			name:       "HIGH band always blocks",
+			// RC-1: the reason now NAMES what corroborated it rather than
+			// asserting "confidence HIGH". Two engines agreeing is the signal;
+			// the band is the arithmetic consequence, not the justification.
+			name:       "HIGH band blocks and names its corroborator",
 			ev:         evidence.Evidence{Severity: models.SeverityCritical, Source: models.SourceCorrelated},
 			want:       StatusBlock,
 			wantLegacy: StatusBlock,
-			reasonHas:  "confidence HIGH",
+			reasonHas:  "corroborated by: cross-engine agreement",
 		},
 		{
 			// 35 + 10 static + 30 deterministic detection = 75 → HIGH.
@@ -77,15 +80,37 @@ func TestDecideEnforcedRuleTable(t *testing.T) {
 			reasonHas:  "corroborated by: reachable taint path",
 		},
 		{
-			// 35 + 10 runtime = 45 → MEDIUM. THE DAST ROW: a pure blackbox
-			// finding's only corroborator is the live runtime observation
-			// keyed on Source (DECISIONS.md D7). If this flips to WARN, the
-			// whole active-scan gate has been destroyed.
-			name:       "MEDIUM band blackbox blocks on the live runtime observation",
+			// 35 + 10 runtime = 45 → MEDIUM. THE RC-1 ROW, inverted from what
+			// it asserted before. A bare blackbox finding used to supply its
+			// own corroborator ("live runtime observation", true for every
+			// Source=blackbox), so any scanner-assigned CRITICAL blocked the
+			// build on nothing but a severity constant. It now warns.
+			//
+			// This does NOT destroy the active-scan gate: an active probe that
+			// elicited a confirming response earns "payload-validated probe"
+			// (see the row below), and a deterministic response read earns the
+			// self-evident signal. What is gone is gating on the mere fact that
+			// a DAST scanner ran.
+			name:       "MEDIUM band blackbox no longer blocks on source alone",
 			ev:         evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceBlackbox},
+			want:       StatusWarn,
+			wantLegacy: StatusBlock,
+			reasonHas:  "nothing corroborates the claim",
+		},
+		{
+			// 35 + 10 runtime + 10 payload-validated = 55 → MEDIUM, and the
+			// probe differential is INDEPENDENT, so the active-scan gate holds
+			// for a probe that actually confirmed something.
+			name: "MEDIUM band blackbox blocks on a payload-validated probe",
+			ev: evidence.Evidence{
+				Severity: models.SeverityHigh,
+				Source:   models.SourceBlackbox,
+				Payload:  "' OR 1=1--",
+				Response: "SQL syntax error near ''",
+			},
 			want:       StatusBlock,
 			wantLegacy: StatusBlock,
-			reasonHas:  "corroborated by: live runtime observation",
+			reasonHas:  "corroborated by: payload-validated probe",
 		},
 		{
 			// 35 + 10 runtime - 15 4xx context = 30 → LOW.
@@ -164,13 +189,18 @@ func TestEnforcedDecisionsNameTheSignalsThatJustifiedTheBlock(t *testing.T) {
 	if d.Status != StatusBlock {
 		t.Fatalf("Status = %q, want BLOCK", d.Status)
 	}
+	// RC-1: "live runtime observation" is no longer among them — it named the
+	// scanner, not the evidence.
 	for _, want := range []string{
-		"cross-engine agreement", "live runtime observation",
+		"cross-engine agreement",
 		"confirmed route", "reachable taint path", "proven path",
 	} {
 		if !strings.Contains(d.Reason, want) {
 			t.Errorf("BLOCK reason does not name %q: %q", want, d.Reason)
 		}
+	}
+	if strings.Contains(d.Reason, "live runtime observation") {
+		t.Errorf("BLOCK reason still names the removed tautological signal: %q", d.Reason)
 	}
 }
 
@@ -289,53 +319,111 @@ func TestCorroborationsAreDeterministicAndOrdered(t *testing.T) {
 
 		DirectObservation: true,
 	}
-	want := []string{
+	// RC-1: "live runtime observation" is gone — it restated Source and made
+	// every blackbox finding corroborate itself. The remaining signals are
+	// partitioned: independent (a second observation that could have
+	// disagreed) vs self-evident (the claim IS the observation).
+	wantIndependent := []string{
 		"cross-engine agreement",
-		"live runtime observation",
-		"direct observation of a live response",
-		"deterministic detection in production code",
 		"confirmed route",
 		"reachable taint path",
 		"proven path",
 		"payload-validated probe",
 	}
-	got := corroborations(full)
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("corroborations = %v, want %v", got, want)
+	wantSelfEvident := []string{
+		"direct observation of a live response",
+		"deterministic detection in production code",
+	}
+	got := corroborate(full)
+	if strings.Join(got.Independent, "|") != strings.Join(wantIndependent, "|") {
+		t.Errorf("Independent = %v, want %v", got.Independent, wantIndependent)
+	}
+	if strings.Join(got.SelfEvident, "|") != strings.Join(wantSelfEvident, "|") {
+		t.Errorf("SelfEvident = %v, want %v", got.SelfEvident, wantSelfEvident)
 	}
 	for i := 0; i < 1000; i++ {
-		if strings.Join(corroborations(full), "|") != strings.Join(want, "|") {
-			t.Fatalf("corroborations is not deterministic (iteration %d): %v", i, corroborations(full))
+		c := corroborate(full)
+		if strings.Join(c.Independent, "|") != strings.Join(wantIndependent, "|") ||
+			strings.Join(c.SelfEvident, "|") != strings.Join(wantSelfEvident, "|") {
+			t.Fatalf("corroborate is not deterministic (iteration %d): %+v", i, c)
 		}
 	}
-	if got := corroborations(evidence.Evidence{Severity: models.SeverityHigh}); got != nil {
-		t.Errorf("corroborations with no signals = %v, want nil so len()==0 is the single predicate", got)
+	none := corroborate(evidence.Evidence{Severity: models.SeverityHigh})
+	if none.Independent != nil || none.SelfEvident != nil {
+		t.Errorf("corroborate with no signals = %+v, want both nil so len()==0 is the single predicate", none)
+	}
+	if none.Any() {
+		t.Error("Any() = true with no signals")
 	}
 }
 
-// TestCorroborationsAcceptsBothObservationConcepts is DECISIONS.md D7 in test
-// form: decision's wide Source-keyed predicate and the narrow
-// evidence.DirectObservation field are DIFFERENT signals and both count. If
-// someone "unifies" them onto the narrow field, the first case here goes red —
-// and with it every active-probe DAST finding's ability to gate a build.
-func TestCorroborationsAcceptsBothObservationConcepts(t *testing.T) {
-	// An active-probe DAST finding: blackbox, but no DirectObservation (the
-	// injection/XSS/SSRF/GraphQL scanners do not set it).
-	probe := evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceBlackbox, Payload: "' OR 1=1--"}
-	if len(corroborations(probe)) == 0 {
-		t.Error("an active-probe blackbox finding has no corroborator — the live-scan gate is gone")
-	}
-
-	// The narrow field on its own (a header/cookie/CORS read) also counts.
+// TestObservationConceptsAreClassified supersedes the DECISIONS.md D7 lock.
+//
+// D7 held that decision's wide Source-keyed predicate ("live runtime
+// observation") and the narrow evidence.DirectObservation field were two
+// DIFFERENT corroborating signals and that both must count. RC-1 overturns the
+// first half: the wide predicate was a restatement of Source, so it corroborated
+// nothing and made every blackbox finding self-corroborating. The narrow field
+// survives — reclassified as SELF-EVIDENT, because a deterministic read of a
+// response is the claim itself, not a second observation of it.
+func TestObservationConceptsAreClassified(t *testing.T) {
+	// The narrow field (a header/cookie/CORS read) is self-evident, not independent.
 	direct := evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceBlackbox, DirectObservation: true}
-	if !contains(corroborations(direct), "direct observation of a live response") {
-		t.Error("evidence.DirectObservation is not counted as corroboration")
+	c := corroborate(direct)
+	if !contains(c.SelfEvident, "direct observation of a live response") {
+		t.Error("evidence.DirectObservation is not classified as a self-evident signal")
+	}
+	if len(c.Independent) != 0 {
+		t.Errorf("Independent = %v, want empty — a deterministic read confirms nothing beyond itself", c.Independent)
 	}
 
-	// And the static mirror, so a code-only scan of production code can gate.
+	// The static mirror is likewise self-evident.
 	det := evidence.Evidence{Severity: models.SeverityHigh, Source: models.SourceWhitebox, Confidence: models.ConfidenceHigh}
-	if !contains(corroborations(det), "deterministic detection in production code") {
-		t.Error("the deterministic-detection signal is not counted as corroboration")
+	if !contains(corroborate(det).SelfEvident, "deterministic detection in production code") {
+		t.Error("the deterministic-detection signal is not classified as self-evident")
+	}
+}
+
+// TestActiveProbeNeedsAResponseToCorroborate pins the contract Task 2 of the
+// decision-integrity plan implements.
+//
+// An active probe that only records what it SENT has produced no differential:
+// "we sent a payload" is not evidence. The pair (Payload, Response) is — the
+// target answered the way the check predicted. This mirrors
+// confidence.payloadValidated exactly.
+func TestActiveProbeNeedsAResponseToCorroborate(t *testing.T) {
+	sentOnly := evidence.Evidence{
+		Severity: models.SeverityHigh, Source: models.SourceBlackbox, Payload: "' OR 1=1--",
+	}
+	if len(corroborate(sentOnly).Independent) != 0 {
+		t.Error("a probe that recorded only its payload corroborated something; it has no differential")
+	}
+
+	confirmed := sentOnly
+	confirmed.Response = "SQL syntax error near ''"
+	if !contains(corroborate(confirmed).Independent, "payload-validated probe") {
+		t.Error("a probe whose payload elicited a confirming response is not independently corroborated")
+	}
+}
+
+// TestActiveProbeScannersCanStillGateABuild is the COVERAGE half of RC-1 and is
+// deliberately red until Task 2 lands.
+//
+// Removing "live runtime observation" is only safe because the honest
+// replacement — payload-validated probe — becomes real. Until the active-probe
+// scanners record a response excerpt, they emit Payload with no Response and
+// cannot gate. This test is the tripwire that stops Task 1 from shipping alone.
+func TestActiveProbeScannersCanStillGateABuild(t *testing.T) {
+	t.Skip("restored by Task 2: active-probe scanners must populate Evidence.Response")
+
+	// Shape a production injection finding has TODAY (scanner sets Payload only).
+	probe := evidence.Evidence{
+		Title: "SQL injection", Category: "injection", Endpoint: "GET /search",
+		Severity: models.SeverityHigh, Source: models.SourceBlackbox,
+		Confidence: models.ConfidenceHigh, Payload: "' OR 1=1--",
+	}
+	if got := DecideWithOptions(probe, "HIGH", Options{EnforceConfidence: true}); got.Status != StatusBlock {
+		t.Errorf("Status = %q, want BLOCK — active-probe findings must still gate", got.Status)
 	}
 }
 

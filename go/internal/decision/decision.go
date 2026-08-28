@@ -118,23 +118,47 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 	return d
 }
 
-// applyConfidenceGate is FIX-08: a finding whose severity met --fail-on BLOCKs
-// only when the deterministic confidence band supports the claim.
+// applyConfidenceGate is FIX-08, tightened by RC-1: a finding whose severity met
+// --fail-on BLOCKs only when the deterministic confidence band supports the
+// claim AND something actually corroborates it.
 //
 // The rule table, in evaluation order:
 //
-//	marked unconfirmed-by-live-scan, no corroboration → WARN
-//	band LOW                                          → WARN
-//	band MEDIUM, no corroborating signal              → WARN
-//	band MEDIUM, ≥1 corroborating signal              → BLOCK
-//	band HIGH                                         → BLOCK
+//	marked unconfirmed-by-live-scan, no independent signal → WARN
+//	band LOW                                               → WARN
+//	NO signal of any class                                 → WARN   ← RC-1
+//	band MEDIUM, no INDEPENDENT signal                     → WARN
+//	otherwise                                              → BLOCK
+//
+// RC-1 CHANGE, and the shape of it matters. The old table's third arm read
+// "band MEDIUM, no corroborating signal → WARN", and the signal list counted
+// "live runtime observation" — true for every Source ∈ {blackbox, correlated}.
+// So a bare DAST finding (35 base + 10 runtime = 45, MEDIUM) supplied its own
+// required signal and any scanner-assigned CRITICAL blocked the build.
+//
+// The fix is NOT "self-evident signals can never block". That was tried and it
+// broke the case deterministicDetn exists for: a hardcoded credential in
+// production source, found by a deterministic pattern match on a code-only scan,
+// where no second observation is even possible. The difference is whether the
+// observation ESTABLISHES the claim:
+//
+//   - secrets: the observation ("this regex matched a credential in non-test
+//     source") substantially IS the claim. Self-evident, and sufficient at HIGH.
+//   - auth_bypass: the observation ("HTTP 200 with no Authorization header") is
+//     NOT the claim ("authentication was bypassed"). It is missing the premise
+//     "authentication was expected here", which nothing supplied. It now scores
+//     no signal at all and is held at WARN — and Task 3/4 of the plan gives it a
+//     real independent signal when a spec declares the requirement.
+//
+// So the tautology is deleted, self-evident signals still count at HIGH, and a
+// MEDIUM band still requires something independent.
 //
 // The unconfirmed arm runs FIRST and is band-independent: the correlator set
 // that marker because a live scan ran and did NOT confirm this finding, which
 // is a direct contradiction of the claim rather than merely weak support for
 // it. Reporting "[Unconfirmed by live scan]" in the evidence text and failing
 // the build on the same finding is the specific incoherence FIX-08 exists to
-// remove, so no band alone lifts it — only an actual corroborating signal does.
+// remove, so no band alone lifts it — only an actual independent signal does.
 //
 // Every WARN arm appends one 0-point line to the score breakdown. It must be
 // 0-point and carry an explicit "+0 " prefix: confidence_reasons is published
@@ -143,7 +167,8 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 // parse the leading signed delta). The score itself never moves; a demotion is
 // an ENFORCEMENT decision, not a re-scoring of the evidence.
 func applyConfidenceGate(d *Decision, ev evidence.Evidence) {
-	sigs := corroborations(ev)
+	c := corroborate(ev)
+	sigs := c.Independent
 
 	hold := func(reason string) {
 		d.Status = StatusWarn
@@ -154,95 +179,129 @@ func applyConfidenceGate(d *Decision, ev evidence.Evidence) {
 	switch {
 	case ev.UnconfirmedByLiveScan && len(sigs) == 0:
 		hold("severity at or above the --fail-on threshold but the finding is unconfirmed " +
-			"by live scan and uncorroborated — needs corroboration to block")
+			"by live scan and uncorroborated — needs independent corroboration to block")
 	case d.Score.Band == models.ConfidenceLow:
 		hold("severity above threshold but confidence LOW — needs corroboration to block")
+	case !c.Any():
+		// RC-1's core arm. Reaching a band without ANY signal means the score
+		// came from source/tier deltas alone — i.e. from what kind of scanner
+		// ran, not from anything it established. A scanner-assigned severity
+		// constant must not gate a build on its own.
+		hold("severity above threshold but nothing corroborates the claim — " +
+			"needs corroboration to block")
 	case d.Score.Band == models.ConfidenceMedium && len(sigs) == 0:
+		// A MEDIUM band supported only by self-evident signals: the observation
+		// was clean, but nothing independent of it agrees. Held at WARN.
 		hold("severity above threshold but confidence MEDIUM with no corroborating signal — " +
 			"needs corroboration to block")
-	case d.Score.Band == models.ConfidenceMedium:
+	default:
 		d.Status = StatusBlock
-		d.Reason = "severity at or above the --fail-on threshold; corroborated by: " + strings.Join(sigs, ", ")
-	default: // ConfidenceHigh
-		d.Status = StatusBlock
-		d.Reason = "severity at or above the --fail-on threshold; confidence HIGH"
-		if len(sigs) > 0 {
-			d.Reason += "; corroborated by: " + strings.Join(sigs, ", ")
-		}
+		d.Reason = "severity at or above the --fail-on threshold; corroborated by: " +
+			strings.Join(append(append([]string(nil), sigs...), c.SelfEvident...), ", ")
 	}
 }
 
-// corroborations names every corroborating signal present on ev, in a FIXED
-// order. Pure and deterministic (Rule 8): a fixed sequence of ifs, never a map
-// or a set, because the result is joined into Decision.Reason and the
-// order-independence locks compare those strings verbatim.
+// corroboration partitions the signals supporting a claim into two classes.
 //
-// Returns nil (not an empty slice) when nothing fires, so `len(...) == 0` is
-// the single corroboration predicate everywhere.
+// INDEPENDENT signals come from an observation DISTINCT from the one that
+// produced the claim: another engine agreed, a taint path was proved, a route
+// was confirmed live, a probe payload elicited a predicted response, an external
+// tool reported the same weakness at the same location. These are the only
+// signals that may lift a band to BLOCK.
 //
-// On the two "observation" signals — DECISIONS.md D7 is binding here, and the
-// distinction is easy to collapse by accident:
+// SELF-EVIDENT signals restate the observation that produced the claim: a
+// deterministic read of a live response, a deterministic pattern match in
+// production source. They are strong — they carry the largest confidence deltas
+// in the scorer (+30 each) — but they are not CONFIRMATION, because there is no
+// second observation that could have disagreed. They are published so a reader
+// sees the full support, and they never substitute for an independent signal.
 //
-//   - liveRuntimeObservation is keyed on Source (blackbox or correlated): the
-//     finding came from a live probe against a running target at all. It is
-//     deliberately WIDER than evidence.Evidence.DirectObservation.
-//   - Evidence.DirectObservation is the narrow deterministic-read flag the
-//     header/cookie/CORS checks set, and it is scored separately by
-//     confidence.directObservation.
+// RC-1, REMOVED IN THIS CHANGE: "live runtime observation", which fired for
+// every Source ∈ {blackbox, correlated}. It was a restatement of a field the
+// report already exports, so every blackbox finding corroborated ITSELF: a
+// bare DAST finding sits at 35 base + 10 runtime = 45 (MEDIUM band), the
+// tautology supplied the one required signal, and any scanner-assigned CRITICAL
+// then blocked the build. Severity is a constant in the scanner; that made
+// "BLOCK" a function of a constant.
 //
-// If this predicate were "unified" onto the narrow field, every active-probe
-// DAST finding (injection, XSS, SSRF, GraphQL) would lose its ONLY corroborator
-// — those scanners do not set DirectObservation — and a pure-blackbox finding
-// sits at 35 base + 10 runtime = 45, MEDIUM band. The whole live-scan gate would
-// silently disappear. Hence both, OR-ed.
+// The prior comment defended the signal on the grounds that removing it would
+// strip every active-probe DAST finding (injection, XSS, SSRF, GraphQL) of its
+// only corroborator. That was TRUE, and the reason is recorded in confidence.go:
+// payloadValidated requires Payload AND Response, and no production producer set
+// Response, so the honest signal for those scanners was dead code. The fix is to
+// make that signal real (the active-probe checks now record a bounded response
+// excerpt), not to keep a tautology standing in for it.
 //
-// confidence.HasDeterministicDetection is the static mirror of the same idea and
-// is called rather than re-derived, so the corroboration predicate cannot drift
-// from the delta that pays for it.
+// confidence.HasDeterministicDetection is the static mirror of DirectObservation
+// and is called rather than re-derived, so the classification cannot drift from
+// the delta that pays for it.
 //
-// Note on payload validation: it mirrors confidence.go's rule exactly (Payload
-// AND Response), and evidence.Evidence.Response has no production producer
-// today, so this arm is forward-compatibility only. Do not build a test or a
-// gating expectation on it.
-func corroborations(ev evidence.Evidence) []string {
-	liveRuntimeObservation := ev.Source == models.SourceBlackbox || ev.Source == models.SourceCorrelated
+// Both slices are built by a FIXED sequence of ifs, never a map or a set: they
+// are joined into Decision.Reason and exported into SARIF, so their order must
+// be a pure function of the evidence (Rule 8). Each is nil when nothing fires,
+// so `len(...) == 0` is the single predicate everywhere.
+type corroboration struct {
+	Independent []string
+	SelfEvident []string
+}
 
-	var sigs []string
+// Any reports whether any signal at all fired, in either class.
+func (c corroboration) Any() bool {
+	return len(c.Independent) > 0 || len(c.SelfEvident) > 0
+}
+
+func corroborate(ev evidence.Evidence) corroboration {
+	var c corroboration
+
 	if ev.Source == models.SourceCorrelated {
-		sigs = append(sigs, "cross-engine agreement")
-	}
-	if liveRuntimeObservation {
-		sigs = append(sigs, "live runtime observation")
-	}
-	if ev.DirectObservation {
-		sigs = append(sigs, "direct observation of a live response")
-	}
-	if confidence.HasDeterministicDetection(ev) {
-		sigs = append(sigs, "deterministic detection in production code")
+		c.Independent = append(c.Independent, "cross-engine agreement")
 	}
 	if ev.RouteConfirmed {
-		sigs = append(sigs, "confirmed route")
+		c.Independent = append(c.Independent, "confirmed route")
 	}
 	if ev.Reachable {
-		sigs = append(sigs, "reachable taint path")
+		c.Independent = append(c.Independent, "reachable taint path")
 	}
 	if ev.ProvenPath {
-		sigs = append(sigs, "proven path")
+		c.Independent = append(c.Independent, "proven path")
 	}
+	// Payload AND Response — mirrors confidence.payloadValidated exactly. The
+	// pair is the differential: "we sent something" is not evidence, "the
+	// target answered the way the check predicted" is.
 	if ev.Payload != "" && ev.Response != "" {
-		sigs = append(sigs, "payload-validated probe")
+		c.Independent = append(c.Independent, "payload-validated probe")
 	}
 	// Strong cross-tool corroboration only — stamped exclusively by
 	// engine.CorrelateCrossTool when an INDEPENDENT tool reported the same
-	// normalized CWE at the same normalized location. An imported finding
-	// that merely shares a title, category, fingerprint, or file with this
-	// one never sets the flag, so it can never satisfy this arm. Appended
-	// last so the existing signal order (and every string-locked test)
-	// stays byte-identical.
+	// normalized CWE at the same normalized location. An imported finding that
+	// merely shares a title, category, fingerprint, or file with this one never
+	// sets the flag, so it can never satisfy this arm.
 	if ev.CrossToolCorroborated {
-		sigs = append(sigs, "independent cross-tool corroboration")
+		c.Independent = append(c.Independent, "independent cross-tool corroboration")
 	}
-	return sigs
+
+	if ev.DirectObservation {
+		c.SelfEvident = append(c.SelfEvident, "direct observation of a live response")
+	}
+	if confidence.HasDeterministicDetection(ev) {
+		c.SelfEvident = append(c.SelfEvident, "deterministic detection in production code")
+	}
+	// An imported finding whose SOURCE TOOL declares the rule high-precision.
+	// Self-evident, not independent: it is one engine's own claim about its own
+	// rule, and nothing has agreed with it — cross-tool agreement is a separate
+	// signal that only engine.CorrelateCrossTool may stamp.
+	//
+	// It must be classified rather than omitted. The SARIF-import design
+	// (docs/superpowers/specs/2026-08-25-sarif-import-design.md) calibrated the
+	// import deltas so a high-precision rule lands at exactly bandHigh (35 base
+	// + 10 imported + 25 high-precision = 70) and gates on its own, while medium
+	// lands at 45 and low at 35. Leaving it unclassified would silently revoke
+	// that contract via the "no signal of any class" arm, turning an intentional
+	// design decision into an accident of taxonomy.
+	if ev.Source == models.SourceImported && ev.Confidence == models.ConfidenceHigh {
+		c.SelfEvident = append(c.SelfEvident, "imported high-precision rule")
+	}
+	return c
 }
 
 // appendReason appends one explainability line to a fresh copy of the reason
@@ -342,7 +401,13 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 		// A corroborated finding in test code still gates the build: a live
 		// credential that a provider validated is a real leak wherever the
 		// file happens to live.
-		if len(corroborations(ev)) == 0 {
+		//
+		// RC-1: reads the INDEPENDENT class only. Not a behaviour change for
+		// this arm — confidence.HasDeterministicDetection is gated on !InTest,
+		// so the only self-evident signal reachable here is DirectObservation,
+		// which no secrets/fixture producer sets. Keeping it on the independent
+		// class is the conservative reading and matches the gate above.
+		if len(corroborate(ev).Independent) == 0 {
 			d.Status = StatusWarn
 			d.Reason = "de-escalated to WARN: finding is in test/fixture code with no corroborating " +
 				"signal beyond the pattern match (rule: test-fixture; evidence preserved; " +
