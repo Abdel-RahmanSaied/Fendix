@@ -781,5 +781,25 @@ func secretIdentifier(line string, valueStart int, hasValue bool) string {
 	if !hasValue || valueStart <= 0 || valueStart > len(line) {
 		return ""
 	}
-	return lastAssignmentKey(line[:valueStart])
+	prefix := line[:valueStart]
+	// Prefer the OUTERMOST binding — the name on the left of the assignment —
+	// over the nearest one.
+	//
+	// A connection string carries its own key:value shapes inside the quoted
+	// value: `DATABASE_URL = "postgres://appuser:pw@host/db"` makes `appuser`
+	// the nearest key, so the nearest-key search named the finding after the
+	// database username. That is stable exactly until someone rotates the
+	// credential, at which point a rotation — the correct response to the
+	// finding — files it as a different vulnerability.
+	//
+	// Everything from the first quote onward is the value's own text, so the
+	// binding is whatever assignment precedes it. lastAssignmentKey still runs
+	// on that prefix (a nested `config["stripe_key"] =` should give
+	// `stripe_key`, not `config`), just never on the value.
+	if q := strings.IndexAny(prefix, `"'`); q >= 0 {
+		if outer := lastAssignmentKey(prefix[:q]); outer != "" {
+			return outer
+		}
+	}
+	return lastAssignmentKey(prefix)
 }

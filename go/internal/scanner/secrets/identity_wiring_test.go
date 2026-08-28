@@ -81,3 +81,48 @@ func scanContent(t *testing.T, rel, src string) []evidence.Evidence {
 	}
 	return found
 }
+
+// The identifier must be the name the credential is BOUND to, not a fragment
+// found inside the credential's own text.
+//
+// A connection string contains its own "key:value" shapes — postgres://user:pw
+// — and the nearest-key search reads `user` out of the URL. That is stable only
+// until someone rotates the database username, at which point the finding gets
+// a new identity for a change that is not a new vulnerability. The binding on
+// the left of the assignment is the stable name.
+func TestIdentifierIsTheBindingNameNotAFragmentOfTheValue(t *testing.T) {
+	src := `DATABASE_URL = "postgres://appuser:s3cr3tpassw0rd@db.internal:5432/app"` + "\n"
+
+	found := scanContent(t, "settings.py", src)
+	if len(found) == 0 {
+		t.Fatal("connection string was not detected")
+	}
+	for _, ev := range found {
+		if ev.Secret == nil {
+			continue
+		}
+		if ev.Secret.Identifier != "DATABASE_URL" {
+			t.Errorf("identifier = %q, want DATABASE_URL — a name read out of the URL "+
+				"changes whenever the credential is rotated", ev.Secret.Identifier)
+		}
+	}
+}
+
+// Rotating the credential must not change identity: same binding, same secret.
+func TestRotatingACredentialKeepsTheIdentity(t *testing.T) {
+	before := scanContent(t, "settings.py",
+		`DATABASE_URL = "postgres://appuser:oldpassword1@db.internal:5432/app"`+"\n")
+	after := scanContent(t, "settings.py",
+		`DATABASE_URL = "postgres://rotated:newpassword2@db.internal:5432/app"`+"\n")
+
+	if len(before) == 0 || len(after) == 0 {
+		t.Fatal("connection string was not detected on one side")
+	}
+	if before[0].Secret == nil || after[0].Secret == nil {
+		t.Fatal("no secret identity captured")
+	}
+	if before[0].Secret.Identifier != after[0].Secret.Identifier {
+		t.Errorf("rotating the credential changed its identity: %q -> %q",
+			before[0].Secret.Identifier, after[0].Secret.Identifier)
+	}
+}
