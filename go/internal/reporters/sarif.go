@@ -143,6 +143,81 @@ type SARIFResultProperties struct {
 	// being lost at the boundary — a consumer can see that two engines
 	// agreed, not merely that fendix scored the finding highly.
 	CorroboratingTools []string `json:"corroborating_tools,omitempty"`
+	// Decision is the machine-readable justification for Status. Pointer +
+	// omitempty so a report produced without the decision pass stays
+	// byte-identical to one produced before this field existed.
+	Decision *SARIFDecision `json:"decision,omitempty"`
+}
+
+// SARIFDecision is the auditable justification for one finding's verdict: what
+// the decision was, why, which signals supported it and in which class, and the
+// evidence flags behind them.
+//
+// It exists so a consumer can answer "why exactly did this BLOCK my build?"
+// from the exported result alone. Before it, a reader could see status,
+// confidence_score, confidence_band and source_tier and still not reconstruct
+// the verdict.
+type SARIFDecision struct {
+	Status             string   `json:"status"`
+	Reason             string   `json:"reason,omitempty"`
+	IndependentSignals []string `json:"independent_signals,omitempty"`
+	SelfEvidentSignals []string `json:"self_evident_signals,omitempty"`
+	// Evidence is a MAP, not a struct, and that is load-bearing — see
+	// decisionProperties.
+	Evidence map[string]interface{} `json:"evidence,omitempty"`
+}
+
+// decisionProperties renders the machine-readable justification for a finding's
+// verdict, or nil when no decision pass ran.
+//
+// THE EVIDENCE SUB-OBJECT IS A MAP ON PURPOSE. A struct field is either true or
+// false, and this contract requires a third state: a key that is ABSENT means
+// "not evaluated", never "evaluated and found false". Rendering unknown as
+// false is the single most misleading thing this exporter could do, because a
+// consumer cannot then distinguish a check that cleared from a check that never
+// ran — and "unknown treated as false" is the defect class this whole change
+// exists to remove. `omitempty` on a bool would collapse false into absent,
+// which is the same error wearing a different hat: it would make a genuinely
+// evaluated `false` unrepresentable.
+//
+// Only facts Fendix actually established are emitted.
+func decisionProperties(f models.Finding) *SARIFDecision {
+	if f.Status == "" {
+		return nil // no decision pass ran; emit nothing rather than a hollow block
+	}
+
+	evi := map[string]interface{}{}
+	if f.Reachable {
+		evi["reachable"] = true
+		// Only meaningful once reachability was evaluated: a chain either was
+		// or was not established. With no reachability analysis at all, both
+		// keys stay absent.
+		evi["flow_established"] = len(f.TaintChain) > 0
+	}
+	if len(f.TaintChain) > 0 {
+		evi["source_controlled"] = true
+		evi["sink_detected"] = true
+	}
+	if f.RouteConfirmed {
+		evi["route_confirmed"] = true
+	}
+	if f.AuthExpectation != models.AuthExpectationUnknown {
+		evi["auth_expectation"] = string(f.AuthExpectation)
+	}
+	if f.CrossToolCorroborated {
+		evi["cross_tool_corroborated"] = true
+	}
+
+	out := &SARIFDecision{
+		Status:             f.Status,
+		Reason:             NeutralizeText(f.DecisionReason),
+		IndependentSignals: neutralizeTags(f.IndependentSignals),
+		SelfEvidentSignals: neutralizeTags(f.SelfEvidentSignals),
+	}
+	if len(evi) > 0 {
+		out.Evidence = evi
+	}
+	return out
 }
 
 // SARIFCodeFlow groups one or more threadFlows (SARIF §3.36). A taint chain
@@ -298,6 +373,10 @@ func sarifResultProperties(f models.Finding) *SARIFResultProperties {
 		p.RoutePattern = f.Route.Pattern
 		p.RouteHandler = f.Route.Handler
 	}
+	// The guard above already returns early on f.Status == "", so any finding
+	// reaching here with a decision gets its justification; one without a
+	// decision pass gets nil and the key is omitted entirely.
+	p.Decision = decisionProperties(f)
 	return p
 }
 

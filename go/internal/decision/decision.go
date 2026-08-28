@@ -64,6 +64,10 @@ type Decision struct {
 	Score confidence.Result
 	// Evidence is the supporting evidence this verdict was derived from.
 	Evidence evidence.Evidence
+	// Corroboration is the partitioned signal set behind Status. Exported so
+	// the orchestrator can stamp it onto the finding without re-deriving — and
+	// therefore drifting from — the predicate the gate actually used.
+	Corroboration corroboration
 
 	// aboveThreshold records that this finding's severity met --fail-on,
 	// independent of what the confidence policy then did with it. It is the
@@ -98,7 +102,16 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 	}
 	rank := models.SeverityRank(ev.Severity)
 
-	d := Decision{Confidence: ev.Confidence, Score: confidence.Score(ev), Evidence: ev}
+	d := Decision{
+		Confidence: ev.Confidence,
+		Score:      confidence.Score(ev),
+		Evidence:   ev,
+		// Computed once here so the gate, the reason string and the exported
+		// justification all read the SAME partition. Deriving it a second time
+		// downstream is how an exporter drifts from the policy it claims to
+		// describe.
+		Corroboration: corroborate(ev),
+	}
 	d.aboveThreshold = threshold > 0 && rank >= threshold
 	switch {
 	case d.aboveThreshold:
@@ -167,7 +180,7 @@ func decide(ev evidence.Evidence, failOn string, opts Options) Decision {
 // parse the leading signed delta). The score itself never moves; a demotion is
 // an ENFORCEMENT decision, not a re-scoring of the evidence.
 func applyConfidenceGate(d *Decision, ev evidence.Evidence) {
-	c := corroborate(ev)
+	c := d.Corroboration
 	sigs := c.Independent
 
 	hold := func(reason string) {
@@ -419,7 +432,7 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 		// so the only self-evident signal reachable here is DirectObservation,
 		// which no secrets/fixture producer sets. Keeping it on the independent
 		// class is the conservative reading and matches the gate above.
-		if len(corroborate(ev).Independent) == 0 {
+		if len(d.Corroboration.Independent) == 0 {
 			d.Status = StatusWarn
 			d.Reason = "de-escalated to WARN: finding is in test/fixture code with no corroborating " +
 				"signal beyond the pattern match (rule: test-fixture; evidence preserved; " +

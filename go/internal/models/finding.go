@@ -214,6 +214,26 @@ type Finding struct {
 	// ConfidenceReasons is the plain-text, per-rule breakdown of the score
 	// (the "no black boxes" contract).
 	ConfidenceReasons []string `json:"confidence_reasons,omitempty"`
+	// DecisionReason is the plain-text justification for Status, verbatim from
+	// decision.Decision.Reason.
+	DecisionReason string `json:"decision_reason,omitempty"`
+	// IndependentSignals / SelfEvidentSignals are the two corroboration classes
+	// behind Status (decision.corroborate). Only Independent may lift a band to
+	// BLOCK; both are published so a reader can reconstruct the verdict without
+	// re-running the engine.
+	//
+	// STAMPED, NOT PROJECTED — same reasoning as the corroboration pair below:
+	// engine.stampDecisions writes them from the post-Restore evidence, so they
+	// reflect the merged group rather than whichever duplicate won findingLess.
+	IndependentSignals []string `json:"independent_signals,omitempty"`
+	SelfEvidentSignals []string `json:"self_evident_signals,omitempty"`
+	// AuthExpectation is what a source of truth declared about authentication
+	// for this endpoint (unknown / public / required). Published because the
+	// DECISION depends on it: a "contradicted authentication requirement" is an
+	// independent corroborating signal, and an auditable decision cannot cite a
+	// field the report withholds. Empty (unknown) is omitted, which is the
+	// honest encoding — see the type doc.
+	AuthExpectation AuthExpectation `json:"auth_expectation,omitempty"`
 
 	// --- Cross-tool corroboration (SARIF import) ------------------------
 	// CrossToolCorroborated / CorroboratingTools publish the verdict of

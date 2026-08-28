@@ -1,40 +1,48 @@
-fix(engine): preserve proved evidence across deduplication
+feat(sarif): export machine-readable decision justification
 
-Deduplicate accumulated only endpoints, references, Confidence and Source
-order-invariantly. Reachable, ProvenPath, RouteConfirmed, TaintChain, Route and
-SourceTier rode along with whichever member won findingLess — endpoint, then
-evidence, then fix, then line, lexicographic.
+A consumer could read status, confidence_score, confidence_band, source_tier and
+reachable and still not answer "why exactly did this BLOCK my build?". Results
+now carry properties.decision: the verdict, its plain-text reason, the
+independent and self-evident signal lists, and the evidence flags behind them.
 
-So a confirmed SSRF at "z/views.py:674" merged with an unconfirmed duplicate at
-"a/util.py:10" came out with Reachable=false, no taint chain, no bound route and
-the semgrep tier. decision.corroborate reads exactly those fields, so dedup
-could silently demote a genuinely confirmed finding to WARN.
+  "decision": {
+    "status": "BLOCK",
+    "reason": "severity at or above the --fail-on threshold; corroborated by: reachable taint path",
+    "independent_signals": ["reachable taint path"],
+    "evidence": {"reachable": true, "flow_established": true,
+                 "source_controlled": true, "sink_detected": true}
+  }
 
-This was NOT an arrival-order race. findingLess picks the same winner for every
-permutation, so the erasure was systematic — the lexicographically-first
-occurrence always won regardless of what it had proved. The new regression test
-fails identically on both input orderings, which is how that was established.
+THE EVIDENCE SUB-OBJECT IS A MAP, NOT A STRUCT. A struct field is either true or
+false and this contract needs a third state: an ABSENT key means "not
+evaluated", never "evaluated and false". `omitempty` on a bool would be the same
+error wearing a different hat — it collapses false into absent, making a
+genuinely evaluated false unrepresentable. Rendering unknown as false is the
+defect class this whole change exists to remove, so the exporter must not
+reintroduce it at the boundary.
 
-These six fields live in the RENDER BLOCK, so evidence.ProvenanceIndex could
-never have covered them: it exists to carry the Evidence-INTERNAL half across
-the ToFinding projection, and its own invariant comment scopes it that way. The
-gap was structural, not an omission.
+decision.Decision now carries the partitioned Corroboration, computed ONCE in
+decide(). The gate, the reason string and the export all read the same
+partition; re-deriving it downstream is how an exporter drifts from the policy
+it claims to describe.
 
-They now fold by proof union — OR for the flags, max-trust for the tier,
-prefer-the-member-that-proved-it for the chain and route. Only members that
-CARRIED the evidence contribute, so the fold cannot manufacture it
-(TestDedupDoesNotManufactureEvidence), and each operation is commutative,
-associative and idempotent, so the merged finding stays a pure function of the
-member set (TestDedupProofUnionIsOrderIndependent walks all six permutations of
-a three-member group; F-L6).
+models.Finding gains decision_reason, independent_signals, self_evident_signals
+and auth_expectation — all omitempty, all STAMPED by engine.stampDecisions from
+the post-Restore evidence rather than projected through evidence.ToFinding, for
+the same reason the cross-tool corroboration pair is: projecting would publish a
+pre-dedup value and undo the proof-union fold on a public surface. They are
+registered in evidence_test.notRoundTripped, whose companion test asserts each
+exemption is genuine rather than a parking space.
 
-This extends to the render block the same distinction mergeScoringProvenance
-already documents for its own fields: agree-or-drop describes the NATURE of each
-occurrence, proof-union preserves a positive fact about the logical
-vulnerability that one occurrence established.
+auth_expectation is published because the DECISION cites it: an auditable
+verdict cannot reference a field the report withholds.
 
-Full suite: 39 packages ok, 0 failures. Determinism suites pass at -count=3.
+Additive only. The import golden report diff is three added keys and no changed
+ones; a report produced without the decision pass emits no decision block at
+all (TestNoDecisionBlockWhenNoDecisionPassRan).
 
-Refs RC-3.
+Full suite: 39 packages ok, 0 failures.
+
+Refs D5.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>

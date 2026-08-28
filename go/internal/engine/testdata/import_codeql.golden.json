@@ -16,6 +16,7 @@
         "+10 imported: an external scanner reported this finding (SARIF import)"
       ],
       "confidence_score": 45,
+      "decision_reason": "actionable finding below the --fail-on threshold",
       "endpoint": "app/auth.py:57",
       "evidence": "This expression logs sensitive data (password) as clear text.",
       "fingerprint": "4985453a46d3f1acc976df431c325fad7adcac66",
@@ -44,6 +45,7 @@
         "+25 the source tool declares high precision for this rule"
       ],
       "confidence_score": 70,
+      "decision_reason": "actionable finding below the --fail-on threshold",
       "endpoint": "app/views.py:102",
       "evidence": "This SQL query depends on a user-provided value. | Snippet: cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")",
       "fingerprint": "177f68988e7db5d218825212a32333b6d5b5a464",
@@ -56,6 +58,9 @@
         "rule:py/sql-injection",
         "sarif-fingerprint:primaryLocationLineHash=8f1c9a2b7e3d4a5f:1",
         "tool:codeql@2.19.0"
+      ],
+      "self_evident_signals": [
+        "imported high-precision rule"
       ],
       "severity": "HIGH",
       "source": "imported",

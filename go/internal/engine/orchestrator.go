@@ -1215,6 +1215,15 @@ func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, fa
 		findings[i].ConfidenceScore = d.Score.Value
 		findings[i].ConfidenceBand = string(d.Score.Band)
 		findings[i].ConfidenceReasons = d.Score.Reasons
+		// The decision justification. Stamped from the Decision the gate
+		// actually produced — never re-derived — so the exported explanation
+		// cannot disagree with the verdict it explains.
+		findings[i].DecisionReason = d.Reason
+		findings[i].IndependentSignals = d.Corroboration.Independent
+		findings[i].SelfEvidentSignals = d.Corroboration.SelfEvident
+		// d.Evidence is post-Restore, so this is the merged group's declared
+		// expectation, not whichever duplicate became the primary.
+		findings[i].AuthExpectation = d.Evidence.AuthExpectation
 		// d.Evidence is post-Restore, so these carry the PROOF-UNION value
 		// over the dedup group — not whichever duplicate became the primary.
 		// See the field docs on models.Finding for why this must be stamped
