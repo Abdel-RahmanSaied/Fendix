@@ -1,48 +1,27 @@
-feat(sarif): export machine-readable decision justification
+test(decision): lock the BLOCK invariant across every category
 
-A consumer could read status, confidence_score, confidence_band, source_tier and
-reachable and still not answer "why exactly did this BLOCK my build?". Results
-now carry properties.decision: the verdict, its plain-text reason, the
-independent and self-evident signal lists, and the evidence flags behind them.
+Property test over category × severity × source × confidence × tier × --fail-on
+— 20,400 evidence shapes — asserting that no combination reaches BLOCK without
+a corroborating signal, and that no MEDIUM-band finding reaches BLOCK without an
+INDEPENDENT one. Severity is a constant chosen by the scanner; it must never be
+sufficient on its own.
 
-  "decision": {
-    "status": "BLOCK",
-    "reason": "severity at or above the --fail-on threshold; corroborated by: reachable taint path",
-    "independent_signals": ["reachable taint path"],
-    "evidence": {"reachable": true, "flow_established": true,
-                 "source_controlled": true, "sink_detected": true}
-  }
+The category list is explicit rather than derived: bringing a new category under
+this invariant should be a conscious act, not something that happens silently
+when someone adds a string elsewhere.
 
-THE EVIDENCE SUB-OBJECT IS A MAP, NOT A STRUCT. A struct field is either true or
-false and this contract needs a third state: an ABSENT key means "not
-evaluated", never "evaluated and false". `omitempty` on a bool would be the same
-error wearing a different hat — it collapses false into absent, making a
-genuinely evaluated false unrepresentable. Rendering unknown as false is the
-defect class this whole change exists to remove, so the exporter must not
-reintroduce it at the boundary.
+Four companion guards, each covering a way this change could be wrong rather
+than merely incomplete:
 
-decision.Decision now carries the partitioned Corroboration, computed ONCE in
-decide(). The gate, the reason string and the export all read the same
-partition; re-deriving it downstream is how an exporter drifts from the policy
-it claims to describe.
+  TestConfirmedFindingsStillBlock       the gate is still reachable, once per
+                                        confirmation mechanism — a gate nobody
+                                        can trip is a removal, not a fix
+  TestEveryBlockNamesItsCorroboration   no BLOCK ships an empty justification
+  TestDecisionIsDeterministic           200 iterations, verdict + reason +
+                                        score + signal ORDER stable
+  TestLegacyPolicyIgnoresCorroboration  --enforce-confidence=false still
+                                        restores the severity-only mapping
 
-models.Finding gains decision_reason, independent_signals, self_evident_signals
-and auth_expectation — all omitempty, all STAMPED by engine.stampDecisions from
-the post-Restore evidence rather than projected through evidence.ToFinding, for
-the same reason the cross-tool corroboration pair is: projecting would publish a
-pre-dedup value and undo the proof-union fold on a public surface. They are
-registered in evidence_test.notRoundTripped, whose companion test asserts each
-exemption is genuine rather than a parking space.
-
-auth_expectation is published because the DECISION cites it: an auditable
-verdict cannot reference a field the report withholds.
-
-Additive only. The import golden report diff is three added keys and no changed
-ones; a report produced without the decision pass emits no decision block at
-all (TestNoDecisionBlockWhenNoDecisionPassRan).
-
-Full suite: 39 packages ok, 0 failures.
-
-Refs D5.
+Full suite: 39 packages ok, 0 failures, stable at -count=2.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
