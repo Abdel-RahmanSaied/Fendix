@@ -279,6 +279,18 @@ func corroborate(ev evidence.Evidence) corroboration {
 	if ev.CrossToolCorroborated {
 		c.Independent = append(c.Independent, "independent cross-tool corroboration")
 	}
+	// A live unauthenticated success that contradicts a DECLARED requirement is
+	// two observations disagreeing: the specification says protected, the wire
+	// says open. The declaration comes from a source entirely separate from the
+	// probe that produced the claim, which is what makes it independent — and
+	// it is the premise the auth_bypass claim was missing (RC-2).
+	//
+	// Unknown and Public contribute NOTHING. Unknown is not evidence in either
+	// direction, and Public is evidence AGAINST the claim, which the scanner
+	// already reflects by emitting the finding at INFO.
+	if ev.AuthExpectation == models.AuthExpectationRequired {
+		c.Independent = append(c.Independent, "contradicted authentication requirement")
+	}
 
 	if ev.DirectObservation {
 		c.SelfEvident = append(c.SelfEvident, "direct observation of a live response")

@@ -90,6 +90,31 @@ func (t SourceTier) TrustRank() int {
 	}
 }
 
+// AuthExpectation is what Fendix ESTABLISHED about whether an endpoint is
+// supposed to require authentication — independently of what it actually did
+// when probed.
+//
+// The zero value is UNKNOWN and that is load-bearing. A target scanned with no
+// spec and no static route analysis has no expectation, and "we never
+// established one" must never render as "this endpoint is declared public".
+// Collapsing unknown into public would silently suppress real bypasses;
+// collapsing it into required would flag every public endpoint as CRITICAL,
+// which is the RC-2 defect. It is its own state, and the decision layer treats
+// it as evidence in neither direction.
+type AuthExpectation string
+
+const (
+	// AuthExpectationUnknown — never evaluated. NOT a claim in either direction.
+	AuthExpectationUnknown AuthExpectation = ""
+	// AuthExpectationPublic — a source of truth declares anonymous access
+	// intentional (OpenAPI `security: []` or `security: [{}]`).
+	AuthExpectationPublic AuthExpectation = "public"
+	// AuthExpectationRequired — a source of truth declares authentication
+	// required: an operation-level `security` requirement, or an inherited
+	// global one the operation does not override.
+	AuthExpectationRequired AuthExpectation = "required"
+)
+
 // Route binds a finding to the HTTP route that reaches its sink (Proven
 // Path v1). Populated by the Python route extractor for whitebox findings
 // whose enclosing function is a registered Django/Flask/FastAPI handler;

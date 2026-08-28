@@ -30,6 +30,23 @@ const corroborationFloor = 16
 // corroboration check so a hostile/huge response can't blow up memory.
 const bodyPeekLimit = 4096
 
+// The two titles checkUnauthenticated can emit for the SAME live observation
+// (HTTP 2xx with no credentials). Which one applies is decided entirely by
+// Endpoint.AuthExpectation — see checkUnauthenticated.
+//
+// Named constants rather than string literals because the JWT-probe dedup, the
+// scanner tests and the integration tests all key off the title; before RC-2
+// they each carried their own copy of it, so changing the claim meant hunting
+// fourteen literals.
+const (
+	// authTitleObserved — a 2xx with no credentials where nothing established
+	// that authentication was expected. An observation, not a confirmed bypass.
+	authTitleObserved = "Unauthenticated endpoint observed"
+	// authTitleBypassed — the same observation where a source of truth DID
+	// declare a requirement, so the live result contradicts it.
+	authTitleBypassed = "Authentication requirement bypassed"
+)
+
 // authCheck implements the Check interface for the authentication
 // scanner. Structural adapter — Run holds the unchanged body of the
 // historical CheckAuth free function.
@@ -190,21 +207,65 @@ func checkUnauthenticated(ctx context.Context, client *http.Client, cfg *models.
 	defer resp.Body.Close()
 
 	twoXX, bodyLen := readOutcome(resp)
-	if twoXX {
-		return &ev.Evidence{
-			Title:      "Missing authentication on endpoint",
-			Severity:   models.SeverityCritical,
-			Source:     models.SourceBlackbox,
-			Category:   "auth_bypass",
-			Endpoint:   epLabel,
-			Evidence:   fmt.Sprintf("HTTP %d returned without Authorization header", resp.StatusCode),
-			Fix:        "Require authentication. Return 401 for unauthenticated requests.",
-			References: []string{"CWE-306", "OWASP-A01"},
-			Confidence: confidenceFor(bodyLen),
-		}
+	if !twoXX {
+		return nil
 	}
 
-	return nil
+	// RC-2. The observation is identical in all three cases — HTTP 2xx with no
+	// credentials. What differs is whether Fendix ESTABLISHED that
+	// authentication was expected, and that is what decides whether this is a
+	// confirmed bypass or merely an unauthenticated endpoint.
+	//
+	// Before this, every 2xx was "Missing authentication on endpoint" at
+	// CRITICAL, so docs pages, health checks and SPA routes each produced a
+	// CRITICAL that the decision layer then blocked on. The premise the claim
+	// needs — "authentication was expected here" — was never supplied by
+	// anything, and a status code cannot supply it.
+	//
+	// Nothing here is path-based. A /status the spec declares protected still
+	// reports a bypass; an /api/admin the spec declares public does not. That
+	// is the difference between a semantic fix and an allowlist, and
+	// TestClassificationIsSemanticNotPathBased pins it.
+	title, severity := authTitleObserved, models.SeverityMedium
+	fix := "If this endpoint is intended to be public, declare it so in the API specification " +
+		"(an explicit `security: []` on the operation). If it is not, require authentication and " +
+		"return 401 for unauthenticated requests."
+	detail := "; no authentication requirement was established for this operation " +
+		"(no specification security requirement and no static route evidence), so this is an " +
+		"observation, not a confirmed bypass"
+
+	source := ""
+	switch endpoint.AuthExpectation {
+	case models.AuthExpectationRequired:
+		title, severity = authTitleBypassed, models.SeverityCritical
+		fix = "Require authentication. Return 401 for unauthenticated requests."
+		detail = "; the API specification declares an authentication requirement for this " +
+			"operation, and it was not enforced"
+		source = "openapi"
+	case models.AuthExpectationPublic:
+		severity = models.SeverityInfo
+		fix = "No action needed: the API specification declares this operation public."
+		detail = "; the API specification declares this operation public, so anonymous access " +
+			"is intentional"
+		source = "openapi"
+	}
+
+	return &ev.Evidence{
+		Title:      title,
+		Severity:   severity,
+		Source:     models.SourceBlackbox,
+		Category:   "auth_bypass",
+		Endpoint:   epLabel,
+		Evidence:   fmt.Sprintf("HTTP %d returned without Authorization header%s", resp.StatusCode, detail),
+		Fix:        fix,
+		References: []string{"CWE-306", "OWASP-A01"},
+		Confidence: confidenceFor(bodyLen),
+		// Carried onto the evidence so the decision layer can count a
+		// CONTRADICTED requirement as independent corroboration, and so the
+		// exported result can show which of the three states applied.
+		AuthExpectation:       endpoint.AuthExpectation,
+		AuthExpectationSource: source,
+	}
 }
 
 // isJWTAuth returns true only if the auth value carries a real JWT: after

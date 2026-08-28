@@ -105,13 +105,19 @@ func TestCheckAuth_UnauthenticatedAccess_Vulnerable(t *testing.T) {
 		Method:  "GET",
 		Path:    "/api/users",
 		FullURL: server.URL + "/api/users",
+		// RC-2: the spec declares this operation protected, so a successful
+		// unauthenticated request CONTRADICTS a declared requirement and is a
+		// confirmed bypass at CRITICAL. Without the declaration the same
+		// observation is only "an endpoint answered without credentials",
+		// which is what TestUnknownExpectationYieldsObservationNotBypass covers.
+		AuthExpectation: models.AuthExpectationRequired,
 	}
 
 	findings := CheckAuth(context.Background(), cfg, endpoint)
 
 	var found bool
 	for _, f := range findings {
-		if f.Title == "Missing authentication on endpoint" {
+		if f.Title == authTitleBypassed {
 			found = true
 			if f.Severity != models.SeverityCritical {
 				t.Errorf("severity = %s, want CRITICAL", f.Severity)
@@ -158,7 +164,7 @@ func TestCheckAuth_UnauthenticatedAccess_Secure(t *testing.T) {
 	findings := CheckAuth(context.Background(), cfg, endpoint)
 
 	for _, f := range findings {
-		if f.Title == "Missing authentication on endpoint" {
+		if f.Title == authTitleObserved {
 			t.Error("should not report unauthenticated access for secure server")
 		}
 	}
@@ -438,7 +444,7 @@ func TestCheckAuth_NonJWTAuth_SkipsJWTChecks(t *testing.T) {
 	// Should still detect unauthenticated access
 	var foundUnauth bool
 	for _, f := range findings {
-		if f.Title == "Missing authentication on endpoint" {
+		if f.Title == authTitleObserved {
 			foundUnauth = true
 		}
 	}
@@ -540,7 +546,7 @@ func TestCheckAuth_PublicEndpointEmitsOnlyMissingAuth(t *testing.T) {
 	}
 
 	// Missing-auth fires (the root cause)
-	if !titles["Missing authentication on endpoint"] {
+	if !titles[authTitleObserved] {
 		t.Error("expected 'Missing authentication on endpoint' to fire on fully-public endpoint")
 	}
 	// The 3 JWT-bypass findings are suppressed as FPs of the root cause
@@ -589,7 +595,7 @@ func TestCheckAuth_JWTBypassEndpointEmitsAllJWTFindings(t *testing.T) {
 	}
 
 	// Missing-auth should NOT fire (server returns 401 to no-auth)
-	if titles["Missing authentication on endpoint"] {
+	if titles[authTitleObserved] {
 		t.Error("missing-auth should not fire when server returns 401 to no-Authorization request")
 	}
 	// All 3 JWT-bypass findings should fire (independent vulnerabilities)
@@ -722,7 +728,7 @@ func TestAuth_GarbageAuthPOSTWithBody(t *testing.T) {
 	// is present), and because the garbage-auth probe ALSO sends a body and
 	// sees 200, the JWT-bypass probes are suppressed (Track-4 dedup). This
 	// only works if both probes send a body (fix 3.2).
-	if !titles["Missing authentication on endpoint"] {
+	if !titles[authTitleObserved] {
 		t.Error("fix 3.2: expected 'Missing authentication' on body-200 endpoint (body must be sent)")
 	}
 	for _, suppressed := range []string{
@@ -753,7 +759,7 @@ func TestAuth_StatusOnlyIsMedium(t *testing.T) {
 		findings := CheckAuth(context.Background(), cfg, endpoint)
 		var f *ev.Evidence
 		for i := range findings {
-			if findings[i].Title == "Missing authentication on endpoint" {
+			if findings[i].Title == authTitleObserved {
 				f = &findings[i]
 			}
 		}
@@ -781,7 +787,7 @@ func TestAuth_StatusOnlyIsMedium(t *testing.T) {
 		findings := CheckAuth(context.Background(), cfg, endpoint)
 		var f *ev.Evidence
 		for i := range findings {
-			if findings[i].Title == "Missing authentication on endpoint" {
+			if findings[i].Title == authTitleObserved {
 				f = &findings[i]
 			}
 		}

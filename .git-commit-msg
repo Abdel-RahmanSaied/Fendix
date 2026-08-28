@@ -1,0 +1,51 @@
+fix(auth): separate unauthenticated observation from confirmed bypass
+
+checkUnauthenticated emitted CRITICAL "Missing authentication on endpoint" for
+ANY 2xx returned without credentials, and graded its confidence off response
+body length. scanner.Endpoint carried no auth-expectation field, so the check
+structurally could not tell a public endpoint from a bypassed one: docs pages,
+health checks and SPA routes each produced a CRITICAL that the decision layer
+then blocked on.
+
+The premise the claim needs — "authentication was expected here" — was never
+supplied by anything, and a status code cannot supply it. The knowledge existed
+and was discarded: python/analyzers/spec_parser.py already parses per-operation
+and global `security`.
+
+Now resolved in Go, where crawler.fromSpec already holds the parsed spec:
+
+  models.AuthExpectation  unknown ("") | public | required
+  Endpoint.AuthExpectation                 set by fromSpec
+  Evidence.AuthExpectation{,Source}        carried to the decision layer
+
+  required → "Authentication requirement bypassed", CRITICAL, and the
+             contradiction counts as INDEPENDENT corroboration
+  unknown  → "Unauthenticated endpoint observed", MEDIUM, never gates
+  public   → INFO
+
+Unknown is a real third state. Collapsing it into public would suppress real
+bypasses; collapsing it into required is the bug being fixed. Evidence is
+preserved in all three cases (Rule 3) — only the claim's strength changes, and
+the evidence text now says WHY a finding is unconfirmed.
+
+No path is hardcoded. TestClassificationIsSemanticNotPathBased probes the same
+/status twice and asserts the claim differs only with the declared expectation.
+
+specAllowsAnon mirrors spec_parser._allows_anon including the `security: [{}]`
+form, where len([{}]) == 1 makes a naive truthiness check read an explicit
+opt-out as a requirement.
+
+ADJACENT DEFECT FIXED: correlator_v2 restores producer-set flags for
+pass-through findings because the ProvenanceIndex is built AFTER correlation.
+The AuthExpectation pair is the same shape as the four flags already listed
+there, so it is restored alongside them — otherwise the new signal would work
+on a pure-DAST scan and be silently dead on every --url + --code scan.
+
+The two auth titles are now named constants. Fourteen test sites carried their
+own copy of the literal, which is why changing the claim broke them all.
+
+Full suite: 39 packages ok, 0 failures.
+
+Refs RC-2.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>

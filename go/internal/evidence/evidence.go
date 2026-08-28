@@ -148,6 +148,22 @@ type Evidence struct {
 	// it must be carried by ScoringProvenance AND restored by
 	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
 	ComponentNotImported bool
+	// AuthExpectation is what a source of truth DECLARED about authentication
+	// for this endpoint, and AuthExpectationSource names that source
+	// ("openapi", "static-route", "differential"). They are what let the
+	// decision layer treat a contradicted requirement as INDEPENDENT
+	// corroboration — the spec says protected, the wire says open, and those
+	// are two observations that could have agreed — while an unauthenticated
+	// 200 on an endpoint of unknown expectation stays observational.
+	//
+	// Unknown ("") is a real third state, not a default standing in for
+	// Public: see models.AuthExpectation.
+	//
+	// Like DirectObservation these have NO endpoint-derived fallback — nothing
+	// on a projected Finding can reconstruct them — so they must be carried by
+	// ScoringProvenance and restored before scoring, or the rule is dead.
+	AuthExpectation       models.AuthExpectation
+	AuthExpectationSource string
 	// Weakness is the normalized CWE identity of the claim ("CWE-89", …),
 	// the machine-readable input to cross-tool correlation. Producers:
 	// sarifimport extracts it from SARIF rule taxa/tags; StampWeakness

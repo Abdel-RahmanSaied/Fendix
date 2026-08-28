@@ -198,7 +198,7 @@ func TestIntegration_VulnerableServer_AcceptsEverything(t *testing.T) {
 		titles[f.Title] = true
 	}
 
-	if !titles["Missing authentication on endpoint"] {
+	if !titles[authTitleObserved] {
 		t.Error("expected 'Missing authentication on endpoint' (root cause)")
 	}
 	for _, suppressed := range []string{
@@ -340,6 +340,12 @@ func TestIntegration_AuthFindingsHaveCorrectFields(t *testing.T) {
 		Method:  "GET",
 		Path:    "/api/validate",
 		FullURL: server.URL + "/api/validate",
+		// RC-2: this test asserts the field shape of CRITICAL auth findings, so
+		// the fixture has to be the shape that produces one — a spec-declared
+		// protected operation. With no declared expectation the same live
+		// result is an observation at MEDIUM, which is correct and is covered
+		// separately.
+		AuthExpectation: models.AuthExpectationRequired,
 	}
 
 	findings := CheckAuth(context.Background(), cfg, endpoint)
