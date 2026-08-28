@@ -57,14 +57,29 @@ type Evidence struct {
 	ConfidenceBand    string
 	ConfidenceReasons []string
 
+	// RuleID is the precise rule/check identity (e.g. a semgrep rule id, a
+	// DAST check name, or a CVE for an advisory) — finer-grained than
+	// Category.
+	//
+	// PROJECTED, as of the v2 fingerprint. It used to live in the
+	// internal-only block below, and dropping it was the root cause of RC-5:
+	// by the time the orchestrator stamped a fingerprint, the only identity
+	// material left on the Finding was Category|Endpoint|Title, and Endpoint
+	// for a whitebox finding is "path:line". Identity had nothing semantic to
+	// hold on to, so it held on to the line number.
+	RuleID string
+	// Dependency / Secret are the per-family semantic identities the v2
+	// fingerprint keys on. Both are projected for the same reason as RuleID:
+	// identity must be built from structure the model carries, never
+	// reconstructed by parsing a rendered Title.
+	Dependency *models.DependencyRef
+	Secret     *models.SecretRef
+
 	// --- v0.22 provenance: INTERNAL ONLY, never serialized into Finding ---
 	// ToFinding drops every field below. Anything here that confidence.Score
 	// reads must also be carried by ScoringProvenance (provenance.go),
 	// otherwise the rule that reads it is dead for any caller downstream of
 	// the projection — see the comment at the top of provenance.go.
-	// RuleID is the precise rule/check identity (e.g. a semgrep rule id or a
-	// DAST check name) — finer-grained than Category.
-	RuleID string
 	// Payload is the request/probe Fendix sent (DAST); empty for static evidence.
 	Payload string
 	// Response is a bounded excerpt of what the target returned (DAST).
@@ -260,6 +275,9 @@ func FromFinding(f models.Finding) Evidence {
 		ConfidenceScore:   f.ConfidenceScore,
 		ConfidenceBand:    f.ConfidenceBand,
 		ConfidenceReasons: f.ConfidenceReasons,
+		RuleID:            f.RuleID,
+		Dependency:        f.Dependency,
+		Secret:            f.Secret,
 	}
 }
 
@@ -292,6 +310,9 @@ func (e Evidence) ToFinding() models.Finding {
 		ConfidenceScore:   e.ConfidenceScore,
 		ConfidenceBand:    e.ConfidenceBand,
 		ConfidenceReasons: e.ConfidenceReasons,
+		RuleID:            e.RuleID,
+		Dependency:        e.Dependency,
+		Secret:            e.Secret,
 	}
 }
 

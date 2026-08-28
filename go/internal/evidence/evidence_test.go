@@ -40,6 +40,9 @@ func fullyPopulatedFinding() models.Finding {
 		ConfidenceScore:   100,
 		ConfidenceBand:    "HIGH",
 		ConfidenceReasons: []string{"+35 base", "+25 cross-engine agreement"},
+		RuleID:            "python.sqli.cursor-execute",
+		Dependency:        &models.DependencyRef{Ecosystem: "PyPI", Package: "requests", Version: "2.28.0", Manifest: "requirements.txt"},
+		Secret:            &models.SecretRef{Identifier: "AWS_KEY", File: "config/settings.py"},
 	}
 }
 
@@ -160,11 +163,20 @@ func TestRoundTripJSONByteIdentical(t *testing.T) {
 	}
 }
 
-// TestProvenanceIsInternal confirms the new v0.22 fields live on Evidence but
-// do NOT leak into the projected Finding (and thus not into the JSON).
+// TestProvenanceIsInternal confirms the probe-level provenance fields live on
+// Evidence but do NOT leak into the projected Finding (and thus not into the
+// JSON).
+//
+// RuleID is deliberately NOT in this list any more. It became a published
+// field when the v2 fingerprint made it an identity input: identity is
+// computed from RuleID, and a fingerprint whose inputs the report withholds is
+// exactly the black box the decision-integrity work removed for decisions —
+// same argument that promoted auth_expectation and applicability. A rule name
+// is also not sensitive, which the fields below are: a probe payload and the
+// target's response can carry credentials and customer data, and a detection
+// timestamp is run metadata, not finding identity.
 func TestProvenanceIsInternal(t *testing.T) {
 	e := FromFinding(fullyPopulatedFinding())
-	e.RuleID = "python.sqli.cursor-execute"
 	e.Payload = "id=1' OR '1'='1"
 	e.Response = "HTTP 500 ... SQL syntax error"
 	e.DetectedAt = time.Unix(1700000000, 0)
@@ -176,10 +188,26 @@ func TestProvenanceIsInternal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, leak := range []string{"python.sqli.cursor-execute", "OR '1'='1", "SQL syntax error", "1700000000"} {
+	for _, leak := range []string{"OR '1'='1", "SQL syntax error", "1700000000", "\"scanner\""} {
 		if strings.Contains(string(blob), leak) {
 			t.Errorf("internal provenance %q leaked into Finding JSON: %s", leak, blob)
 		}
+	}
+}
+
+// TestRuleIdentityIsPublished is the other half of the contract above: the
+// fingerprint's primary identity input must be readable in the report, so a
+// consumer can see WHY two findings share an identity.
+func TestRuleIdentityIsPublished(t *testing.T) {
+	e := FromFinding(fullyPopulatedFinding())
+	e.RuleID = "python.sqli.cursor-execute"
+
+	blob, err := json.Marshal(e.ToFinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"rule_id":"python.sqli.cursor-execute"`) {
+		t.Errorf("rule_id must be published — the v2 fingerprint keys on it: %s", blob)
 	}
 }
 
