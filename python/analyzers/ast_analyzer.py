@@ -346,6 +346,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         lineno: int,
         category: str = "injection",
         taint_chain=_CHAIN_NOT_ATTEMPTED,
+        proven_title: str | None = None,
     ) -> None:
         finding: dict = {
             "id": f"SEC-{pat_id}",
@@ -395,6 +396,20 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         chain = None if not attempted_chain else taint_chain
         if attempted_chain and not chain and finding["confidence"] == "HIGH":
             finding["confidence"] = "MEDIUM"
+
+        # RC-6: the wording is a function of the evidence, decided here rather
+        # than at each call site, because here is the only place that knows
+        # whether the chain was proven. A reachability-dependent finding
+        # arrives with the HEDGED title in `title` and, when it has one, the
+        # proven wording in `proven_title`; the hedged form is what ships
+        # unless a chain was actually collected.
+        #
+        # Both forms are pure presentation. Identity is keyed on rule, file,
+        # symbol and sink (models.Fingerprint), so a finding that strengthens
+        # from "Potential SSRF" to "SSRF" keeps the record it already had
+        # instead of being filed as a new vulnerability.
+        if chain and proven_title:
+            finding["title"] = proven_title
 
         if chain:
             # TASK-114: when the visitor proves user input flows from a
@@ -1243,7 +1258,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 )
             self._emit_finding(
                 "PY_OPEN_REDIRECT",
-                "Open redirect — user-controlled redirect target",
+                "Potential open redirect — dynamic redirect target",
                 "HIGH",
                 "MEDIUM",
                 "CWE-601",
@@ -1253,6 +1268,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 ),
                 node.lineno,
                 taint_chain=chain,
+                proven_title="Open redirect — user-controlled redirect target",
             )
 
         # XSS HTML-render sinks (TASK-120). Three patterns:
@@ -1335,6 +1351,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                 ),
                 node.lineno,
                 taint_chain=chain,
+                proven_title="SSRF — user-controlled URL reaches HTTP client",
             )
 
         # Path-traversal sinks (TASK-134 / Phase 17d). Recognises:
@@ -1387,7 +1404,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             else:
                 self._emit_finding(
                     "PY_PATH_TRAVERSAL",
-                    "Path traversal — user input flows to filesystem path",
+                    "Potential path traversal — dynamic path reaches filesystem sink",
                     "HIGH",
                     "MEDIUM",
                     "CWE-22",
@@ -1399,6 +1416,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     ),
                     node.lineno,
                     taint_chain=chain,
+                    proven_title="Path traversal — user-controlled input reaches filesystem path",
                 )
 
         # LLM prompt-injection sink (Sanad A1/A2). An untrusted value reaching
