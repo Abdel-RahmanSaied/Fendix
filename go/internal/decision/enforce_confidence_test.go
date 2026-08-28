@@ -406,24 +406,40 @@ func TestActiveProbeNeedsAResponseToCorroborate(t *testing.T) {
 	}
 }
 
-// TestActiveProbeScannersCanStillGateABuild is the COVERAGE half of RC-1 and is
-// deliberately red until Task 2 lands.
+// TestActiveProbeScannersCanStillGateABuild is the COVERAGE half of RC-1.
 //
 // Removing "live runtime observation" is only safe because the honest
-// replacement — payload-validated probe — becomes real. Until the active-probe
-// scanners record a response excerpt, they emit Payload with no Response and
-// cannot gate. This test is the tripwire that stops Task 1 from shipping alone.
+// replacement — payload-validated probe — is real. Before Task 2 it was not:
+// every `Payload:` site in internal/scanner populated a ProbeRecord (the audit
+// log), never an ev.Evidence, so production findings carried NEITHER Payload
+// nor Response and payloadValidated was doubly dead.
+//
+// This asserts the shape a confirmed active probe emits NOW. If a scanner
+// regresses to recording only what it sent, this goes red and the active-scan
+// gate is gone — which is exactly what it is here to catch.
 func TestActiveProbeScannersCanStillGateABuild(t *testing.T) {
-	t.Skip("restored by Task 2: active-probe scanners must populate Evidence.Response")
-
-	// Shape a production injection finding has TODAY (scanner sets Payload only).
 	probe := evidence.Evidence{
-		Title: "SQL injection", Category: "injection", Endpoint: "GET /search",
+		Title: "SQL Injection (MySQL, error-based)", Category: "injection", Endpoint: "GET /search",
 		Severity: models.SeverityHigh, Source: models.SourceBlackbox,
-		Confidence: models.ConfidenceHigh, Payload: "' OR 1=1--",
+		Confidence: models.ConfidenceHigh,
+		Payload:    "' OR 1=1--",
+		Response:   "You have an error in your SQL syntax near '''",
 	}
-	if got := DecideWithOptions(probe, "HIGH", Options{EnforceConfidence: true}); got.Status != StatusBlock {
-		t.Errorf("Status = %q, want BLOCK — active-probe findings must still gate", got.Status)
+	d := DecideWithOptions(probe, "HIGH", Options{EnforceConfidence: true})
+	if d.Status != StatusBlock {
+		t.Errorf("Status = %q, want BLOCK — a confirmed active probe must gate (score %d, band %s, reason %q)",
+			d.Status, d.Score.Value, d.Score.Band, d.Reason)
+	}
+	if !contains(corroborate(probe).Independent, "payload-validated probe") {
+		t.Error("a confirmed active probe is not independently corroborated")
+	}
+
+	// The same probe WITHOUT a recorded response is not a differential and
+	// must not gate. This is the pre-Task-2 production shape.
+	sentOnly := probe
+	sentOnly.Response = ""
+	if got := DecideWithOptions(sentOnly, "HIGH", Options{EnforceConfidence: true}); got.Status == StatusBlock {
+		t.Error("a probe that recorded only what it sent gated a build; it confirmed nothing")
 	}
 }
 

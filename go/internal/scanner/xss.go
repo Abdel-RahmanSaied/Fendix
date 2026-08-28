@@ -227,6 +227,11 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 			"Set a restrictive Content-Security-Policy and prefer framework auto-escaping over manual string concatenation.",
 		References: []string{"CWE-79", "OWASP-A03"},
 		Confidence: models.ConfidenceHigh,
+		// The differential: the canary we injected, and the body region proving
+		// its HTML metacharacters survived un-encoded. The snippet — not the
+		// whole body — is what confirms the claim.
+		Payload:  payload,
+		Response: ProbeExcerpt(xssSnippet(bodyStr, rawSignature)),
 	}, true
 }
 

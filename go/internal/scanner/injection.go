@@ -556,6 +556,13 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 				Fix:        "Use parameterized queries / prepared statements. Never concatenate user input into SQL.",
 				References: []string{"CWE-89", "OWASP-A03"},
 				Confidence: confidence,
+				// For a TIMING check the confirming observation is the delay,
+				// not the body — the body proves nothing here and is not even
+				// read. Recording the measured differential is the truthful
+				// response observation; recording an unread body would be
+				// fabrication.
+				Payload:  p.Payload,
+				Response: ProbeTimingExcerpt(elapsed, threshold),
 			})
 			// Once one DB type confirms, skip the rest for this (param, loc) —
 			// the underlying vuln is the same; multiple findings would just be
@@ -652,6 +659,11 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 			Fix:        "Use parameterized queries / prepared statements. Sanitize input before SQL.",
 			References: []string{"CWE-89", "OWASP-A03"},
 			Confidence: models.ConfidenceHigh,
+			// The probe differential: what we sent, and the DB error signature
+			// that came back. confidence.payloadValidated needs BOTH, and the
+			// decision layer counts the pair as independent corroboration.
+			Payload:  sqliErrorPayload,
+			Response: ProbeExcerpt(match),
 		}}
 	}
 
@@ -870,6 +882,10 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			Fix:        "Never pass user input to shell commands. Use safe APIs that avoid shell interpretation.",
 			References: []string{"CWE-78", "OWASP-A03"},
 			Confidence: models.ConfidenceHigh,
+			// `body` was truncated to 200 bytes just above for the evidence
+			// text; ProbeExcerpt re-bounds and sanitizes it for the scorer.
+			Payload:  cmdiPayload,
+			Response: ProbeExcerpt(string(body)),
 		}}
 	}
 
@@ -950,6 +966,10 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 				Fix:        "Sanitize all user input used in HTTP headers. Strip CR/LF characters.",
 				References: []string{"CWE-113", "OWASP-A03"},
 				Confidence: models.ConfidenceHigh,
+				// The confirming observation is the reflected header itself,
+				// not the body (which is closed unread).
+				Payload:  crlfPayload,
+				Response: ProbeExcerpt("Set-Cookie: " + cookie.Name + "=" + cookie.Value),
 			}}
 		}
 	}

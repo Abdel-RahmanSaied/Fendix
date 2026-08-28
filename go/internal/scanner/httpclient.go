@@ -2,12 +2,63 @@ package scanner
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Abdel-RahmanSaied/Fendix/internal/budget"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/models"
 	"github.com/Abdel-RahmanSaied/Fendix/internal/netguard"
 )
+
+// probeResponseLimit bounds the response excerpt an active probe stores on
+// Evidence.Response. Large enough to carry the matched indicator with context,
+// small enough that a hostile response cannot bloat the report.
+const probeResponseLimit = 512
+
+// ProbeExcerpt returns a bounded, control-character-free excerpt of what an
+// active probe observed, for storage on evidence.Evidence.Response.
+//
+// WHY THIS EXISTS: confidence.payloadValidated requires BOTH Payload and
+// Response, and the decision layer counts "payload-validated probe" as an
+// INDEPENDENT corroborating signal. No production producer set Response, so
+// both were dead — and the decision layer had been leaning on a tautology
+// ("Source is blackbox") in their place, which is the RC-1 defect. Recording
+// what came back is what makes the honest signal real.
+//
+// Response is Evidence-INTERNAL: evidence.ToFinding drops it, so it never
+// reaches models.Finding, the JSON report or SARIF. It exists to justify a
+// decision, not to be published.
+//
+// Deterministic by construction — a pure function of the input string — because
+// it feeds a confidence score that must be reproducible across runs.
+func ProbeExcerpt(body string) string {
+	if len(body) > probeResponseLimit {
+		body = body[:probeResponseLimit]
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r == '\r' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, body)
+}
+
+// ProbeTimingExcerpt renders the timing differential that confirmed a
+// timing-based probe (blind SQLi, SSRF hang detection) as the response
+// observation.
+//
+// For a timing check the confirming observation is NOT the body — the body
+// proves nothing and is often empty. It is the elapsed time relative to the
+// threshold the check tested against. Recording that is truthful; recording an
+// unread body would be fabrication, and recording nothing would leave the
+// check unable to corroborate a differential it genuinely measured.
+func ProbeTimingExcerpt(elapsed, threshold time.Duration) string {
+	return "response delayed " + elapsed.Round(time.Millisecond).String() +
+		" against a " + threshold.Round(time.Millisecond).String() + " threshold"
+}
 
 // allowPrivate returns the effective SSRF-guard policy for a scan: the guard
 // is relaxed when the operator opted in with --allow-private-targets
