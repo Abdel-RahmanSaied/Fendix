@@ -251,6 +251,14 @@ func checkUnauthenticated(ctx context.Context, client *http.Client, cfg *models.
 	}
 
 	return &ev.Evidence{
+		// ONE rule for both titles. "Unauthenticated endpoint observed" and
+		// "Authentication requirement bypassed" are the same observation about
+		// the same endpoint; what differs is whether a source of truth
+		// established that authentication was expected. Learning that is
+		// evidence ENRICHMENT, so the finding must keep the record it already
+		// had rather than being filed as a new vulnerability — the same
+		// invariant that lets "Potential SSRF" become "SSRF".
+		RuleID:     "auth/unauthenticated-access",
 		Title:      title,
 		Severity:   severity,
 		Source:     models.SourceBlackbox,
@@ -413,6 +421,7 @@ func checkMalformedJWT(ctx context.Context, client *http.Client, cfg *models.Sca
 	twoXX, bodyLen := sendTamperedJWT(ctx, client, cfg, endpoint, "invalid.jwt.token")
 	if twoXX {
 		return &ev.Evidence{
+			RuleID:     "auth/jwt-not-validated",
 			Title:      "JWT not validated",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -433,6 +442,7 @@ func checkExpiredJWT(ctx context.Context, client *http.Client, cfg *models.ScanC
 	twoXX, bodyLen := sendTamperedJWT(ctx, client, cfg, endpoint, expiredToken)
 	if twoXX {
 		return &ev.Evidence{
+			RuleID:     "auth/expired-jwt-accepted",
 			Title:      "Expired JWT accepted",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -453,6 +463,7 @@ func checkAlgNoneJWT(ctx context.Context, client *http.Client, cfg *models.ScanC
 	twoXX, bodyLen := sendTamperedJWT(ctx, client, cfg, endpoint, algNoneToken)
 	if twoXX {
 		return &ev.Evidence{
+			RuleID:     "auth/jwt-alg-none",
 			Title:      "JWT algorithm confusion (alg:none accepted)",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,

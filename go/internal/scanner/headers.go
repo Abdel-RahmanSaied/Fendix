@@ -246,6 +246,7 @@ func missingHeaderInfo(endpoint, name, fix string) headerCheck {
 func checkHSTS(endpoint, value string) *ev.Evidence {
 	if value == "" {
 		return &ev.Evidence{
+			RuleID:            "headers/Strict-Transport-Security/missing",
 			Title:             "Missing Strict-Transport-Security header",
 			Severity:          models.SeverityMedium,
 			Source:            models.SourceBlackbox,
@@ -264,6 +265,7 @@ func checkHSTS(endpoint, value string) *ev.Evidence {
 
 	if !hasMaxAge || maxAge == 0 {
 		return &ev.Evidence{
+			RuleID:            "headers/Strict-Transport-Security/disabled",
 			Title:             "HSTS disabled",
 			Severity:          models.SeverityMedium,
 			Source:            models.SourceBlackbox,
@@ -278,6 +280,7 @@ func checkHSTS(endpoint, value string) *ev.Evidence {
 	}
 	if maxAge < minMaxAge {
 		return &ev.Evidence{
+			RuleID:            "headers/Strict-Transport-Security/max-age-too-short",
 			Title:             "HSTS max-age too short",
 			Severity:          models.SeverityLow,
 			Source:            models.SourceBlackbox,
@@ -325,6 +328,7 @@ func parseHSTSMaxAge(value string) (int64, bool) {
 func checkCSP(endpoint, value string) *ev.Evidence {
 	if value == "" {
 		return &ev.Evidence{
+			RuleID:            "headers/Content-Security-Policy/missing",
 			Title:             "Missing Content-Security-Policy header",
 			Severity:          models.SeverityMedium,
 			Source:            models.SourceBlackbox,
@@ -343,6 +347,7 @@ func checkCSP(endpoint, value string) *ev.Evidence {
 		return nil
 	}
 	return &ev.Evidence{
+		RuleID:     "headers/Content-Security-Policy/weak",
 		Title:      "Weak Content-Security-Policy",
 		Severity:   severity,
 		Source:     models.SourceBlackbox,
@@ -490,6 +495,18 @@ func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint
 			// is real, so the finding stays; only its confidence drops.
 			if respContext := responseContextFor(resp.StatusCode, endpoint.Path); respContext != "" {
 				finding.ResponseContext = respContext
+			}
+			// Identity for a blackbox finding is category + rule + endpoint.
+			// With no rule, all eleven header checks at one endpoint collapse
+			// into ONE record, so suppressing "missing CSP" silently
+			// suppresses "missing HSTS" and every sibling with it. The header
+			// this check is about is the rule.
+			//
+			// Only filled when empty: a check whose single header yields more
+			// than one distinct claim (HSTS present-but-disabled versus
+			// max-age-too-short) sets its own finer id, and that must win.
+			if finding.RuleID == "" {
+				finding.RuleID = "headers/" + hc.Name
 			}
 			findings = append(findings, *finding)
 		}

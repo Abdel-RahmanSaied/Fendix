@@ -217,6 +217,7 @@ func probeXSS(ctx context.Context, cc *CheckContext, ep Endpoint, param string, 
 	}
 
 	return ev.Evidence{
+		RuleID:   "xss/reflected",
 		Title:    "Reflected Cross-Site Scripting (XSS)",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,

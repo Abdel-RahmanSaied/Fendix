@@ -546,6 +546,7 @@ func probeSQLi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			}
 
 			findings = append(findings, ev.Evidence{
+				RuleID:   "injection/sqli-time-based",
 				Title:    fmt.Sprintf("Potential SQL Injection (%s, time-based)", p.DB),
 				Severity: models.SeverityHigh,
 				Source:   models.SourceBlackbox,
@@ -649,6 +650,7 @@ func probeSQLiErrorBased(ctx context.Context, client *http.Client, cfg *models.S
 			match = match[:160] + "..."
 		}
 		return []ev.Evidence{{
+			RuleID:   "injection/sqli-error-based",
 			Title:    fmt.Sprintf("SQL Injection (%s, error-based)", p.DB),
 			Severity: models.SeverityHigh,
 			Source:   models.SourceBlackbox,
@@ -746,6 +748,7 @@ func probeSQLiBoolean(ctx context.Context, client *http.Client, cfg *models.Scan
 	}
 
 	return []ev.Evidence{{
+		RuleID:   "injection/sqli-boolean-based",
 		Title:    "SQL Injection (boolean-based)",
 		Severity: models.SeverityHigh,
 		Source:   models.SourceBlackbox,
@@ -873,6 +876,7 @@ func probeCMDi(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 		evidence += fmt.Sprintf(", response snippet: %s", string(body))
 
 		return []ev.Evidence{{
+			RuleID:     "injection/command-injection",
 			Title:      "Command Injection confirmed",
 			Severity:   models.SeverityCritical,
 			Source:     models.SourceBlackbox,
@@ -957,6 +961,7 @@ func probeCRLF(ctx context.Context, client *http.Client, cfg *models.ScanConfig,
 			auditLog.Record(record)
 
 			return []ev.Evidence{{
+				RuleID:     "injection/header-crlf",
 				Title:      "Header Injection / CRLF",
 				Severity:   models.SeverityHigh,
 				Source:     models.SourceBlackbox,

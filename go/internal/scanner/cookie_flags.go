@@ -155,6 +155,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 				// the observation being reported, and the DVWA corpus matches
 				// its expected cookie finding on that substring in the title.
 				emit(c.Name, "csrf-httponly", ev.Evidence{
+					RuleID:            "cookies/csrf-no-httponly",
 					Title:             "CSRF cookie readable by JavaScript (no HttpOnly) — expected for double-submit patterns (Django/Rails AJAX); verify this is intentional",
 					Severity:          models.SeverityInfo,
 					Source:            models.SourceBlackbox,
@@ -169,6 +170,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 			} else {
 				// Exposes the cookie to document.cookie / XSS theft.
 				emit(c.Name, "httponly", ev.Evidence{
+					RuleID:            "cookies/session-no-httponly",
 					Title:             "Session cookie missing HttpOnly flag",
 					Severity:          models.SeverityMedium,
 					Source:            models.SourceBlackbox,
@@ -198,6 +200,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 		// which was actively wrong, changes.
 		if isHTTPS && !c.Secure {
 			emit(c.Name, "secure", ev.Evidence{
+				RuleID:            "cookies/session-no-secure",
 				Title:             "Session cookie missing Secure flag",
 				Severity:          models.SeverityMedium,
 				Source:            models.SourceBlackbox,
@@ -235,6 +238,7 @@ func (cookieFlagsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endp
 				}
 			}
 			emit(c.Name, "samesite", ev.Evidence{
+				RuleID:     "cookies/session-weak-samesite",
 				Title:      "Session cookie missing or weak SameSite attribute",
 				Severity:   severity,
 				Source:     models.SourceBlackbox,

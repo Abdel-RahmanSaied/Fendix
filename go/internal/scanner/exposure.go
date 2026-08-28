@@ -291,6 +291,11 @@ func (exposureCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoin
 			}
 
 			findings = append(findings, ev.Evidence{
+				// The pattern's own name is the rule. Without it every
+				// exposure pattern firing at one endpoint shares a single
+				// identity — a password disclosure and a stack trace become
+				// one record, and suppressing either hides both.
+				RuleID:     "exposure/" + pat.Name,
 				Title:      pat.Title,
 				Severity:   pat.Severity,
 				Source:     models.SourceBlackbox,

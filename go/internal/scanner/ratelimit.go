@@ -245,6 +245,7 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 	}
 	return []ev.Evidence{
 		{
+			RuleID:   "ratelimit/none-observed",
 			Title:    fmt.Sprintf("No rate limiting observed within %d requests", successfulProbes),
 			Severity: models.SeverityMedium,
 			Source:   models.SourceBlackbox,

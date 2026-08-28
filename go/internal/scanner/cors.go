@@ -236,6 +236,7 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 100,
 			finding: ev.Evidence{
+				RuleID:            "cors/wildcard-with-credentials",
 				Title:             "CORS wildcard origin with credentials allowed",
 				Severity:          models.SeverityCritical,
 				Source:            models.SourceBlackbox,
@@ -255,6 +256,7 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 90,
 			finding: ev.Evidence{
+				RuleID:            "cors/reflects-origin-with-credentials",
 				Title:             "CORS reflects arbitrary origin with credentials",
 				Severity:          models.SeverityCritical,
 				Source:            models.SourceBlackbox,
@@ -272,6 +274,7 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 70,
 			finding: ev.Evidence{
+				RuleID:            "cors/reflects-origin",
 				Title:             "CORS reflects arbitrary origin",
 				Severity:          models.SeverityHigh,
 				Source:            models.SourceBlackbox,
@@ -289,6 +292,7 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	// fire — same arbitrary-origin root cause, don't double-report.
 	if sawNull && !sawReflected {
 		f := ev.Evidence{
+			RuleID:            "cors/null-origin",
 			Title:             "CORS accepts null origin",
 			Severity:          models.SeverityHigh,
 			Source:            models.SourceBlackbox,
@@ -312,6 +316,7 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 		candidates = append(candidates, originCandidate{
 			rank: 30, // MEDIUM — lowest; must never suppress a higher finding
 			finding: ev.Evidence{
+				RuleID:            "cors/wildcard-origin",
 				Title:             "CORS allows any origin",
 				Severity:          models.SeverityMedium,
 				Source:            models.SourceBlackbox,
@@ -395,6 +400,7 @@ func appendMethodFindings(findings []ev.Evidence, acam string, sawWildcardMeth b
 			evidence = fmt.Sprintf("Access-Control-Allow-Methods includes wildcard method: %s", acam)
 		}
 		return append(findings, ev.Evidence{
+			RuleID:     "cors/wildcard-methods",
 			Title:      "CORS allows all methods (wildcard)",
 			Severity:   models.SeverityMedium,
 			Source:     models.SourceBlackbox,
@@ -420,6 +426,7 @@ func appendMethodFindings(findings []ev.Evidence, acam string, sawWildcardMeth b
 		method = strings.TrimSpace(strings.ToUpper(method))
 		if method != "" && !standardMethods[method] {
 			return append(findings, ev.Evidence{
+				RuleID:     "cors/nonstandard-method",
 				Title:      "CORS allows non-standard HTTP method",
 				Severity:   models.SeverityLow,
 				Source:     models.SourceBlackbox,

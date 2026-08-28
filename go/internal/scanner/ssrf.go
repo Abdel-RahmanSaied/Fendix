@@ -351,6 +351,7 @@ func ssrfFetchProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param st
 			status, sig, canaryHost, injectURL, paramLabel(param, loc),
 		)
 		return ev.Evidence{
+			RuleID:   "ssrf/error-leakage",
 			Title:    "SSRF — outbound fetch error leakage",
 			Severity: models.SeverityHigh,
 			Source:   models.SourceBlackbox,
@@ -454,6 +455,7 @@ func ssrfRedirectProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param
 			record.Finding = true
 			cc.Audit.Record(record)
 			return ev.Evidence{
+				RuleID:   "ssrf/confirmed-fetch",
 				Title:    "SSRF — server-side fetch of attacker-controlled URL",
 				Severity: models.SeverityMedium,
 				Source:   models.SourceBlackbox,
@@ -559,6 +561,7 @@ func ssrfTimingProbe(ctx context.Context, cc *CheckContext, ep Endpoint, param s
 	const ssrfTimingThreshold = 4 * time.Second
 	if probe > baseline+ssrfTimingThreshold {
 		return ev.Evidence{
+			RuleID:   "ssrf/timing-differential",
 			Title:    "SSRF — timing differential",
 			Severity: models.SeverityMedium,
 			Source:   models.SourceBlackbox,
