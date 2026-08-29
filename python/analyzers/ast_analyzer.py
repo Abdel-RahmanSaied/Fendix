@@ -347,6 +347,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         category: str = "injection",
         taint_chain=_CHAIN_NOT_ATTEMPTED,
         proven_title: str | None = None,
+        proven_severity: str | None = None,
         sink: str | None = None,
     ) -> None:
         finding: dict = {
@@ -417,6 +418,24 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
         # instead of being filed as a new vulnerability.
         if chain and proven_title:
             finding["title"] = proven_title
+
+        # Some rules need the SEVERITY to follow the evidence too, not just the
+        # wording. Path traversal is the case that forced this: a dynamic path
+        # reaching `open()` is a shape, and shipping it at the same severity as
+        # a proven request→filesystem flow let an unproven observation reach a
+        # blocking threshold on evidence that never established external
+        # control.
+        #
+        # A rule that wants this passes the WEAK severity in `severity` and the
+        # proven one in `proven_severity`, exactly mirroring title/proven_title,
+        # so the escalate-on-proof rule lives in one place instead of at each
+        # call site. Rules that omit it are unaffected.
+        #
+        # Severity is presentation to the identity layer (models.Fingerprint
+        # keys on rule, file, symbol and sink), so strengthening here cannot
+        # re-file the finding as a new vulnerability.
+        if chain and proven_severity:
+            finding["severity"] = proven_severity
 
         # The vulnerable OPERATION, emitted whether or not the flow was
         # proven. It is what the fingerprint keys on, and the analyzer builds
@@ -897,6 +916,130 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             for scope in reversed(self._scopes):
                 if expr.id in scope:
                     return self._expr_is_fully_escaped(scope[expr.id], _depth + 1)
+        return False
+
+    # ─── traversal containment (CWE-22 specific) ────────────────────
+    #
+    # The generic sanitiser set above models "this value was narrowed to a
+    # bounded set". Traversal has a second, different safety shape: the value
+    # stays free-form but is stripped of directory structure, or is rejected
+    # when it contains one.
+    #
+    # DELIBERATELY ABSENT: a bare `Path(x).resolve()`. Resolving is not
+    # containing — `Path("/srv/data/../../etc/passwd").resolve()` returns
+    # `/etc/passwd`. `resolve()` only becomes a guard when it is paired with a
+    # containment ASSERTION (`.relative_to(base)` in a try/except, or a checked
+    # `startswith`), and recognising the call alone would suppress exactly the
+    # traversal it appears to defend against. The engine does not treat a
+    # function NAME as proof of what the function achieved; that is the same
+    # discipline that keeps `.. in x` below gated on control flow rather than
+    # on the mere presence of a comparison.
+
+    # Calls that reduce a value to a single path component. Each genuinely
+    # removes directory structure — basename() returns the trailing component,
+    # Werkzeug's secure_filename() strips separators and traversal sequences —
+    # so a traversal payload cannot survive them.
+    # Matched on the TERMINAL name so every import style is covered at once:
+    # `os.path.basename(x)`, `posixpath.basename(x)`, `from os.path import
+    # basename; basename(x)`, `werkzeug.utils.secure_filename(x)` and
+    # `from werkzeug.utils import secure_filename; secure_filename(x)`. Both
+    # names are unambiguous enough that a terminal match carries no realistic
+    # collision risk, unlike the `open`/`Path` receivers the sink predicate has
+    # to disambiguate.
+    _CONTAINMENT_CALL_NAMES = frozenset({"basename", "secure_filename"})
+
+    def _path_is_contained(self, arg: ast.AST, sink_line: int) -> bool:
+        """Return True when `arg` cannot carry directory traversal into a
+        filesystem sink, either because it was reduced to a bare filename or
+        because a dominating guard rejects traversal sequences.
+
+        Resolves through the scope chain the same way `_arg_is_sanitised` does,
+        so `name = os.path.basename(raw); open(name)` is recognised.
+        """
+        if isinstance(arg, ast.Call):
+            fn = arg.func
+            called = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if called in self._CONTAINMENT_CALL_NAMES:
+                return True
+        # `Path(x).name` / `PurePath(x).name` — pathlib's single-component
+        # accessor, same effect as basename().
+        #
+        # The RECEIVER must be a pathlib construction. Matching `.name` on any
+        # receiver is wrong and was actively harmful: Django's
+        # `request.FILES['f'].name` is an attribute called `name` whose value is
+        # the filename the UPLOADER chose, i.e. the attacker-controlled input
+        # this rule exists to catch. A bare attribute name says nothing about
+        # what produced it.
+        if isinstance(arg, ast.Attribute) and arg.attr == "name":
+            recv = arg.value
+            if isinstance(recv, ast.Call):
+                fn = recv.func
+                ctor = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if ctor in ("Path", "PurePath", "PurePosixPath", "PureWindowsPath"):
+                    return True
+            return False
+        if isinstance(arg, ast.Name):
+            if self._name_is_traversal_rejected(arg.id, sink_line):
+                return True
+            for scope in reversed(self._scopes):
+                if arg.id in scope:
+                    bound = scope[arg.id]
+                    # Self-referential binding (`x = f(x)`) — stop rather than
+                    # loop, matching _arg_is_sanitised.
+                    if isinstance(bound, ast.Name) and bound.id == arg.id:
+                        return False
+                    return self._path_is_contained(bound, sink_line)
+        return False
+
+    def _name_is_traversal_rejected(self, name: str, sink_line: int) -> bool:
+        """Return True if the enclosing function body contains a DOMINATING
+        early-exit guard that rejects traversal in `name`, of the shape::
+
+            if ".." in name:
+                raise / return / abort(...)
+
+        Dominance is enforced exactly as `_name_is_membership_guarded` does it
+        (top-level statements of the function body only, `lineno` strictly
+        before the sink), so a guard placed after the sink — or nested inside a
+        branch that may not run — cannot suppress the finding. A guard that
+        does not end control flow is ignored for the same reason: testing for
+        '..' and continuing anyway protects nothing.
+        """
+        if not self._func_stack:
+            return False
+        func = self._func_stack[-1]
+        for stmt in func.body:
+            if not isinstance(stmt, ast.If) or stmt.lineno >= sink_line:
+                continue
+            test = stmt.test
+            # `if ".." in name:` — a traversal sequence being looked for.
+            if not (
+                isinstance(test, ast.Compare)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.In)
+                and isinstance(test.left, ast.Constant)
+                and isinstance(test.left.value, str)
+                and ".." in test.left.value
+                and test.comparators
+                and isinstance(test.comparators[0], ast.Name)
+                and test.comparators[0].id == name
+            ):
+                continue
+            if self._body_ends_control_flow(stmt.body):
+                return True
+        return False
+
+    @staticmethod
+    def _body_ends_control_flow(body: list) -> bool:
+        """True when a guard body returns, raises, or calls abort()/exit()."""
+        for s in body:
+            if isinstance(s, (ast.Return, ast.Raise)):
+                return True
+            if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call):
+                fn = s.value.func
+                called = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if called in ("abort", "exit", "sys_exit"):
+                    return True
         return False
 
     def _arg_is_sanitised(self, arg: ast.AST, sink_line: int = 1_000_000) -> bool:
@@ -1444,10 +1587,24 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
             if sink_name.startswith("os.path.") and chain is None:
                 pass
             else:
+                # Two claims, two gradings. Without a chain, all Fendix has
+                # observed is that a NON-CONSTANT value reaches a filesystem
+                # API — it has not established that the value is externally
+                # controlled, and a dynamic path is not automatically a
+                # traversal. Saying "path traversal" there names a
+                # vulnerability class the evidence has not reached, so the
+                # unproven form says what was actually seen and stays MEDIUM,
+                # below the default --fail-on HIGH, i.e. non-blocking.
+                #
+                # With a chain, request data demonstrably reaches path
+                # construction past the recognised guards, and the finding
+                # takes the traversal wording and HIGH. The chain also ships as
+                # taint_chain, which the SARIF exporter renders as codeFlows —
+                # the same source→sink representation SSRF gets.
                 self._emit_finding(
                     "PY_PATH_TRAVERSAL",
-                    "Potential path traversal — dynamic path reaches filesystem sink",
-                    "HIGH",
+                    "Potential unsafe dynamic filesystem path",
+                    "MEDIUM",
                     "MEDIUM",
                     "CWE-22",
                     (
@@ -1459,6 +1616,7 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     node.lineno,
                     taint_chain=chain,
                     proven_title="Path traversal — user-controlled input reaches filesystem path",
+                    proven_severity="HIGH",
                     sink=sink_expr,
                 )
 
@@ -2886,6 +3044,12 @@ class _PythonSecurityVisitor(ast.NodeVisitor):
                     break  # innermost binding wins (audit #17)
         # Whitelisted dict lookup / set-membership guard → sanitised.
         if self._arg_is_sanitised(target, node.lineno):
+            return False
+        # Traversal-specific containment: basename-family normalisation, or a
+        # dominating guard that rejects '..' outright. These neutralise
+        # traversal specifically, which the generic sanitiser set above does
+        # not model.
+        if self._path_is_contained(target, node.lineno):
             return False
         # TwiScope FP-4: a path that provably comes from a NON-request source —
         # __file__-relative Path, os.getenv, tempfile.*.name, settings.*, a

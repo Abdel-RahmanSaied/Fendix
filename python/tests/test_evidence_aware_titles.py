@@ -162,3 +162,149 @@ def test_retitling_does_not_change_the_finding_identity_inputs():
     assert sink_only["title"] != proven["title"], "fixtures should differ in wording"
     assert sink_only["id"] == proven["id"], "the rule identity must not move with the title"
     assert sink_only["category"] == proven["category"]
+
+
+# --- the claim, not just the wording, follows the evidence ---------------
+#
+# RC-6 made the WORDING evidence-aware. These lock the second half: a
+# sink-only observation must not carry a blocking-grade severity either, and
+# the name of the vulnerability class must not appear until the flow is real.
+
+
+def test_sink_only_path_traversal_does_not_name_the_vulnerability_class():
+    """A dynamic path is not automatically a traversal.
+
+    Without a chain the analyzer has established only that a NON-CONSTANT
+    value reaches a filesystem API — nothing about external control. Calling
+    that "path traversal" names a class the evidence has not reached.
+    """
+    f = _one(_analyze(SINK_ONLY_PATH), "SEC-PY_PATH_TRAVERSAL")
+    assert not f.get("taint_chain"), "fixture is meant to be chainless"
+    assert "path traversal" not in f["title"].lower(), (
+        f"sink-only observation names the vulnerability class: {f['title']!r}"
+    )
+    assert f["title"] == "Potential unsafe dynamic filesystem path"
+
+
+def test_sink_only_path_traversal_is_not_blocking_grade():
+    """MEDIUM keeps it below the default --fail-on HIGH.
+
+    Evidence is preserved — the finding is still emitted, still CWE-22, still
+    carrying its evidence line — only the strength of the claim moves.
+    """
+    f = _one(_analyze(SINK_ONLY_PATH), "SEC-PY_PATH_TRAVERSAL")
+    assert f["severity"] == "MEDIUM", (
+        f"an unproven filesystem path must not reach a blocking severity: {f['severity']}"
+    )
+    assert "CWE-22" in f["references"], "the advisory must survive de-escalation"
+
+
+def test_proven_path_traversal_escalates_severity_and_ships_a_flow():
+    """With a proven request->sink chain the claim is earned, so it is made."""
+    f = _one(_analyze(PROVEN_PATH), "SEC-PY_PATH_TRAVERSAL")
+    assert f.get("taint_chain"), "fixture is meant to prove a source->sink path"
+    assert f["severity"] == "HIGH", (
+        f"a proven flow should carry the full severity: {f['severity']}"
+    )
+    assert "Path traversal" in f["title"]
+    assert f.get("reachable") is True
+    # The chain is what the SARIF exporter renders as codeFlows, matching the
+    # SSRF source->sink representation.
+    assert len(f["taint_chain"]) >= 1
+
+
+def test_severity_escalation_does_not_move_identity():
+    """The severity split must not re-file a finding as a new vulnerability."""
+    sink_only = _one(_analyze(SINK_ONLY_PATH), "SEC-PY_PATH_TRAVERSAL")
+    proven = _one(_analyze(PROVEN_PATH), "SEC-PY_PATH_TRAVERSAL")
+
+    assert sink_only["severity"] != proven["severity"], "fixtures should differ in grade"
+    assert sink_only["id"] == proven["id"], "rule identity must not move with severity"
+    assert sink_only["rule_id"] == proven["rule_id"]
+    assert sink_only["category"] == proven["category"]
+
+
+# --- containment guards -------------------------------------------------
+
+CONTAINED_BASENAME = """
+import os
+from flask import request
+
+def read_report():
+    name = os.path.basename(request.args.get("name"))
+    return open(name).read()
+"""
+
+CONTAINED_SECURE_FILENAME = """
+from flask import request
+from werkzeug.utils import secure_filename
+
+def upload():
+    name = secure_filename(request.args.get("name"))
+    return open(name).read()
+"""
+
+TRAVERSAL_REJECTED = """
+from flask import request, abort
+
+def read_report():
+    name = request.args.get("name")
+    if ".." in name:
+        abort(400)
+    return open(name).read()
+"""
+
+# `resolve()` does NOT contain — Path("/srv/../etc/passwd").resolve() is
+# "/etc/passwd". Recognising the call alone would suppress the very traversal
+# it appears to defend against.
+RESOLVE_WITHOUT_CONTAINMENT = """
+from pathlib import Path
+from flask import request
+
+def read_report():
+    name = request.args.get("name")
+    return open(Path(name).resolve()).read()
+"""
+
+# Django's UploadedFile.name is the filename the UPLOADER chose. An attribute
+# called `name` is not a pathlib component accessor.
+UPLOAD_NAME_IS_NOT_CONTAINMENT = """
+import os
+
+def h(request):
+    return os.path.join('/d', request.FILES['f'].name)
+"""
+
+
+def test_basename_contains_traversal():
+    findings = _analyze(CONTAINED_BASENAME)
+    assert not [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"], (
+        "basename() reduces the value to a single component; traversal cannot survive it"
+    )
+
+
+def test_secure_filename_contains_traversal():
+    findings = _analyze(CONTAINED_SECURE_FILENAME)
+    assert not [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"], (
+        "secure_filename() strips separators and traversal sequences"
+    )
+
+
+def test_dominating_traversal_rejection_guard_contains():
+    findings = _analyze(TRAVERSAL_REJECTED)
+    assert not [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"], (
+        "an early-exit guard rejecting '..' before the sink contains the flow"
+    )
+
+
+def test_bare_resolve_is_not_treated_as_containment():
+    f = _one(_analyze(RESOLVE_WITHOUT_CONTAINMENT), "SEC-PY_PATH_TRAVERSAL")
+    assert f, "resolve() without a containment assertion must not suppress the finding"
+
+
+def test_upload_filename_attribute_is_not_containment():
+    """Regression: `.name` on a Django upload is attacker-controlled input."""
+    findings = _analyze(UPLOAD_NAME_IS_NOT_CONTAINMENT)
+    assert [f for f in findings if f["id"] == "SEC-PY_PATH_TRAVERSAL"], (
+        "request.FILES['f'].name is the uploader's filename, not a pathlib component"
+    )
