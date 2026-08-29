@@ -26,8 +26,13 @@ func TestCheckRateLimit_NoLimiting(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for no rate limiting, got %d", len(findings))
 	}
-	if findings[0].Severity != models.SeverityMedium {
-		t.Errorf("expected MEDIUM severity, got %s", findings[0].Severity)
+	// An ordinary authenticated-style list read. The observation is real and
+	// still reported, but an unlimited GET /api/users is a capacity fact, not
+	// the credential-stuffing precondition an unlimited login is — so it is
+	// INFO. This is what stops a 700-endpoint scan from emitting one giant WARN
+	// that implies equal urgency everywhere.
+	if findings[0].Severity != models.SeverityInfo {
+		t.Errorf("expected INFO severity for an ordinary GET, got %s", findings[0].Severity)
 	}
 	// Phase 5.4 deliberate change: the title is now scoped to the bounded
 	// burst ("...within N requests") instead of the absolute "No rate

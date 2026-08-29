@@ -243,11 +243,29 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 	for _, h := range rateLimitHeaders[:3] {
 		headerList = append(headerList, h)
 	}
+
+	// The OBSERVATION above is identical for every operation. What differs is
+	// what an unlimited version of it is worth to an attacker, so the severity
+	// — and only the severity, title and one appended sentence — follows the
+	// operation's abuse sensitivity. See ratelimit_sensitivity.go.
+	//
+	// This is prioritization, never suppression: an ordinary endpoint still
+	// gets a finding, still with the full bounded-burst claim and both scope
+	// disclaimers, just at INFO. Grouping falls out of the existing dedup key
+	// (Severity|Category|Title), which turns a single undifferentiated WARN
+	// across every endpoint into an abuse-sensitive WARN group and an ordinary
+	// INFO group, each keeping its own affected_endpoints list.
+	sensitivity, sensitivityReason := classifyAbuseSensitivity(endpoint, probeMethod)
+	title := fmt.Sprintf("No rate limiting observed within %d requests", successfulProbes)
+	if sensitivity != abuseOrdinary {
+		title = fmt.Sprintf("No rate limiting observed within %d requests on an abuse-sensitive operation", successfulProbes)
+	}
+
 	return []ev.Evidence{
 		{
 			RuleID:   "ratelimit/none-observed",
-			Title:    fmt.Sprintf("No rate limiting observed within %d requests", successfulProbes),
-			Severity: models.SeverityMedium,
+			Title:    title,
+			Severity: sensitivity.severity(),
 			Source:   models.SourceBlackbox,
 			Category: "rate_limiting",
 			Endpoint: epLabel,
@@ -258,11 +276,15 @@ func (rateLimitCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoi
 					"Granularity note: the probe observes only whether THIS operation answered with a limit. "+
 					"It cannot tell a missing per-operation limiter from a shared gateway or perimeter limiter "+
 					"whose threshold this burst never reached, so nothing here establishes where a limit would "+
-					"have to be added.",
-				successfulProbes, probeMethod, strings.Join(headerList, ", "), successfulProbes),
-			Fix:        "Implement rate limiting. Return 429 Too Many Requests with Retry-After header.",
-			References: []string{"CWE-770"},
-			Confidence: models.ConfidenceMedium,
+					"have to be added. "+
+					"Prioritization note: graded %s because this endpoint %s — the observation itself is the same "+
+					"for every operation, only its consequence differs.",
+				successfulProbes, probeMethod, strings.Join(headerList, ", "), successfulProbes,
+				sensitivity.severity(), sensitivityReason),
+			Fix:             "Implement rate limiting. Return 429 Too Many Requests with Retry-After header.",
+			References:      []string{"CWE-770"},
+			Confidence:      models.ConfidenceMedium,
+			AuthExpectation: endpoint.AuthExpectation,
 		},
 	}
 }
