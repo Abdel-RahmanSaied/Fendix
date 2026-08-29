@@ -7,6 +7,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-29
+
+A grading release. Six checks were asserting an impact their evidence never
+reached, so severities and statuses move — but no finding is deleted, no
+detection is lost, and **no fingerprint changes**.
+
+### Changed
+
+- **`Access-Control-Allow-Origin: *` with `Access-Control-Allow-Credentials:
+  true` is no longer CRITICAL, and no longer blocks.** It is MEDIUM/WARN,
+  titled and worded as an invalid configuration whose exploitation was not
+  demonstrated.
+
+  The pair is not merely unproven, it is inert. The Fetch standard forbids the
+  wildcard when a request's credentials mode is `include`, so every compliant
+  browser rejects the response and no authenticated cross-origin read occurs.
+  Reading the two headers establishes a server misconfigured to *intend*
+  permissive credentialed sharing; it does not demonstrate that the sharing
+  works.
+
+  **This changes exit codes.** A pipeline that failed on this finding alone
+  will now pass. Origin REFLECTION with credentials — the shape that genuinely
+  is account-takeover grade — stays CRITICAL, and the wildcard finding is
+  re-ranked below every reflection signal so a configuration observation can
+  never mask a demonstrated one.
+
+  Reflection severity is now sensitivity-aware too: when a source of truth
+  declares an operation public, the readable body is not authenticated data, so
+  the finding lands HIGH rather than CRITICAL. Only that positive declaration
+  de-escalates — an endpoint with no declaration keeps full severity.
+
+- **"No rate limiting observed" is graded by what abusing the operation is
+  worth.** The observation is identical everywhere; the consequence is not. On
+  a 700-endpoint target the old flat MEDIUM produced one enormous WARN
+  asserting equal urgency for an unlimited login and an unlimited list read.
+
+  Severity now follows an abuse-sensitivity grade built from parameter
+  semantics (an operation accepting `password` or `otp_code` is an
+  authentication endpoint whatever its route is called), whole-segment route
+  semantics matched exactly (so `/api/authors` is not authentication), and
+  authentication context. Authentication and identity gateways and expensive
+  unauthenticated operations stay MEDIUM; ordinary operations become INFO.
+
+  Grouping needs no new machinery — the existing dedup key is
+  `Severity|Category|Title`, so this splits one undifferentiated group into an
+  abuse-sensitive WARN group and an ordinary INFO group, each keeping its own
+  `affected_endpoints`. The bounded-burst claim and both scope disclaimers are
+  unchanged; a fourth sentence names the signal behind the grade.
+
+- **Browser-document headers are graded against the response type.**
+  Content-Security-Policy, X-Frame-Options, Permissions-Policy,
+  Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy instruct a
+  browser that is rendering a document. A JSON payload has no DOM to inject
+  into, no frame to be nested in and no browsing context to isolate, so on a
+  response parsed as data these are reported at INFO with an appended sentence
+  explaining that the header would not have applied.
+
+  Strict-Transport-Security, X-Content-Type-Options and
+  Cross-Origin-Resource-Policy are deliberately unaffected — `nosniff` matters
+  *more* for JSON, not less. Classification is three-state: an absent or
+  unrecognised `Content-Type` changes nothing at all.
+
+- **A dynamic filesystem path is separated from a proven traversal.**
+  `open(path)` with a non-constant argument established that a value is
+  dynamic, never that it is externally controlled, but reported "Potential path
+  traversal" at HIGH. Without a proven chain it is now "Potential unsafe
+  dynamic filesystem path" at MEDIUM (non-blocking); with one it takes the
+  traversal wording at HIGH and ships the chain as SARIF `codeFlows`.
+
+  Traversal-specific containment is now recognised: basename-family and
+  `secure_filename` calls, pathlib's `.name` on a pathlib construction, and a
+  dominating early-exit guard rejecting `..`. A bare `Path(x).resolve()` is
+  deliberately *not* credited — resolving is not containing.
+
+- **A fixture credential in test code reaches INFO.** Being in test code and
+  having a fixture-shaped value are two independent deterministic signals — the
+  path and the bytes — and their agreement is enough to stop reporting the
+  finding at the same level as a real unconfirmed one.
+
+  Bounded by provider anchoring: a value carrying a provider's own token
+  signature (`AKIA`, `gh[opusr]_`, `sk_live_`, `xox`, `AIza`, `sk-ant-`,
+  `npm_`, PEM headers) keeps the WARN floor no matter how the variable is
+  named. `TEST_STRIPE_KEY = "sk_live_…"` is a live key with a misleading label,
+  and a label is evidence about its author's intent, not about the credential.
+
+### Fixed
+
+- **A dependency finding could claim safety from an import that was never going
+  to be there.** The applicability pass de-escalated whenever an advisory's
+  component was not *statically* imported. A project reaching that component
+  only through a computed import — `import_module(name)`, `require(pkg)` —
+  names it nowhere in the source, so the grep found nothing and the finding was
+  annotated "affected component not imported; effective risk reduced".
+
+  The walk now also records, per language and over the same bytes, whether the
+  tree calls dynamic-import machinery with a non-literal target. When it does,
+  the de-escalation is withheld and the finding stays at applicability
+  `unknown`, saying why. "We looked and could not tell" is a different claim
+  from "we looked and the component is unused", and only the second justifies
+  reducing anyone's risk assessment. Literal dynamic imports are unaffected —
+  the grep already reads through them.
+
+  **This direction is stricter**: some dependency findings that were previously
+  de-escalated now keep full weight.
+
+### Upgrade notes
+
+- **Fingerprints do not change.** Verified by diffing
+  `partialFingerprints["fendix/v2"]` across the release on a fixture that
+  changed both title and severity: identical, with no identity lost or created.
+  Saved `--baseline` files and `.fendix-ignore` `fingerprint:` rules keep
+  working. Rules keyed on a finding's *title* will need updating for the
+  path-traversal and CORS wildcard findings.
+- **Exit codes can move in both directions.** A build gated only on a CORS
+  wildcard+credentials finding will now pass; a build against a project using
+  computed imports may newly fail on a dependency finding that was previously
+  de-escalated.
+- `metadata.schema_version` stays `1` — no field was added or removed from the
+  report contract, only the values that populate it.
+
 ## [3.0.2] - 2026-08-28
 
 ### Fixed
