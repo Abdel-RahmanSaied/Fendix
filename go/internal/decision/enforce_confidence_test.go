@@ -513,19 +513,37 @@ func TestTestFixtureBlockDemotionRequiresNoCorroboration(t *testing.T) {
 // independent demotions now exist (the confidence gate and the test-fixture
 // rule), and letting them cascade would bury a finding that DID cross the
 // team's --fail-on threshold at the same level as a below-threshold LOW.
+//
+// ONE EXCEPTION, added deliberately and tested separately below: a credential
+// that is BOTH in test code AND fixture-shaped may reach INFO. The floor exists
+// to stop a REAL finding being buried by stacked demotions; that concern does
+// not apply when two independent deterministic signals — the path it lives on
+// and the bytes of the value — agree the string is not a credential at all. The
+// exception is bounded by ProviderAnchored, so anything carrying a provider's
+// own token signature keeps the floor no matter how it is named.
+//
+// The fixture below therefore sets Placeholder WITHOUT InTest for the floor
+// cases, so it still exercises the stacked-demotion cascade the floor guards.
 func TestThresholdCrossingFindingNeverSinksBelowWarn(t *testing.T) {
-	// InTest + Placeholder: 35 base + 10 static - 20 placeholder = 25 → LOW
-	// band, so the confidence gate demotes it too. The worst case for the
-	// cascade.
+	// Placeholder alone: 35 base + 10 static - 20 placeholder = 25 → LOW band,
+	// so the confidence gate demotes it. The worst case for the cascade that
+	// does NOT meet the fixture-corroborated exception.
+	//
+	// ProviderAnchored keeps the fixture-corroborated exception vetoed, so both
+	// demotions (confidence gate AND test-fixture) still stack exactly as they
+	// did before the exception existed — which is what the floor is here to
+	// catch. A misleadingly-named live provider key is also the case where the
+	// floor matters most.
 	ev := evidence.Evidence{
-		Title:       "Hardcoded API key or token",
-		Category:    "secrets",
-		Endpoint:    "app/tests/test_client.py:12",
-		Severity:    models.SeverityHigh,
-		Source:      models.SourceWhitebox,
-		Confidence:  models.ConfidenceHigh,
-		InTest:      true,
-		Placeholder: true,
+		Title:            "Stripe live secret key hardcoded",
+		Category:         "secrets",
+		Endpoint:         "app/tests/test_client.py:12",
+		Severity:         models.SeverityHigh,
+		Source:           models.SourceWhitebox,
+		Confidence:       models.ConfidenceHigh,
+		InTest:           true,
+		Placeholder:      true,
+		ProviderAnchored: true,
 	}
 	for _, enforce := range []bool{true, false} {
 		for _, deescalate := range []bool{true, false} {
@@ -546,5 +564,132 @@ func TestThresholdCrossingFindingNeverSinksBelowWarn(t *testing.T) {
 	below.Severity = models.SeverityMedium
 	if d := DecideWithOptions(below, "HIGH", Options{EnforceConfidence: true, DeescalateTests: true}); d.Status != StatusInfo {
 		t.Errorf("below-threshold test finding Status = %q, want INFO (the v1.1 rule must still fire)", d.Status)
+	}
+}
+
+// --- the fixture-corroborated exception to the WARN floor ----------------
+//
+// A credential that is BOTH in test code AND fixture-shaped carries two
+// INDEPENDENT deterministic signals that it is not a live secret: the path it
+// sits on, and the bytes of the value. Their agreement is corroboration used to
+// weaken a claim, which is the same standard the blocking gate applies to
+// strengthen one.
+
+func fixtureSecret() evidence.Evidence {
+	return evidence.Evidence{
+		Title:       "Hardcoded API key or token",
+		Category:    "secrets",
+		Endpoint:    "app/tests/test_client.py:12",
+		Severity:    models.SeverityHigh,
+		Source:      models.SourceWhitebox,
+		Confidence:  models.ConfidenceHigh,
+		InTest:      true,
+		Placeholder: true,
+	}
+}
+
+func TestFixtureCorroboratedCredentialReachesInfo(t *testing.T) {
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+	d := DecideWithOptions(fixtureSecret(), "HIGH", opts)
+
+	if d.Status != StatusInfo {
+		t.Fatalf("a fixture-shaped credential in test code should reach INFO, got %q (%s)",
+			d.Status, d.Reason)
+	}
+	// The drop must be explained in BOTH places a reader might look.
+	if !strings.Contains(d.Reason, "two independent signals") {
+		t.Errorf("the decision reason must name the two signals: %q", d.Reason)
+	}
+	var found bool
+	for _, r := range d.Score.Reasons {
+		if strings.Contains(r, "test-fixture-corroborated") {
+			found = true
+			if !strings.HasPrefix(r, "+0 ") {
+				t.Errorf("the de-escalation must carry an explicit +0 delta: %q", r)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the confidence breakdown must record the de-escalation: %v", d.Score.Reasons)
+	}
+}
+
+// The veto. A provider's own token signature is evidence about the VALUE; a
+// variable name is evidence about its author's intent. `TEST_STRIPE_KEY =
+// "sk_live_..."` is a live key with a misleading label and must keep its floor.
+func TestProviderAnchoredCredentialKeepsTheWarnFloor(t *testing.T) {
+	ev := fixtureSecret()
+	ev.ProviderAnchored = true
+
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+	d := DecideWithOptions(ev, "HIGH", opts)
+
+	if d.Status == StatusInfo {
+		t.Fatalf("a provider-anchored credential must not be de-escalated to INFO by its NAME (%s)", d.Reason)
+	}
+	if d.Status != StatusWarn {
+		t.Errorf("expected the existing WARN floor, got %q", d.Status)
+	}
+}
+
+// Each signal ALONE is an observation, not corroboration. Neither may reach
+// INFO on its own, or the exception would be one signal wearing two hats.
+func TestOneTestContextSignalIsNotEnoughForInfo(t *testing.T) {
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+
+	pathOnly := fixtureSecret()
+	pathOnly.Placeholder = false // in tests, but the value looks real
+	if d := DecideWithOptions(pathOnly, "HIGH", opts); d.Status == StatusInfo {
+		t.Errorf("a real-looking credential in a test file must not reach INFO: %s", d.Reason)
+	}
+
+	valueOnly := fixtureSecret()
+	valueOnly.InTest = false // fixture-shaped, but in production code
+	valueOnly.Endpoint = "app/settings.py:12"
+	if d := DecideWithOptions(valueOnly, "HIGH", opts); d.Status == StatusInfo {
+		t.Errorf("a fixture-shaped value in production code must not reach INFO: %s", d.Reason)
+	}
+}
+
+// Independent corroboration vetoes the drop. Once something beyond the pattern
+// match supports the claim, the two fixture signals are no longer the whole
+// story, so the finding keeps the WARN floor.
+//
+// It stays WARN rather than returning to BLOCK because a fixture-shaped value
+// scores in the LOW band (35 base + 10 static + 10 reachable - 20 placeholder =
+// 35), and a LOW-band finding never blocks — that is the confidence gate's rule,
+// not this de-escalation's, and it is asserted here so the interaction between
+// the two is pinned rather than assumed.
+func TestCorroboratedFixtureCredentialDoesNotSinkToInfo(t *testing.T) {
+	ev := fixtureSecret()
+	ev.Reachable = true // any independent signal
+
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+	d := DecideWithOptions(ev, "HIGH", opts)
+	if d.Status == StatusInfo {
+		t.Errorf("independent corroboration must veto the fixture de-escalation: %s", d.Reason)
+	}
+	if d.Status != StatusWarn {
+		t.Errorf("expected the WARN floor, got %q (%s)", d.Status, d.Reason)
+	}
+}
+
+// Nothing is deleted to achieve the drop — the whole point of preferring
+// de-escalation over suppression.
+func TestFixtureDeescalationPreservesTheEvidence(t *testing.T) {
+	ev := fixtureSecret()
+	opts := Options{EnforceConfidence: true, DeescalateTests: true}
+	d := DecideWithOptions(ev, "HIGH", opts)
+
+	if d.Evidence.Title != ev.Title || d.Evidence.Category != ev.Category {
+		t.Error("the finding's identity fields must survive de-escalation")
+	}
+	if d.Evidence.Severity != models.SeverityHigh {
+		t.Errorf("intrinsic severity must not be rewritten by a decision: %s", d.Evidence.Severity)
+	}
+	plain := DecideWithOptions(ev, "HIGH", Options{EnforceConfidence: true})
+	if d.Score.Value != plain.Score.Value {
+		t.Errorf("the de-escalation changed the SCORE (%d → %d); it must only change STATUS",
+			plain.Score.Value, d.Score.Value)
 	}
 }

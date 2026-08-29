@@ -642,6 +642,11 @@ func scanFile(path, root string, d fs.DirEntry) ([]evidence.Evidence, error) {
 					// placeholder.go for why this is not folded into
 					// isReferenceOrPlaceholder.
 					Placeholder: classifyPlaceholder(line, vStart, value).isPlaceholder(),
+					// Whether the match was anchored on the provider's own
+					// token signature rather than on a surrounding assignment.
+					// Bounds how far the fixture classification above is
+					// allowed to de-escalate — see providerAnchoredRules.
+					ProviderAnchored: isProviderAnchored(pat.id),
 				})
 			}
 		}

@@ -505,6 +505,37 @@ const testFixtureReason = "+0 de-escalated to INFO: finding is in test/fixture c
 const testFixtureBlockReason = "+0 de-escalated to WARN: finding is in test/fixture code " +
 	"with no corroborating signal (rule: test-fixture; evidence preserved)"
 
+// testFixtureCorroboratedReason is the line for the further WARN → INFO step
+// taken when the test PATH and the fixture-shaped VALUE agree. Distinct from
+// the two above so a reader can tell "held at WARN because it is in a test"
+// from "dropped to INFO because two independent signals said it is not a real
+// credential".
+const testFixtureCorroboratedReason = "+0 de-escalated to INFO: credential is in test/fixture " +
+	"code AND its value is fixture-shaped — two independent signals " +
+	"(rule: test-fixture-corroborated; evidence preserved)"
+
+// fixtureCorroborated reports whether two INDEPENDENT signals agree that a
+// credential finding is not a live secret:
+//
+//   - InTest — where the value lives, derived from the file path.
+//   - Placeholder — what the value looks like, derived from the bytes.
+//
+// Independence is the whole point. The two are produced by different inputs, so
+// their agreement is genuine corroboration rather than one observation counted
+// twice — the same standard the blocking gate applies, used here to weaken a
+// claim instead of to strengthen one.
+//
+// ProviderAnchored VETOES it. The placeholder heuristics include a signal read
+// off the variable NAME, and a name is chosen by whoever wrote the line: it
+// records their intent, not the nature of the value. `TEST_STRIPE_KEY =
+// "sk_live_…"` is a live key with a misleading label, and a label must never be
+// allowed to push a provider-signed credential below WARN. A generic rule's
+// match carries no such signature, which is exactly the case this de-escalation
+// is for.
+func fixtureCorroborated(ev evidence.Evidence) bool {
+	return ev.InTest && ev.Placeholder && !ev.ProviderAnchored
+}
+
 // DecideWithOptions is the production entry point: decide() under the scan
 // policy, plus the test-fixture de-escalation.
 //
@@ -570,6 +601,40 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 			// nothing in confidence_reasons explaining why.
 			d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureReason)
 		}
+	}
+
+	// The fixture-corroborated exception to the WARN floor.
+	//
+	// Placed AFTER the switch, and gated on the resulting status rather than on
+	// which arm produced it, because a fixture credential can arrive at WARN by
+	// two different routes: the confidence gate demoting a threshold-crosser
+	// whose band is LOW, or the test-fixture arm above holding a BLOCK. Both
+	// describe the same finding, so both must reach the same verdict — keying
+	// this off one arm would make the outcome depend on which demotion happened
+	// to fire first, which is exactly the kind of order-dependence this package
+	// works to avoid.
+	//
+	// The floor (see TestThresholdCrossingFindingNeverSinksBelowWarn) exists so
+	// stacked demotions cannot bury a finding that crossed the team's --fail-on
+	// threshold. That concern does not apply here: two INDEPENDENT deterministic
+	// signals — the path the value sits on, and the bytes of the value itself —
+	// agree the string is not a credential at all. Their agreement is
+	// corroboration, applied in the de-escalating direction, which is the same
+	// standard the blocking gate applies in the escalating one.
+	//
+	// Independent corroboration VETOES the drop, exactly as it does for the
+	// BLOCK arm: if anything beyond the pattern match supports the claim, the
+	// fixture signals are no longer the whole story.
+	//
+	// Nothing is suppressed. The finding keeps its id, intrinsic severity,
+	// endpoint and full redacted evidence; only Status and Reason move, plus one
+	// 0-point line in the published breakdown.
+	if d.Status == StatusWarn && len(d.Corroboration.Independent) == 0 && fixtureCorroborated(ev) {
+		d.Status = StatusInfo
+		d.Reason = "de-escalated to INFO: credential is in test/fixture code AND its value " +
+			"matches the deterministic fixture heuristics — two independent signals agree " +
+			"it is not a live credential (rule: test-fixture-corroborated; evidence preserved)"
+		d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureCorroboratedReason)
 	}
 	return d
 }

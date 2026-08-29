@@ -75,6 +75,10 @@ type ScoringProvenance struct {
 	UnconfirmedByLiveScan bool
 	Placeholder           bool
 	ComponentNotImported  bool
+	// ProviderAnchored joins them, with one difference recorded at the merge
+	// site: it folds by UNION, not agree-or-drop, because it withholds a
+	// de-escalation rather than granting a bonus.
+	ProviderAnchored bool
 	// CrossToolCorroborated + CorroboratingTools are the outputs of strong
 	// cross-tool correlation (engine.CorrelateCrossTool): an INDEPENDENT
 	// tool reported the same normalized CWE at the same normalized location.
@@ -155,6 +159,7 @@ func NewProvenanceIndex(evs []Evidence) ProvenanceIndex {
 			DirectObservation:     e.DirectObservation,
 			UnconfirmedByLiveScan: e.UnconfirmedByLiveScan,
 			Placeholder:           e.Placeholder,
+			ProviderAnchored:      e.ProviderAnchored,
 			ComponentNotImported:  e.ComponentNotImported,
 			CrossToolCorroborated: e.CrossToolCorroborated,
 			CorroboratingTools:    e.CorroboratingTools,
@@ -218,6 +223,9 @@ func (ix ProvenanceIndex) Restore(evs []Evidence) []Evidence {
 		}
 		if !out[i].Placeholder {
 			out[i].Placeholder = p.Placeholder
+		}
+		if !out[i].ProviderAnchored {
+			out[i].ProviderAnchored = p.ProviderAnchored
 		}
 		if !out[i].ComponentNotImported {
 			out[i].ComponentNotImported = p.ComponentNotImported
@@ -302,6 +310,13 @@ func mergeScoringProvenance(a, b ScoringProvenance) ScoringProvenance {
 		UnconfirmedByLiveScan: agreementOrBool(a.UnconfirmedByLiveScan, b.UnconfirmedByLiveScan),
 		Placeholder:           agreementOrBool(a.Placeholder, b.Placeholder),
 		ComponentNotImported:  agreementOrBool(a.ComponentNotImported, b.ComponentNotImported),
+		// UNION, deliberately breaking the agree-or-drop rule its neighbours
+		// follow. Those flags grant a bonus or a de-escalation, so requiring
+		// every occurrence to agree is the conservative direction. This one
+		// WITHHOLDS a de-escalation, so the conservative direction is the
+		// opposite: if any occurrence in the group carries a provider's
+		// signature, the group keeps its full weight.
+		ProviderAnchored: a.ProviderAnchored || b.ProviderAnchored,
 		// Derived from the surviving proof, never from the bare flags: a
 		// true flag with no tool record (which no producer emits) does not
 		// survive the merge — corroboration without its proof is not

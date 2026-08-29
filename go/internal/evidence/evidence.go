@@ -153,6 +153,27 @@ type Evidence struct {
 	// be carried explicitly by ScoringProvenance AND restored by
 	// engine.CorrelateEvidence. INTERNAL — never projected onto Finding.
 	Placeholder bool
+	// ProviderAnchored marks credential evidence whose VALUE carries a known
+	// provider's signature — an AKIA… access-key id, a ghp_/gho_/ghu_/ghs_
+	// GitHub token, sk_live_…, xox[abprs]-…, AIza… — rather than merely being
+	// a high-entropy string a generic rule matched.
+	//
+	// It exists to bound fixture de-escalation. The placeholder heuristics
+	// include a signal read off the variable NAME (FAKE_/TEST_/DUMMY_…), and a
+	// name is chosen by whoever wrote the line — it is evidence about their
+	// intent, never about the credential. `TEST_STRIPE_KEY = "sk_live_…"` is a
+	// live key with a misleading label, and letting the label alone push it
+	// below WARN would suppress exactly the leak that matters most.
+	//
+	// So this flag does not de-escalate anything. It VETOES a de-escalation
+	// that other signals would otherwise have earned, which is why it merges
+	// by union rather than agreement: one provider-anchored occurrence in a
+	// dedup group is enough to withhold the drop for the whole group.
+	//
+	// Like the flags above it cannot be re-derived from the endpoint, so it
+	// must be carried by ScoringProvenance and restored. INTERNAL — never
+	// projected onto Finding.
+	ProviderAnchored bool
 	// ComponentNotImported marks dependency evidence whose advisory is scoped
 	// to a specific importable sub-component — a Django advisory that only
 	// touches django.contrib.gis, say — that the scanned tree never imports.

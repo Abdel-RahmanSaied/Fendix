@@ -1026,3 +1026,103 @@ func TestScan_PlaceholderIsAnnotationNotSuppression(t *testing.T) {
 		})
 	}
 }
+
+// --- provider anchoring ---------------------------------------------------
+//
+// ProviderAnchored records whether a match was anchored on the credential's OWN
+// signature or merely on a surrounding assignment shape. It carries no score of
+// its own; it bounds how far decision.fixtureCorroborated may de-escalate a
+// finding, so getting it wrong either suppresses a live key or restores the
+// noise the de-escalation exists to remove.
+
+func findingFor(t *testing.T, evs []evidence.Evidence, id string) evidence.Evidence {
+	t.Helper()
+	for _, e := range evs {
+		if strings.Contains(e.Title, id) || strings.Contains(e.RuleID, id) {
+			return e
+		}
+	}
+	var titles []string
+	for _, e := range evs {
+		titles = append(titles, e.Title)
+	}
+	t.Fatalf("no finding matching %q; got %v", id, titles)
+	return evidence.Evidence{}
+}
+
+// A live provider key under a misleading TEST_ name must stay anchored, so the
+// name alone can never push it below WARN.
+func TestScan_ProviderKeyUnderTestNameStaysAnchored(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "tests/test_billing.py",
+		"TEST_STRIPE_KEY = \"sk_live_abcdefghijklmnopqrstuvwxyz\"\n")
+
+	found, err := Scan(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	f := findingFor(t, found, "Stripe")
+	if !f.ProviderAnchored {
+		t.Error("a sk_live_ match must be provider-anchored regardless of the variable name")
+	}
+	// The fixture heuristics still fire on the TEST_ prefix — that is the whole
+	// point of the veto: both are true, and anchoring wins.
+	if !f.Placeholder {
+		t.Error("expected the TEST_ name prefix to still register as fixture-shaped")
+	}
+}
+
+// A generic assignment-shaped match is NOT anchored: nothing about the value
+// carries a provider's signature, which is precisely the case the fixture
+// de-escalation is for.
+func TestScan_GenericFixtureKeyIsNotProviderAnchored(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "tests/test_client.py",
+		"FAKE_API_KEY = \"abcdef0123456789abcdef0123456789\"\n")
+
+	found, err := Scan(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	f := findingFor(t, found, "API key")
+	if f.ProviderAnchored {
+		t.Error("a generic assignment-shaped match must not claim a provider signature")
+	}
+	if !f.Placeholder {
+		t.Error("FAKE_ prefix must register as fixture-shaped")
+	}
+}
+
+// Every provider rule anchors; every generic rule does not. Locked as a table
+// so a new rule cannot silently land on the wrong side.
+func TestProviderAnchoredPartitionsTheRuleSet(t *testing.T) {
+	anchored := []string{
+		"AWS_ACCESS_KEY", "AWS_SECRET_KEY", "PRIVATE_KEY", "GITHUB_TOKEN",
+		"STRIPE_LIVE_KEY", "SLACK_TOKEN", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY", "NPM_TOKEN", "GCP_SERVICE_ACCOUNT",
+	}
+	generic := []string{
+		"GENERIC_API_KEY", "HARDCODED_PASSWORD", "HARDCODED_SECRET_CONFIG",
+		"JWT_TOKEN", "JWT_TOKEN_HEADER", "DB_CONNECTION_STRING", "ENV_SECRET",
+	}
+	for _, id := range anchored {
+		if !isProviderAnchored(id) {
+			t.Errorf("%s matches a provider's own token signature and must be anchored", id)
+		}
+	}
+	for _, id := range generic {
+		if isProviderAnchored(id) {
+			t.Errorf("%s matches an assignment shape, not a provider signature; anchoring it "+
+				"would block the fixture de-escalation for the rules that need it most", id)
+		}
+	}
+	// The two lists must together account for BOTH registries — the general
+	// `patterns` set and the .env-only `envPatterns` set — or a new rule could
+	// be added and silently default to un-anchored, which is the failure mode
+	// that would quietly let a new provider token be de-escalated by its name.
+	total := len(patterns) + len(envPatterns)
+	if got := len(anchored) + len(generic); got != total {
+		t.Errorf("rule partition covers %d rules but the registries hold %d — a new pattern "+
+			"needs an explicit side", got, total)
+	}
+}

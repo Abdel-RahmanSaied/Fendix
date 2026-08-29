@@ -255,6 +255,35 @@ func provenanceDriftFixtures() []provenanceFixture {
 			wantValue: base + staticEvidence,
 		},
 		{
+			// A provider-signed credential (an sk_live_… match) sitting in a
+			// test file under a misleading TEST_ name. ProviderAnchored is a
+			// decision-layer signal the scorer does not read — it VETOES the
+			// fixture de-escalation in decision.fixtureCorroborated — but like
+			// InTest and AuthExpectation it is unobservable downstream of the
+			// projection, so it has to be CARRIED. This fixture is what the
+			// coverage guard below reads to prove the hop exists.
+			//
+			// Placeholder is set alongside it deliberately: the veto only means
+			// anything when the fixture heuristics DID fire, which is exactly
+			// the `TEST_STRIPE_KEY = "sk_live_…"` shape.
+			name: "provider-anchored credential in test code under a fixture-shaped name",
+			ev: evidence.Evidence{
+				Title:            "Stripe live secret key hardcoded",
+				Category:         "secrets",
+				Endpoint:         "tests/test_billing.py:12",
+				Severity:         models.SeverityCritical,
+				Source:           models.SourceWhitebox,
+				Confidence:       models.ConfidenceHigh,
+				InTest:           true,
+				Placeholder:      true,
+				ProviderAnchored: true,
+			},
+			// 35 base + 10 static - 20 placeholder. InTest gates the
+			// deterministic-detection bonus off; ProviderAnchored carries no
+			// score delta of its own by design.
+			wantValue: base + staticEvidence + placeholderPenalty,
+		},
+		{
 			// A live auth finding on an endpoint the OpenAPI spec declares
 			// protected. AuthExpectation / AuthExpectationSource are stamped by
 			// the auth check from the spec-derived endpoint inventory and are

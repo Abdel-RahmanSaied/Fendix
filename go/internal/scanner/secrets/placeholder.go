@@ -161,3 +161,42 @@ func hasRepeatedChars(v string) bool {
 	}
 	return max*100 >= 60*len(v)
 }
+
+// providerAnchoredRules are the rules whose REGEX anchors a provider's own
+// token signature — an `AKIA…` key id, `gh[opusr]_` + 36 chars, `sk_live_…`,
+// `xox[abprs]-…`, `AIza…`, `sk-ant-…`, `sk-…` (OpenAI), `npm_…`, or a PEM
+// private-key header.
+//
+// Membership means the match is anchored on the credential's OWN shape rather
+// than on a surrounding assignment. That distinction is what the flag is for:
+// the placeholder heuristics include a signal read off the variable NAME, and a
+// name records the intent of whoever wrote the line, not the nature of the
+// value. `TEST_STRIPE_KEY = "sk_live_…"` is a live key with a misleading
+// label; the label must not be allowed to push it below WARN.
+//
+// The generic rules are deliberately EXCLUDED. GENERIC_API_KEY,
+// HARDCODED_PASSWORD, HARDCODED_SECRET_CONFIG, ENV_SECRET, JWT_* and
+// DB_CONNECTION_STRING match an assignment SHAPE around an arbitrary value, so
+// a fixture is exactly what they most often find — those are the findings the
+// fixture de-escalation exists to grade, and vetoing it for them would restore
+// the noise this is meant to reduce.
+//
+// GCP_SERVICE_ACCOUNT is a signature-only match with no value to classify, so
+// it is anchored too: nothing about it can be read as fixture-shaped.
+var providerAnchoredRules = map[string]bool{
+	"AWS_ACCESS_KEY":      true,
+	"AWS_SECRET_KEY":      true,
+	"PRIVATE_KEY":         true,
+	"GITHUB_TOKEN":        true,
+	"STRIPE_LIVE_KEY":     true,
+	"SLACK_TOKEN":         true,
+	"GOOGLE_API_KEY":      true,
+	"ANTHROPIC_API_KEY":   true,
+	"OPENAI_API_KEY":      true,
+	"NPM_TOKEN":           true,
+	"GCP_SERVICE_ACCOUNT": true,
+}
+
+// isProviderAnchored reports whether a rule id matches a provider's own token
+// signature. See providerAnchoredRules.
+func isProviderAnchored(ruleID string) bool { return providerAnchoredRules[ruleID] }
