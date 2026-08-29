@@ -24,10 +24,28 @@
 // pre-compiled alternation per language: O(tree + advisories), never
 // O(tree x advisories).
 //
-// Known false negative, documented rather than papered over: a dynamic
-// import (importlib.import_module("django.contrib.gis"), a computed
-// require()) is not matched. A miss means the finding is NOT de-escalated,
-// which is the safe direction.
+// Dynamic imports come in two kinds and they are handled differently.
+//
+// A LITERAL one — importlib.import_module("django.contrib.gis"), require(
+// "lodash/template") — names the component in the source, so the import grep
+// reads straight through it and resolves the finding as applicable.
+//
+// A COMPUTED one — import_module(name), require(pkg) — names nothing the grep
+// can resolve. The old behaviour treated that silence as absence and reported
+// "affected component not imported", which claimed safety from the absence of
+// a static import that was never going to be there. So the walk now also
+// records whether the tree uses computed loading at all, per language, and
+// withholds the de-escalation when it does: the finding stays at
+// ApplicabilityUnknown and says why. Unknown is a real answer here — "we
+// looked and could not tell" is not "we looked and the component is unused",
+// and only the second justifies reducing anyone's risk assessment.
+//
+// Remaining known limit, documented rather than papered over: import-level
+// reachability is as deep as this goes. That the affected MODULE is imported
+// does not establish that the vulnerable FUNCTION is called, which is why an
+// imported component restores normal policy rather than escalating past it.
+// Call-graph-level reachability would need per-advisory symbol curation and is
+// not attempted.
 package applicability
 
 import (
@@ -67,6 +85,30 @@ var skipDirs = map[string]struct{}{
 	".next": {}, ".nuxt": {}, ".svelte-kit": {}, ".cache": {}, "target": {},
 }
 
+// dynamicLoaderRe matches a call to a language's dynamic-import machinery whose
+// TARGET IS NOT A STRING LITERAL — importlib.import_module(name), __import__(x),
+// require(pkg), import(spec).
+//
+// The literal-argument forms are deliberately excluded, because the import grep
+// already sees straight through them: import_module("django.contrib.gis")
+// contains the component's name and matches like any static import. What this
+// catches is the case the grep genuinely cannot resolve, where the module name
+// is assembled or passed in at runtime and appears nowhere in the source.
+//
+// Why that matters: without it, a project that reaches a vulnerable component
+// ONLY through a computed import looks exactly like a project that never
+// touches it, and the analyzer would report "affected component not imported"
+// — claiming safety from the absence of a static import that was never going to
+// be there. That is the one way this package could actively mislead.
+//
+// A JS template literal counts as dynamic. `require(`+"`lodash`"+`)` is in fact
+// literal, but `+"`pkg/${x}`"+` is not, and the two are not worth separating when
+// the conservative reading costs only a withheld de-escalation.
+var dynamicLoaderRe = map[Lang]*regexp.Regexp{
+	LangPython: regexp.MustCompile(`(?m)(?:\bimportlib\.import_module|\b__import__)\s*\(\s*[^'")\s]`),
+	LangJS:     regexp.MustCompile(`(?m)(?:\brequire|\bimport)\s*\(\s*[^'")\s]`),
+}
+
 var langExtensions = map[Lang]map[string]struct{}{
 	LangPython: {".py": {}, ".pyi": {}},
 	LangJS: {
@@ -99,7 +141,7 @@ func resolve(root string, evs []evidence.Evidence) ([]evidence.Evidence, int) {
 	}
 
 	// Phase 2 — one walk, all tokens.
-	found, filesWalked, overran := grepImports(root, tokens)
+	found, dynamic, filesWalked, overran := grepImports(root, tokens)
 	if overran {
 		// Fail open: an incomplete grep is not evidence of absence.
 		return evs, filesWalked
@@ -140,6 +182,32 @@ func resolve(root string, evs []evidence.Evidence) ([]evidence.Evidence, int) {
 			continue
 		}
 		sort.Strings(missing)
+
+		// The static grep found nothing — but is its negative trustworthy?
+		//
+		// If the tree loads modules by a name it never spells out, the absence
+		// of a static import is not evidence the component is unreachable; it
+		// is evidence that this technique cannot see. Reporting EvidenceAgainst
+		// there would claim safety from the absence of an import that was never
+		// going to be there, which is the one way this package could actively
+		// mislead a reader.
+		//
+		// So the finding stays at ApplicabilityUnknown — Fendix's claim held
+		// exactly as weak as its evidence — and says why. Unknown is not a
+		// silent no-op here: it is the difference between "we looked and the
+		// component is unused" and "we looked and could not tell", and only the
+		// first justifies reducing anyone's risk assessment.
+		//
+		// The advisory is untouched either way: same id, severity, endpoint and
+		// evidence. Only the de-escalation is withheld.
+		if lang, ok := dynamicLangFor(comps); ok && dynamic[lang] {
+			out[idx].Evidence += " — the affected component (" +
+				strings.Join(missing, ", ") + ") is not statically imported, but this project " +
+				"loads modules by computed name, so the absence of a static import does not " +
+				"establish that the component is unreachable; effective risk NOT reduced"
+			continue
+		}
+
 		out[idx].Applicability = models.ApplicabilityEvidenceAgainst
 		// Kept in lockstep for one release: an out-of-tree consumer reading the
 		// old bool sees the same de-escalation it always did.
@@ -223,8 +291,9 @@ func componentsFor(ev evidence.Evidence) []Component {
 // language, so a file is read once and scanned once no matter how many
 // advisories are in play. Files whose extension belongs to no ACTIVE
 // language are never opened.
-func grepImports(root string, tokens map[Component]bool) (found map[Component]bool, filesWalked int, overran bool) {
+func grepImports(root string, tokens map[Component]bool) (found map[Component]bool, dynamic map[Lang]bool, filesWalked int, overran bool) {
 	found = make(map[Component]bool, len(tokens))
+	dynamic = make(map[Lang]bool, len(dynamicLoaderRe))
 
 	// Order the tokens deterministically so the compiled alternation, and
 	// therefore the group indices, are a pure function of the input set.
@@ -295,6 +364,14 @@ func grepImports(root string, tokens map[Component]bool) (found map[Component]bo
 		if rerr != nil {
 			return nil
 		}
+		// Same bytes, same pass: does this file reach for a module name it
+		// does not spell out? Recorded per language because a Python
+		// component's absence can only be explained away by Python source.
+		if lang, ok := langForPath(path); ok && !dynamic[lang] {
+			if re := dynamicLoaderRe[lang]; re != nil && re.Match(data) {
+				dynamic[lang] = true
+			}
+		}
 		for _, loc := range m.re.FindAllSubmatchIndex(data, -1) {
 			for gi, c := range m.groups {
 				// Submatch group gi+1 occupies loc[2*(gi+1)]; -1 means the
@@ -312,9 +389,22 @@ func grepImports(root string, tokens map[Component]bool) (found map[Component]bo
 	})
 	if err != nil {
 		// A walk that failed outright is an incomplete grep; fail open.
-		return found, filesWalked, true
+		return found, dynamic, filesWalked, true
 	}
-	return found, filesWalked, overran
+	return found, dynamic, filesWalked, overran
+}
+
+// langForPath returns the language a source file belongs to. Unlike
+// matcherForPath it is independent of which languages are ACTIVE for this scan,
+// because the dynamic-loader question is about the file, not about the token set.
+func langForPath(path string) (Lang, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	for lang, exts := range langExtensions {
+		if _, ok := exts[ext]; ok {
+			return lang, true
+		}
+	}
+	return LangPython, false
 }
 
 // langMatcher is one language's compiled alternation over every active
@@ -389,4 +479,20 @@ func importPattern(lang Lang, token string) string {
 		alts = append(alts, `^[ \t]*from[ \t]+`+parent+`[ \t]+import[ \t]+.*\b`+leaf+`\b`)
 	}
 	return "(?:" + strings.Join(alts, "|") + ")"
+}
+
+// dynamicLangFor returns the language whose dynamic-loader evidence could
+// explain away this finding's missing imports.
+//
+// An advisory's components are single-language in the catalog as it stands, so
+// the first component's language answers it. The multi-language case is handled
+// conservatively rather than assumed away: if components ever span languages,
+// ANY of those languages using computed imports is enough to withhold the
+// de-escalation, because the component that is actually reached may be the one
+// in that language.
+func dynamicLangFor(comps []Component) (Lang, bool) {
+	if len(comps) == 0 {
+		return LangPython, false
+	}
+	return comps[0].Lang, true
 }
