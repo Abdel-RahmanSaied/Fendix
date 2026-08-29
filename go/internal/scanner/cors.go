@@ -232,17 +232,32 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	}
 	var candidates []originCandidate
 
+	// Wildcard + credentials is a CONFIGURATION-ONLY observation, and it is
+	// graded as one. The pair is invalid rather than exploitable: the Fetch
+	// standard forbids `Access-Control-Allow-Origin: *` when the request's
+	// credentials mode is `include`, so a spec-compliant browser rejects the
+	// response outright and NO authenticated cross-origin read occurs. Reading
+	// two headers therefore proves a server misconfigured to intend permissive
+	// credentialed sharing — it does not demonstrate that sharing works.
+	//
+	// It stays MEDIUM/non-blocking for that reason. The exploitable shape is
+	// origin REFLECTION with credentials (rank 90 below), where the server
+	// echoes a specific attacker origin and the browser does honour it; that
+	// remains CRITICAL. Ranking wildcard+creds below every reflection finding
+	// keeps a configuration observation from masking a demonstrated one.
 	if sawWildcardCreds {
 		candidates = append(candidates, originCandidate{
-			rank: 100,
+			// MEDIUM — above plain wildcard (30), below every reflected/null
+			// signal, which grade demonstrated behaviour rather than intent.
+			rank: 40,
 			finding: ev.Evidence{
 				RuleID:            "cors/wildcard-with-credentials",
-				Title:             "CORS wildcard origin with credentials allowed",
-				Severity:          models.SeverityCritical,
+				Title:             "CORS wildcard origin combined with credentials (invalid configuration)",
+				Severity:          models.SeverityMedium,
 				Source:            models.SourceBlackbox,
 				Category:          "cors",
 				Endpoint:          epLabel,
-				Evidence:          "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true",
+				Evidence:          "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true — an invalid combination that browsers reject; credentialed cross-origin access was NOT demonstrated",
 				Fix:               "Never combine wildcard origin with credentials. Specify explicit allowed origins.",
 				References:        []string{"CWE-942"},
 				Confidence:        models.ConfidenceHigh,
@@ -252,21 +267,44 @@ func (corsCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint) [
 	}
 	if sawReflected && sawReflectedCred {
 		// Reflected arbitrary origin WITH credentials is account-takeover grade
-		// (Phase 4a / 4.2) → CRITICAL.
+		// (Phase 4a / 4.2) → CRITICAL, because an attacker page can read the
+		// authenticated response.
+		//
+		// That impact is what CRITICAL is claiming, so it is graded against
+		// what the response actually exposes. When a source of truth DECLARES
+		// the operation anonymous (AuthExpectationPublic), the credentialed
+		// read returns a body any unauthenticated client could already fetch:
+		// the reflection is still a real misconfiguration to fix, but calling
+		// it account-takeover overstates the evidence.
+		//
+		// Only the POSITIVE declaration de-escalates. AuthExpectationUnknown —
+		// every crawled or brute-forced endpoint — stays CRITICAL, because an
+		// absent declaration is not evidence that a response is harmless. That
+		// asymmetry is deliberate and matches the rest of the decision layer:
+		// unknown is never silently read as safe.
+		severity, rank := models.SeverityCritical, 90
+		exposure := "credentialed cross-origin read of an authenticated response"
+		if endpoint.AuthExpectation == models.AuthExpectationPublic {
+			// HIGH, still ranked above uncredentialed reflection (70): strictly
+			// more evidence than that finding holds.
+			severity, rank = models.SeverityHigh, 75
+			exposure = "credentialed cross-origin read, but a source of truth declares this operation public, so the readable response is not authenticated data"
+		}
 		candidates = append(candidates, originCandidate{
-			rank: 90,
+			rank: rank,
 			finding: ev.Evidence{
 				RuleID:            "cors/reflects-origin-with-credentials",
 				Title:             "CORS reflects arbitrary origin with credentials",
-				Severity:          models.SeverityCritical,
+				Severity:          severity,
 				Source:            models.SourceBlackbox,
 				Category:          "cors",
 				Endpoint:          epLabel,
-				Evidence:          fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s with Access-Control-Allow-Credentials: true", reflectedEvid),
+				Evidence:          fmt.Sprintf("Access-Control-Allow-Origin reflects attacker origin: %s with Access-Control-Allow-Credentials: true — %s", reflectedEvid, exposure),
 				Fix:               "Validate Origin against an explicit allowlist. Do not reflect the Origin header.",
 				References:        []string{"CWE-942"},
 				Confidence:        models.ConfidenceHigh,
 				DirectObservation: true,
+				AuthExpectation:   endpoint.AuthExpectation,
 			},
 		})
 	}

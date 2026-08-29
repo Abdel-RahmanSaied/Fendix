@@ -31,11 +31,124 @@ func TestCheckCORS_WildcardWithCredentials(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for wildcard+credentials, got %d", len(findings))
 	}
-	if findings[0].Severity != models.SeverityCritical {
-		t.Errorf("expected CRITICAL severity, got %s", findings[0].Severity)
+	// Configuration-only observation, NOT a demonstrated exploit. The Fetch
+	// standard forbids ACAO:* under credentials mode `include`, so browsers
+	// reject the pair and no authenticated cross-origin read happens. MEDIUM
+	// keeps it below --fail-on HIGH, i.e. non-blocking.
+	if findings[0].Severity != models.SeverityMedium {
+		t.Errorf("expected MEDIUM severity (invalid config, exploitation not demonstrated), got %s", findings[0].Severity)
 	}
-	if findings[0].Title != "CORS wildcard origin with credentials allowed" {
+	if findings[0].Title != "CORS wildcard origin combined with credentials (invalid configuration)" {
 		t.Errorf("unexpected title: %s", findings[0].Title)
+	}
+	// The wording must say exploitation was not demonstrated, so a reader
+	// cannot mistake the pair for a proven credentialed read.
+	if !strings.Contains(findings[0].Evidence, "NOT demonstrated") {
+		t.Errorf("evidence must state exploitation was not demonstrated, got: %s", findings[0].Evidence)
+	}
+}
+
+// A configuration-only wildcard+credentials observation must never outrank a
+// DEMONSTRATED credentialed reflection. Both signals fire here (wildcard+creds
+// on the preflight, reflection+creds on the simple request); the exploitable
+// one has to win, or the de-escalation above would have bought quiet at the
+// cost of hiding the finding that matters.
+func TestCORS_WildcardCredsNeverMasksDemonstratedReflection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.WriteHeader(200)
+			return
+		}
+		origin := r.Header.Get("Origin")
+		if origin != "" && origin != "null" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{Method: "GET", Path: "/api/users", FullURL: server.URL + "/api/users"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 origin finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Title != "CORS reflects arbitrary origin with credentials" {
+		t.Fatalf("demonstrated reflection was masked by the config-only wildcard finding: %s", findings[0].Title)
+	}
+	if findings[0].Severity != models.SeverityCritical {
+		t.Errorf("expected CRITICAL for demonstrated credentialed reflection, got %s", findings[0].Severity)
+	}
+}
+
+// Fixture 5 — reflection on an endpoint a source of truth DECLARES public.
+// The reflection is still real and still reported; what changes is the impact
+// claim, because the readable response is not authenticated data. CRITICAL
+// there would be asserting account takeover against a public body.
+func TestCORS_ReflectedCredsOnDeclaredPublicEndpointIsNotCritical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && origin != "null" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	ep := Endpoint{
+		Method:          "GET",
+		Path:            "/api/status",
+		FullURL:         server.URL + "/api/status",
+		AuthExpectation: models.AuthExpectationPublic,
+	}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 origin finding, got %d: %+v", len(findings), findings)
+	}
+	// Preserved, not deleted: still reported, still reflection, just not
+	// account-takeover grade.
+	if findings[0].RuleID != "cors/reflects-origin-with-credentials" {
+		t.Fatalf("the reflection finding must be preserved, got rule %s", findings[0].RuleID)
+	}
+	if findings[0].Severity != models.SeverityHigh {
+		t.Errorf("expected HIGH on a declared-public endpoint, got %s", findings[0].Severity)
+	}
+	if findings[0].AuthExpectation != models.AuthExpectationPublic {
+		t.Errorf("the declaration that drove the de-escalation must be serialized, got %q", findings[0].AuthExpectation)
+	}
+}
+
+// The asymmetry that keeps the de-escalation honest: absence of a declaration
+// is NOT evidence that a response is harmless. An endpoint discovered by
+// crawling carries AuthExpectationUnknown and must keep the full severity.
+func TestCORS_UnknownAuthExpectationStaysCritical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && origin != "null" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	// No AuthExpectation set — exactly what crawl/brute-force discovery leaves.
+	ep := Endpoint{Method: "GET", Path: "/api/data", FullURL: server.URL + "/api/data"}
+	cfg := &models.ScanConfig{Timeout: 10, AllowPrivate: true}
+
+	findings := CheckCORS(context.Background(), cfg, ep)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 origin finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != models.SeverityCritical {
+		t.Errorf("unknown auth expectation must not be read as public; expected CRITICAL, got %s", findings[0].Severity)
 	}
 }
 

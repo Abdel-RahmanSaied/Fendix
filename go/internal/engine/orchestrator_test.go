@@ -28,8 +28,20 @@ func newVulnerableServer() *httptest.Server {
 	})
 
 	mux.HandleFunc("/api/v1/config", func(w http.ResponseWriter, r *http.Request) {
-		// Wildcard CORS with credentials
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Origin-REFLECTING CORS with credentials — the exploitable shape, and
+		// this fixture's only CRITICAL. It used to serve `ACAO: *` with
+		// credentials, which reads as worse but is inert: the Fetch standard
+		// forbids the wildcard under credentials mode `include`, so browsers
+		// reject it and no cross-origin read occurs. That pair is now graded
+		// MEDIUM as a configuration-only observation, which left this fixture
+		// with nothing CRITICAL in it and silently stopped
+		// TestOrchestrator_FailOnThreshold from exercising the gate it names.
+		// Reflection is the shape that genuinely warrants CRITICAL.
+		if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"api_key":"sk-live-1234567890abcdef","debug":true}`)
@@ -242,7 +254,7 @@ paths:
 	orch := NewOrchestrator(cfg, "dev")
 	exitCode := orch.Run(context.Background())
 	if exitCode != 1 {
-		t.Fatalf("expected exit code 1 for --fail-on CRITICAL (password in response), got %d", exitCode)
+		t.Fatalf("expected exit code 1 for --fail-on CRITICAL (credentialed origin reflection on /api/v1/config), got %d", exitCode)
 	}
 }
 
