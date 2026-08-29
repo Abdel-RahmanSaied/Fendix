@@ -83,3 +83,61 @@ func responseContextFor(status int, path string) string {
 	}
 	return ""
 }
+
+// ── document-rendering classification ───────────────────────────────────────
+//
+// A second, orthogonal axis to the B4 contexts above. Those grade how much to
+// TRUST an observation; this one grades whether the observation describes a
+// control that could have applied at all.
+//
+// Content-Security-Policy, X-Frame-Options, Cross-Origin-Opener-Policy,
+// Cross-Origin-Embedder-Policy and Permissions-Policy are instructions to a
+// browser that is RENDERING A DOCUMENT. A JSON payload is parsed by a fetch
+// caller, never rendered: it has no DOM to inject into, no frame to be nested
+// in, no browsing-context group to isolate, and no feature-permission surface.
+// Reporting those headers as missing on an API response describes a control
+// that had nothing to control.
+//
+// Transport and sniffing headers are NOT part of this set and are deliberately
+// unaffected: Strict-Transport-Security governs the connection, and
+// X-Content-Type-Options: nosniff genuinely matters for a JSON response — it is
+// what stops a browser MIME-sniffing that body into something executable.
+
+// documentContentTypeRe matches media types a browser renders as a document.
+// XHTML and SVG are included: both are parsed into a DOM and can execute
+// script, which is exactly what CSP and frame-ancestors constrain.
+var documentContentTypeRe = regexp.MustCompile(`(?i)^(?:text/html|application/xhtml\+xml|image/svg\+xml)\b`)
+
+// apiContentTypeRe matches media types that are parsed as DATA. Deliberately a
+// closed list of shapes rather than "anything not a document": that inversion
+// would classify an unknown or novel media type as an API response and silently
+// de-escalate a real finding, which is the reading this file exists to avoid.
+//
+// The `+json`/`+xml` suffix forms cover the structured-syntax families
+// (application/problem+json, application/vnd.api+json, application/hal+json …)
+// that RFC 6839 defines, so a vendor media type does not fall through to
+// "unknown" merely for being vendor-specific.
+var apiContentTypeRe = regexp.MustCompile(`(?i)^(?:application/(?:json|xml|[\w.+-]*\+json|[\w.+-]*\+xml)|text/csv)\b`)
+
+// classifyDocumentRendering reports whether a response is browser-rendered.
+//
+// THREE-STATE ON PURPOSE, and the third state is the point. `known` is false
+// when the Content-Type is absent, empty, or simply not one this function
+// recognises — and in that case the caller must change NOTHING. Collapsing
+// unknown into "not a document" would de-escalate every response whose media
+// type the engine has not enumerated, turning a gap in Fendix's knowledge into
+// a silent claim about the target. That is the same "absence of evidence read
+// as evidence" failure the decision layer refuses everywhere else.
+func classifyDocumentRendering(contentType string) (isDocument bool, known bool) {
+	if contentType == "" {
+		return false, false
+	}
+	switch {
+	case documentContentTypeRe.MatchString(contentType):
+		return true, true
+	case apiContentTypeRe.MatchString(contentType):
+		return false, true
+	default:
+		return false, false
+	}
+}

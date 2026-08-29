@@ -20,6 +20,15 @@ type headerCheck struct {
 	Severity models.Severity
 	Category string
 	Check    func(value string) *ev.Evidence
+	// DocumentOnly marks a header that only constrains a browser RENDERING a
+	// document. On a response the browser parses as data — a JSON API payload —
+	// the control has nothing to act on, so the finding is de-escalated to INFO
+	// rather than reported at a weight that implies a missing protection.
+	//
+	// See classifyDocumentRendering: the de-escalation applies only when the
+	// response type is POSITIVELY known not to be a document. An unrecognised
+	// or absent Content-Type leaves the finding exactly as it was.
+	DocumentOnly bool
 }
 
 // DIRECT OBSERVATION. Every check in this file that asserts
@@ -76,9 +85,10 @@ func securityHeaders(endpoint string) []headerCheck {
 			},
 		},
 		{
-			Name:     "X-Frame-Options",
-			Severity: models.SeverityLow,
-			Category: "headers",
+			Name:         "X-Frame-Options",
+			Severity:     models.SeverityLow,
+			Category:     "headers",
+			DocumentOnly: true,
 			Check: func(value string) *ev.Evidence {
 				v := strings.ToUpper(value)
 				if v != "DENY" && v != "SAMEORIGIN" {
@@ -99,9 +109,10 @@ func securityHeaders(endpoint string) []headerCheck {
 			},
 		},
 		{
-			Name:     "Content-Security-Policy",
-			Severity: models.SeverityMedium,
-			Category: "headers",
+			Name:         "Content-Security-Policy",
+			Severity:     models.SeverityMedium,
+			Category:     "headers",
+			DocumentOnly: true,
 			Check: func(value string) *ev.Evidence {
 				return checkCSP(endpoint, value)
 			},
@@ -182,9 +193,10 @@ func securityHeaders(endpoint string) []headerCheck {
 			},
 		},
 		{
-			Name:     "Permissions-Policy",
-			Severity: models.SeverityInfo,
-			Category: "headers",
+			Name:         "Permissions-Policy",
+			Severity:     models.SeverityInfo,
+			Category:     "headers",
+			DocumentOnly: true,
 			Check: func(value string) *ev.Evidence {
 				if value == "" {
 					return &ev.Evidence{
@@ -203,23 +215,28 @@ func securityHeaders(endpoint string) []headerCheck {
 				return nil
 			},
 		},
+		// COOP and COEP isolate a BROWSING CONTEXT — they have meaning only
+		// where a document is rendered. CORP is deliberately NOT document-only:
+		// it governs whether a resource may be embedded cross-origin at all,
+		// which is exactly the protection a JSON endpoint wants.
 		missingHeaderInfo(endpoint, "Cross-Origin-Opener-Policy",
-			"Add header: Cross-Origin-Opener-Policy: same-origin"),
+			"Add header: Cross-Origin-Opener-Policy: same-origin", true),
 		missingHeaderInfo(endpoint, "Cross-Origin-Embedder-Policy",
-			"Add header: Cross-Origin-Embedder-Policy: require-corp"),
+			"Add header: Cross-Origin-Embedder-Policy: require-corp", true),
 		missingHeaderInfo(endpoint, "Cross-Origin-Resource-Policy",
-			"Add header: Cross-Origin-Resource-Policy: same-origin"),
+			"Add header: Cross-Origin-Resource-Policy: same-origin", false),
 	}
 }
 
 // missingHeaderInfo builds a headerCheck that emits an Info finding when
 // the named header is entirely absent. Used for the Cross-Origin-*
 // isolation headers (4.10).
-func missingHeaderInfo(endpoint, name, fix string) headerCheck {
+func missingHeaderInfo(endpoint, name, fix string, documentOnly bool) headerCheck {
 	return headerCheck{
-		Name:     name,
-		Severity: models.SeverityInfo,
-		Category: "headers",
+		Name:         name,
+		Severity:     models.SeverityInfo,
+		Category:     "headers",
+		DocumentOnly: documentOnly,
 		Check: func(value string) *ev.Evidence {
 			if value == "" {
 				return &ev.Evidence{
@@ -481,10 +498,34 @@ func (headersCheck) Run(ctx context.Context, cc *CheckContext, endpoint Endpoint
 	epLabel := fmt.Sprintf("%s %s", endpoint.Method, endpoint.Path)
 	checks := securityHeaders(epLabel)
 
+	// Resolved once for the response, not per check: every DocumentOnly header
+	// is answering the same question about the same body.
+	isDocument, renderingKnown := classifyDocumentRendering(resp.Header.Get("Content-Type"))
+
 	var findings []ev.Evidence
 	for _, hc := range checks {
 		value := resp.Header.Get(hc.Name)
 		if finding := hc.Check(value); finding != nil {
+			// A browser-document header on a response the browser parses as
+			// DATA. The header really is absent — that observation is true and
+			// is kept, at the same rule id and endpoint, with its evidence and
+			// fix intact — but a JSON payload has no DOM to inject into, no
+			// frame to be nested in and no browsing context to isolate, so
+			// reporting it at a weight that implies a missing protection
+			// describes a control that had nothing to control.
+			//
+			// Gated on renderingKnown, so this fires ONLY when the media type
+			// positively says "data". An absent or unrecognised Content-Type
+			// leaves the finding exactly as it was: not knowing what a response
+			// is must never be spent as a reason to care less about it.
+			if hc.DocumentOnly && renderingKnown && !isDocument {
+				finding.Severity = models.SeverityInfo
+				finding.Evidence += fmt.Sprintf(
+					" Context: this response is %s, which a browser parses as data rather than "+
+						"rendering as a document, so this header would not have applied to it. "+
+						"Reported for completeness; it is not a missing protection for this endpoint.",
+					resp.Header.Get("Content-Type"))
+			}
 			// B4: tag lower-confidence context so the scorer de-escalates —
 			// evidence preserved, not suppressed. Two cases apply here:
 			//   "4xx"          an auth-gated / client-error response (the
