@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-08-30
+
+A reporting-integrity release. Every decision Fendix already made is now
+explainable from the exported report alone, in both formats. No scoring rule,
+threshold or gate changed: **no fingerprint changes, and no finding changes
+status or severity** — verified by scanning one target with 3.1.0 and 3.2.0
+and diffing every finding under both policies.
+
+### Added
+
+- **`confidence_breakdown` — the score, in machine-readable form.** Every
+  scored finding now carries one entry per scoring rule that fired:
+  `{delta, code, text}`, index-aligned with `confidence_reasons`, with the
+  deltas summing exactly to `confidence_score`.
+
+  `confidence_reasons` has always explained the score in prose, which meant the
+  only way to act on it was to parse English. `code` is a stable snake_case
+  identity from a single namespace, so a policy can now match on
+  `deterministic_detection` or `component_not_imported` directly. The wording
+  in `text` stays free to change; the codes do not.
+
+  The namespace covers the decision layer's enforcement lines too, so the
+  reasons a finding was *held back* — `held_uncorroborated`,
+  `held_confidence_low`, `not_applicable_component_absent`,
+  `deescalated_test_fixture_corroborated` — are matchable on the same footing
+  as the reasons it scored.
+
+- **SARIF publishes `confidence_reasons` and `confidence_breakdown`.** SARIF
+  carried the final score and the decision block but not the breakdown behind
+  them, so a SARIF-only consumer could see *that* a finding scored 75 and never
+  *which* rules produced it. Both forms now travel, and the two report formats
+  describe the same score identically.
+
+### Fixed
+
+- **`policy_override` no longer marks findings that do not block.** The flag
+  answers one question — which BLOCKs exist only because
+  `--enforce-confidence=false` switched the evidence requirement off — and it
+  was being set before the applicability gate and the test-fixture
+  de-escalation had run. Either can move a finding off BLOCK, and neither
+  re-evaluated the flag, so a relaxed run exported WARN and INFO findings
+  claiming to be relaxed-policy blocks.
+
+  Anyone filtering `policy_override` to audit which blocks were operator-forced
+  was getting back findings that block nothing. The flag is now settled after
+  every arm has run; it is only ever withdrawn, never set, so a genuine relaxed
+  BLOCK is unaffected. Status, severity, score and fingerprint are untouched.
+
+  The SARIF exporter also refuses to emit `policy_override` on a non-BLOCK
+  result, which covers reports archived before this fix and re-rendered later.
+
+### Changed
+
+- **Native JSON and SARIF are contract-tested against each other.** Status,
+  confidence score and band, intrinsic severity, decision policy, override
+  state, decision reason, both corroboration classes and the breakdown codes
+  are asserted equal across the two formats for every decision shape —
+  deterministic dependency BLOCK, reachable taint BLOCK, sink-only WARN,
+  fixture credential, provider credential in test code, absent dependency
+  component, unresolved import, and relaxed policy. The formats may differ
+  structurally; they can no longer differ semantically.
+
 ## [3.1.0] - 2026-08-29
 
 A grading release. Six checks were asserting an impact their evidence never
