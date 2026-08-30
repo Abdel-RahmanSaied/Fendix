@@ -225,6 +225,16 @@ type SecretRef struct {
 	File       string `json:"file,omitempty"`
 }
 
+// ConfidenceReason is one scoring rule's contribution to a confidence score.
+// confidence.Reason is an alias of this type; it is declared HERE because it
+// has to sit on Finding, and the confidence package imports models — so the
+// dependency can only point one way.
+type ConfidenceReason struct {
+	Delta int    `json:"delta"`
+	Code  string `json:"code"`
+	Text  string `json:"text"`
+}
+
 // Finding represents a single security finding produced by either engine.
 // This struct is the shared data contract between Go and Python.
 //
@@ -337,6 +347,16 @@ type Finding struct {
 	// ConfidenceReasons is the plain-text, per-rule breakdown of the score
 	// (the "no black boxes" contract).
 	ConfidenceReasons []string `json:"confidence_reasons,omitempty"`
+
+	// ConfidenceBreakdown is ConfidenceReasons in machine-readable form,
+	// index-for-index aligned with it: one entry per scoring rule that fired,
+	// carrying a stable Code and the signed Delta it contributed.
+	//
+	// It exists so a consumer — the SARIF export above all — can key off a
+	// rule identity instead of parsing a presentation string whose wording is
+	// free to change. The deltas sum to ConfidenceScore, so the score is
+	// reconstructable without a parser.
+	ConfidenceBreakdown []ConfidenceReason `json:"confidence_breakdown,omitempty"`
 	// DecisionReason is the plain-text justification for Status, verbatim from
 	// decision.Decision.Reason.
 	DecisionReason string `json:"decision_reason,omitempty"`

@@ -108,6 +108,17 @@
         "corroborated": { "type": "integer", "minimum": 0 }
       }
     },
+    "ConfidenceReason": {
+      "type": "object",
+      "description": "One scoring rule's contribution to a confidence score. `code` is the stable machine-readable identity a consumer matches on; `text` is human wording and is free to be reworded. The `delta` values of a finding's confidence_breakdown sum to its confidence_score.",
+      "additionalProperties": false,
+      "required": ["delta", "code", "text"],
+      "properties": {
+        "delta": { "type": "integer" },
+        "code":  { "type": "string" },
+        "text":  { "type": "string" }
+      }
+    },
     "DependencyRef": {
       "type": "object",
       "additionalProperties": false,
@@ -164,6 +175,7 @@
         "confidence_score":   { "type": "integer", "minimum": 0, "maximum": 100 },
         "confidence_band":    { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
         "confidence_reasons": { "type": "array", "items": { "type": "string" } },
+        "confidence_breakdown": { "type": "array", "items": { "$ref": "#/definitions/ConfidenceReason" } },
         "rule_id":            { "type": "string" },
         "dependency":         { "$ref": "#/definitions/DependencyRef" },
         "secret":             { "$ref": "#/definitions/SecretRef" },

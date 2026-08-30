@@ -1223,6 +1223,11 @@ func stampDecisions(findings []models.Finding, prov evidence.ProvenanceIndex, fa
 		findings[i].ConfidenceScore = d.Score.Value
 		findings[i].ConfidenceBand = string(d.Score.Band)
 		findings[i].ConfidenceReasons = d.Score.Reasons
+		// The same breakdown in machine-readable form. Stamped from the SAME
+		// Result, never re-derived by parsing the strings — parsing the
+		// presentation form is exactly the fragility the structured one exists
+		// to remove.
+		findings[i].ConfidenceBreakdown = d.Score.Details
 		// The decision justification. Stamped from the Decision the gate
 		// actually produced — never re-derived — so the exported explanation
 		// cannot disagree with the verdict it explains.

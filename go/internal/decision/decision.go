@@ -233,30 +233,34 @@ func applyConfidenceGate(d *Decision, ev evidence.Evidence) {
 	c := d.Corroboration
 	sigs := c.Independent
 
-	hold := func(reason string) {
+	hold := func(code, reason string) {
 		d.Status = StatusWarn
 		d.Reason = reason
-		d.Score.Reasons = appendReason(d.Score.Reasons, "+0 held at WARN: "+reason)
+		appendDecisionReason(&d.Score, code, "+0 held at WARN: "+reason)
 	}
 
 	switch {
 	case ev.UnconfirmedByLiveScan && len(sigs) == 0:
-		hold("severity at or above the --fail-on threshold but the finding is unconfirmed " +
-			"by live scan and uncorroborated — needs independent corroboration to block")
+		hold(confidence.CodeHeldUnconfirmedByLiveScan,
+			"severity at or above the --fail-on threshold but the finding is unconfirmed "+
+				"by live scan and uncorroborated — needs independent corroboration to block")
 	case d.Score.Band == models.ConfidenceLow:
-		hold("severity above threshold but confidence LOW — needs corroboration to block")
+		hold(confidence.CodeHeldConfidenceLow,
+			"severity above threshold but confidence LOW — needs corroboration to block")
 	case !c.Any():
 		// RC-1's core arm. Reaching a band without ANY signal means the score
 		// came from source/tier deltas alone — i.e. from what kind of scanner
 		// ran, not from anything it established. A scanner-assigned severity
 		// constant must not gate a build on its own.
-		hold("severity above threshold but nothing corroborates the claim — " +
-			"needs corroboration to block")
+		hold(confidence.CodeHeldUncorroborated,
+			"severity above threshold but nothing corroborates the claim — "+
+				"needs corroboration to block")
 	case d.Score.Band == models.ConfidenceMedium && len(sigs) == 0:
 		// A MEDIUM band supported only by self-evident signals: the observation
 		// was clean, but nothing independent of it agrees. Held at WARN.
-		hold("severity above threshold but confidence MEDIUM with no corroborating signal — " +
-			"needs corroboration to block")
+		hold(confidence.CodeHeldMediumNoIndependent,
+			"severity above threshold but confidence MEDIUM with no corroborating signal — "+
+				"needs corroboration to block")
 	default:
 		d.Status = StatusBlock
 		d.Reason = "severity at or above the --fail-on threshold; corroborated by: " +
@@ -433,16 +437,29 @@ func applyApplicabilityGate(d *Decision, ev evidence.Evidence, opts Options) {
 		"(override with --block-on-inapplicable)"
 	d.Status = StatusWarn
 	d.Reason = "severity at or above the --fail-on threshold, but " + reason
-	d.Score.Reasons = appendReason(d.Score.Reasons, "+0 held at WARN: "+reason)
+	appendDecisionReason(&d.Score, confidence.CodeNotApplicableComponentAbsent, "+0 held at WARN: "+reason)
 }
 
-// appendReason appends one explainability line to a fresh copy of the reason
-// slice. Copying is not optional: confidence.Score builds Reasons once per
-// call, and appending in place could write into a backing array another
-// Decision shares, making the published output depend on evaluation order
+// appendDecisionReason appends ONE enforcement line to the score breakdown, in
+// both published forms at once — the rendered text and its machine-readable
+// twin. Doing both from a single call is what stops a future demotion from
+// landing in confidence_reasons but not in confidence_breakdown.
+//
+// `line` is the fully rendered text, INCLUDING its "+0 " prefix; the structured
+// Text is that line with the prefix stripped, so Reasons[i] always ends with
+// Details[i].Text and the alignment tests hold. Delta is 0 by construction: a
+// demotion is an ENFORCEMENT decision, not a re-scoring of the evidence, and
+// the published reasons must still sum to ConfidenceScore (Rule 8).
+//
+// Both slices are COPIED before appending. Copying is not optional:
+// confidence.Score builds them once per call, and appending in place could
+// write into a backing array another Decision shares, making the published
+// output depend on evaluation order
 // (TestDeescalationDoesNotAliasTheSharedReasonSlice guards this).
-func appendReason(reasons []string, line string) []string {
-	return append(append([]string(nil), reasons...), line)
+func appendDecisionReason(score *confidence.Result, code, line string) {
+	score.Reasons = append(append([]string(nil), score.Reasons...), line)
+	score.Details = append(append([]confidence.Reason(nil), score.Details...),
+		confidence.Reason{Code: code, Text: strings.TrimPrefix(line, "+0 ")})
 }
 
 // Options tunes the decision policy.
@@ -590,7 +607,7 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 			d.Reason = "de-escalated to WARN: finding is in test/fixture code with no corroborating " +
 				"signal beyond the pattern match (rule: test-fixture; evidence preserved; " +
 				"--fail-on threshold was met)"
-			d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureBlockReason)
+			appendDecisionReason(&d.Score, confidence.CodeDeescalatedTestFixtureThreshold, testFixtureBlockReason)
 		}
 	case StatusWarn:
 		if !d.aboveThreshold {
@@ -599,7 +616,7 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 			// Surface the de-escalation in the published breakdown too. Without
 			// this the report shows a finding silently demoted to INFO with
 			// nothing in confidence_reasons explaining why.
-			d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureReason)
+			appendDecisionReason(&d.Score, confidence.CodeDeescalatedTestFixture, testFixtureReason)
 		}
 	}
 
@@ -634,7 +651,7 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 		d.Reason = "de-escalated to INFO: credential is in test/fixture code AND its value " +
 			"matches the deterministic fixture heuristics — two independent signals agree " +
 			"it is not a live credential (rule: test-fixture-corroborated; evidence preserved)"
-		d.Score.Reasons = appendReason(d.Score.Reasons, testFixtureCorroboratedReason)
+		appendDecisionReason(&d.Score, confidence.CodeDeescalatedTestFixtureCorroborated, testFixtureCorroboratedReason)
 	}
 	return d
 }

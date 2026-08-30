@@ -11,6 +11,18 @@
       "category": "import/codeql",
       "confidence": "MEDIUM",
       "confidence_band": "MEDIUM",
+      "confidence_breakdown": [
+        {
+          "code": "base_detection",
+          "delta": 35,
+          "text": "base: a scanner produced this finding"
+        },
+        {
+          "code": "imported_evidence",
+          "delta": 10,
+          "text": "imported: an external scanner reported this finding (SARIF import)"
+        }
+      ],
       "confidence_reasons": [
         "+35 base: a scanner produced this finding",
         "+10 imported: an external scanner reported this finding (SARIF import)"
@@ -41,6 +53,23 @@
       "category": "injection",
       "confidence": "HIGH",
       "confidence_band": "HIGH",
+      "confidence_breakdown": [
+        {
+          "code": "base_detection",
+          "delta": 35,
+          "text": "base: a scanner produced this finding"
+        },
+        {
+          "code": "imported_evidence",
+          "delta": 10,
+          "text": "imported: an external scanner reported this finding (SARIF import)"
+        },
+        {
+          "code": "imported_high_precision",
+          "delta": 25,
+          "text": "the source tool declares high precision for this rule"
+        }
+      ],
       "confidence_reasons": [
         "+35 base: a scanner produced this finding",
         "+10 imported: an external scanner reported this finding (SARIF import)",

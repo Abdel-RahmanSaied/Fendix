@@ -98,7 +98,24 @@ type Result struct {
 	// Reasons is the plain-text breakdown — one line per rule that fired,
 	// in deterministic order. This is the "no black boxes" contract.
 	Reasons []string
+	// Details is the SAME breakdown in machine-readable form, index-for-index
+	// aligned with Reasons. It exists so a consumer — SARIF above all — can key
+	// off a stable Code and a signed Delta instead of parsing a presentation
+	// string whose wording is free to change.
+	//
+	// Reasons is NOT derived from Details and Details is NOT derived from
+	// Reasons: both are appended by the same rule at the same moment, which is
+	// what keeps them aligned. TestDetailsParallelReasons locks the alignment.
+	Details []Reason
 }
+
+// Reason is one scoring rule's contribution to a confidence score.
+//
+// Aliased to models.ConfidenceReason rather than declared here: the type has
+// to sit on models.Finding (the published report shape) and models cannot
+// import this package without a cycle. An ALIAS, not a defined type, so the
+// two names are the same type and no conversion is ever needed.
+type Reason = models.ConfidenceReason
 
 // Score computes the confidence Result for ev. Pure and deterministic.
 //
@@ -112,52 +129,59 @@ type Result struct {
 // TestScoringProvenanceSurvivesTheFindingProjection guards it.
 func Score(ev evidence.Evidence) Result {
 	score := base
-	reasons := []string{fmt.Sprintf("+%d base: a scanner produced this finding", base)}
+	const baseWhy = "base: a scanner produced this finding"
+	reasons := []string{fmt.Sprintf("+%d %s", base, baseWhy)}
+	details := []Reason{{Delta: base, Code: CodeBaseDetection, Text: baseWhy}}
 
-	add := func(delta int, why string) {
+	// add records ONE rule firing, in both forms, from a single call. Keeping
+	// the two appends in one place is the whole anti-drift mechanism: there is
+	// no way to add a scoring rule that lands in the text report but not in the
+	// structured one.
+	add := func(delta int, code, why string) {
 		score += delta
 		sign := "+"
 		if delta < 0 {
 			sign = "" // negative already carries its sign
 		}
 		reasons = append(reasons, fmt.Sprintf("%s%d %s", sign, delta, why))
+		details = append(details, Reason{Delta: delta, Code: code, Text: why})
 	}
 
 	hasStatic := ev.Source == models.SourceWhitebox || ev.Source == models.SourceCorrelated
 	hasRuntime := ev.Source == models.SourceBlackbox || ev.Source == models.SourceCorrelated
 	if hasStatic {
-		add(staticEvidence, "static (SAST) evidence present")
+		add(staticEvidence, CodeStaticEvidence, "static (SAST) evidence present")
 	}
 	if hasRuntime {
-		add(runtimeEvidence, "runtime (DAST) observation present")
+		add(runtimeEvidence, CodeRuntimeEvidence, "runtime (DAST) observation present")
 	}
 	if ev.Source == models.SourceCorrelated {
-		add(crossEngineAgree, "cross-engine agreement: DAST and SAST independently flagged this")
+		add(crossEngineAgree, CodeCrossEngineAgreement, "cross-engine agreement: DAST and SAST independently flagged this")
 	}
 	if ev.Source == models.SourceImported {
-		add(importedEvidence, "imported: an external scanner reported this finding (SARIF import)")
+		add(importedEvidence, CodeImportedEvidence, "imported: an external scanner reported this finding (SARIF import)")
 		// The tool's self-declared precision (mapped onto the Confidence
 		// enum by sarifimport) sets the standalone band. It is the tool's
 		// claim about its own rule — never a fendix verification signal, and
 		// never a corroborator for any OTHER finding.
 		switch ev.Confidence {
 		case models.ConfidenceHigh:
-			add(importedHighPrecision, "the source tool declares high precision for this rule")
+			add(importedHighPrecision, CodeImportedHighPrecision, "the source tool declares high precision for this rule")
 		case models.ConfidenceLow:
-			add(importedLowPrecision, "the source tool declares low precision for this rule")
+			add(importedLowPrecision, CodeImportedLowPrecision, "the source tool declares low precision for this rule")
 		}
 	}
 	if ev.RouteConfirmed {
-		add(routeConfirmed, "live request confirmed the vulnerable route")
+		add(routeConfirmed, CodeRouteConfirmed, "live request confirmed the vulnerable route")
 	}
 	if ev.Reachable {
-		add(reachableTaint, "AST proved a reachable source→sink taint path")
+		add(reachableTaint, CodeReachableTaintPath, "AST proved a reachable source→sink taint path")
 	}
 	if ev.ProvenPath {
-		add(provenPathBonus, "proven path: confirmed route AND reachable taint chain")
+		add(provenPathBonus, CodeProvenPath, "proven path: confirmed route AND reachable taint chain")
 	}
 	if ev.Payload != "" && ev.Response != "" {
-		add(payloadValidated, "active probe payload elicited a confirming response")
+		add(payloadValidated, CodePayloadValidated, "active probe payload elicited a confirming response")
 	}
 	// A deterministic read of a live response — a header present or absent, a
 	// cookie attribute present or absent, a literal CORS header value — is
@@ -175,16 +199,16 @@ func Score(ev evidence.Evidence) Result {
 	// and one carrying the B4 context penalty lands at 60 — still MEDIUM, which
 	// is precisely the de-escalation the 4xx / static-asset FP classes need.
 	if hasRuntime && ev.DirectObservation {
-		add(directObservation, "direct observation: the finding is a deterministic read of a live response")
+		add(directObservation, CodeDirectObservation, "direct observation: the finding is a deterministic read of a live response")
 	}
 	if HasDeterministicDetection(ev) {
-		add(deterministicDetn, "deterministic detection: a high-confidence pattern match in production (non-test) code")
+		add(deterministicDetn, CodeDeterministicDetection, "deterministic detection: a high-confidence pattern match in production (non-test) code")
 	}
 	switch ev.SourceTier {
 	case models.TierTreeSitter:
-		add(tierTreeSitterBump, "high-trust analyzer tier (tree-sitter taint)")
+		add(tierTreeSitterBump, CodeTierTreeSitter, "high-trust analyzer tier (tree-sitter taint)")
 	case models.TierSemgrepShim:
-		add(tierSemgrepPenalty, "lower-trust analyzer tier (semgrep regex breadth)")
+		add(tierSemgrepPenalty, CodeTierSemgrep, "lower-trust analyzer tier (semgrep regex breadth)")
 	}
 
 	// Strong cross-tool corroboration (engine.CorrelateCrossTool): an
@@ -198,7 +222,7 @@ func Score(ev evidence.Evidence) Result {
 			why = "independent cross-tool corroboration: " + strings.Join(ev.CorroboratingTools, ", ") +
 				" reported the same weakness at the same location"
 		}
-		add(crossToolCorroborated, why)
+		add(crossToolCorroborated, CodeCrossToolCorroborated, why)
 	}
 
 	// B4: de-escalate (not suppress) DAST findings that fired on a 4xx
@@ -206,9 +230,9 @@ func Score(ev evidence.Evidence) Result {
 	// is preserved (Rule 3); only the confidence score drops.
 	switch ev.ResponseContext {
 	case "4xx":
-		add(httpContextPenalty, "finding fired on a 4xx (auth-gated/client-error) response")
+		add(httpContextPenalty, CodeHTTPContext4xx, "finding fired on a 4xx (auth-gated/client-error) response")
 	case "static-asset":
-		add(httpContextPenalty, "finding fired on a static-asset endpoint, not an API route")
+		add(httpContextPenalty, CodeHTTPContextStaticAsset, "finding fired on a static-asset endpoint, not an API route")
 	}
 
 	// De-escalate (never suppress) a credential finding whose value is shaped
@@ -217,7 +241,7 @@ func Score(ev evidence.Evidence) Result {
 	// heuristic at scoring time (Rule 8) and the finding is still reported in
 	// full with its evidence intact (Rule 3).
 	if ev.Placeholder {
-		add(placeholderPenalty, "credential value matches deterministic placeholder heuristics (fixture-shaped)")
+		add(placeholderPenalty, CodeFixtureShapedValue, "credential value matches deterministic placeholder heuristics (fixture-shaped)")
 	}
 
 	// De-escalate (never suppress) a dependency finding whose advisory is
@@ -228,22 +252,29 @@ func Score(ev evidence.Evidence) Result {
 	// smaller-surface vulnerability from gating a build at the same weight as
 	// one on a code path the project actually uses.
 	if ev.ComponentNotImported {
-		add(componentNotImported, "the advisory's affected component is not imported by the scanned code")
+		add(componentNotImported, CodeComponentNotImported, "the advisory's affected component is not imported by the scanned code")
 	}
 
 	// Evidence-chain tracing: a correlated score is only as trustworthy as
 	// the inputs that merged into it, so surface them.
 	if trace := lineageTrace(ev); trace != "" {
+		// Delta 0: lineage explains where the score came from, it does not
+		// move it. Its rendered line carries no signed prefix, which is why
+		// the alignment test suffix-matches rather than comparing equality.
 		reasons = append(reasons, trace)
+		details = append(details, Reason{Code: CodeEvidenceLineage, Text: trace})
 	}
 
 	// Keep the "no black boxes" contract exact: when corroboration pushes the
 	// raw sum over the ceiling, record the cap so the reasons sum to Value.
 	if score > 100 {
-		reasons = append(reasons, fmt.Sprintf("-%d capped at 100 (corroboration ceiling)", score-100))
+		const capWhy = "capped at 100 (corroboration ceiling)"
+		over := score - 100
+		reasons = append(reasons, fmt.Sprintf("-%d %s", over, capWhy))
+		details = append(details, Reason{Delta: -over, Code: CodeCorroborationCeiling, Text: capWhy})
 	}
 	score = clamp(score, 0, 100)
-	return Result{Value: score, Band: bandFor(score), Reasons: reasons}
+	return Result{Value: score, Band: bandFor(score), Reasons: reasons, Details: details}
 }
 
 // HasDeterministicDetection reports whether ev earns the deterministicDetn

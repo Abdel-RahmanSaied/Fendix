@@ -148,6 +148,20 @@ type SARIFResultProperties struct {
 	Status          string `json:"status,omitempty"`
 	ConfidenceScore int    `json:"confidence_score,omitempty"`
 	ConfidenceBand  string `json:"confidence_band,omitempty"`
+	// ConfidenceReasons / ConfidenceBreakdown are the score's justification,
+	// in the two forms the native JSON report publishes. Both travel, because
+	// parity means a SARIF reader sees what a native-JSON reader sees.
+	//
+	// ConfidenceBreakdown is the one a CONSUMER should key off: stable Code,
+	// signed Delta, and the deltas reconstruct ConfidenceScore with no parser.
+	// ConfidenceReasons is the human wording, carried for readers, and no
+	// automated decision should depend on parsing it.
+	//
+	// Both omitempty: a finding from a report produced before the decision
+	// pass has neither, and must re-render byte-identically to how it always
+	// has.
+	ConfidenceReasons   []string                  `json:"confidence_reasons,omitempty"`
+	ConfidenceBreakdown []models.ConfidenceReason `json:"confidence_breakdown,omitempty"`
 	// IntrinsicSeverity / EffectiveRisk publish the two severity concepts that
 	// used to be indistinguishable in the report. IntrinsicSeverity is the
 	// finding's own severity — how bad this kind of issue is when real, the
@@ -420,15 +434,17 @@ func sarifResultProperties(f models.Finding) *SARIFResultProperties {
 		return nil
 	}
 	p := &SARIFResultProperties{
-		SourceTier:         string(f.SourceTier),
-		Reachable:          f.Reachable,
-		Status:             f.Status,
-		ConfidenceScore:    f.ConfidenceScore,
-		ConfidenceBand:     f.ConfidenceBand,
-		IntrinsicSeverity:  string(f.Severity),
-		EffectiveRisk:      effectiveRiskBand(f),
-		Evidence:           evidence,
-		CorroboratingTools: f.CorroboratingTools,
+		SourceTier:          string(f.SourceTier),
+		Reachable:           f.Reachable,
+		Status:              f.Status,
+		ConfidenceScore:     f.ConfidenceScore,
+		ConfidenceBand:      f.ConfidenceBand,
+		ConfidenceReasons:   neutralizeAll(f.ConfidenceReasons),
+		ConfidenceBreakdown: neutralizeBreakdown(f.ConfidenceBreakdown),
+		IntrinsicSeverity:   string(f.Severity),
+		EffectiveRisk:       effectiveRiskBand(f),
+		Evidence:            evidence,
+		CorroboratingTools:  f.CorroboratingTools,
 	}
 	if f.Route != nil {
 		p.RouteMethod = f.Route.Method
@@ -1190,6 +1206,22 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 // untrusted string slice. Endpoint names reach the report from crawled targets
 // and spec files, so they are neutralized wherever they are emitted — the
 // property copy is no different from the logicalLocation copy.
+// neutralizeBreakdown sanitizes the free TEXT of each breakdown entry and
+// leaves Code and Delta untouched. Codes are a closed set this engine emits
+// and deltas are integers, so neither can carry the control/bidi characters
+// NeutralizeText exists to strip — and a code must survive byte-exact or the
+// consumer matching on it silently stops matching.
+func neutralizeBreakdown(in []models.ConfidenceReason) []models.ConfidenceReason {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]models.ConfidenceReason, len(in))
+	for i, r := range in {
+		out[i] = models.ConfidenceReason{Delta: r.Delta, Code: r.Code, Text: NeutralizeText(r.Text)}
+	}
+	return out
+}
+
 func neutralizeAll(in []string) []string {
 	out := make([]string, len(in))
 	for i, s := range in {

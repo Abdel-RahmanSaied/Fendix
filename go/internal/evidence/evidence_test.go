@@ -40,11 +40,15 @@ func fullyPopulatedFinding() models.Finding {
 		ConfidenceScore:   100,
 		ConfidenceBand:    "HIGH",
 		ConfidenceReasons: []string{"+35 base", "+25 cross-engine agreement"},
-		RuleID:            "python.sqli.cursor-execute",
-		Dependency:        &models.DependencyRef{Ecosystem: "PyPI", Package: "requests", Version: "2.28.0", Manifest: "requirements.txt"},
-		Secret:            &models.SecretRef{Identifier: "AWS_KEY", File: "config/settings.py"},
-		Sink:              "cursor.execute(q)",
-		Symbol:            "list_users",
+		ConfidenceBreakdown: []models.ConfidenceReason{
+			{Delta: 35, Code: "base_detection", Text: "base"},
+			{Delta: 25, Code: "cross_engine_agreement", Text: "cross-engine agreement"},
+		},
+		RuleID:     "python.sqli.cursor-execute",
+		Dependency: &models.DependencyRef{Ecosystem: "PyPI", Package: "requests", Version: "2.28.0", Manifest: "requirements.txt"},
+		Secret:     &models.SecretRef{Identifier: "AWS_KEY", File: "config/settings.py"},
+		Sink:       "cursor.execute(q)",
+		Symbol:     "list_users",
 	}
 }
 
