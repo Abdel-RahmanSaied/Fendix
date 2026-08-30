@@ -225,6 +225,12 @@ type SARIFDecision struct {
 	Evidence map[string]interface{} `json:"evidence,omitempty"`
 }
 
+// decisionStatusBlock is decision.StatusBlock's value, restated here rather
+// than imported: reporters must not depend on the decision package (it would
+// invite exactly the logic duplication the decision block exists to avoid).
+// The two are locked together by TestSARIFBlockLiteralMatchesDecisionPackage.
+const decisionStatusBlock = "BLOCK"
+
 // decisionProperties renders the machine-readable justification for a finding's
 // verdict, or nil when no decision pass ran.
 //
@@ -270,10 +276,26 @@ func decisionProperties(f models.Finding) *SARIFDecision {
 	}
 
 	out := &SARIFDecision{
-		Status:             f.Status,
-		Reason:             NeutralizeText(f.DecisionReason),
-		Policy:             NeutralizeText(f.DecisionPolicy),
-		PolicyOverride:     f.PolicyOverride,
+		Status: f.Status,
+		Reason: NeutralizeText(f.DecisionReason),
+		Policy: NeutralizeText(f.DecisionPolicy),
+		// STRUCTURAL INVARIANT, not a second decision.
+		//
+		// policy_override means "this BLOCK exists only because the evidence
+		// requirement was switched off". On a non-BLOCK there is no such
+		// BLOCK, so the claim is unpublishable regardless of how the field got
+		// set. This never asks whether the finding SHOULD be an override —
+		// that is decision.decide's call and stays there — it only refuses to
+		// emit a self-contradictory pair.
+		//
+		// decision.settleOverride stops the pair being produced in the first
+		// place. This guard covers the input that layer cannot reach: an
+		// ARCHIVED report written before that fix, re-rendered later. Those
+		// documents exist, so the reporter has to be safe against them.
+		//
+		// The `policy` label is deliberately NOT cleared: "this came from a
+		// relaxed run" stays true of a demoted finding.
+		PolicyOverride:     f.PolicyOverride && f.Status == string(decisionStatusBlock),
 		IndependentSignals: neutralizeTags(f.IndependentSignals),
 		SelfEvidentSignals: neutralizeTags(f.SelfEvidentSignals),
 	}

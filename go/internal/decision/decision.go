@@ -589,7 +589,7 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 	d := decide(ev, failOn, opts)
 	applyApplicabilityGate(&d, ev, opts)
 	if !opts.DeescalateTests || !ev.InTest {
-		return d
+		return settleOverride(d)
 	}
 	switch d.Status {
 	case StatusBlock:
@@ -652,6 +652,31 @@ func DecideWithOptions(ev evidence.Evidence, failOn string, opts Options) Decisi
 			"matches the deterministic fixture heuristics — two independent signals agree " +
 			"it is not a live credential (rule: test-fixture-corroborated; evidence preserved)"
 		appendDecisionReason(&d.Score, confidence.CodeDeescalatedTestFixtureCorroborated, testFixtureCorroboratedReason)
+	}
+	return settleOverride(d)
+}
+
+// settleOverride is the LAST word on PolicyOverride, and it exists because the
+// flag was being set too early to stay true.
+//
+// decide() computes it in the relaxed BLOCK arm — correctly, at that moment.
+// But applyApplicabilityGate and the test-fixture de-escalation both run
+// afterwards and can move Status off BLOCK, and neither re-evaluated the flag.
+// A relaxed run therefore exported WARN and INFO findings carrying
+// policy_override=true, which breaks the single question the flag exists to
+// answer: "which BLOCKs exist only because the evidence requirement was turned
+// off?" Filtering on it returned findings that block nothing.
+//
+// So the flag is settled once, here, after every arm has had its say. This is
+// NOT a re-derivation of the override decision — decide() still owns that, and
+// this never turns the flag ON. It only withdraws a claim that a later
+// demotion made untrue, which is why a genuine relaxed BLOCK is untouched.
+//
+// Status, severity and score are unaffected: a demotion already happened and
+// is already explained in the reason breakdown. Only the stale claim clears.
+func settleOverride(d Decision) Decision {
+	if d.Status != StatusBlock {
+		d.PolicyOverride = false
 	}
 	return d
 }
