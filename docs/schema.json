@@ -167,6 +167,7 @@
         "taint_chain":        { "type": "array", "items": { "$ref": "#/definitions/TaintLink" } },
         "reachable":          { "type": "boolean" },
         "fingerprint":        { "type": "string" },
+        "fingerprint_v1":     { "type": "string" },
         "source_tier":        { "type": "string", "enum": ["native_go", "tree_sitter_sidecar", "semgrep_shim"] },
         "route":              { "$ref": "#/definitions/Route" },
         "route_confirmed":    { "type": "boolean" },

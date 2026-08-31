@@ -32,8 +32,11 @@ type Evidence struct {
 	// Evidence field on the Evidence type), so a scanner migrates from
 	// building models.Finding{...} to evidence.Evidence{...} by swapping the
 	// type name and nothing else. Keep in lockstep with models.Finding.
-	ID                string
-	Fingerprint       string
+	ID          string
+	Fingerprint string
+	// FingerprintV1 is the retired identity, carried alongside Fingerprint
+	// purely so downstream consumers can bridge the v1→v2 re-key.
+	FingerprintV1     string
 	Title             string
 	Severity          models.Severity
 	Source            models.Source
@@ -285,6 +288,7 @@ func FromFinding(f models.Finding) Evidence {
 	return Evidence{
 		ID:                  f.ID,
 		Fingerprint:         f.Fingerprint,
+		FingerprintV1:       f.FingerprintV1,
 		Title:               f.Title,
 		Severity:            f.Severity,
 		Source:              f.Source,
@@ -323,6 +327,7 @@ func (e Evidence) ToFinding() models.Finding {
 	return models.Finding{
 		ID:                  e.ID,
 		Fingerprint:         e.Fingerprint,
+		FingerprintV1:       e.FingerprintV1,
 		Title:               e.Title,
 		Severity:            e.Severity,
 		Source:              e.Source,

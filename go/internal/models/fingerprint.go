@@ -369,3 +369,15 @@ func looksLikeFileRef(ep string) bool {
 	}
 	return lineSuffix.MatchString(ep) || strings.Contains(ep, "/") || strings.Contains(ep, ".")
 }
+
+// StampIdentity sets both identity keys on a finding: the canonical v2
+// fingerprint and the retired v1 key that lets downstream consumers recognise
+// a finding they first tracked under the old scheme.
+//
+// Called once, centrally, in the orchestrator before ID assignment. Keeping
+// the pair in one place is what stops a future caller stamping the canonical
+// key and silently omitting the bridge.
+func StampIdentity(f *Finding) {
+	f.Fingerprint = Fingerprint(*f)
+	f.FingerprintV1 = FingerprintV1(*f)
+}

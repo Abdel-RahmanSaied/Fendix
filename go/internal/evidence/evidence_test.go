@@ -19,6 +19,7 @@ func fullyPopulatedFinding() models.Finding {
 	return models.Finding{
 		ID:                "SEC-001",
 		Fingerprint:       "abc123",
+		FingerprintV1:     "def456",
 		Title:             "SQL injection",
 		Severity:          models.SeverityCritical,
 		Source:            models.SourceCorrelated,

@@ -259,6 +259,20 @@ type Finding struct {
 	// `fingerprint:` and keep matching across scans. Stamped centrally in the
 	// orchestrator before ID assignment.
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// FingerprintV1 is the RETIRED sha1(Category|Endpoint|Title) identity for
+	// this same finding, published purely as a migration bridge.
+	//
+	// It is not an identity and nothing may key on it: v1 moved whenever a
+	// line was inserted above a finding, which is the defect v2 exists to fix.
+	// Its only job is to let a consumer that tracked this finding under v1
+	// recognise it after the re-key, instead of reading the transition as
+	// "the old finding vanished and a new one appeared" — which is how the
+	// hosted backend ended up with two Issues, and two SEC ids, for one
+	// vulnerability.
+	//
+	// Computed here rather than downstream so the mapping is produced by the
+	// side that owns both algorithms and cannot drift from either.
+	FingerprintV1 string `json:"fingerprint_v1,omitempty"`
 	// RuleID is the precise rule/check that fired (e.g. "python.ssrf.taint",
 	// "secrets/aws-access-key", or a CVE id for a dependency advisory). It is
 	// the single most stable identity input a finding has: unlike Title it is
