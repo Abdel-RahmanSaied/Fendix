@@ -129,3 +129,50 @@ func (o *Orchestrator) recordNpmScanResult(status *scannerStatusList, findings *
 	}
 	return *findings
 }
+
+// depScanners are the three dependency-CVE passes that the report's
+// `checks_run` list has always summarised under the single coarse label
+// "deps". Kept as one label for backward compatibility: consumers parse
+// checks_run for that exact string.
+var depScanners = map[string]bool{"govulncheck": true, "pip": true, "npm": true}
+
+// codeScannerLabels returns the coarse `checks_run` labels for the code
+// analysis passes that ACTUALLY completed, derived from the recorded
+// per-scanner status rather than from the scan configuration.
+//
+// The list used to be hand-appended whenever a code path was configured,
+// which meant a scan reported semgrep under "checks_run" while
+// scanner_status simultaneously recorded it as skipped because the binary
+// was missing — the same document asserting a check both ran and did not.
+// A consumer cannot audit a release decision made from evidence that was
+// never gathered, so only an `ok` pass earns its label here.
+//
+// Order is fixed (secrets, semgrep, deps) rather than derived from map or
+// slice iteration, so two identical scans render byte-identical reports.
+func codeScannerLabels(status scannerStatusList) []string {
+	ran := make(map[string]bool, len(status))
+	for _, s := range status {
+		if s.State == reporters.ScannerOK {
+			ran[s.Name] = true
+		}
+	}
+	deps := false
+	for name := range depScanners {
+		if ran[name] {
+			deps = true
+			break
+		}
+	}
+
+	var out []string
+	if ran["secrets"] {
+		out = append(out, "secrets")
+	}
+	if ran["semgrep"] {
+		out = append(out, "semgrep")
+	}
+	if deps {
+		out = append(out, "deps")
+	}
+	return out
+}

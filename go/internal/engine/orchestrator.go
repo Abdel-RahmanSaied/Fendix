@@ -578,9 +578,10 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 	for _, c := range checks {
 		checksRun = append(checksRun, c.Name())
 	}
-	if o.cfg.CodePath != "" || o.cfg.SpecPath != "" {
-		checksRun = append(checksRun, "secrets", "semgrep", "deps")
-	}
+	// Derived from the recorded per-scanner status, NOT from the presence of
+	// a code path: a configured scanner that never ran (missing binary,
+	// absent manifest, crash) must not be published as a check that ran.
+	checksRun = append(checksRun, codeScannerLabels(scanStatus)...)
 
 	meta := reporters.ScanMetadata{
 		Target:    o.cfg.URL,
@@ -785,7 +786,7 @@ func (o *Orchestrator) finalize(evid []evidence.Evidence, meta reporters.ScanMet
 	// runs, so it is the durable key for suppressions.
 	for i := range findings {
 		findings[i].ID = fmt.Sprintf("SEC-%03d", i+1)
-		findings[i].Fingerprint = models.Fingerprint(findings[i])
+		models.StampIdentity(&findings[i])
 	}
 
 	// 8. Apply ignore rules from .fendix-ignore.
