@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-09-02
+
+An identity-and-honesty release. One new key is published, one report field
+stops overstating what happened, and the latency harness becomes reproducible.
+**No fingerprint changes**: `Fingerprint` itself is untouched, so saved
+`--baseline` files and `.fendix-ignore` `fingerprint:` rules keep matching, and
+no finding changes status or severity.
+
+### Added
+
+- **`fingerprint_v1` — the retired identity, published as a migration bridge.**
+  Every finding now carries the old `sha1(Category|Endpoint|Title)` key
+  alongside the canonical v2 one, as `fingerprint_v1` (omitted when empty).
+
+  It is **not an identity and nothing may key on it**: v1 moved whenever a line
+  was inserted above a finding, which is the defect v2 exists to fix. Its only
+  job is to let a consumer that first tracked a finding under v1 recognise it
+  after the re-key, instead of reading the transition as "the old finding
+  vanished and a new one appeared" — which is how the hosted backend ended up
+  with two Issues, and two SEC ids, for one vulnerability.
+
+  Both keys are stamped together in one place (`models.StampIdentity`, called
+  centrally in the orchestrator), so a future caller cannot set the canonical
+  key and silently omit the bridge. Computed here rather than downstream
+  because this side owns both algorithms and cannot drift from either.
+
+- **A reproducible latency harness** (`scripts/bench/latency.py`) that records
+  the environment it measured in — load average, worktree cleanliness, machine
+  — and marks a result `publishable` only when that environment justifies it.
+  No published figure changes in this release; the harness exists so the next
+  one can be defended.
+
+### Fixed
+
+- **`checks_run` no longer lists checks that did not run.** The list was
+  hand-appended whenever a code path was *configured*, so a scan could report
+  `semgrep` under `checks_run` while `scanner_status` simultaneously recorded
+  it as skipped because the binary was missing — the same document asserting a
+  check both ran and did not.
+
+  The labels are now derived from the recorded per-scanner status, and only an
+  `ok` pass earns one. A consumer cannot audit a release decision made from
+  evidence that was never gathered.
+
+  `scanner_status` itself is unchanged, so **coverage evaluation and release
+  decisions are unaffected**; what changes is that `checks_run` now agrees with
+  it. Expect fewer labels on scans where a scanner was skipped — that is the
+  correction, not a regression. The three dependency passes stay summarised
+  under the single coarse `deps` label for backward compatibility.
+
 ## [3.2.0] - 2026-08-30
 
 A reporting-integrity release. Every decision Fendix already made is now
