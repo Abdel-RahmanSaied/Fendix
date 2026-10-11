@@ -660,7 +660,7 @@ jobs:
         with:
           fetch-depth: 0      # diff-aware scanning needs git history
 
-      - uses: Fendix-app/Fendix@v1
+      - uses: Fendix-app/Fendix@047d18502d9a71af742bee4da6cc96756195ae7c # verified-source Python setup
         with:
           code: .
           # Optional override: engine_path: /path/to/version-matched/python

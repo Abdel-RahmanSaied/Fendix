@@ -7,6 +7,9 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+import subprocess
+import os
 
 spec = importlib.util.spec_from_file_location("action_engine", Path(__file__).resolve().parents[2] / "scripts/prepare-action-engine.py")
 engine = importlib.util.module_from_spec(spec)
@@ -82,3 +85,27 @@ class ActionEngineTests(unittest.TestCase):
         for value in ["/tmp/tree\nKEY=value", "/tmp/tree\rKEY=value"]:
             with self.assertRaises(ValueError):
                 engine.safe_line(value)
+
+    def test_signature_failure_never_fetches_source(self):
+        with mock.patch.object(engine.subprocess, "check_output", return_value="fendix version v3.6.0 (linux/amd64)"), mock.patch.object(engine, "download") as download, mock.patch.object(engine.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "cosign")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                engine.automatic_tree(self.binary, self.root)
+            self.assertEqual(download.call_count, 3)
+            self.assertFalse((self.root / "python").exists())
+
+    def test_failed_install_publishes_no_runner_environment(self):
+        tree = self.root / "engine"
+        tree.mkdir()
+        (tree / "engine.py").touch()
+        (tree / "requirements.txt").touch()
+        env_file, path_file = self.root / "env", self.root / "path"
+        env_file.touch()
+        path_file.touch()
+        def run(command, **kwargs):
+            if "pip" in command:
+                raise subprocess.CalledProcessError(1, command)
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root), "GITHUB_ENV": str(env_file), "GITHUB_PATH": str(path_file)}), mock.patch("sys.argv", ["prepare", "--engine-path", str(tree)]), mock.patch("shutil.which", return_value=str(self.binary)), mock.patch.object(engine.subprocess, "run", side_effect=run):
+            with self.assertRaises(subprocess.CalledProcessError):
+                engine.main()
+        self.assertEqual(env_file.read_text(), "")
+        self.assertEqual(path_file.read_text(), "")
