@@ -627,11 +627,22 @@ also accepts an optional `FENDIX_SHA256` pin.
 ### GitHub Actions
 
 The [Fendix Action](action.yml) runs a **diff-aware** scan on pull requests and
-uploads SARIF. Through v3.6.0 the Action has a known engine-resolution defect: its
-default `engine_path` is empty, but it runs `fendix engine sync` against a
-standalone binary that has no embedded Python payload. Until that is fixed,
-set `engine_path` to a checked-out `python/` tree or use the official container,
-which ships the engine and its dependencies:
+uploads SARIF. This source revision prepares Python automatically: it verifies
+the installed binary against its signed release build record, fetches the
+`python/` tree at the record's immutable source commit, installs the declared
+requirements in a Python 3.11 virtual environment outside the target checkout,
+and runs `fendix engine sync`. A missing record, invalid signature, mismatched
+binary, or dependency-install failure stops the Action. Requirement constraints
+are version-matched, with a Pydantic <2.14 compatibility bound for the
+current Semgrep/MCP line, but are not a full transitive dependency lock.
+
+`engine_path` is an optional caller-managed override; it must contain `engine.py`
+and `requirements.txt`. Its requirements are also installed in an isolated venv.
+Source/binary matching for this explicit override is the caller's responsibility.
+The published Action tags through v3.6.0 still have the empty-path defect: use
+a fixed revision containing this change, prepare an explicit tree on those
+tags, or use the official container. Older releases without a signed build record
+require the explicit override. The example below targets the fixed source:
 
 ```yaml
 name: Security Scan
@@ -649,11 +660,11 @@ jobs:
         with:
           fetch-depth: 0      # diff-aware scanning needs git history
 
-      - uses: Fendix-app/Fendix@v1
+      - uses: Fendix-app/Fendix@047d18502d9a71af742bee4da6cc96756195ae7c # verified-source Python setup
         with:
           code: .
-          # Required through v3.6.0: prepare a version-matched tree here first.
-          engine_path: ${{ github.workspace }}/vendor/fendix-python
+          # Optional override: engine_path: /path/to/version-matched/python
+          # Published v3.6.0 tags require that override; pin a fixed Action revision.
           url: ${{ secrets.STAGING_API_URL }}   # optional — adds DAST
           spec: openapi.yaml                     # optional
           fail-on: HIGH
