@@ -5,10 +5,10 @@
 # only surfaces issues the PR actually introduced. Uploads SARIF so findings
 # render inline in the GitHub Security tab and as PR annotations.
 #
-# Usage (minimal — SAST/secrets/SCA on changed code in a PR). Stable v3.6.0
-# requires a prepared, version-matched Python tree and its requirements; see
-# the GitHub Actions section in README.md. The official container is the
-# ready-to-run alternative:
+# Usage (minimal — SAST/secrets/SCA on changed code in a PR). This revision
+# prepares Python automatically from the installed release's signed build
+# record. Published tags through v3.6.0 still require an explicit tree;
+# see README.md for the version boundary.
 #
 #   - uses: actions/checkout@v4
 #     with: { fetch-depth: 0 }          # diff mode needs history
@@ -16,7 +16,6 @@
 #     with:
 #       version: v3.6.0
 #       code: .
-#       engine_path: ${{ github.workspace }}/vendor/fendix-python
 #
 # Usage (full — add a DAST target + fail the build on HIGH):
 #
@@ -27,7 +26,6 @@
 #       code: .
 #       spec: openapi.yaml
 #       fail-on: HIGH
-#       engine_path: ${{ github.workspace }}/vendor/fendix-python
 name: "Fendix Security Scan"
 description: "Evidence-backed application security decisions for CI/CD."
 author: "Fendix"
@@ -105,7 +103,7 @@ inputs:
     required: false
     default: "https://api.fendix.dev"
   engine_path:
-    description: "Path to the Fendix Python engine directory. Known defect through v3.6.0: the empty default cannot resolve from the standalone release binary; provide a version-matched tree or use the official container."
+    description: "Optional caller-managed Python engine directory. Empty prepares the immutable source matching the installed binary via its signed build record. Both paths install requirements in an isolated Python 3.11 environment."
     required: false
     default: ""
 
@@ -196,15 +194,25 @@ runs:
         fi
         fendix version
 
-    # Pin the Python taint engine before scanning. With engine_path set this
-    # pins that explicit tree. Known defect through v3.6.0: official standalone
-    # releases have no embedded tree, so the empty default fails here. A
-    # failure is loud rather than silently degrading to native-Go-only output.
-    - name: Sync Fendix Python engine
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      with:
+        python-version: "3.11"
+
+    - name: Install source verification tool
+      if: ${{ inputs.engine_path == '' }}
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: "v2.4.1"
+
+    # Bind the Python tree to the installed binary's signed build record,
+    # install its requirements in an isolated venv, then pin it for all scans.
+    - name: Prepare Fendix Python engine
       shell: bash
-      run: fendix engine sync
       env:
-        FENDIX_ENGINE: ${{ inputs.engine_path || '' }}
+        ENGINE_PATH: ${{ inputs.engine_path }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$ACTION_PATH/scripts/prepare-action-engine.py"
 
     - name: Run Fendix scan
       id: scan
