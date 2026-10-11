@@ -118,7 +118,9 @@ def main():
         tree = automatic_tree(Path(binary).resolve(), work)
     venv = work / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
-    subprocess.run([str(venv / "bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(tree / "requirements.txt")], check=True)
+    # Published v3.6.0 requirements permit Pydantic 2.14, which breaks the
+    # Semgrep MCP 1.16.x import. Keep the proven compatibility boundary.
+    subprocess.run([str(venv / "bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(tree / "requirements.txt"), "pydantic<2.14"], check=True)
     # Publish only after dependency installation and sync both succeed.
     subprocess.run([str(binary), "engine", "sync", "--dir", str(tree)], check=True)
     with open(os.environ["GITHUB_ENV"], "a") as handle:

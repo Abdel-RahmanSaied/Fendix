@@ -633,7 +633,8 @@ the installed binary against its signed release build record, fetches the
 requirements in a Python 3.11 virtual environment outside the target checkout,
 and runs `fendix engine sync`. A missing record, invalid signature, mismatched
 binary, or dependency-install failure stops the Action. Requirement constraints
-are version-matched, but are not a full transitive dependency lock.
+are version-matched, with a Pydantic <2.14 compatibility bound for the
+current Semgrep/MCP line, but are not a full transitive dependency lock.
 
 `engine_path` is an optional caller-managed override; it must contain `engine.py`
 and `requirements.txt`. Its requirements are also installed in an isolated venv.
