@@ -14,8 +14,8 @@
 #   - Installs the pinned FENDIX_VERSION below with the official
 #     installer, fetched at a pinned commit. The installer verifies the
 #     release's SHA-256 checksum and requires a valid cosign signature.
-#   - Produces a GitLab-SAST-compatible JSON report uploaded as the
-#     job's `sast` report and as a 30-day artifact.
+#   - Produces a SARIF 2.1.0 report retained as a 30-day job artifact.
+#     SARIF is not GitLab's native SAST report schema.
 #   - Gates the pipeline on HIGH+ findings via fendix's --fail-on.
 #
 # Required permissions: none beyond the project default (Maintainer
@@ -69,13 +69,11 @@ fendix-security-scan:
       fendix scan
       --code .
       --format sarif
-      --output gl-sast-report.json
+      --output fendix-results.sarif
       --fail-on HIGH
   artifacts:
     when: always
-    reports:
-      sast: gl-sast-report.json
     paths:
-      - gl-sast-report.json
+      - fendix-results.sarif
     expire_in: 30 days
   allow_failure: false

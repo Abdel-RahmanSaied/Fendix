@@ -228,3 +228,24 @@ func TestRun_PrintGitLabIncludesIncludeInstruction(t *testing.T) {
 		t.Errorf("--print --ci gitlab missing template separator:\n%s", got)
 	}
 }
+
+// SARIF consumers and GitLab's native SAST ingestion accept different schemas.
+func TestGitLabSARIFIsAnArtifactNotANativeSASTReport(t *testing.T) {
+	files, _ := generate(t, CIGitLab, "v3.6.0", testCommit)
+	var config map[string]interface{}
+	if err := yaml.Unmarshal([]byte(files[".gitlab-ci.fendix.yml"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	job := config["fendix-security-scan"].(map[string]interface{})
+	artifacts := job["artifacts"].(map[string]interface{})
+	if _, exists := artifacts["reports"]; exists {
+		t.Fatal("SARIF must not be submitted as a native GitLab SAST report")
+	}
+	paths := artifacts["paths"].([]interface{})
+	if len(paths) != 1 || paths[0] != "fendix-results.sarif" {
+		t.Fatalf("unexpected report paths: %v", paths)
+	}
+	if !strings.Contains(files[".gitlab-ci.fendix.yml"], "--output fendix-results.sarif") {
+		t.Fatal("scan output differs from artifact")
+	}
+}
