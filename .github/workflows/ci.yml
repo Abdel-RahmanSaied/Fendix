@@ -149,6 +149,8 @@ jobs:
               /usr/local/bin/fendix scan --code /src --python-engine --offline --offline-db /tmp/offline-db.json \
                 --format json --output /tmp/report.json >/dev/null 2>&1 || true
               cat /tmp/report.json' > smoke-container.json
+          # Fixture-only diagnostic: name the failed analyzer and its reason.
+          python3 -c 'import json; print(json.dumps(json.load(open("smoke-container.json"))["metadata"]["scanner_status"], indent=2))'
           scripts/coverage-smoke-check.sh --deterministic smoke-container.json
 
   e2e:
