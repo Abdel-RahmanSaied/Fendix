@@ -35,10 +35,16 @@ signature (`FENDIX_REQUIRE_SIGNATURE=1`).
 
 ## Required project settings
 
-- **GitLab SAST report ingestion** — Premium / Ultimate tiers expose
-  the SAST report under `Security & Compliance → Vulnerability
-  Report`. Free tier still receives the JSON as a job artifact at
-  `gl-sast-report.json`.
+- **Report download** — `fendix-results.sarif` is retained as a job
+  artifact on every tier. It is SARIF 2.1.0, not the GitLab native SAST
+  schema, so this job does not declare `artifacts:reports:sast`. Import it
+  into a SARIF-compatible consumer or Fendix workspace.
+- **Python engine** — the standalone binary does not bundle the Python
+  analyzers. Prepare a version-matched Python tree and its requirements,
+  set `FENDIX_ENGINE`, and run `fendix engine sync` before the scan, or
+  use the official Fendix container. Required analyzers must be checked
+  with `--fail-on-coverage-gap` and `--require-analyzers`; exit 0 alone
+  does not establish complete coverage.
 - **No tokens needed for the public install path.** If your scan
   target requires credentials, plumb them via masked CI variables
   and reference them in the `script:` block.
