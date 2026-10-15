@@ -127,13 +127,31 @@ jobs:
               *scan-error*) want="The scan did not complete" ;;
               *block*) want="At least one finding reached BLOCK status" ;;
             esac
+            # Job logs carry ANSI colour codes, which gh refuses to print
+            # unless told to; strip them before matching.
             log=""
             for _ in 1 2 3 4 5 6; do
-              log=$(gh api "repos/$REPO/actions/jobs/$id/logs" 2>/dev/null) && [ -n "$log" ] && break
+              log=$(gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g') || true
+              [ -n "$log" ] && break
               sleep 10
             done
-            check() { if printf '%s' "$log" | grep -qF -- "$2"; then [ "$1" = present ]; else [ "$1" = absent ]; fi; }
-            for rule in "present|$want" "absent|numeric argument required" "absent|Run github/codeql-action/upload-sarif@" "absent|Unable to upload"; do
+            # No log means nothing was checked: that is a failure, never a
+            # vacuous pass of the "absent" rules below.
+            if [ -z "$log" ]; then
+              echo "::error::$name: could not read the job log"
+              failed=1
+              continue
+            fi
+            # A literal substring match without a pipe: under the default
+            # pipefail, `printf | grep -q` can fail with SIGPIPE on a match.
+            check() { if [[ $log == *"$2"* ]]; then [ "$1" = present ]; else [ "$1" = absent ]; fi; }
+            for rule in \
+              "present|##[start-action display=Enforce fail-on threshold;" \
+              "present|$want" \
+              "present|##[end-action id=fendix.upload;outcome=skipped;" \
+              "absent|Run github/codeql-action/upload-sarif@" \
+              "absent|Unable to upload" \
+              "absent|numeric argument required"; do
               if check "${rule%%|*}" "${rule#*|}"; then
                 echo "✓ $name: ${rule%%|*}: ${rule#*|}"
               else
