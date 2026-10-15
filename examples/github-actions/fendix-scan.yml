@@ -22,9 +22,18 @@
 # entries a later run can restore. This key does not prove main-only provenance.
 #
 # Required permissions:
+#   actions:         read     — SARIF upload on private repositories
+#                               (upload-sarif reads the workflow run)
 #   contents:        read     — checkout
 #   security-events: write    — SARIF upload via github/codeql-action
 #   pull-requests:   write    — PR comment via actions/github-script
+#
+# SARIF upload and GitHub Code Security: the Fendix gate does not depend on
+# it. Public repositories upload SARIF to the Security tab. A private
+# repository needs GitHub Code Security for code scanning, so the upload is
+# skipped there with a notice; the scan, the PR comment and the gate still
+# run. If your private repository has Code Security, set the repository
+# variable FENDIX_UPLOAD_SARIF to `true` to upload.
 #
 # Required repository secrets: none for the public container path.
 # If your project's spec or staging URL needs auth, plumb a secret
@@ -56,6 +65,7 @@ on:
     branches: [main]
 
 permissions:
+  actions: read
   contents: read
   security-events: write
   pull-requests: write
@@ -129,12 +139,28 @@ jobs:
             --format sarif \
             --output results.sarif
 
-      - name: Upload SARIF to GitHub Code Scanning
+      # TEMPORARY compatibility workaround for the v3.6.0 SARIF exporter:
+      # with zero findings it writes `"rules": null`, which GitHub rejects as
+      # invalid SARIF. This replaces a null `rules` value with an empty array
+      # and changes nothing else. Remove this step when FENDIX_IMAGE moves to
+      # a release whose exporter writes `"rules": []`.
+      - name: Normalize empty SARIF rules (temporary, v3.6.0)
         if: always() && hashFiles('results.sarif') != ''
+        run: |
+          jq '(.runs[]?.tool.driver | select(has("rules") and .rules == null) | .rules) = []' results.sarif > results.sarif.tmp
+          mv results.sarif.tmp results.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles('results.sarif') != '' && (!github.event.repository.private || vars.FENDIX_UPLOAD_SARIF == 'true')
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: results.sarif
           category: fendix
+
+      - name: Explain skipped SARIF upload
+        if: always() && hashFiles('results.sarif') != '' && github.event.repository.private && vars.FENDIX_UPLOAD_SARIF != 'true'
+        run: |
+          echo "::notice title=SARIF upload skipped::GitHub Security-tab upload for a private repository requires GitHub Code Security. If this repository has it, set the repository variable FENDIX_UPLOAD_SARIF=true. The Fendix gate still decides this check."
 
       # PR summary comment. Posts at most one new comment per push to
       # the PR — the GitHub UI threads them by timestamp. If you'd
@@ -192,11 +218,18 @@ jobs:
               body: lines.join('\n'),
             });
 
-      # Surface the scan exit code as the job result. We deferred
-      # failure until after SARIF upload + comment so that the
-      # PR author sees full output even when the gate fails.
+      # The scan result decides the job, whatever happened to the reporting
+      # steps above (SARIF, upload, comment). Failure was deferred until here
+      # so the PR author sees the full output. A missing or unknown result
+      # fails closed: it must never pass by accident.
       - name: Enforce --fail-on gate
-        if: steps.scan.outputs.exit_code != '0'
+        if: always()
+        env:
+          SCAN_EXIT: ${{ steps.scan.outputs.exit_code }}
         run: |
-          echo "fendix scan exited ${{ steps.scan.outputs.exit_code }} (1=findings at gate, 2=scan error)"
-          exit ${{ steps.scan.outputs.exit_code }}
+          case "$SCAN_EXIT" in
+            0) echo "Fendix gate passed: no finding blocks at --fail-on HIGH." ;;
+            1) echo "::error title=Fendix gate::A finding blocks at --fail-on HIGH (fendix scan exited 1)."; exit 1 ;;
+            2) echo "::error title=Fendix gate::The scan did not complete (fendix scan exited 2)."; exit 2 ;;
+            *) echo "::error title=Fendix gate::No usable scan result (exit code '$SCAN_EXIT'); failing closed."; exit 2 ;;
+          esac
