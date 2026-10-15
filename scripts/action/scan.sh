@@ -32,8 +32,12 @@ args=()
 [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
 args+=(--format "$FORMAT" --output "$OUTPUT")
 
-# Diff-aware scoping. On a pull_request event, 'auto'/'true' scope the scan to
-# files changed versus the PR base ref. Requires fetch-depth: 0 on checkout.
+# Diff mode: 'auto' on a pull_request event, 'true' on any event. --diff
+# limits the native secrets, text and Semgrep scanners to the changed files
+# (whole files); the Python engine and DAST still scan everything. A fetch
+# error is ignored here; if origin/<base> is then missing, the engine falls
+# back to a full scan.
+# Requires fetch-depth: 0 on checkout.
 if [ "$DIFF" = "true" ] || { [ "$DIFF" = "auto" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; }; then
   base="${GITHUB_BASE_REF:-}"
   if [ -n "$base" ]; then

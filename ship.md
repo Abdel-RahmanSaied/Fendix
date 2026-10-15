@@ -51,7 +51,7 @@ gh run watch $(gh run list --workflow=Release --limit 1 --json databaseId --jq '
 
 ## What the workflow does
 
-The pipeline at `.github/workflows/release.yml` runs end-to-end on every `v*` tag without manual intervention:
+The pipeline at `.github/workflows/release.yml` runs end-to-end on every `vX.Y.Z` tag (its glob `v[0-9]*.[0-9]*.[0-9]*` also matches pre-release tags such as `v3.5.0-rc.2`; a moving pointer like `v1` does not trigger it) without manual intervention:
 
 | Job | What it does | Output |
 |---|---|---|

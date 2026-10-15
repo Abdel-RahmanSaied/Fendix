@@ -218,7 +218,7 @@ inventory is recorded in
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--diff` | string | `""` (bare = `HEAD`) | Diff-aware scan: only changed files vs a git ref. `--diff=origin/main` = vs that ref. Whitebox scanners scoped to changed files; dep-CVE scanners run only when a manifest changed. |
+| `--diff` | string | `""` (bare = `HEAD`) | Diff mode vs a git ref. `--diff=origin/main` = vs that ref. The native secrets, text and Semgrep scanners read only the changed files (whole files); dep-CVE scanners run only when a manifest changed; the Python engine, DAST and plugins scan the full target. Falls back to a full scan if `git diff` fails. |
 | `--staged` | bool | `false` | Diff over staged changes (`git diff --cached`). Implies `--diff`. What the pre-commit hook runs. |
 | `--fast` | bool | `false` | Skip semgrep and native dep-CVE scanners. It does not suppress Python auto-enabled by `--code`; add `--python-engine=false` for the native-only path. |
 | `--max-endpoints` | int | `500` | Cap discovered endpoints (0 = no cap). |
@@ -471,16 +471,35 @@ This file was tested end to end on 2026-10-15, installed with the commands above
 >
 > Use the reference workflow (§3.1). A corrected Action is planned for v3.6.1; `v1` will move only to a release that has been validated end to end.
 
-The rest of this section documents the Action's interface on `main`. That revision has not been released or validated end to end. Do not reference `@main`.
+The rest of this section documents the Action on `main`, which is what v3.6.1 will ship. Until that release is out and has passed its own end-to-end validation, keep using the reference workflow (§3.1), and never reference `@main`.
 
-A **composite** action that installs Fendix, syncs the Python taint engine, runs `fendix scan`, uploads SARIF, then enforces the fail-on gate. It needs `actions/checkout@v4` with `fetch-depth: 0` because diff mode needs git history.
+A **composite** action. Its steps, in order:
 
-**Known defect through v3.6.0:** the standalone release binary has no embedded Python
-payload, while the Action's default `engine_path: ""` still runs `fendix engine
-sync` as if one existed. A default invocation therefore fails before scanning
-unless the workflow supplies a version-matched `python/` tree. The example
-below assumes one is prepared at `vendor/fendix-python`. The official container
-is the out-of-box path until the Action is corrected.
+1. **Validate managed-mode inputs** (managed mode only).
+2. **Install cosign** (`sigstore/cosign-installer`, pinned), for every caller.
+3. **Install Fendix.** One exact release from `Fendix-app/Fendix`: `version: latest` is resolved once to an exact tag. The installer bundled with the Action revision, never fetched live, runs with the signature required, in an environment stripped of every inherited `FENDIX_*` variable. It verifies the release's checksum, then its cosign signature, and only then installs and first runs the binary, in a private temporary directory under `RUNNER_TEMP` (no `sudo`, nothing written to `/usr/local/bin`). The binary must report exactly the requested release; only then is the directory added to `PATH`. There is no checksum-only fallback.
+4. **Set up Python 3.11** without changing the rest of the job's environment (`update-environment: false`).
+5. **Prepare the Python engine** (below).
+6. **Run `fendix scan`**, recording whether a report was written and the exit code.
+7. **Upload SARIF** to code scanning, only when the scan wrote one (`upload-sarif`, `format: sarif`).
+8. **Gate:** `0` passes, `1` is a policy `BLOCK`, `2` a scan error. A setup failure before the scan, or any other value, fails closed with `2`.
+
+**Python engine.** With `engine_path` empty, the Python source is fetched at the commit the release's signed build record names, and the installed binary's hash must appear in that record. From v3.6.1 its dependencies are installed only from the release's hash-locked `python/requirements.lock`, with `--require-hashes`. Releases up to v3.6.0 ship no lock, so they keep `requirements.txt` with a `pydantic<2.14` compatibility bound, and a later release without a lock is refused. A caller-managed `engine_path` must contain `engine.py` and `requirements.txt`; its `requirements.txt` is installed with the same bound (a lock inside it is not used), and matching it to the binary is the caller's responsibility. Both install into an isolated venv whose `bin/`, with `FENDIX_ENGINE`, stays available to later steps of the job.
+
+**Requirements.**
+
+- **Signed releases only.** Only releases published with a cosign signature can be installed. Automatic Python preparation needs a signed build record, published from v3.5.0.
+- **Network.** Outbound HTTPS to GitHub (release downloads, and the API for `latest`) and to Sigstore (its TUF root and Rekor) for the signature check; the Python engine also needs `codeload.github.com` and PyPI. Without Sigstore access the install fails. Proxies work through the standard `HTTPS_PROXY` and `NO_PROXY` variables; a `~/.curlrc` is ignored.
+- **Permissions.**
+
+  | Repository | `permissions:` |
+  |---|---|
+  | Public | `contents: read`, `security-events: write` |
+  | Private or internal | also `actions: read`, and GitHub Code Security enabled on the repository |
+  | Any, with `upload-sarif: 'false'` | `contents: read` |
+
+  The Action uses the job token only for the SARIF upload. Pull requests from forks get a read-only token and no secrets, so the upload cannot succeed there and a secret-based DAST URL is empty.
+- **Diff mode** (`diff: auto` on `pull_request`). The native secrets, text and Semgrep scanners read only the changed files, whole files, so existing issues in them are reported. Dependency checks run when a manifest changed and then report the manifest's full set. The Python engine and DAST always scan the full target. If the diff cannot be computed, the scan falls back to a full scan. Use a baseline to report only new findings. Known limitation: with `code` set to a subdirectory of the repository, diff mode can miss changed files, because the changed paths are resolved from the repository root; scan from the repository root, or set `diff: 'false'`, until the fix planned for v3.7.0.
 
 ```yaml
 name: Fendix Security Scan
@@ -491,28 +510,28 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # for SARIF upload to the Security tab
+  security-events: write   # SARIF upload
+  actions: read            # SARIF upload in a private or internal repository
 
 jobs:
   fendix:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0      # required: diff mode needs history
+          fetch-depth: 0      # diff mode compares against the PR base ref
       # Not @v1 and not @main: pin the full commit SHA of a validated release.
       - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
         with:
+          version: "<that release>"
           code: "."           # white-box SAST/secrets/SCA (default ".")
-          engine_path: ${{ github.workspace }}/vendor/fendix-python
           url: ""             # optional: black-box DAST target
           spec: ""            # optional: OpenAPI spec to seed discovery
           fail-on: "HIGH"     # CRITICAL | HIGH | MEDIUM | LOW; empty never fails
-          diff: "auto"        # auto = PR-changed files on pull_request, full scan otherwise
+          diff: "auto"        # auto = diff mode on pull_request, full scan otherwise
           format: "sarif"     # sarif (Security tab) | json | html | pdf
           output: "fendix-results.sarif"
           upload-sarif: "true"
-          version: "v3.6.0"
           extra-args: ""      # raw args appended to `fendix scan`
 ```
 
@@ -524,17 +543,17 @@ jobs:
 | `url` | `""` | Black-box target. Empty skips DAST. |
 | `spec` | `""` | OpenAPI spec to seed discovery. |
 | `fail-on` | `HIGH` | Severity floor considered by release policy; exit 1 only when a finding reaches `BLOCK`. Empty disables blocking. |
-| `diff` | `auto` | `auto` = scope to PR-changed files on `pull_request`; `true` = force diff vs base ref; `false` = always full. |
+| `diff` | `auto` | `auto` = diff mode on `pull_request` events (native secrets, text and Semgrep scanners read only changed files; the Python engine and DAST scan everything); `true` = diff mode on every event, against `HEAD` when there is no PR base ref; `false` = always full. |
 | `format` | `sarif` | `sarif` / `json` / `html` / `pdf`. |
 | `output` | `fendix-results.sarif` | Report path. |
-| `upload-sarif` | `true` | Upload SARIF to code scanning. Only when `format=sarif`. |
-| `version` | `latest` | Fendix version to install. |
+| `upload-sarif` | `true` | Upload SARIF to code scanning, when `format=sarif` and the scan wrote a report. A private or internal repository needs `actions: read` and GitHub Code Security. |
+| `version` | `latest` | Exact release tag, or `latest` (resolved once to an exact tag). Only signed releases install; automatic Python preparation needs v3.5.0 or later. |
 | `extra-args` | `""` | Raw args appended to `fendix scan`. |
-| `engine_path` | `""` | Python engine dir. Through v3.6.0, the empty default fails at `engine sync` because the standalone binary has no embedded payload. |
+| `engine_path` | `""` | Caller-managed Python engine dir, installed from its `requirements.txt`. Empty: the release's own source, from its signed build record, with its hash-locked `requirements.lock` from v3.6.1. |
 
 **Outputs:** `report` (path to the generated report), `exit-code` (0 no blocking decision / 1 at least one `BLOCK` / 2 error).
 
-What the steps do: install via `curl … get.fendix.dev/install.sh | sh` → `fendix engine sync` (**fails loudly here if the SAST engine can't be resolved**, rather than silently degrading) → `fendix scan` under `set +e` (capturing exit code, deliberately exiting 0 so SARIF upload runs first) → `github/codeql-action/upload-sarif@v3` → a final `if: always()` step that re-raises the failure (`exit 1` on findings, `exit <code>` on error).
+Outside the Action, the same verification is available to any workflow: install cosign first and run the installer with `FENDIX_REQUIRE_SIGNATURE=1` and an exact `FENDIX_VERSION`.
 
 ### 3.3 Public Action availability
 
@@ -568,7 +587,7 @@ jobs:
           set +e
           fendix scan --code . --format json --output findings.json --fail-on HIGH
           echo "FENDIX_EXIT=$?" >> "$GITHUB_ENV"
-      - name: Surface findings (job summary — no GHAS needed)
+      - name: Surface findings (job summary, no Code Security needed)
         if: always()
         run: |
           fendix report --input findings.json --format html >> "$GITHUB_STEP_SUMMARY" || true
@@ -783,7 +802,7 @@ automation contract.
 | `--url` | `""` | Black-box target (→ blackbox/hybrid) |
 | `--spec` | `""` | OpenAPI spec (→ whitebox/hybrid) |
 | `--code` | `""` | Source dir (→ whitebox/hybrid; implicitly enables Python engine) |
-| `--diff` | `""` (bare=HEAD) | Scan only files changed vs git ref |
+| `--diff` | `""` (bare=HEAD) | Native secrets/text/Semgrep scanners read only files changed vs a git ref; the Python engine scans all |
 | `--staged` | `false` | Staged-only diff (implies `--diff`) |
 | `--fast` | `false` | Skips semgrep/native SCA; add `--python-engine=false` for native-only |
 | `--fail-on` | `""` | Severity floor for the gate: CRITICAL/HIGH/MEDIUM/LOW (evidence gate also applies) |
@@ -828,13 +847,13 @@ These inputs belong to the composite Action, which is not currently recommended 
 | `url` | `""` | Black-box target (empty skips DAST) |
 | `spec` | `""` | OpenAPI spec |
 | `fail-on` | `HIGH` | Severity floor: CRITICAL/HIGH/MEDIUM/LOW (empty never fails). Confidence-gated since engine v2.0. |
-| `diff` | `auto` | auto/true/false |
+| `diff` | `auto` | auto/true/false; native file scanners only, the Python engine always scans in full |
 | `format` | `sarif` | sarif/json/html/pdf |
 | `output` | `fendix-results.sarif` | Report path |
-| `upload-sarif` | `true` | SARIF → code scanning (a private repository needs GitHub Code Security) |
-| `version` | `latest` | Engine version |
+| `upload-sarif` | `true` | SARIF → code scanning, when a report was written (a private repository needs `actions: read` and GitHub Code Security) |
+| `version` | `latest` | Exact signed release tag, or `latest` resolved once |
 | `extra-args` | `""` | Raw args appended to `fendix scan` |
-| `engine_path` | `""` | Python engine dir; through v3.6.0 the empty default fails because the release binary has no embedded tree |
+| `engine_path` | `""` | Caller-managed Python engine dir; empty uses the release's own source and, from v3.6.1, its hash lock |
 
 **Pinned image (v3.6.0):** `fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033`
 
@@ -842,4 +861,4 @@ These inputs belong to the composite Action, which is not currently recommended 
 
 ### Worked-example note (TwiScope)
 
-TwiScope is a Django/DRF backend, so the natural integration is: (1) a developer `fendix hook install --fail-on HIGH` for commit-time secret/IaC gating; (2) a CI job using the public Marketplace Action, which resolves for public and private repositories, or the canonical Docker Hub image, running `fendix scan --code . --fail-on HIGH` against a fresh checkout and surfacing findings through `$GITHUB_STEP_SUMMARY`; and, if internal/staging API targets must be scanned, (3) an Enterprise-org **runner** inside the network performing `mode=hybrid` scans (`--url` staging + `--code` repo) and POSTing results back so they land in the dashboard with full TrackedFinding lifecycle. The v3.6.0 Action requires a version-matched Python engine tree through `engine_path`; use the container when that tree is unavailable. Private repositories need GitHub Advanced Security for SARIF upload, but that does not prevent the Action itself from running. A fresh checkout narrows the scanned files; review the report before publishing it because secret values are redacted at capture time while file locations, safe identifiers, and security structure remain visible.
+TwiScope is a Django/DRF backend, so the natural integration is: (1) a developer `fendix hook install --fail-on HIGH` for commit-time secret/IaC gating; (2) a CI job using the public GitHub Action (`Fendix-app/Fendix`), which resolves for public and private repositories, or the canonical Docker Hub image, running `fendix scan --code . --fail-on HIGH` against a fresh checkout and surfacing findings through `$GITHUB_STEP_SUMMARY`; and, if internal/staging API targets must be scanned, (3) an Enterprise-org **runner** inside the network performing `mode=hybrid` scans (`--url` staging + `--code` repo) and POSTing results back so they land in the dashboard with full TrackedFinding lifecycle. The v3.6.0 Action requires a version-matched Python engine tree through `engine_path`; use the container when that tree is unavailable. Private repositories need GitHub Advanced Security for SARIF upload, but that does not prevent the Action itself from running. A fresh checkout narrows the scanned files; review the report before publishing it because secret values are redacted at capture time while file locations, safe identifiers, and security structure remain visible.

@@ -1052,7 +1052,7 @@
           "no_opt_default": "HEAD",
           "repeatable": false,
           "required": false,
-          "usage": "Diff-aware scan: only scan files changed vs a git ref (bare --diff = vs HEAD, --diff=origin/main = vs that ref). Whitebox scanners are scoped to the changed files; dep-CVE scanners run only when a manifest changed.",
+          "usage": "Diff-aware scan against a git ref (bare --diff = vs HEAD, --diff=origin/main = vs that ref). The native secrets, text and Semgrep scanners read only the changed files, whole files, so existing issues in them are reported; dependency-CVE scanners run only when a manifest changed and then report its full set; the Python engine, DAST and plugins always scan the full target. If git diff fails, the scan falls back to a full scan.",
           "availability": "stable"
         },
         {

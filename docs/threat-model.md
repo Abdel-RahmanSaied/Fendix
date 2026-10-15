@@ -222,8 +222,18 @@ it.
   are recorded in `release.yml`.
 - **Dependency hygiene.** `go.sum` is committed and verified by
   `go mod download` on every CI run. `python/requirements.txt`
-  pins exact versions. `dependabot` is enabled for both Go and
-  Python ecosystems.
+  declares minimum versions, plus a `pydantic<2.14` compatibility
+  bound; `python/requirements.lock` is the hash-locked set the
+  composite Action installs, with `--require-hashes`, for a
+  release's own Python tree (from v3.6.1). `dependabot` is enabled
+  for both Go and Python ecosystems.
+- **Verified install in the composite Action.** The Action installs
+  the binary with the installer bundled in its own revision and
+  `FENDIX_REQUIRE_SIGNATURE=1`, so the release's cosign signature
+  verifies before the binary first runs. There is no checksum-only
+  fallback, inherited `FENDIX_*` variables are removed first, and the
+  binary is published to the job only from a private directory after
+  an exact version check.
 - **No third-party CI actions in critical path.** The release
   workflow uses only GitHub-published or Sigstore-published
   actions; no random `marketplace.action@latest` pins.

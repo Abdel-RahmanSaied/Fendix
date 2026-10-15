@@ -661,7 +661,7 @@ func newScanCmd() *cobra.Command {
 	// `--staged` scopes to the index (what a pre-commit hook scans) and
 	// implies diff mode. NoOptDefVal lets `--diff` work as a bare flag
 	// while still accepting `--diff=<ref>`.
-	flags.String("diff", "", "Diff-aware scan: only scan files changed vs a git ref (bare --diff = vs HEAD, --diff=origin/main = vs that ref). Whitebox scanners are scoped to the changed files; dep-CVE scanners run only when a manifest changed.")
+	flags.String("diff", "", "Diff-aware scan against a git ref (bare --diff = vs HEAD, --diff=origin/main = vs that ref). The native secrets, text and Semgrep scanners read only the changed files, whole files, so existing issues in them are reported; dependency-CVE scanners run only when a manifest changed and then report its full set; the Python engine, DAST and plugins always scan the full target. If git diff fails, the scan falls back to a full scan.")
 	flags.Lookup("diff").NoOptDefVal = "HEAD"
 	flags.Bool("staged", false, "Diff-aware scan over staged changes only (git diff --cached). Implies --diff. This is what the pre-commit hook runs.")
 	flags.Bool("fast", false, "Skip semgrep and the native dependency scanners. Known limitation: --fast does not disable the Python engine auto-enabled by --code; add --python-engine=false when a native-only pre-commit scan is required.")

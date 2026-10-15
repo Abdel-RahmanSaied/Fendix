@@ -1,6 +1,6 @@
 # CI/CD Integration
 
-Fendix produces SARIF 2.1.0 output that integrates directly with GitHub Advanced Security, enabling PR annotations and the Security tab.
+Fendix produces SARIF 2.1.0 output for GitHub code scanning: PR annotations and the Security tab. Code scanning on a private repository needs GitHub Code Security.
 
 ## Quick start — copy this workflow
 
