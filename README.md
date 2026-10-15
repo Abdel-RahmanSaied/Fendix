@@ -626,6 +626,31 @@ also accepts an optional `FENDIX_SHA256` pin.
 
 ### GitHub Actions
 
+**Recommended until v3.6.1: the reference workflow at a fixed commit.** It runs
+the official v3.6.0 container by digest, pins every third-party Action to a
+full commit SHA, and was tested end to end from fresh repositories. Install it
+from that commit, not from `main`:
+
+```bash
+mkdir -p .github/workflows
+curl -fsSL -o .github/workflows/fendix-scan.yml \
+  https://raw.githubusercontent.com/Fendix-app/Fendix/7cf1960f321c497e0b15da7e5e1f02d87988743e/examples/github-actions/fendix-scan.yml
+```
+
+The [integration guide](docs/INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit)
+gives the checksum, the permissions, how the gate fails closed, and the
+private-repository behaviour: a private repository needs GitHub Code Security
+for the SARIF upload, so the workflow skips the upload there unless the
+repository variable `FENDIX_UPLOAD_SARIF` is `true`. The scan, the PR comment
+and the gate run either way.
+
+> **Do not use `uses: Fendix-app/Fendix@v1`.** The `v1` tag points to an
+> outdated revision of the Action with known defects; see the
+> [warning in the integration guide](docs/INTEGRATION_GUIDE.md#32-the-composite-github-action--do-not-use-v1).
+> Do not reference `@main` either.
+
+#### The composite Action (unreleased)
+
 The [Fendix Action](action.yml) runs a **diff-aware** scan on pull requests and
 uploads SARIF. This source revision prepares Python automatically: it verifies
 the installed binary against its signed release build record, fetches the
@@ -639,10 +664,11 @@ current Semgrep/MCP line, but are not a full transitive dependency lock.
 `engine_path` is an optional caller-managed override; it must contain `engine.py`
 and `requirements.txt`. Its requirements are also installed in an isolated venv.
 Source/binary matching for this explicit override is the caller's responsibility.
-The published Action tags through v3.6.0 still have the empty-path defect: use
-a fixed revision containing this change, prepare an explicit tree on those
-tags, or use the official container. Older releases without a signed build record
-require the explicit override. The example below targets the fixed source:
+The published Action tags through v3.6.0 still have the empty-path defect, and
+`v1` has the further defects listed in the guide. The revision below has not
+been released or validated end to end, so it is not the recommended path yet;
+use the reference workflow above. Older releases without a signed build record
+require the explicit override. The example shows that revision's interface:
 
 ```yaml
 name: Security Scan
@@ -686,9 +712,17 @@ jobs:
             --fail-on HIGH \
             --format sarif \
             --output results.sarif
+      # Temporary, v3.6.0: a scan with no findings writes "rules": null,
+      # which upload-sarif rejects. Drop this step once your release's
+      # exporter writes "rules": [].
+      - name: Normalize empty SARIF rules
+        if: always() && hashFiles('results.sarif') != ''
+        run: |
+          jq '(.runs[]?.tool.driver | select(has("rules") and .rules == null) | .rules) = []' results.sarif > results.sarif.tmp
+          mv results.sarif.tmp results.sarif
       - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: results.sarif
 ```
