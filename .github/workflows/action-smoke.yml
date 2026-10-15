@@ -39,3 +39,107 @@ jobs:
           for name in ['python-engine', 'python-engine/injection', 'semgrep']:
               assert states.get(name) == 'ok', (name, states)
           PY
+
+  # Local-mode failure handling (scripts/action/{scan,enforce}.sh). Every leg
+  # must fail closed with the result it names. This job holds no
+  # security-events permission, so nothing is ever uploaded from this
+  # repository; the two legs that write no report keep upload-sarif on to
+  # prove the upload is skipped rather than attempted.
+  failure-handling:
+    name: Action failure (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # v3.4.1 predates signed build records, so the Python engine cannot
+          # be prepared: a setup step fails before any scan.
+          - case: setup-failure
+            version: v3.4.1
+            fail-on: HIGH
+            upload-sarif: 'true'
+            expected-exit: ''
+          # The engine rejects --fail-on INFO before scanning: exit 2, no report.
+          - case: scan-error
+            version: v3.6.0
+            fail-on: INFO
+            upload-sarif: 'true'
+            expected-exit: '2'
+          - case: block
+            version: v3.6.0
+            fail-on: HIGH
+            upload-sarif: 'false'
+            expected-exit: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: fendix
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.version }}
+          code: tests/fixtures/action-block
+          diff: 'false'
+          fail-on: ${{ matrix.fail-on }}
+          format: sarif
+          output: action report.sarif
+          upload-sarif: ${{ matrix.upload-sarif }}
+      - name: Assert the Action failed closed with the expected result
+        env:
+          CASE: ${{ matrix.case }}
+          OUTCOME: ${{ steps.fendix.outcome }}
+          EXIT_CODE: ${{ steps.fendix.outputs.exit-code }}
+          EXPECTED: ${{ matrix.expected-exit }}
+        run: |
+          set -eu
+          [ "$OUTCOME" = failure ] || { echo "::error::$CASE: the Action step should fail, got '$OUTCOME'"; exit 1; }
+          [ "$EXIT_CODE" = "$EXPECTED" ] || { echo "::error::$CASE: exit-code should be '$EXPECTED', got '$EXIT_CODE'"; exit 1; }
+          if [ "$CASE" = block ]; then
+            [ -s "action report.sarif" ] || { echo "::error::block: no report was written"; exit 1; }
+          else
+            [ ! -e "action report.sarif" ] || { echo "::error::$CASE: a report was left behind"; exit 1; }
+          fi
+          echo "$CASE: outcome=$OUTCOME exit-code='$EXIT_CODE' as expected"
+
+  # A composite Action's inner steps are invisible to the caller, so the
+  # messages and the skipped upload are checked in each leg's finished log.
+  failure-handling-logs:
+    name: Action failure log checks
+    needs: failure-handling
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Check each leg's log
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+          jobs=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name | startswith("Action failure (")) | "\(.id) \(.name)"')
+          [ "$(printf '%s\n' "$jobs" | grep -c .)" = 3 ] || { echo "::error::expected 3 failure legs, found: $jobs"; exit 1; }
+          failed=0
+          while read -r id name; do
+            case "$name" in
+              *setup-failure*) want="A setup step failed before the scan" ;;
+              *scan-error*) want="The scan did not complete" ;;
+              *block*) want="At least one finding reached BLOCK status" ;;
+            esac
+            log=""
+            for _ in 1 2 3 4 5 6; do
+              log=$(gh api "repos/$REPO/actions/jobs/$id/logs" 2>/dev/null) && [ -n "$log" ] && break
+              sleep 10
+            done
+            check() { if printf '%s' "$log" | grep -qF -- "$2"; then [ "$1" = present ]; else [ "$1" = absent ]; fi; }
+            for rule in "present|$want" "absent|numeric argument required" "absent|Run github/codeql-action/upload-sarif@" "absent|Unable to upload"; do
+              if check "${rule%%|*}" "${rule#*|}"; then
+                echo "✓ $name: ${rule%%|*}: ${rule#*|}"
+              else
+                echo "::error::$name: expected '${rule#*|}' to be ${rule%%|*} in the log"
+                failed=1
+              fi
+            done
+          done <<<"$jobs"
+          exit "$failed"

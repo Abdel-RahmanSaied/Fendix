@@ -229,41 +229,9 @@ runs:
         OUTPUT: ${{ inputs.output }}
         DIFF: ${{ inputs.diff }}
         EXTRA_ARGS: ${{ inputs.extra-args }}
-      run: |
-        set -uo pipefail
-        args=()
-        [ -n "$CODE" ] && args+=(--code "$CODE")
-        [ -n "$URL" ]  && args+=(--url "$URL")
-        [ -n "$SPEC" ] && args+=(--spec "$SPEC")
-        [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
-        args+=(--format "$FORMAT" --output "$OUTPUT")
-
-        # Diff-aware scoping. On a pull_request event, 'auto'/'true' scope the
-        # scan to files changed versus the PR base ref, so the check is fast
-        # and only flags net-new issues. Requires fetch-depth: 0 on checkout.
-        if [ "$DIFF" = "true" ] || { [ "$DIFF" = "auto" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; }; then
-          base="${GITHUB_BASE_REF:-}"
-          if [ -n "$base" ]; then
-            git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
-            args+=(--diff="origin/$base")
-          else
-            args+=(--diff)
-          fi
-        fi
-
-        # shellcheck disable=SC2206  # intentional word-split into multiple flags
-        [ -n "$EXTRA_ARGS" ] && args+=($EXTRA_ARGS)
-
-        echo "fendix scan ${args[*]}"
-        set +e
-        fendix scan "${args[@]}"
-        code=$?
-        set -e
-        echo "report=$OUTPUT" >> "$GITHUB_OUTPUT"
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-        # Don't abort the job here on exit 1 — let the SARIF upload run first,
-        # then re-raise the failure in the final step so findings are visible.
-        exit 0
+        ACTION_PATH: ${{ github.action_path }}
+      # scripts/action/scan.sh records report-present, report and exit-code.
+      run: bash "$ACTION_PATH/scripts/action/scan.sh"
 
     # Managed scan: full-head SAST/SCA, no diff scoping, no local gate. The
     # engine writes the exact document the backend will receive; the runner
@@ -349,8 +317,12 @@ runs:
           exit "$code"
         fi
 
+    # Only a report this scan actually wrote is uploaded. After a setup or scan
+    # failure there is nothing to upload, and trying would bury the real error
+    # under an unrelated one.
     - name: Upload SARIF to code scanning
-      if: ${{ inputs.mode != 'managed' && inputs.upload-sarif == 'true' && inputs.format == 'sarif' && always() }}
+      id: upload
+      if: ${{ inputs.mode != 'managed' && inputs.upload-sarif == 'true' && inputs.format == 'sarif' && steps.scan.outputs.report-present == 'true' && always() }}
       uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
       with:
         sarif_file: ${{ inputs.output }}
@@ -363,15 +335,12 @@ runs:
       env:
         # Route inputs through env (never interpolate ${{ }} into a run:
         # script) — the untrusted-input rule Fendix itself ships.
-        CODE: ${{ steps.scan.outputs.exit-code }}
+        EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
         FAIL_ON: ${{ inputs.fail-on }}
-      run: |
-        if [ "$CODE" = "0" ]; then
-          echo "✓ Fendix: release policy produced no BLOCK-status findings."
-        elif [ "$CODE" = "1" ]; then
-          echo "✗ Fendix: release policy produced BLOCK-status findings at the '${FAIL_ON}' severity threshold — see the Security tab annotations + decision summary."
-          exit 1
-        else
-          echo "✗ Fendix: scan error (exit $CODE)."
-          exit "$CODE"
-        fi
+        REPORT: ${{ inputs.output }}
+        REPORT_PRESENT: ${{ steps.scan.outputs.report-present }}
+        SARIF_UPLOAD: ${{ steps.upload.outcome }}
+        ACTION_PATH: ${{ github.action_path }}
+      # scripts/action/enforce.sh: empty -> setup failure (2), 0 pass, 1 BLOCK,
+      # 2 scan error, anything else fails closed (2).
+      run: bash "$ACTION_PATH/scripts/action/enforce.sh"
