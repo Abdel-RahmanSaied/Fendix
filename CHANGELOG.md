@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-10-15
+
 Makes the composite GitHub Action safe to run. Its Fendix binary now runs only
 after the release's cosign signature verifies, its Python engine is prepared
 from verified source with a hash-locked dependency set, and its failures are
