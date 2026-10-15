@@ -4,19 +4,25 @@ Fendix produces SARIF 2.1.0 output that integrates directly with GitHub Advanced
 
 ## Quick start — copy this workflow
 
-A complete, ready-to-use, digest-pinned v3.6.0 container workflow lives at
-[`examples/github-actions/fendix-scan.yml`](../examples/github-actions/fendix-scan.yml).
-Drop it into `.github/workflows/fendix-scan.yml` of your project and it
-will:
+A complete, digest-pinned v3.6.0 container workflow lives at
+[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/7cf1960f321c497e0b15da7e5e1f02d87988743e/examples/github-actions/fendix-scan.yml).
+Install it from that tested commit, not from `main`, as shown in
+[INTEGRATION_GUIDE §3.1](INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit);
+do not use `uses: Fendix-app/Fendix@v1` (see §3.2 there). Dropped into
+`.github/workflows/fendix-scan.yml` of your project, it will:
 
 - Scan on every PR and on push to `main`.
-- Upload SARIF to GitHub Code Scanning (inline annotations on the PR).
+- Upload SARIF to GitHub Code Scanning (inline annotations on the PR). A
+  private repository needs GitHub Code Security for this, so the upload is
+  skipped there unless the repository variable `FENDIX_UPLOAD_SARIF` is
+  `true`; the scan, comment and gate still run.
 - Persist the previous run's findings as a baseline (cached via
   `actions/cache`) so a PR comment shows only the diff.
-- Post a summary comment on each PR with finding counts, top 5
-  findings, and links to the Security tab.
+- Post a summary comment on each PR with finding counts and the top 5
+  findings.
 - Fail the build on a HIGH or CRITICAL finding that survives baseline
-  filtering **and** whose confidence band supports the claim (`--fail-on HIGH`).
+  filtering **and** whose confidence band supports the claim (`--fail-on HIGH`),
+  and on a scan error. A missing exit code fails closed.
 
 The sections below show the individual building blocks if you'd rather
 assemble your own workflow.
@@ -46,6 +52,7 @@ jobs:
     env:
       FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033
     permissions:
+      actions: read           # Required for SARIF upload on a private repository
       security-events: write  # Required for SARIF upload
       contents: read
 
@@ -72,8 +79,19 @@ jobs:
             --fail-on HIGH
         continue-on-error: true  # Upload SARIF even if findings exist
 
+      # Temporary, v3.6.0: a scan with no findings writes "rules": null,
+      # which upload-sarif rejects. Drop this step once your release's
+      # exporter writes "rules": [].
+      - name: Normalize empty SARIF rules
+        if: hashFiles('results.sarif') != ''
+        run: |
+          jq '(.runs[]?.tool.driver | select(has("rules") and .rules == null) | .rules) = []' results.sarif > results.sarif.tmp
+          mv results.sarif.tmp results.sarif
+
+      # A private repository needs GitHub Code Security for this upload.
       - name: Upload SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v3
+        if: hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: results.sarif
           category: fendix
