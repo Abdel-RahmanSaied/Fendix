@@ -213,9 +213,10 @@ it.
   for an attacker to exfiltrate.
 - **Reproducible release matrix.** The release workflow runs in a
   declared, audited CI environment with **commit-SHA-pinned third-party
-  actions** (every `uses:` line carries a 40-char SHA followed by a
-  human-readable major-tag comment, e.g.
-  `actions/checkout@34e114...d5 # v4`). A `dependabot` config can
+  actions** (every `uses:` line in the workflows and in the root
+  `action.yml` carries a 40-char SHA followed by a human-readable tag
+  comment, e.g. `actions/checkout@34e114...d5 # v4`; CI enforces this
+  with `scripts/check-action-pins.sh`). A `dependabot` config can
   bump these by opening a PR rather than silently moving the tag. The
   build ldflags (`-s -w -X main.Version=...`) and Go version (1.22)
   are recorded in `release.yml`.
