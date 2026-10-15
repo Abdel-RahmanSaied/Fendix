@@ -101,18 +101,16 @@ jobs:
         run: actionlint -color
 
       # Enforce the SHA-pin policy directly. actionlint itself doesn't
-      # mandate SHA-pin; this guard is a one-liner that fails CI if any
-      # workflow re-introduces a floating @vN tag for a third-party
-      # action. GitHub-published actions/* are also pinned for
-      # consistency.
+      # mandate SHA-pin. scripts/check-action-pins.sh fails CI if any
+      # workflow, or the root action.yml that users run as the composite
+      # Action, references an action by tag, branch or short SHA instead
+      # of a full commit SHA. Its self-test plants floating references
+      # first, so the guard itself is proven on every run.
       - name: Enforce SHA-pin policy
         run: |
           set -eu
-          if grep -EHn 'uses: [a-zA-Z0-9_./-]+@v[0-9]+\b' .github/workflows/*.yml; then
-            echo "::error::Found a floating @vN tag pin. Every uses: line must pin to a 40-char SHA followed by '# vN' (see docs/threat-model.md §T6)."
-            exit 1
-          fi
-          echo "✓ all workflow action pins are SHAs"
+          sh scripts/check-action-pins.sh --self-test
+          sh scripts/check-action-pins.sh .github/workflows/*.yml action.yml
 
   public-claims:
     name: Public namespace and claim regression

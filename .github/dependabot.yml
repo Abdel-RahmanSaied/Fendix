@@ -1,14 +1,15 @@
 # Dependabot config — keeps every dependency surface current.
 #
-# All third-party actions in .github/workflows/*.yml are pinned to
-# 40-char commit SHAs (see docs/threat-model.md §T6). A pinned SHA
+# All third-party actions in .github/workflows/*.yml and the root
+# action.yml are pinned to 40-char commit SHAs (see
+# docs/threat-model.md §T6; enforced by scripts/check-action-pins.sh). A pinned SHA
 # never moves unless someone explicitly bumps it, which means stale
 # pins are an active maintenance burden. Dependabot opens a PR per
 # bumpable dep on a weekly cadence; the SECURITY.md verify-blob
 # commands stay valid as long as the bumps are reviewed.
 #
 # Ecosystems covered:
-#   - github-actions  → .github/workflows/*.yml
+#   - github-actions  → .github/workflows/*.yml and action.yml
 #   - gomod           → go/go.mod
 #   - pip             → python/requirements.txt
 #   - docker          → Dockerfile, Dockerfile.app
