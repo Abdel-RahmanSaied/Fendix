@@ -1044,7 +1044,10 @@ func RenderSARIF(w io.Writer, findings []models.Finding, meta ScanMetadata) erro
 
 	// Build deduplicated rules list keyed by stable check identity.
 	ruleMap := make(map[string]int) // stable ruleKey -> index in rules
-	var rules []SARIFRule
+	// Never nil: SARIF 2.1.0 types driver.rules as an array, so a scan with
+	// no findings must write "rules": [] (a nil slice marshals to null, which
+	// GitHub's upload-sarif rejects).
+	rules := []SARIFRule{}
 
 	for _, f := range findings {
 		key := ruleKeyFor(f)
