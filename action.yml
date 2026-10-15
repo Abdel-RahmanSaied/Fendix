@@ -173,26 +173,25 @@ runs:
         [ -z "$URL" ] || fail "managed mode does not scan a URL in the pilot"
         [ -z "$SPEC" ] || fail "managed mode does not take a spec in the pilot"
 
+    # cosign first, for every caller: the Fendix binary is always verified by
+    # its release signature before it first runs (engine_path changes only the
+    # Python tree), and the Python engine's signed build record uses it too.
+    - name: Install source verification tool
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: "v2.4.1"
+
+    # scripts/action/install.sh: one exact release from Fendix-app/Fendix,
+    # installed by the installer bundled with this Action revision with the
+    # signature REQUIRED, into a private directory that is published to PATH
+    # only after the exact version is confirmed. No inherited FENDIX_*
+    # variable reaches the installer.
     - name: Install Fendix
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-      run: |
-        set -euo pipefail
-        # The installer reads the pin from the environment. Passing it as an
-        # argv option silently installed 'latest' instead, which managed mode
-        # cannot tolerate and local mode never wanted.
-        if [ "$VERSION" = "latest" ]; then
-          curl -fsSL https://get.fendix.dev/install.sh | sh
-        else
-          curl -fsSL https://get.fendix.dev/install.sh | FENDIX_VERSION="$VERSION" sh
-          installed="$(fendix version 2>/dev/null | head -1)"
-          case "$installed" in
-            *"$VERSION"*) ;;
-            *) echo "::error::requested $VERSION but installed $installed"; exit 1 ;;
-          esac
-        fi
-        fendix version
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/action/install.sh"
 
     # Python 3.11 for the engine's preparation only: update-environment: false
     # keeps setup-python from putting it on PATH or setting pythonLocation
@@ -203,12 +202,6 @@ runs:
       with:
         python-version: "3.11"
         update-environment: false
-
-    - name: Install source verification tool
-      if: ${{ inputs.engine_path == '' }}
-      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      with:
-        cosign-release: "v2.4.1"
 
     # Bind the Python tree to the installed binary's signed build record,
     # install its dependencies in an isolated venv (the release's hash lock
