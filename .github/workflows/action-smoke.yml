@@ -39,6 +39,21 @@ jobs:
           for name in ['python-engine', 'python-engine/injection', 'semgrep', 'secrets', 'textscan']:
               assert states.get(name) == 'ok', (name, states)
           PY
+      # The Action installed exactly v3.6.0, signature-verified, into its own
+      # private directory under RUNNER_TEMP: that is the fendix on PATH, and
+      # nothing was written to /usr/local/bin.
+      - name: Assert the verified binary runs from the Action's private directory
+        run: |
+          set -eu
+          path=$(command -v fendix)
+          case "$path" in
+            "$RUNNER_TEMP"/fendix-bin.*/fendix) ;;
+            *) echo "::error::fendix resolves to $path, not the Action's private directory"; exit 1 ;;
+          esac
+          out=$(fendix version)
+          [ "${out%%$'\n'*}" = "fendix version v3.6.0 (linux/amd64)" ] || { echo "::error::unexpected version: $out"; exit 1; }
+          [ ! -e /usr/local/bin/fendix ] || { echo "::error::a fendix binary was written to /usr/local/bin"; exit 1; }
+          echo "fendix v3.6.0 runs from $path"
       # setup-python runs with update-environment: false, so the caller's job
       # keeps its own environment: no pythonLocation or *_ROOT_DIR, and the
       # tool-cache interpreter is not on PATH. (The Action's venv and
@@ -132,6 +147,79 @@ jobs:
           print("analyzers ok:", ", ".join(required))
           PY
 
+  # Signature verification is required: against the real v3.6.0 release, an
+  # install without cosign, or one whose signature cannot verify, is refused
+  # with nothing installed, run or published. And hostile inherited FENDIX_*
+  # variables cannot move the Action off the official repository and signer.
+  installer-fails-closed:
+    name: Installer fails closed (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [no-cosign, wrong-signer]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - if: ${{ matrix.case == 'wrong-signer' }}
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: "v2.4.1"
+      - name: The install must be refused, with nothing installed, run or published
+        env:
+          CASE: ${{ matrix.case }}
+        run: |
+          # The default shell runs with -e; the install below is expected to
+          # fail, so its status is captured instead of ending the step early.
+          set -u +e
+          published="$RUNNER_TEMP/published-path"
+          : >"$published"
+          if [ "$CASE" = no-cosign ]; then
+            if command -v cosign >/dev/null; then echo "::error::precondition: this runner already has cosign"; exit 1; fi
+            # The Action's own install step, with no cosign available.
+            VERSION=v3.6.0 ACTION_PATH="$GITHUB_WORKSPACE" GITHUB_PATH="$published" \
+              bash scripts/action/install.sh >install.log 2>&1
+            rc=$?
+            want="FENDIX_REQUIRE_SIGNATURE=1 but cosign is not installed"
+          else
+            # The bundled installer expecting another signer: the release's
+            # real signature cannot verify against it.
+            dir=$(mktemp -d "$RUNNER_TEMP/fendix-bin.wrong-signer.XXXXXXXX")
+            FENDIX_VERSION=v3.6.0 FENDIX_DIR="$dir" FENDIX_REQUIRE_SIGNATURE=1 FENDIX_SIGN_REPO=not-fendix/not-fendix \
+              PATH="$dir:$PATH" sh scripts/install.sh >install.log 2>&1
+            rc=$?
+            want="cosign signature verification FAILED"
+          fi
+          cat install.log
+          [ "$rc" -ne 0 ] || { echo "::error::$CASE: the install was not refused"; exit 1; }
+          grep -qF "$want" install.log || { echo "::error::$CASE: expected '$want'"; exit 1; }
+          if grep -q '^fendix version v' install.log; then echo "::error::$CASE: a fendix binary ran"; exit 1; fi
+          for leftover in "$RUNNER_TEMP"/fendix-bin.*/fendix; do
+            if [ -e "$leftover" ]; then echo "::error::$CASE: $leftover was left installed"; exit 1; fi
+          done
+          [ ! -s "$published" ] || { echo "::error::$CASE: a directory was published to PATH"; exit 1; }
+          echo "$CASE: refused; nothing installed, run or published"
+      - name: Inherited FENDIX_* variables cannot redirect or weaken the Action
+        if: ${{ matrix.case == 'wrong-signer' }}
+        env:
+          FENDIX_REPO: not-fendix/not-fendix
+          FENDIX_SIGN_REPO: not-fendix/not-fendix
+          FENDIX_ALLOW_UNVERIFIED: "1"
+          FENDIX_REQUIRE_SIGNATURE: "0"
+          FENDIX_VERSION: v0.0.1
+          FENDIX_DIR: /tmp/not-the-action
+        run: |
+          set -eu
+          published="$RUNNER_TEMP/published-path-2"
+          : >"$published"
+          VERSION=v3.6.0 ACTION_PATH="$GITHUB_WORKSPACE" GITHUB_PATH="$published" bash scripts/action/install.sh | tee install.log
+          grep -qF "cosign signature verified." install.log
+          dir=$(cat "$published")
+          case "$dir" in "$RUNNER_TEMP"/fendix-bin.*) ;; *) echo "::error::published $dir"; exit 1 ;; esac
+          out=$("$dir/fendix" version)
+          [ "${out%%$'\n'*}" = "fendix version v3.6.0 (linux/amd64)" ]
+          [ ! -e /tmp/not-the-action ] || { echo "::error::FENDIX_DIR redirected the install"; exit 1; }
+          echo "official v3.6.0 verified and installed despite the hostile environment"
+
   # Local-mode failure handling (scripts/action/{scan,enforce}.sh). Every leg
   # must fail closed with the result it names. This job holds no
   # security-events permission, so nothing is ever uploaded from this
@@ -223,6 +311,12 @@ jobs:
               "Action failure (scan-error)") printf '%s\n' "present|The scan did not complete" ;;
               "Action failure (block)") printf '%s\n' "present|At least one finding reached BLOCK status" ;;
             esac
+            # Every Action job: the signature verified before the binary first
+            # ran, the exact version confirmed, and never checksum-only.
+            printf '%s\n' \
+              "before|cosign signature verified.|fendix version v" \
+              "present|Verified Fendix v" \
+              "absent|cosign not installed"
             case "$1" in
               "Action failure ("*) printf '%s\n' \
                 "present|##[start-action display=Enforce fail-on threshold;" \
@@ -256,10 +350,24 @@ jobs:
             [ -n "$rules" ] || { echo "::error::$name: no log rules for this job"; failed=1; continue; }
             # A literal substring match without a pipe: under the default
             # pipefail, `printf | grep -q` can fail with SIGPIPE on a match.
-            check() { if [[ $log == *"$2"* ]]; then [ "$1" = present ]; else [ "$1" = absent ]; fi; }
+            # before|A|B: both appear, and the first A precedes the first B.
+            check() {
+              case "$1" in
+                before)
+                  local a=${2%%|*} b=${2#*|}
+                  [[ $log == *"$b"* ]] || return 1
+                  local head=${log%%"$b"*}
+                  [[ $head == *"$a"* ]] ;;
+                *) if [[ $log == *"$2"* ]]; then [ "$1" = present ]; else [ "$1" = absent ]; fi ;;
+              esac
+            }
             while IFS= read -r rule; do
               if check "${rule%%|*}" "${rule#*|}"; then
                 echo "✓ $name: ${rule%%|*}: ${rule#*|}"
+              elif [ "${rule%%|*}" = before ]; then
+                text=${rule#*|}
+                echo "::error::$name: expected '${text%%|*}' before the first '${text#*|}' in the log"
+                failed=1
               else
                 echo "::error::$name: expected '${rule#*|}' to be ${rule%%|*} in the log"
                 failed=1
