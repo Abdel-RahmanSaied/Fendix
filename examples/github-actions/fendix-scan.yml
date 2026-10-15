@@ -2,17 +2,19 @@
 #
 # Drop this into `.github/workflows/fendix-scan.yml` of your project. It
 # scans your repo (and optional OpenAPI spec) on every PR and on push to
-# main, uploads SARIF to the GitHub Security tab, posts a summary comment
+# main, uploads SARIF to the GitHub Security tab (public repositories; see
+# the Code Security note below for private ones), posts a summary comment
 # on the PR, and gates the merge on findings at or above HIGH severity.
 #
 # What it does on each event:
 #
 #   - pull_request: scans against the newest baseline visible in the event's
 #     Actions cache scope, posts a PR comment summarising findings (top 5 + counts),
-#     uploads SARIF for inline annotations, and fails the build when
-#     --fail-on triggers.
+#     uploads SARIF for inline annotations (see the Code Security note
+#     below), and fails the build when --fail-on triggers.
 #
-#   - push to main: scans, saves a baseline cache entry, and uploads SARIF.
+#   - push to main: scans, saves a baseline cache entry, and uploads SARIF
+#     (see the Code Security note below).
 #     A later PR can restore that main entry when it is the newest entry
 #     visible in the PR's cache scope.
 #
@@ -169,6 +171,10 @@ jobs:
       - name: Post PR summary comment
         if: github.event_name == 'pull_request' && always() && hashFiles('findings.json') != ''
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          # Same condition as the upload step, so the comment never points at
+          # a Security tab this run did not upload to.
+          FENDIX_SARIF_UPLOAD: ${{ !github.event.repository.private || vars.FENDIX_UPLOAD_SARIF == 'true' }}
         with:
           script: |
             const fs = require('fs');
@@ -176,6 +182,7 @@ jobs:
             const summary = report.summary || {};
             const sources = report.sources || {};
             const total = report.total ?? (report.findings || []).length;
+            const sarifUploaded = process.env.FENDIX_SARIF_UPLOAD === 'true';
 
             const lines = [
               `## Fendix scan: ${total} finding${total === 1 ? '' : 's'}`,
@@ -202,13 +209,17 @@ jobs:
                 return `- **[${f.severity}]** ${f.title} — \`${where}\``;
               });
               lines.push('### Top findings', ...top);
-              if (total > 5) lines.push('', `_…and ${total - 5} more in the SARIF report._`);
+              if (total > 5) lines.push('', `_…and ${total - 5} more${sarifUploaded ? ' in the SARIF report' : ''}._`);
             }
 
             lines.push(
               '',
-              '<sub>Open the **Security** tab for inline annotations. ' +
-                'Re-run this workflow to refresh.</sub>'
+              sarifUploaded
+                ? '<sub>Open the **Security** tab for inline annotations. ' +
+                    'Re-run this workflow to refresh.</sub>'
+                : '<sub>SARIF was not uploaded: Security-tab upload for a private ' +
+                    'repository needs GitHub Code Security and the repository ' +
+                    'variable FENDIX_UPLOAD_SARIF=true. Re-run this workflow to refresh.</sub>'
             );
 
             await github.rest.issues.createComment({
@@ -228,8 +239,8 @@ jobs:
           SCAN_EXIT: ${{ steps.scan.outputs.exit_code }}
         run: |
           case "$SCAN_EXIT" in
-            0) echo "Fendix gate passed: no finding blocks at --fail-on HIGH." ;;
-            1) echo "::error title=Fendix gate::A finding blocks at --fail-on HIGH (fendix scan exited 1)."; exit 1 ;;
+            0) echo "Fendix gate passed: no finding blocks at the --fail-on threshold." ;;
+            1) echo "::error title=Fendix gate::A finding blocks at the --fail-on threshold (fendix scan exited 1)."; exit 1 ;;
             2) echo "::error title=Fendix gate::The scan did not complete (fendix scan exited 2)."; exit 2 ;;
             *) echo "::error title=Fendix gate::No usable scan result (exit code '$SCAN_EXIT'); failing closed."; exit 2 ;;
           esac
