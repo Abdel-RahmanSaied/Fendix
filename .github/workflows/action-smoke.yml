@@ -168,7 +168,9 @@ jobs:
         env:
           CASE: ${{ matrix.case }}
         run: |
-          set -u
+          # The default shell runs with -e; the install below is expected to
+          # fail, so its status is captured instead of ending the step early.
+          set -u +e
           published="$RUNNER_TEMP/published-path"
           : >"$published"
           if [ "$CASE" = no-cosign ]; then
