@@ -61,6 +61,30 @@ DETECTORS = (
             re.IGNORECASE,
         ),
     ),
+    # A workflow line that runs the stale moving `v1` tag of the composite
+    # Action. Prose that quotes it as a warning is not a `uses:` line.
+    Detector(
+        "stale_action_ref",
+        re.compile(
+            r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*[\"']?Fendix-app/Fendix@v1(?![\w.])",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    # Retired claims about the Action and diff mode: diff mode scopes only the
+    # native file scanners, whole files, so it does not surface only "new"
+    # issues; requirements.txt declares ranges; the Action is not listed on
+    # the Marketplace.
+    Detector(
+        "obsolete_action_claim",
+        re.compile(
+            r"actually\s+introduced"
+            r"|net-new\s+(?:issues|findings)"
+            r"|pins\s+exact\s+versions"
+            r"|whitebox\s+scanners\s+(?:are\s+)?scoped\s+to\s+(?:the\s+)?changed\s+files"
+            r"|public\s+Marketplace\s+Action",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 
@@ -259,6 +283,18 @@ def self_test() -> None:
         ("personal_namespace", "brew tap Abdel-RahmanSaied/fendix", True),
         ("personal_namespace", "get.fendix.dev CNAME abdel-rahmansaied.github.io.", True),
         ("personal_namespace", '"github.com/Fendix-app/Fendix/go/internal/models"', False),
+        ("stale_action_ref", "      - uses: Fendix-app/Fendix@v1\n", True),
+        ("stale_action_ref", "uses: fendix-app/fendix@v1 # moving tag", True),
+        ("stale_action_ref", "> **Do not use `uses: Fendix-app/Fendix@v1`.**", False),
+        ("stale_action_ref", "      - uses: Fendix-app/Fendix@v1.2.0", False),
+        ("stale_action_ref", "      - uses: Fendix-app/Fendix@24c54180a607b1449ed407dd24f251e4e9147c8d", False),
+        ("obsolete_action_claim", "only surfaces issues the PR actually introduced", True),
+        ("obsolete_action_claim", "`python/requirements.txt` pins exact versions.", True),
+        ("obsolete_action_claim", "Whitebox scanners are scoped to the changed files", True),
+        ("obsolete_action_claim", "a CI job using the public Marketplace Action", True),
+        ("obsolete_action_claim", "only flags net-new issues", True),
+        ("obsolete_action_claim", "whole files, so existing issues in them are reported", False),
+        ("obsolete_action_claim", "Use a baseline to report only new findings.", False),
     )
     detectors = {detector.name: detector.expression for detector in DETECTORS}
     for detector_name, sample, expected in cases:

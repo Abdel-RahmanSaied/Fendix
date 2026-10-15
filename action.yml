@@ -1,27 +1,35 @@
-# Fendix GitHub Action — Marketplace listing.
+# Fendix GitHub Action (composite).
 #
-# Runs a Fendix security scan in CI. On pull requests it defaults to a
-# diff-aware scan (only files changed in the PR), so the check is fast and
-# only surfaces issues the PR actually introduced. Uploads SARIF so findings
-# render inline in the GitHub Security tab and as PR annotations.
+# Runs a Fendix security scan in CI and gates the job on the release policy.
+# On pull_request events (diff: auto) the native secrets, text and Semgrep
+# scanners read only the files the PR changes, whole files, so existing issues
+# in those files are reported; dependency checks run when a manifest changed;
+# the Python engine and DAST always cover the full target. Use a baseline to
+# report only new findings. SARIF goes to GitHub code scanning: a private or
+# internal repository needs GitHub Code Security and `actions: read` for that,
+# otherwise set upload-sarif: 'false'.
 #
-# Usage (minimal — SAST/secrets/SCA on changed code in a PR). This revision
-# prepares Python automatically from the installed release's signed build
-# record. Published tags through v3.6.0 still require an explicit tree;
-# see README.md for the version boundary.
+# The Fendix binary comes from the installer bundled with this revision, into
+# a private temporary directory, and runs only after its release's cosign
+# signature verifies. There is no checksum-only fallback, so the runner needs
+# outbound access to GitHub releases and to Sigstore (proxies through the
+# standard HTTPS_PROXY variables; a ~/.curlrc is ignored).
 #
-#   - uses: actions/checkout@v4
-#     with: { fetch-depth: 0 }          # diff mode needs history
-#   - uses: Fendix-app/Fendix@047d18502d9a71af742bee4da6cc96756195ae7c
+# Usage: pin this Action to the full commit SHA of a validated release, with
+# version set to that same release.
+#
+#   - uses: actions/checkout@<full-commit-sha> # v6
+#     with: { fetch-depth: 0 }          # diff mode compares against the base ref
+#   - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
 #     with:
-#       version: v3.6.0
+#       version: <that release, for example v3.6.1>
 #       code: .
 #
-# Usage (full — add a DAST target + fail the build on HIGH):
+# Usage (full: add a DAST target and fail the build on HIGH):
 #
-#   - uses: Fendix-app/Fendix@047d18502d9a71af742bee4da6cc96756195ae7c
+#   - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
 #     with:
-#       version: v3.6.0
+#       version: <that release>
 #       url: ${{ secrets.STAGING_API_URL }}
 #       code: .
 #       spec: openapi.yaml
@@ -51,7 +59,7 @@ inputs:
     required: false
     default: "HIGH"
   diff:
-    description: "Diff-aware scan: 'auto' scopes to PR-changed files on pull_request events and runs a full scan otherwise; 'true' forces diff vs the base ref; 'false' always full-scans."
+    description: "Diff mode. 'auto' (default) turns it on for pull_request events only: the native secrets, text and Semgrep scanners read the files changed vs the PR base ref, dependency checks run when a manifest changed, and the Python engine and DAST still scan the full target. 'true' turns it on for every event; without a PR base ref it compares against HEAD, which on a fresh checkout leaves those scanners no changed files. 'false' always scans in full. If the diff cannot be computed, the scan falls back to a full scan."
     required: false
     default: "auto"
   format:
@@ -63,11 +71,11 @@ inputs:
     required: false
     default: "fendix-results.sarif"
   upload-sarif:
-    description: "Upload the SARIF report to GitHub code scanning (only effective when format=sarif)."
+    description: "Upload the SARIF report to GitHub code scanning, when format=sarif and the scan wrote a report. Needs security-events: write; a private or internal repository also needs actions: read and GitHub Code Security."
     required: false
     default: "true"
   version:
-    description: "Fendix version to install (e.g. v3.6.0). 'latest' installs the newest release."
+    description: "Fendix release to install: an exact tag such as v3.6.0, or 'latest', resolved once to an exact tag. The binary must verify against its release's cosign signature, so only signed releases install; automatic Python preparation (engine_path empty) needs a signed build record, published from v3.5.0."
     required: false
     default: "latest"
   extra-args:
@@ -103,7 +111,7 @@ inputs:
     required: false
     default: "https://api.fendix.dev"
   engine_path:
-    description: "Optional caller-managed Python engine directory. Empty prepares the immutable source matching the installed binary via its signed build record. Both paths install requirements in an isolated Python 3.11 environment."
+    description: "Optional caller-managed Python engine directory. Empty (default): the installed release's Python source is fetched at the commit its signed build record names, and its dependencies are installed from that release's hash-locked python/requirements.lock (releases up to v3.6.0 have none and use requirements.txt with a pydantic<2.14 bound). Set: the directory's requirements.txt is installed with the same pydantic<2.14 bound. Both install into an isolated Python 3.11 venv; the Fendix binary itself is signature-verified either way."
     required: false
     default: ""
 

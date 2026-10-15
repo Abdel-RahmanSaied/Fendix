@@ -7,6 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Makes the composite GitHub Action safe to run. Its Fendix binary now runs only
+after the release's cosign signature verifies, its Python engine is prepared
+from verified source with a hash-locked dependency set, and its failures are
+legible and fail closed. Also fixes invalid SARIF for scans with no findings.
+`fendix scan` keeps its report schema, finding policy and exit codes; the diff
+behaviour is unchanged and now documented accurately. Read "Upgrading" before
+moving a workflow to this release.
+
+### Security
+
+- **The Action verifies the binary's signature before it first runs** (#113).
+  It used to install Fendix before cosign existed, so the installer fell back
+  to checksum-only verification and the binary ran before any signature
+  check. Now:
+  - cosign is installed first, for every caller, including those that set
+    `engine_path`;
+  - the installer bundled with the Action revision (no longer
+    `get.fendix.dev`) installs one exact release from `Fendix-app/Fendix`
+    with `FENDIX_REQUIRE_SIGNATURE=1`, checking the checksum and then the
+    signature before installing;
+  - every inherited `FENDIX_*` variable is removed from the installer's
+    environment, so none can redirect the source, signer, directory or
+    version, or weaken verification;
+  - the binary goes into a unique private directory under `RUNNER_TEMP` and
+    must report exactly the requested release before that directory is added
+    to `PATH`.
+
+  There is no checksum-only fallback.
+- **The Action's SARIF upload is pinned by commit** (#109): `upload-sarif`
+  v4.38.3 instead of the floating, deprecated `@v3`. The SHA-pin policy now
+  covers `action.yml` as well as the workflows, and rejects `@main` and short
+  SHAs, not just `@vN`.
+- **The Action prepares its Python engine from verified source** (#98). The
+  source is fetched at the commit named by the release's cosign-signed build
+  record, and the installed binary's hash must appear in that record. A
+  missing record or signature, a mismatched binary or an unsafe archive stops
+  the Action.
+
+### Fixed
+
+- **SARIF for a scan with no findings is valid** (#106). The exporter wrote
+  `"rules": null`, which SARIF 2.1.0 forbids and GitHub's `upload-sarif`
+  rejects, so a clean scan failed at the upload. It now writes `"rules": []`.
+  This affects `fendix scan --format sarif` and `fendix report --format
+  sarif`. The goldens are validated against the OASIS SARIF 2.1.0 schema.
+- **The Action works with its defaults** (#98). Every tag through v3.6.0 ran
+  `fendix engine sync` with no Python tree when `engine_path` was empty, and
+  failed before scanning.
+- **Action failures are legible and fail closed** (#110).
+  - A setup failure ends with "A setup step failed before the scan" and exit
+    2, not bash's `numeric argument required`.
+  - SARIF is uploaded only when the scan wrote a report.
+  - Exit code `1` is a policy `BLOCK` at the configured `fail-on`, `2` a scan
+    error, and any other value fails closed with `2`.
+- **Clear Action setup errors** (#112), for:
+  - a release that predates signed build records (they are published from
+    v3.5.0);
+  - a missing or incomplete record;
+  - a signature that does not verify;
+  - a failed download, pip install or engine sync.
+
+  Only transient download failures are retried: at most three attempts,
+  keeping the original reason.
+- **Semgrep keeps running** (#97). Semgrep's MCP 1.16.x imports
+  `eval_type_backport`, which Pydantic 2.14 removed; `python/requirements.txt`
+  now bounds `pydantic<2.14`.
+- **`fendix init --ci gitlab` keeps SARIF as an ordinary artifact** (#97). It
+  no longer declares SARIF under `artifacts:reports:sast`, which expects
+  GitLab's own SAST schema.
+- **The `--diff` help states what diff mode scopes.**
+  - The native secrets, text and Semgrep scanners read the changed files,
+    whole files.
+  - Dependency checks run when a manifest changed.
+  - The Python engine, DAST and plugins scan the full target.
+  - A failed `git diff` falls back to a full scan.
+
+  Behaviour is unchanged.
+
+### Changed
+
+- **Action Python dependencies are reproducible** (#112).
+  - A release's own tree installs only from its hash-locked
+    `python/requirements.lock`, with `--require-hashes`. The lock is derived
+    from `requirements.txt` by `scripts/release/regenerate-python-lock.sh`.
+    It pins the proven line: `semgrep` 1.141.0, `mcp` 1.16.0, `pydantic`
+    2.13.5.
+  - Releases up to v3.6.0 have no lock and keep `requirements.txt` with the
+    `pydantic<2.14` bound. A later release without a lock is refused.
+  - A caller-managed `engine_path` still installs its own `requirements.txt`
+    with that bound, and a lock inside it is not used.
+- **`setup-python` no longer changes the caller's job environment** (#112).
+  It runs with `update-environment: false`, so `pythonLocation` and
+  `Python*_ROOT_DIR` are no longer set, and the tool-cache interpreter is not
+  added to `PATH`. The Action's venv `bin/` and `FENDIX_ENGINE` are still
+  published for later steps.
+- **The Action's binary install** (#113).
+  - It lives in a private temporary directory, no longer `/usr/local/bin`,
+    and no `sudo` is needed.
+  - A caller's `~/.curlrc` is ignored; proxies work through `HTTPS_PROXY` and
+    `NO_PROXY`.
+  - `version` must be an exact release tag or `latest`, which is resolved
+    once. A request for `v3.6.1` never accepts `v3.6.10`.
+  - The log records the verified binary's path and SHA-256.
+- **The scan step** (#110). A file already at the `output` path is removed
+  before the scan, so it cannot pass for the scan's report. The logged scan
+  command quotes its arguments.
+- **Action descriptions only.** The descriptions of `diff`, `upload-sarif`,
+  `version` and `engine_path` now state their actual behaviour. No input or
+  output was added, removed or renamed.
+- **The reference workflow** (`examples/github-actions/fendix-scan.yml`,
+  #104, #105). It pins `upload-sarif` v4.38.3 and grants `actions: read`. Its
+  gate decides from the scan's exit code even when a reporting step failed,
+  and fails closed. Private repositories skip the SARIF upload unless the
+  variable `FENDIX_UPLOAD_SARIF` is `true`. A temporary step normalizes v3.6.0's
+  `"rules": null`. It passed external end-to-end tests on `ubuntu-24.04` and
+  `ubuntu-26.04` (#108).
+- **Documentation** (#107 and this release). The docs recommend the reference
+  workflow at a fixed, tested commit and warn against the `v1` tag. They also
+  document:
+  - diff behaviour;
+  - the permissions for public and private repositories;
+  - the GitHub Code Security requirement for private SARIF upload;
+  - the Sigstore connectivity the Action requires;
+  - the signed-release boundary;
+  - the Python lock behaviour.
+
+  New claim detectors flag workflow lines that use `Fendix-app/Fendix@v1`, and
+  the retired diff, lock and Marketplace claims.
+
+### Upgrading
+
+- **Pin the Action to the v3.6.1 release commit**, with `version: v3.6.1`.
+  Workflows on `@v3.6.0` or older tags keep the old behaviour. **Do not use
+  `@v1`:** it still points to a June 2026 revision with known defects.
+- **The runner needs outbound HTTPS to Sigstore** (its TUF root and Rekor), as
+  well as to GitHub and PyPI. Without Sigstore access the Action's install
+  fails, and there is no opt-out.
+- **SARIF upload in a private or internal repository** needs `actions: read`
+  and GitHub Code Security. Without Code Security, set `upload-sarif: 'false'`.
+- **Releases without a cosign signature can no longer be installed by the
+  Action.** Automatic Python preparation needs v3.5.0 or later.
+- **Later steps that read `pythonLocation` or `Python*_ROOT_DIR` from the
+  Action**, or that expect `fendix` in `/usr/local/bin`, need their own
+  `setup-python` step or should use `fendix` from `PATH`.
+
+### Known limitations
+
+- **Diff mode is unchanged** and scopes whole files of the native scanners
+  only; use a baseline to report only new findings. With `--code` set to a
+  subdirectory of the repository, diff mode can miss changed files. Fixes are
+  planned for v3.7.0.
+- **The Semgrep and Pydantic line is held** at the versions above. Upgrading
+  to Semgrep ≥1.180 with Pydantic 2.14 is planned for v3.7.0, as one paired
+  change (#111).
+- **Pull requests from forks** get a read-only token, so the Action cannot
+  upload SARIF there.
+
 ## [3.6.0] - 2026-10-06
 
 Fixes a gate bypass: baselines and `.fendix-ignore` rules suppressed whole

@@ -105,7 +105,7 @@ fendix scan --code . --staged --fast --python-engine=false  # native secrets + t
 fendix scan --code . --diff=origin/main
 ```
 
-`--diff` scopes the white-box scanners (secrets, textscan, semgrep) to the changed files and runs the dependency-CVE scanners only when a manifest changed. `--fast` drops semgrep and the native dependency passes. Because `--code` currently auto-enables the Python engine, add `--python-engine=false` when you require the native-only pre-commit path. The missing implication (`--fast` should suppress Python itself) is a known product defect; the explicit false flag is the current workaround.
+`--diff` limits the native white-box scanners (secrets, textscan, semgrep) to the changed files, whole files, so existing issues in them are reported, and runs the dependency-CVE scanners only when a manifest changed. The Python engine, DAST and plugins always scan the full target, and if `git diff` fails the scan falls back to a full scan. Use a baseline to report only new findings. `--fast` drops semgrep and the native dependency passes. Because `--code` currently auto-enables the Python engine, add `--python-engine=false` when you require the native-only pre-commit path. The missing implication (`--fast` should suppress Python itself) is a known product defect; the explicit false flag is the current workaround.
 
 ### Pre-commit hook
 
@@ -649,26 +649,59 @@ and the gate run either way.
 > [warning in the integration guide](docs/INTEGRATION_GUIDE.md#32-the-composite-github-action--do-not-use-v1).
 > Do not reference `@main` either.
 
-#### The composite Action (unreleased)
+#### The composite Action
 
-The [Fendix Action](action.yml) runs a **diff-aware** scan on pull requests and
-uploads SARIF. This source revision prepares Python automatically: it verifies
-the installed binary against its signed release build record, fetches the
-`python/` tree at the record's immutable source commit, installs the declared
-requirements in a Python 3.11 virtual environment outside the target checkout,
-and runs `fendix engine sync`. A missing record, invalid signature, mismatched
-binary, or dependency-install failure stops the Action. Requirement constraints
-are version-matched, with a Pydantic <2.14 compatibility bound for the
-current Semgrep/MCP line, but are not a full transitive dependency lock.
+The [Fendix Action](action.yml) on `main` is what v3.6.1 will ship. Until that
+release is out and has passed its own end-to-end validation, use the reference
+workflow above. What the Action does:
 
-`engine_path` is an optional caller-managed override; it must contain `engine.py`
-and `requirements.txt`. Its requirements are also installed in an isolated venv.
-Source/binary matching for this explicit override is the caller's responsibility.
-The published Action tags through v3.6.0 still have the empty-path defect, and
-`v1` has the further defects listed in the guide. The revision below has not
-been released or validated end to end, so it is not the recommended path yet;
-use the reference workflow above. Older releases without a signed build record
-require the explicit override. The example shows that revision's interface:
+- **Verified install.** cosign is installed first. The installer bundled with
+  the Action revision (never fetched live) installs one exact release from
+  `Fendix-app/Fendix`. `version: latest` is resolved once to an exact tag, and
+  the binary must report exactly that version. The release's checksum and
+  cosign signature must both verify before the binary first runs: there is no
+  checksum-only fallback. The binary goes into a private temporary directory
+  under `RUNNER_TEMP` (no `sudo`, nothing written to `/usr/local/bin`), which
+  is added to `PATH` only after those checks. Inherited `FENDIX_*` variables
+  cannot redirect or weaken the install, and a `~/.curlrc` is ignored.
+- **Network.** The runner needs outbound HTTPS to GitHub (release downloads,
+  and the API for `latest`) and to Sigstore (its TUF root and Rekor) for the
+  signature check; the Python engine also needs `codeload.github.com` and
+  PyPI. Proxies work through the standard `HTTPS_PROXY` and `NO_PROXY`
+  variables. Without Sigstore access the install fails.
+- **Supported releases.** Only releases published with a cosign signature can
+  be installed. Automatic Python preparation (the default, `engine_path`
+  empty) needs a signed build record, published from v3.5.0.
+- **Python engine.** With `engine_path` empty, the Python source is fetched at
+  the commit the release's signed build record names, and the installed
+  binary's hash must appear in that record. From v3.6.1 its dependencies are
+  installed only from the release's hash-locked `python/requirements.lock`
+  (`--require-hashes`); releases up to v3.6.0 ship no lock and use
+  `requirements.txt` with a `pydantic<2.14` compatibility bound. A
+  caller-managed `engine_path` must contain `engine.py` and `requirements.txt`;
+  its `requirements.txt` is installed with the same bound (a lock inside it is
+  not used), and matching it to the binary is the caller's responsibility.
+  Both use an isolated Python 3.11 venv. `setup-python` does not change the
+  rest of the job's environment, but the venv's `bin/` and `FENDIX_ENGINE`
+  stay available to later steps.
+- **Diff mode.** On `pull_request` events (`diff: auto`) the native secrets,
+  text and Semgrep scanners read only the changed files, whole files, so
+  existing issues in them are reported; dependency checks run when a manifest
+  changed; the Python engine and DAST always scan the full target. Use a
+  baseline to report only new findings.
+- **Gate.** The last step decides the job from the scan's exit code: `0`
+  passes, `1` is a policy `BLOCK`, `2` a scan error. A setup failure before the
+  scan, or any other value, fails closed with `2`.
+- **SARIF.** Uploaded with `github/codeql-action/upload-sarif` pinned to
+  v4.38.3, and only when the scan wrote a report. A private or internal
+  repository needs GitHub Code Security and `actions: read`; without Code
+  Security, set `upload-sarif: 'false'`. Pull requests from forks get a
+  read-only token and no secrets, so the upload cannot succeed there and a
+  secret-based DAST URL is empty.
+
+The permissions below are all the Action needs; it uses the job token only
+for the SARIF upload. The example pins a placeholder: use the full commit SHA
+of a validated release, with `version` set to that release.
 
 ```yaml
 name: Security Scan
@@ -676,22 +709,22 @@ on: [push, pull_request]
 
 permissions:
   contents: read
-  security-events: write    # required for the SARIF upload
+  security-events: write    # SARIF upload
+  actions: read             # SARIF upload in a private or internal repository
 
 jobs:
   fendix:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0      # diff-aware scanning needs git history
+          fetch-depth: 0      # diff mode compares against the PR base ref
 
-      - uses: Fendix-app/Fendix@047d18502d9a71af742bee4da6cc96756195ae7c # verified-source Python setup
+      - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
         with:
+          version: <that release>
           code: .
-          # Optional override: engine_path: /path/to/version-matched/python
-          # Published v3.6.0 tags require that override; pin a fixed Action revision.
-          url: ${{ secrets.STAGING_API_URL }}   # optional — adds DAST
+          url: ${{ secrets.STAGING_API_URL }}   # optional, adds DAST
           spec: openapi.yaml                     # optional
           fail-on: HIGH
 ```
@@ -700,13 +733,22 @@ jobs:
 <summary>Or wire it by hand (install script + raw CLI)</summary>
 
 ```yaml
-      - uses: actions/checkout@v4
-      - name: Install Fendix
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # cosign first, so the installer can require the release signature.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: "v2.4.1"
+      - name: Install Fendix (signature required)
+        env:
+          FENDIX_VERSION: v3.6.0
+          FENDIX_REQUIRE_SIGNATURE: "1"
         run: curl -fsSL https://get.fendix.dev/install.sh | sh
       - name: Run scan
+        env:
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}   # never interpolate secrets into run:
         run: |
           fendix scan \
-            --url ${{ secrets.STAGING_API_URL }} \
+            --url "$STAGING_API_URL" \
             --code . \
             --spec openapi.yaml \
             --fail-on HIGH \
