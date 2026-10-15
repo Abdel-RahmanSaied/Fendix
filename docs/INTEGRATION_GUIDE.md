@@ -458,7 +458,7 @@ A failing reporting step (SARIF upload, PR comment) still fails the job, but it 
 
 **Temporary step.** The v3.6.0 SARIF exporter writes `"rules": null` for a scan with no findings, which `upload-sarif` rejects as invalid SARIF. The step *Normalize empty SARIF rules (temporary, v3.6.0)* replaces that `null` with `[]` and changes nothing else. It will be removed when the workflow moves to a release whose exporter writes `"rules": []`.
 
-This file was tested end to end on 2026-10-15, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error. Not yet tested: a private repository with Code Security, and pull requests from forks.
+This file was tested end to end on 2026-10-15, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. A variant that changed only `runs-on` passed the core scenarios on `ubuntu-26.04` (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`), the image `ubuntu-latest` moves to from 2026-10-19; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
 
 ### 3.2 The composite GitHub Action — do not use `@v1`
 
