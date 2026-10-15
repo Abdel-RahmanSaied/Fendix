@@ -16,6 +16,14 @@
 #    - minor (v0.5.0): new features, backward-compatible (e.g., Phase 12 ships)
 #    - major (v1.0.0): breaking changes (CLI flag rename, JSON schema break)
 
+# 1b. Python lock: the composite Action installs a release's Python engine
+#     from python/requirements.lock (hash-locked, --require-hashes). CI fails
+#     when requirements.txt changed without a new lock; if it does, regenerate
+#     (about 20 minutes; CPython 3.11, linux/amd64, pinned image and
+#     pip-tools) and commit the lock before tagging. Never regenerate in CI.
+#     sh scripts/release/regenerate-python-lock.sh             # keep pins
+#     sh scripts/release/regenerate-python-lock.sh --upgrade   # re-resolve
+
 # 2. Roll the CHANGELOG: rename [Unreleased] → [X.Y.Z] - YYYY-MM-DD,
 #    write a 1-paragraph summary, then bullet under ### Added/Changed/Fixed.
 #    Keep the empty ## [Unreleased] heading at the top.

@@ -194,10 +194,15 @@ runs:
         fi
         fendix version
 
+    # Python 3.11 for the engine's preparation only: update-environment: false
+    # keeps setup-python from putting it on PATH or setting pythonLocation
+    # and friends for the rest of the caller's job.
     - name: Set up Python
+      id: python
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
       with:
         python-version: "3.11"
+        update-environment: false
 
     - name: Install source verification tool
       if: ${{ inputs.engine_path == '' }}
@@ -206,13 +211,16 @@ runs:
         cosign-release: "v2.4.1"
 
     # Bind the Python tree to the installed binary's signed build record,
-    # install its requirements in an isolated venv, then pin it for all scans.
+    # install its dependencies in an isolated venv (the release's hash lock
+    # when it ships one), then pin it for all scans. Run with setup-python's
+    # own interpreter, never whichever python3 is first on the caller's PATH.
     - name: Prepare Fendix Python engine
       shell: bash
       env:
         ENGINE_PATH: ${{ inputs.engine_path }}
         ACTION_PATH: ${{ github.action_path }}
-      run: python3 "$ACTION_PATH/scripts/prepare-action-engine.py"
+        PYTHON: ${{ steps.python.outputs.python-path }}
+      run: '"$PYTHON" "$ACTION_PATH/scripts/prepare-action-engine.py"'
 
     - name: Run Fendix scan
       id: scan
