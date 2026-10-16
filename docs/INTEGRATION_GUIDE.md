@@ -404,21 +404,21 @@ Key facts:
 
 Goal: fail the build when a scan finds something at/above a severity threshold, and surface the findings to reviewers.
 
-> **GitHub Actions: use the reference workflow at a fixed commit (§3.1).** Do not use `uses: Fendix-app/Fendix@v1`: the `v1` tag points to an outdated revision of the Action (§3.2). Do not reference `@main` either; it changes without review. The corrected Action ships in v3.6.2 and becomes the recommended path once that release passes its end-to-end validation.
+> **GitHub Actions:** the reference workflow at a fixed commit (§3.1) and the composite Action (§3.2) have both passed end-to-end validation with v3.6.2. `uses: Fendix-app/Fendix@v1` now resolves to the v3.6.2 release commit. Do not reference `@main`; it changes without review.
 
-The engine runs in CI from the official container image (§3.1, §3.4), or as the composite GitHub Action (§3.2), which is not currently recommended.
+The engine runs in CI from the official container image (§3.1, §3.4), or as the composite GitHub Action (§3.2).
 
 ### 3.1 Recommended — the reference workflow at a fixed commit
 
-[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml) at commit `46dd52e4880a06c3ebc7852ba572bb71f69a2644` is the recommended GitHub Actions setup until the released v3.6.1 Action passes its end-to-end validation. It runs the official v3.6.1 image by immutable digest and pins every third-party Action to a full commit SHA.
+[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml) at commit `41da3ae48fc17412893112061175120958b8b91e` is a tested GitHub Actions setup. It runs the official v3.6.2 image by immutable digest and pins every third-party Action to a full commit SHA.
 
 Install it from that commit, not from `main`:
 
 ```bash
 mkdir -p .github/workflows
 curl -fsSL -o .github/workflows/fendix-scan.yml \
-  https://raw.githubusercontent.com/Fendix-app/Fendix/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml
-echo "2feeec9841df574a2adcaeca52fe2271572fb81bc6538a1c4567fd6b92d31abc  .github/workflows/fendix-scan.yml" | sha256sum -c -
+  https://raw.githubusercontent.com/Fendix-app/Fendix/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml
+echo "5d5cce3bf02f72971d70f7b3dcde4b3a66b7a9fec39ebbba8183a1e53a8f915c  .github/workflows/fendix-scan.yml" | sha256sum -c -
 ```
 
 On macOS, use `shasum -a 256 -c -` in place of `sha256sum -c -`.
@@ -456,20 +456,13 @@ A failing reporting step (SARIF upload, PR comment) still fails the job, but it 
 - **Private repository without Code Security:** the workflow skips the upload and writes a notice. The scan, the PR comment and the gate run as usual, and the comment says that no SARIF was uploaded.
 - **Private repository with Code Security:** set the repository variable `FENDIX_UPLOAD_SARIF` to `true` (Settings → Secrets and variables → Actions → Variables) to upload. This path has not yet been verified end to end.
 
-This file was tested end to end on 2026-10-16, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. The scan with no findings uploaded its SARIF as the engine wrote it, with `"rules": []`. The previous version of this file (commit `7cf1960f321c497e0b15da7e5e1f02d87988743e`: the v3.6.0 image and a temporary step that rewrote a `null` rules value) also passed the core scenarios on `ubuntu-26.04`, the image `ubuntu-latest` moves to from 2026-10-19 (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`). This version has not yet run there; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
+This file, at commit `41da3ae48fc17412893112061175120958b8b91e` with the v3.6.2 image `sha256:7a8234194fa963f894e1fb77f2b728272230ab9b1ac5c05ffd75c0ab10ea2529`, was tested end to end on 2026-10-16, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. The scan with no findings uploaded its SARIF as the engine wrote it, with `"rules": []`. The previous version of this file (commit `7cf1960f321c497e0b15da7e5e1f02d87988743e`: the v3.6.0 image and a temporary step that rewrote a `null` rules value) also passed the core scenarios on `ubuntu-26.04`, the image `ubuntu-latest` moves to from 2026-10-19 (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`). This version has not yet run there; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
 
-### 3.2 The composite GitHub Action — do not use `@v1`
+### 3.2 The composite GitHub Action
 
-> **Warning: do not use `uses: Fendix-app/Fendix@v1`.** The `v1` tag still points to the June 2026 revision of the Action (`d59a901`). That revision:
->
-> - interpolates its inputs directly into shell scripts, so an input value is executed as shell syntax;
-> - ignores its `version` input: it passes `--version` to an installer that reads only `FENDIX_VERSION`, so it always installs the latest release;
-> - describes its gate as failing "only when both engines confirm", which is not how the `--fail-on` gate works (§3.5);
-> - uploads SARIF with the unpinned, deprecated `github/codeql-action/upload-sarif@v3`.
->
-> Use the reference workflow (§3.1). The corrected Action ships in v3.6.2; `v1` will move only after that release has been validated end to end.
+> **`v1` points to the validated v3.6.2 release.** Since 2026-10-16, `uses: Fendix-app/Fendix@v1` resolves to the v3.6.2 release commit `b9e1fad6e1d9531ac899ab44b01f413424f30a7a`, and it passed the external-user end-to-end matrix in public and private repositories. Before that date `v1` pointed to the June 2026 revision `d59a901`, which interpolated its inputs into shell scripts, ignored its `version` input and used the unpinned `upload-sarif@v3`; a workflow pinned to that revision should move to `@v1` or to the release commit.
 
-The rest of this section documents the Action as shipped in v3.6.2. Until this release has passed its own post-release end-to-end validation, keep using the reference workflow (§3.1), and never reference `@main`.
+This section documents the Action as shipped in v3.6.2. Never reference `@main`.
 
 A **composite** action. Its steps, in order:
 
@@ -837,7 +830,7 @@ automation contract.
 
 ### 6.2 GitHub Action input quick reference
 
-These inputs belong to the composite Action, which is not currently recommended (§3.2).
+These inputs belong to the composite Action (§3.2).
 
 | Input | Default | One-liner |
 |---|---|---|
@@ -859,4 +852,4 @@ These inputs belong to the composite Action, which is not currently recommended 
 
 ### Worked-example note (TwiScope)
 
-TwiScope is a Django/DRF backend, so the natural integration is: (1) a developer `fendix hook install --fail-on HIGH` for commit-time secret/IaC gating; (2) a CI job using the public GitHub Action (`Fendix-app/Fendix`), which resolves for public and private repositories, or the canonical Docker Hub image, running `fendix scan --code . --fail-on HIGH` against a fresh checkout and surfacing findings through `$GITHUB_STEP_SUMMARY`; and, if internal/staging API targets must be scanned, (3) an Enterprise-org **runner** inside the network performing `mode=hybrid` scans (`--url` staging + `--code` repo) and POSTing results back so they land in the dashboard with full TrackedFinding lifecycle. Until the released v3.6.2 Action is validated, use the reference workflow (§3.1); the v3.6.0 Action needs a version-matched Python engine tree through `engine_path`. SARIF upload from a private repository needs GitHub Code Security, but its absence does not stop the scan or the gate. A fresh checkout narrows the scanned files; review the report before publishing it because secret values are redacted at capture time while file locations, safe identifiers, and security structure remain visible.
+TwiScope is a Django/DRF backend, so the natural integration is: (1) a developer `fendix hook install --fail-on HIGH` for commit-time secret/IaC gating; (2) a CI job using the public GitHub Action (`Fendix-app/Fendix`), which resolves for public and private repositories, or the canonical Docker Hub image, running `fendix scan --code . --fail-on HIGH` against a fresh checkout and surfacing findings through `$GITHUB_STEP_SUMMARY`; and, if internal/staging API targets must be scanned, (3) an Enterprise-org **runner** inside the network performing `mode=hybrid` scans (`--url` staging + `--code` repo) and POSTing results back so they land in the dashboard with full TrackedFinding lifecycle. Use the validated v3.6.2 Action (§3.2) or the reference workflow (§3.1); the older v3.6.0 Action needs a version-matched Python engine tree through `engine_path`. SARIF upload from a private repository needs GitHub Code Security, but its absence does not stop the scan or the gate. A fresh checkout narrows the scanned files; review the report before publishing it because secret values are redacted at capture time while file locations, safe identifiers, and security structure remain visible.
