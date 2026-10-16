@@ -46,8 +46,13 @@ engine-tree preparation.
 
 ```bash
 brew tap Fendix-app/fendix
+brew trust --formula Fendix-app/fendix/fendix
 brew install fendix
 ```
+
+Current Homebrew refuses to load a formula from a third-party tap until you
+trust it; `brew trust --formula` trusts the `fendix` formula only, not the
+whole tap. A Homebrew without the `brew trust` command does not need that line.
 
 The formula auto-selects the right binary for your arch (Apple Silicon vs
 Intel; arm64 Linux vs amd64 Linux). Updates land via `brew upgrade fendix`
@@ -96,13 +101,15 @@ curl -fsSL https://get.fendix.dev/install.sh | less
 # Pick the right architecture for your host
 ARCH=$(dpkg --print-architecture)         # amd64 or arm64
 VERSION=v3.6.1                            # current release at time of writing
-URL="https://github.com/Fendix-app/Fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${ARCH}.deb"
+FILE="fendix-${VERSION}-linux-${ARCH}.deb"
+URL="https://github.com/Fendix-app/Fendix/releases/download/${VERSION}/${FILE}"
 
-# Download + verify + install
-curl -fsSL -o fendix.deb "${URL}"
-curl -fsSL -o fendix.deb.sha256 "${URL}.sha256"
-sha256sum -c fendix.deb.sha256
-sudo dpkg -i fendix.deb
+# Download + verify + install. Keep the published file name: the .sha256
+# file names it, so sha256sum -c looks for that file.
+curl -fsSL -o "${FILE}" "${URL}"
+curl -fsSL -o "${FILE}.sha256" "${URL}.sha256"
+sha256sum -c "${FILE}.sha256"
+sudo dpkg -i "./${FILE}"
 sudo apt-get install -f       # pull in python3 if it isn't already there
 ```
 
@@ -121,12 +128,13 @@ case "$ARCH" in
   aarch64) PKG_ARCH=arm64 ;;
 esac
 VERSION=v3.6.1
-URL="https://github.com/Fendix-app/Fendix/releases/download/${VERSION}/fendix-${VERSION}-linux-${PKG_ARCH}.rpm"
+FILE="fendix-${VERSION}-linux-${PKG_ARCH}.rpm"
+URL="https://github.com/Fendix-app/Fendix/releases/download/${VERSION}/${FILE}"
 
-curl -fsSL -o fendix.rpm "${URL}"
-curl -fsSL -o fendix.rpm.sha256 "${URL}.sha256"
-sha256sum -c fendix.rpm.sha256
-sudo dnf install ./fendix.rpm   # or: sudo rpm -i ./fendix.rpm
+curl -fsSL -o "${FILE}" "${URL}"
+curl -fsSL -o "${FILE}.sha256" "${URL}.sha256"
+sha256sum -c "${FILE}.sha256"
+sudo dnf install "./${FILE}"   # or: sudo rpm -i "./${FILE}"
 ```
 
 Note: nfpm builds Fendix `.rpm` files using the canonical Go-style arch in
@@ -165,14 +173,16 @@ matching `.sha256` file, and place it on your PATH:
 
 ```bash
 VERSION=v3.6.1
-URL="https://github.com/Fendix-app/Fendix/releases/download/${VERSION}/fendix-${VERSION}-darwin-arm64"
+FILE="fendix-${VERSION}-darwin-arm64"
+URL="https://github.com/Fendix-app/Fendix/releases/download/${VERSION}/${FILE}"
 
-curl -fsSL -o fendix "${URL}"
-curl -fsSL -o fendix.sha256 "${URL}.sha256"
-shasum -a 256 -c fendix.sha256
+# Keep the published file name: the .sha256 file names it.
+curl -fsSL -o "${FILE}" "${URL}"
+curl -fsSL -o "${FILE}.sha256" "${URL}.sha256"
+shasum -a 256 -c "${FILE}.sha256"
 
-chmod +x fendix
-sudo mv fendix /usr/local/bin/fendix
+chmod +x "${FILE}"
+sudo mv "${FILE}" /usr/local/bin/fendix
 fendix version
 ```
 
