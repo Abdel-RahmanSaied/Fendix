@@ -149,6 +149,15 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 		return nil, nil
 	}
 
+	// Diff scoping: one --include per changed file, relative to codePath.
+	// An allowlist that cannot be expressed under codePath is an error, never
+	// a filter that matches nothing. The orchestrator checks the scope first
+	// and widens to a full scan instead; this guards direct callers.
+	includes, err := allow.RelPaths(codePath)
+	if err != nil {
+		return nil, fmt.Errorf("semgrep: diff scope: %w", err)
+	}
+
 	bin, err := LookPath("semgrep")
 	if err != nil {
 		return nil, ErrSemgrepUnavailable
@@ -171,8 +180,7 @@ func ScanWithAllowlist(ctx context.Context, codePath string, allow *gitdiff.Allo
 		"--no-git-ignore",
 		"--quiet",
 	}
-	// Diff scoping: one --include per changed file (relative to codePath).
-	for _, rel := range allow.RelPaths(codePath) {
+	for _, rel := range includes {
 		args = append(args, "--include", rel)
 	}
 	args = append(args, codePath)

@@ -122,16 +122,24 @@ func ScanWithAllowlist(rootDir string, rules []Rule, allow *gitdiff.Allowlist) (
 	// through a symlinked parent dir (which WalkDir never descends, and which
 	// could escape rootDir), plus the same pruned dirs; then run the shared
 	// scanCandidate body. (Empty allowlists already returned above.)
+	// The allowlist holds absolute paths, so the root is resolved once and
+	// used for every check and for the reported path: a relative rootDir
+	// (`--code .`) would otherwise fail filepath.Rel, refuse every file and
+	// report absolute endpoints.
 	if allow != nil {
+		absRoot, err := filepath.Abs(rootDir)
+		if err != nil {
+			return nil, fmt.Errorf("textscan: resolve %s: %w", rootDir, err)
+		}
 		for _, path := range allow.AbsPaths() {
 			info, err := os.Lstat(path)
 			if err != nil || info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 				continue
 			}
-			if underSkipDir(rootDir, path) || gitdiff.TraversesSymlink(rootDir, path) {
+			if underSkipDir(absRoot, path) || gitdiff.TraversesSymlink(absRoot, path) {
 				continue
 			}
-			findings = append(findings, scanCandidate(rootDir, path, fs.FileInfoToDirEntry(info), rules)...)
+			findings = append(findings, scanCandidate(absRoot, path, fs.FileInfoToDirEntry(info), rules)...)
 		}
 		return findings, nil
 	}

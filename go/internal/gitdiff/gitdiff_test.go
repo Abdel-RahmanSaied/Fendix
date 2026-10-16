@@ -156,7 +156,10 @@ func TestAllowlist_ContainsBaseMatchesNestedManifest(t *testing.T) {
 func TestAllowlist_RelPathsRoundTrips(t *testing.T) {
 	root := t.TempDir()
 	al := NewAllowlist(root, []string{"z.go", "a/b.py"})
-	rel := al.RelPaths(root)
+	rel, err := al.RelPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"a/b.py", "z.go"}
 	if !reflect.DeepEqual(rel, want) {
 		t.Fatalf("RelPaths got %v, want %v", rel, want)

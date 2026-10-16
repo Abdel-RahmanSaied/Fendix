@@ -105,7 +105,7 @@ fendix scan --code . --staged --fast --python-engine=false  # native secrets + t
 fendix scan --code . --diff=origin/main
 ```
 
-`--diff` limits the native white-box scanners (secrets, textscan, semgrep) to the changed files, whole files, so existing issues in them are reported, and runs the dependency-CVE scanners only when a manifest changed. The Python engine, DAST and plugins always scan the full target, and if `git diff` fails the scan falls back to a full scan. Use a baseline to report only new findings. `--fast` drops semgrep and the native dependency passes. Because `--code` currently auto-enables the Python engine, add `--python-engine=false` when you require the native-only pre-commit path. The missing implication (`--fast` should suppress Python itself) is a known product defect; the explicit false flag is the current workaround.
+`--diff` limits the native white-box scanners (secrets, textscan, semgrep) to the changed files, whole files, so existing issues in them are reported, and runs the dependency-CVE scanners only when a manifest changed. The Python engine, DAST and plugins always scan the full target, and if `git diff` fails, or a changed file cannot be placed under `--code` (as when `--code` is a subdirectory of the repository), the scan falls back to a full scan. Use a baseline to report only new findings. `--fast` drops semgrep and the native dependency passes. Because `--code` currently auto-enables the Python engine, add `--python-engine=false` when you require the native-only pre-commit path. The missing implication (`--fast` should suppress Python itself) is a known product defect; the explicit false flag is the current workaround.
 
 ### Pre-commit hook
 

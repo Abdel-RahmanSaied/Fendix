@@ -59,7 +59,7 @@ inputs:
     required: false
     default: "HIGH"
   diff:
-    description: "Diff mode. 'auto' (default) turns it on for pull_request events only: the native secrets, text and Semgrep scanners read the files changed vs the PR base ref, dependency checks run when a manifest changed, and the Python engine and DAST still scan the full target. 'true' turns it on for every event; without a PR base ref it compares against HEAD, which on a fresh checkout leaves those scanners no changed files. 'false' always scans in full. If the diff cannot be computed, the scan falls back to a full scan."
+    description: "Diff mode. 'auto' (default) turns it on for pull_request events only: the native secrets, text and Semgrep scanners read the files changed vs the PR base ref, dependency checks run when a manifest changed, and the Python engine and DAST still scan the full target. 'true' turns it on for every event; without a PR base ref it compares against HEAD, which on a fresh checkout leaves those scanners no changed files. 'false' always scans in full. If the diff cannot be computed, or a changed file cannot be placed under code (as when code is a subdirectory of the repository), the scan falls back to a full scan."
     required: false
     default: "auto"
   format:
