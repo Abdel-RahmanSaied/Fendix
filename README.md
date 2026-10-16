@@ -243,7 +243,7 @@ Releases after v3.4.1 use `Fendix-app/Fendix` in the certificate identity. Binar
 For the current Docker image, use `cosign verify` against the immutable digest and the official workflow identity:
 
 ```bash
-cosign verify fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387 \
+cosign verify fendixapp/fendix@sha256:7a8234194fa963f894e1fb77f2b728272230ab9b1ac5c05ffd75c0ab10ea2529 \
   --certificate-identity-regexp "^https://github.com/Fendix-app/Fendix/" \
   --certificate-oidc-issuer     "https://token.actions.githubusercontent.com"
 ```
