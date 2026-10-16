@@ -2,14 +2,22 @@
 
 Fendix produces SARIF 2.1.0 output for GitHub code scanning: PR annotations and the Security tab. Code scanning on a private repository needs GitHub Code Security.
 
-## Quick start — copy this workflow
+## Quick start
 
-A complete, digest-pinned v3.6.2 container workflow lives at
+The recommended GitHub integration is the Fendix Action,
+`uses: Fendix-app/Fendix@v1` with an explicit `version: v3.6.2`, or pinned to
+the full commit of the validated release for high-assurance pipelines; see
+[INTEGRATION_GUIDE §3.1](INTEGRATION_GUIDE.md#31-recommended--the-composite-github-action).
+Never reference `@main`.
+
+### Alternative — copy the reference workflow
+
+For the container-based path, a complete, digest-pinned v3.6.2 container
+workflow lives at
 [`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml).
 Install it from that tested commit, not from `main`, as shown in
-[INTEGRATION_GUIDE §3.1](INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit);
-do not use `uses: Fendix-app/Fendix@v1` (see §3.2 there). Dropped into
-`.github/workflows/fendix-scan.yml` of your project, it will:
+[INTEGRATION_GUIDE §3.2](INTEGRATION_GUIDE.md#32-alternative--the-digest-pinned-reference-workflow).
+Dropped into `.github/workflows/fendix-scan.yml` of your project, it will:
 
 - Scan on every PR and on push to `main`.
 - Upload SARIF to GitHub Code Scanning (inline annotations on the PR). A

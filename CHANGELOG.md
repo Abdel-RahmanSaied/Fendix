@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The Fendix Action is the recommended GitHub integration.** The README,
+  the integration guide and `docs/ci-cd-integration.md` recommend
+  `uses: Fendix-app/Fendix@v1` with an explicit `version`, show the full
+  release commit as the immutable choice for high-assurance pipelines, and
+  keep the digest-pinned reference workflow as an alternative. `v1` points to
+  the v3.6.2 release commit, which passed the external-user end-to-end
+  matrix. The public-claims check now flags a branch reference such as
+  `Fendix-app/Fendix@main` instead of `@v1`.
+
 ## [3.6.2] - 2026-10-16
 
 Fixes a coverage-integrity defect in diff-aware scans. With a relative

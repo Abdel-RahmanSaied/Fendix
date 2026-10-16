@@ -61,12 +61,13 @@ DETECTORS = (
             re.IGNORECASE,
         ),
     ),
-    # A workflow line that runs the stale moving `v1` tag of the composite
-    # Action. Prose that quotes it as a warning is not a `uses:` line.
+    # A workflow line that runs the composite Action from a branch, which
+    # changes without review. The validated `@v1` tag and a full release
+    # commit are the supported references.
     Detector(
-        "stale_action_ref",
+        "floating_action_branch",
         re.compile(
-            r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*[\"']?Fendix-app/Fendix@v1(?![\w.])",
+            r"^[ \t]*(?:-[ \t]*)?uses:[ \t]*[\"']?Fendix-app/Fendix@(?:main|master|HEAD)(?![\w.\-/])",
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
@@ -283,11 +284,11 @@ def self_test() -> None:
         ("personal_namespace", "brew tap Abdel-RahmanSaied/fendix", True),
         ("personal_namespace", "get.fendix.dev CNAME abdel-rahmansaied.github.io.", True),
         ("personal_namespace", '"github.com/Fendix-app/Fendix/go/internal/models"', False),
-        ("stale_action_ref", "      - uses: Fendix-app/Fendix@v1\n", True),
-        ("stale_action_ref", "uses: fendix-app/fendix@v1 # moving tag", True),
-        ("stale_action_ref", "> **Do not use `uses: Fendix-app/Fendix@v1`.**", False),
-        ("stale_action_ref", "      - uses: Fendix-app/Fendix@v1.2.0", False),
-        ("stale_action_ref", "      - uses: Fendix-app/Fendix@24c54180a607b1449ed407dd24f251e4e9147c8d", False),
+        ("floating_action_branch", "      - uses: Fendix-app/Fendix@main\n", True),
+        ("floating_action_branch", "uses: fendix-app/fendix@master # moving branch", True),
+        ("floating_action_branch", "      - uses: Fendix-app/Fendix@v1\n", False),
+        ("floating_action_branch", "> Never reference `uses: Fendix-app/Fendix@main`.", False),
+        ("floating_action_branch", "      - uses: Fendix-app/Fendix@b9e1fad6e1d9531ac899ab44b01f413424f30a7a # v3.6.2", False),
         ("obsolete_action_claim", "only surfaces issues the PR actually introduced", True),
         ("obsolete_action_claim", "`python/requirements.txt` pins exact versions.", True),
         ("obsolete_action_claim", "Whitebox scanners are scoped to the changed files", True),
