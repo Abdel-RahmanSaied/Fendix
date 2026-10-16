@@ -127,8 +127,13 @@ Engine source and release assets live in the official [`Fendix-app/Fendix`](http
 
 ```bash
 brew tap Fendix-app/fendix
+brew trust --formula Fendix-app/fendix/fendix
 brew install fendix
 ```
+
+Current Homebrew refuses to load a formula from a third-party tap until you
+trust it; `brew trust --formula` trusts the `fendix` formula only, not the
+whole tap. A Homebrew without the `brew trust` command does not need that line.
 
 ### curl (macOS / Linux)
 

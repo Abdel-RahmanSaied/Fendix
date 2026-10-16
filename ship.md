@@ -82,7 +82,7 @@ gh release edit vX.Y.Z -R Fendix-app/Fendix --notes-file release-notes-vX.Y.Z.tx
 gh release view vX.Y.Z -R Fendix-app/Fendix --json body --jq .body | diff - release-notes-vX.Y.Z.txt && echo "release body matches"
 ```
 
-Optional: spot-check that `brew install fendix` (with the tap already added) picks up the new version.
+Optional: spot-check that `brew install fendix` (with the tap added and the formula trusted through `brew trust --formula Fendix-app/fendix/fendix`) picks up the new version.
 
 The install commands in `README.md` are version-agnostic, but several
 documents pin the released artifacts and need a follow-up PR once the
