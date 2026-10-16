@@ -73,16 +73,14 @@ DETECTORS = (
     ),
     # Retired claims about the Action and diff mode: diff mode scopes only the
     # native file scanners, whole files, so it does not surface only "new"
-    # issues; requirements.txt declares ranges; the Action is not listed on
-    # the Marketplace.
+    # issues; requirements.txt declares ranges.
     Detector(
         "obsolete_action_claim",
         re.compile(
             r"actually\s+introduced"
             r"|net-new\s+(?:issues|findings)"
             r"|pins\s+exact\s+versions"
-            r"|whitebox\s+scanners\s+(?:are\s+)?scoped\s+to\s+(?:the\s+)?changed\s+files"
-            r"|public\s+Marketplace\s+Action",
+            r"|whitebox\s+scanners\s+(?:are\s+)?scoped\s+to\s+(?:the\s+)?changed\s+files",
             re.IGNORECASE,
         ),
     ),
@@ -292,7 +290,7 @@ def self_test() -> None:
         ("obsolete_action_claim", "only surfaces issues the PR actually introduced", True),
         ("obsolete_action_claim", "`python/requirements.txt` pins exact versions.", True),
         ("obsolete_action_claim", "Whitebox scanners are scoped to the changed files", True),
-        ("obsolete_action_claim", "a CI job using the public Marketplace Action", True),
+        ("obsolete_action_claim", "a CI job using the public Marketplace Action", False),
         ("obsolete_action_claim", "only flags net-new issues", True),
         ("obsolete_action_claim", "whole files, so existing issues in them are reported", False),
         ("obsolete_action_claim", "Use a baseline to report only new findings.", False),
