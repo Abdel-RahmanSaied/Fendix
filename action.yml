@@ -22,7 +22,7 @@
 #     with: { fetch-depth: 0 }          # diff mode compares against the base ref
 #   - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
 #     with:
-#       version: <that release, for example v3.6.1>
+#       version: <that release, for example v3.6.2>
 #       code: .
 #
 # Usage (full: add a DAST target and fail the build on HIGH):
@@ -75,7 +75,7 @@ inputs:
     required: false
     default: "true"
   version:
-    description: "Fendix release to install: an exact tag such as v3.6.1, or 'latest', resolved once to an exact tag. The binary must verify against its release's cosign signature, so only signed releases install; automatic Python preparation (engine_path empty) needs a signed build record, published from v3.5.0."
+    description: "Fendix release to install: an exact tag such as v3.6.2, or 'latest', resolved once to an exact tag. The binary must verify against its release's cosign signature, so only signed releases install; automatic Python preparation (engine_path empty) needs a signed build record, published from v3.5.0."
     required: false
     default: "latest"
   extra-args:

@@ -14,7 +14,7 @@ This document covers two things:
 
 ## Supported versions
 
-Current stable release: **v3.6.1** (2026-10-15 — see
+Current stable release: **v3.6.2** (2026-10-16 — see
 [`CHANGELOG.md`](CHANGELOG.md)).
 
 | Version | Supported          |
