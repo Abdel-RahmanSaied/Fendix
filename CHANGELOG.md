@@ -7,32 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-10-16
+
+Fixes a coverage-integrity defect in diff-aware scans. With a relative
+`--code` such as `.`, Semgrep and the native text scanner scanned none of the
+changed files while reporting a clean, complete run, so the composite Action's
+default pull-request check and the pre-commit hook could pass a change that a
+full scan blocks. Diff scoping now gives the same result for every spelling of
+the scan root, and a diff scope that cannot be represented safely widens to a
+full scan instead of narrowing to nothing. Report schema, SARIF, fingerprints,
+exit codes and the Action's inputs and outputs are unchanged.
+
 ### Fixed
 
-- **Diff-aware scans with a relative `--code` scanned none of the changed
-  files in Semgrep and the native text scanner.** In diff mode (`--diff`,
-  `--staged`, and the composite Action's `diff: auto` on pull requests) with
-  a relative code path such as `.` or `./`, semgrep received absolute
-  `--include` paths that matched no file and the text scanner refused every
-  changed file. The coverage table still reported both as `ok`, so a blocking
-  finding only they detect did not fail the scan. This affected the
-  composite Action's default pull-request setup (`code: .`) and the
-  pre-commit hook `fendix hook install` writes
-  (`fendix scan --code . --staged --fast`): a privileged Kubernetes
-  container passed both. A relative and an absolute `--code` now scope the
-  same files and report the same findings at the same paths. The secrets
-  scanner and the Python engine were not affected.
+- **Diff-aware scans with a relative `--code` scope the native scanners
+  correctly.** In diff mode (`--diff`, `--staged`) with a relative code path
+  such as `.` or `./`, Semgrep received absolute `--include` paths that
+  matched no file and the text scanner refused every changed file, while the
+  coverage table reported both as `ok`. A relative and an absolute `--code`
+  now scope the same files and report the same findings at the same paths.
+  The secrets scanner and the Python engine were not affected.
+- **The composite Action's default pull-request setup no longer misses text
+  scanner and Semgrep findings.** With `code: .` and `diff: auto`, a pull
+  request adding a privileged Kubernetes container passed with zero
+  findings; the same change now blocks, as it does with an absolute `code`
+  or `diff: 'false'`.
+- **The pre-commit hook no longer misses staged text-scanner findings.** The
+  hook `fendix hook install` writes runs
+  `fendix scan --code . --staged --fast`; it let a staged privileged
+  Kubernetes manifest be committed, and now rejects the commit.
 
 ### Changed
 
-- **A diff that cannot be placed under `--code` widens to a full scan.** When
-  a changed file cannot be mapped under the scan root, the scan logs
+- **A diff scope that cannot be represented safely widens to a full scan.**
+  When a changed file cannot be placed under the scan root, the scan logs
   `diff-aware scan: file scope could not be represented safely — falling back
   to full scan` and scans `--code` in full, as it already did when `git diff`
-  fails. This covers `--code` set to a subdirectory of the repository, whose
-  changed paths git reports from the repository root; those diff scans
-  previously scanned no changed file. The behaviour is temporary and
-  conservative: diff scoping for a subdirectory is planned for v3.7.0.
+  fails. It never narrows to scanner input that matches nothing.
+- **Temporary behaviour for a subdirectory `--code`.** Git reports changed
+  paths from the repository root, which the diff mapper cannot yet place under
+  a subdirectory, so a diff-mode scan with `--code` set to a subdirectory now
+  falls back to a full scan of `--code` (previously it scanned no changed
+  file). Diff scoping for a subdirectory is planned for v3.7.0.
 
 ### Upgrading
 
@@ -42,8 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With `--code` set to a subdirectory, a diff-mode scan now reports existing
   findings across the whole `--code` tree and runs the dependency scanners,
   as a full scan does. Use a baseline to report only new findings.
-- Report schema, SARIF, fingerprints, exit codes, finding paths and the
-  Action's inputs and outputs are unchanged.
+- The v3.6.1 workarounds (an absolute `code` path or `diff: 'false'` in the
+  Action, an absolute `--code` on the command line) remain valid and can be
+  removed.
 
 ## [3.6.1] - 2026-10-15
 
