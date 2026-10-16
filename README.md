@@ -633,14 +633,14 @@ also accepts an optional `FENDIX_SHA256` pin.
 
 **Recommended until the released v3.6.2 Action is validated: the reference
 workflow at a fixed commit.** It runs
-the official v3.6.1 container by digest, pins every third-party Action to a
+the official v3.6.2 container by digest, pins every third-party Action to a
 full commit SHA, and was tested end to end from fresh repositories. Install it
 from that commit, not from `main`:
 
 ```bash
 mkdir -p .github/workflows
 curl -fsSL -o .github/workflows/fendix-scan.yml \
-  https://raw.githubusercontent.com/Fendix-app/Fendix/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml
+  https://raw.githubusercontent.com/Fendix-app/Fendix/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml
 ```
 
 The [integration guide](docs/INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit)

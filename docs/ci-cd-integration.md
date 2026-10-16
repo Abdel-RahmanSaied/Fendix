@@ -4,8 +4,8 @@ Fendix produces SARIF 2.1.0 output for GitHub code scanning: PR annotations and 
 
 ## Quick start — copy this workflow
 
-A complete, digest-pinned v3.6.1 container workflow lives at
-[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml).
+A complete, digest-pinned v3.6.2 container workflow lives at
+[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml).
 Install it from that tested commit, not from `main`, as shown in
 [INTEGRATION_GUIDE §3.1](INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit);
 do not use `uses: Fendix-app/Fendix@v1` (see §3.2 there). Dropped into
@@ -50,7 +50,7 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     env:
-      FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387
+      FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:7a8234194fa963f894e1fb77f2b728272230ab9b1ac5c05ffd75c0ab10ea2529
     permissions:
       actions: read           # Required for SARIF upload on a private repository
       security-events: write  # Required for SARIF upload
