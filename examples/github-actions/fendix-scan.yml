@@ -47,7 +47,7 @@
 #     floating tag like @v4): a tag can be force-moved by the action
 #     owner to point at new code, a SHA cannot. The trailing comment
 #     records the human-readable version each SHA corresponded to.
-#   - Fendix itself runs from the immutable v3.6.0 Docker Hub digest,
+#   - Fendix itself runs from the immutable v3.6.1 Docker Hub digest,
 #     which includes the version-matched Python engine and Go toolchain.
 #     Review and replace the digest deliberately when upgrading.
 #   - Repo-local plugins (.fendix/plugins/ committed to the repo under
@@ -76,7 +76,7 @@ jobs:
   fendix:
     runs-on: ubuntu-latest
     env:
-      FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033
+      FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -140,17 +140,6 @@ jobs:
             --input findings.json \
             --format sarif \
             --output results.sarif
-
-      # TEMPORARY compatibility workaround for the v3.6.0 SARIF exporter:
-      # with zero findings it writes `"rules": null`, which GitHub rejects as
-      # invalid SARIF. This replaces a null `rules` value with an empty array
-      # and changes nothing else. Remove this step when FENDIX_IMAGE moves to
-      # a release whose exporter writes `"rules": []`.
-      - name: Normalize empty SARIF rules (temporary, v3.6.0)
-        if: always() && hashFiles('results.sarif') != ''
-        run: |
-          jq '(.runs[]?.tool.driver | select(has("rules") and .rules == null) | .rules) = []' results.sarif > results.sarif.tmp
-          mv results.sarif.tmp results.sarif
 
       - name: Upload SARIF to GitHub Code Scanning
         if: always() && hashFiles('results.sarif') != '' && (!github.event.repository.private || vars.FENDIX_UPLOAD_SARIF == 'true')
