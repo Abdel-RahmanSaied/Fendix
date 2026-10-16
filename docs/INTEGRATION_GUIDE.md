@@ -413,7 +413,7 @@ The engine runs in CI as the composite GitHub Action (§3.1), or from the offici
 
 ### 3.1 Recommended — the composite GitHub Action
 
-Use the Fendix Action with `@v1` and an explicit `version`:
+Use the Fendix Action ([Fendix Security Scan on GitHub Marketplace](https://github.com/marketplace/actions/fendix-security-scan)) with `@v1` and an explicit `version`:
 
 ```yaml
 permissions:
@@ -583,7 +583,7 @@ This file, at commit `41da3ae48fc17412893112061175120958b8b91e` with the v3.6.2 
 
 ### 3.3 Public Action availability
 
-The engine source repository (`Fendix-app/Fendix`) is public, so the Action resolves from public and private consumers. Use `@v1`, which resolves to the validated v3.6.2 release, or pin the release's full commit for reproducibility (§3.1). Never reference `@main`.
+The Action is listed on GitHub Marketplace as [Fendix Security Scan](https://github.com/marketplace/actions/fendix-security-scan), published from the v3.6.2 release. The engine source repository (`Fendix-app/Fendix`) is public, so the Action resolves from public and private consumers. Use `@v1`, which resolves to the validated v3.6.2 release, or pin the release's full commit for reproducibility (§3.1). Never reference `@main`.
 
 The canonical Docker Hub image is public and can be pulled anonymously. The previous GHCR image remains a compatibility path for existing consumers.
 

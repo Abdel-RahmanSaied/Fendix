@@ -633,8 +633,9 @@ also accepts an optional `FENDIX_SHA256` pin.
 
 ### GitHub Actions
 
-**Recommended: the Fendix Action.** Use `Fendix-app/Fendix@v1` with an
-explicit `version`:
+**Recommended: the Fendix Action.** It is listed on GitHub Marketplace as
+[Fendix Security Scan](https://github.com/marketplace/actions/fendix-security-scan). Use `Fendix-app/Fendix@v1` with an explicit
+`version`:
 
 ```yaml
 name: Security Scan

@@ -4,7 +4,8 @@ Fendix produces SARIF 2.1.0 output for GitHub code scanning: PR annotations and 
 
 ## Quick start
 
-The recommended GitHub integration is the Fendix Action,
+The recommended GitHub integration is the Fendix Action
+([Fendix Security Scan on GitHub Marketplace](https://github.com/marketplace/actions/fendix-security-scan)),
 `uses: Fendix-app/Fendix@v1` with an explicit `version: v3.6.2`, or pinned to
 the full commit of the validated release for high-assurance pipelines; see
 [INTEGRATION_GUIDE §3.1](INTEGRATION_GUIDE.md#31-recommended--the-composite-github-action).

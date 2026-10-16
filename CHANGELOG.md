@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the v3.6.2 release commit, which passed the external-user end-to-end
   matrix. The public-claims check now flags a branch reference such as
   `Fendix-app/Fendix@main` instead of `@v1`.
+- **The Action is listed on GitHub Marketplace** as
+  [Fendix Security Scan](https://github.com/marketplace/actions/fendix-security-scan), published from the v3.6.2
+  release in the Security and Continuous integration categories. The README,
+  the integration guide and `docs/ci-cd-integration.md` link the listing, and
+  the public-claims check no longer treats "public Marketplace Action" as an
+  obsolete claim.
 
 ## [3.6.2] - 2026-10-16
 
