@@ -628,14 +628,14 @@ also accepts an optional `FENDIX_SHA256` pin.
 
 **Recommended until the released v3.6.1 Action is validated: the reference
 workflow at a fixed commit.** It runs
-the official v3.6.0 container by digest, pins every third-party Action to a
+the official v3.6.1 container by digest, pins every third-party Action to a
 full commit SHA, and was tested end to end from fresh repositories. Install it
 from that commit, not from `main`:
 
 ```bash
 mkdir -p .github/workflows
 curl -fsSL -o .github/workflows/fendix-scan.yml \
-  https://raw.githubusercontent.com/Fendix-app/Fendix/7cf1960f321c497e0b15da7e5e1f02d87988743e/examples/github-actions/fendix-scan.yml
+  https://raw.githubusercontent.com/Fendix-app/Fendix/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml
 ```
 
 The [integration guide](docs/INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit)
@@ -755,14 +755,6 @@ jobs:
             --fail-on HIGH \
             --format sarif \
             --output results.sarif
-      # Temporary, v3.6.0: a scan with no findings writes "rules": null,
-      # which upload-sarif rejects. Drop this step once your release's
-      # exporter writes "rules": [].
-      - name: Normalize empty SARIF rules
-        if: always() && hashFiles('results.sarif') != ''
-        run: |
-          jq '(.runs[]?.tool.driver | select(has("rules") and .rules == null) | .rules) = []' results.sarif > results.sarif.tmp
-          mv results.sarif.tmp results.sarif
       - name: Upload SARIF
         if: always() && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
