@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Diff-aware scans with a relative `--code` scanned none of the changed
+  files in Semgrep and the native text scanner.** In diff mode (`--diff`,
+  `--staged`, and the composite Action's `diff: auto` on pull requests) with
+  a relative code path such as `.` or `./`, semgrep received absolute
+  `--include` paths that matched no file and the text scanner refused every
+  changed file. The coverage table still reported both as `ok`, so a blocking
+  finding only they detect did not fail the scan. This affected the
+  composite Action's default pull-request setup (`code: .`) and the
+  pre-commit hook `fendix hook install` writes
+  (`fendix scan --code . --staged --fast`): a privileged Kubernetes
+  container passed both. A relative and an absolute `--code` now scope the
+  same files and report the same findings at the same paths. The secrets
+  scanner and the Python engine were not affected.
+
+### Changed
+
+- **A diff that cannot be placed under `--code` widens to a full scan.** When
+  a changed file cannot be mapped under the scan root, the scan logs
+  `diff-aware scan: file scope could not be represented safely — falling back
+  to full scan` and scans `--code` in full, as it already did when `git diff`
+  fails. This covers `--code` set to a subdirectory of the repository, whose
+  changed paths git reports from the repository root; those diff scans
+  previously scanned no changed file. The behaviour is temporary and
+  conservative: diff scoping for a subdirectory is planned for v3.7.0.
+
+### Upgrading
+
+- Pull requests scanned by the composite Action with its default `code: .`,
+  and commits checked by the pre-commit hook, can now report findings and
+  block where v3.6.1 passed. These are findings v3.6.1 should have reported.
+- With `--code` set to a subdirectory, a diff-mode scan now reports existing
+  findings across the whole `--code` tree and runs the dependency scanners,
+  as a full scan does. Use a baseline to report only new findings.
+- Report schema, SARIF, fingerprints, exit codes, finding paths and the
+  Action's inputs and outputs are unchanged.
+
 ## [3.6.1] - 2026-10-15
 
 Makes the composite GitHub Action safe to run. Its Fendix binary now runs only

@@ -182,6 +182,29 @@ func (a *Allowlist) AbsPaths() []string {
 	return out
 }
 
+// absRoot resolves a scan root to the absolute, cleaned form the allowlist
+// entries use. Every root-relative computation goes through it: a scan root
+// may be spelled ".", "./" or absolute, and filepath.Rel cannot relate a
+// relative root to the absolute entries (through v3.6.1 that turned the
+// composite Action's default `--code .` into a filter that matched nothing).
+func absRoot(root string) (string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("gitdiff: resolve scan root %q: %w", root, err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+// relUnder returns abs relative to the absolute root, or ok=false when abs is
+// the root itself or lies outside it.
+func relUnder(root, abs string) (string, bool) {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
 // TraversesSymlink reports whether reaching abs from root crosses a symlinked
 // directory component (or escapes root). filepath.WalkDir never descends into
 // symlinked directories, so the diff-aware fast scanners MUST skip any
@@ -190,14 +213,24 @@ func (a *Allowlist) AbsPaths() []string {
 // symlinked parent point outside the repo. A bare os.Lstat(abs) does not catch
 // this: it follows intermediate symlinks and only reveals a final-component
 // symlink. We Lstat each directory component instead. Returns true (refuse) on
-// any error or if abs is not contained in root.
+// any error or if abs is not contained in root. root may be relative; it is
+// resolved first, like abs.
 func TraversesSymlink(root, abs string) bool {
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	base, err := absRoot(root)
+	if err != nil {
+		return true
+	}
+	if !filepath.IsAbs(abs) {
+		if abs, err = filepath.Abs(abs); err != nil {
+			return true
+		}
+	}
+	rel, ok := relUnder(base, filepath.Clean(abs))
+	if !ok {
 		return true // unrelatable or outside root → refuse
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	cur := root
+	cur := base
 	for _, p := range parts[:len(parts)-1] { // directory components only, not the file itself
 		cur = filepath.Join(cur, p)
 		fi, err := os.Lstat(cur)
@@ -208,23 +241,55 @@ func TraversesSymlink(root, abs string) bool {
 	return false
 }
 
-// RelPaths returns the allowlist entries relative to root, sorted. Used to
-// build the semgrep `--include` glob set and for diagnostic logging. A nil
-// or empty allowlist yields an empty slice.
-func (a *Allowlist) RelPaths(root string) []string {
+// RelPaths returns the allowlist entries relative to root, sorted, as the
+// semgrep `--include` set. root may be relative; it is resolved first. An
+// entry that is not under root is an error: it has no root-relative form, and
+// handing a scanner its absolute path as a filter would match nothing while
+// the run still looked clean. A nil or empty allowlist yields no paths.
+func (a *Allowlist) RelPaths(root string) ([]string, error) {
 	if a == nil {
-		return nil
+		return nil, nil
+	}
+	base, err := absRoot(root)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]string, 0, len(a.abs))
 	for abs := range a.abs {
-		if rel, err := filepath.Rel(root, abs); err == nil {
-			out = append(out, filepath.ToSlash(rel))
-		} else {
-			out = append(out, filepath.ToSlash(abs))
+		rel, ok := relUnder(base, abs)
+		if !ok {
+			return nil, fmt.Errorf("gitdiff: changed file %s is not under the scan root %s", abs, base)
 		}
+		out = append(out, filepath.ToSlash(rel))
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
+}
+
+// CheckScope reports whether the allowlist can safely scope a scan of root:
+// root resolves, and every entry lies under it and exists. ChangedFiles drops
+// deletions, so an entry that does not exist means git's repository-relative
+// path did not map onto the tree under root, as happens when root is a
+// subdirectory of the repository. A non-nil error means the diff scope cannot
+// be trusted, and the caller must widen to a full scan rather than narrow to
+// files no scanner can find. A nil or empty allowlist is always in scope.
+func (a *Allowlist) CheckScope(root string) error {
+	if a == nil {
+		return nil
+	}
+	base, err := absRoot(root)
+	if err != nil {
+		return err
+	}
+	for _, abs := range a.AbsPaths() {
+		if _, ok := relUnder(base, abs); !ok {
+			return fmt.Errorf("changed file %s is not under the scan root %s", abs, base)
+		}
+		if _, err := os.Lstat(abs); err != nil {
+			return fmt.Errorf("changed file %s does not exist under the scan root %s (git reports paths from the repository root)", abs, base)
+		}
+	}
+	return nil
 }
 
 // ContainsBase reports whether any allowlisted file has the given base name

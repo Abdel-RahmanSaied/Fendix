@@ -354,9 +354,20 @@ func (o *Orchestrator) Run(ctx context.Context) int {
 			slog.Warn("diff-aware scan: git diff failed — falling back to full scan",
 				"error", derr, "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
 		} else {
-			allow = gitdiff.NewAllowlist(o.cfg.CodePath, changed)
-			slog.Info("diff-aware scan: scoped to changed files",
-				"files", allow.Len(), "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
+			// The same rule as a failed git diff: if the changed files cannot
+			// be placed under CodePath (for example a --code below the
+			// repository root, whose paths git reports from the top), the
+			// scope cannot be trusted. Widen to a full scan; never hand the
+			// scanners a filter that matches nothing.
+			scoped := gitdiff.NewAllowlist(o.cfg.CodePath, changed)
+			if serr := scoped.CheckScope(o.cfg.CodePath); serr != nil {
+				slog.Warn("diff-aware scan: file scope could not be represented safely — falling back to full scan",
+					"error", serr, "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
+			} else {
+				allow = scoped
+				slog.Info("diff-aware scan: scoped to changed files",
+					"files", allow.Len(), "ref", o.cfg.DiffRef, "staged", o.cfg.DiffStaged)
+			}
 		}
 	}
 

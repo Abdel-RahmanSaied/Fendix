@@ -46,7 +46,7 @@ func rootSpellings(abs string) []string {
 // relPathsE wraps the RelPaths call so the assertions below do not depend on
 // its signature.
 func relPathsE(a *Allowlist, root string) ([]string, error) {
-	return a.RelPaths(root), nil
+	return a.RelPaths(root)
 }
 
 func relPaths(t *testing.T, a *Allowlist, root string) []string {
@@ -127,6 +127,52 @@ func TestRelPaths_EntryOutsideRootIsAnError(t *testing.T) {
 		got, err := relPathsE(al, root)
 		if err == nil {
 			t.Errorf("RelPaths(%q) of an entry outside the root returned %v and no error", root, got)
+		}
+	}
+}
+
+func TestCheckScope_AcceptsChangedFilesUnderTheRoot(t *testing.T) {
+	changed := []string{"server.py", "deploy/k8s/worker.yaml"}
+	abs := chdirTempRepo(t, changed...)
+	for _, root := range rootSpellings(abs) {
+		if err := NewAllowlist(root, changed).CheckScope(root); err != nil {
+			t.Errorf("CheckScope(%q): %v", root, err)
+		}
+	}
+	var nilList *Allowlist
+	if err := nilList.CheckScope("."); err != nil {
+		t.Errorf("a nil allowlist (full scan) must be in scope: %v", err)
+	}
+	if err := NewAllowlist(".", nil).CheckScope("."); err != nil {
+		t.Errorf("an empty allowlist (no changes) must be in scope: %v", err)
+	}
+}
+
+// git reports changed paths from the repository root. With the scan root one
+// level down, joining them onto it names files that do not exist: the scope
+// cannot be trusted and the caller must widen to a full scan.
+func TestCheckScope_RejectsPathsThatDoNotMapUnderASubdirectoryRoot(t *testing.T) {
+	abs := chdirTempRepo(t, "services/api/deploy/worker.yaml", "web/app.js")
+	changed := []string{"services/api/deploy/worker.yaml", "web/app.js"}
+	for _, root := range []string{"services/api", "./services/api", filepath.Join(abs, "services", "api")} {
+		if err := NewAllowlist(root, changed).CheckScope(root); err == nil {
+			t.Errorf("CheckScope(%q) accepted repository-root paths joined onto a subdirectory", root)
+		}
+	}
+}
+
+func TestCheckScope_RejectsAnEntryOutsideTheRoot(t *testing.T) {
+	abs := chdirTempRepo(t, "app/server.py")
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, "other.py"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range rootSpellings(abs) {
+		if err := NewAllowlist(elsewhere, []string{"other.py"}).CheckScope(root); err == nil {
+			t.Errorf("CheckScope(%q) accepted a changed file outside the root", root)
 		}
 	}
 }
