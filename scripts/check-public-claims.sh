@@ -39,4 +39,4 @@ grep -F 'CURRENT_SIGN_REPO="Fendix-app/Fendix"' scripts/install.sh >/dev/null
 # shellcheck disable=SC2016 # Match the literal shell assignment.
 grep -F 'REPO="${FENDIX_REPO:-Fendix-app/Fendix}"' scripts/install.sh >/dev/null
 grep -F 'Fendix-app/homebrew-fendix' .github/workflows/release.yml >/dev/null
-grep -F 'fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033' README.md >/dev/null
+grep -F 'fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387' README.md >/dev/null

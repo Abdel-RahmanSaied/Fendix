@@ -577,7 +577,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       # Pin by digest for reproducibility / supply-chain integrity
-      image: fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033
+      image: fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387
     steps:
       - uses: actions/checkout@v4
         with:
@@ -601,11 +601,11 @@ Or as a one-shot `docker run` step (e.g. from a non-container job):
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src \
-  fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033 \
+  fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387 \
   scan --code . --format json --output findings.json --fail-on HIGH
 ```
 
-- **Version v3.6.0 image digest:** `sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033` (public, anonymously pullable; multi-arch `linux/amd64` + `linux/arm64`).
+- **Version v3.6.1 image digest:** `sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387` (public, anonymously pullable; multi-arch `linux/amd64` + `linux/arm64`).
 - **Pin by digest** (not a floating tag) for reproducible, tamper-evident builds — this is the form the release workflow itself signs and references.
 
 ### 3.5 `--fail-on` gating and exit codes
@@ -855,7 +855,7 @@ These inputs belong to the composite Action, which is not currently recommended 
 | `extra-args` | `""` | Raw args appended to `fendix scan` |
 | `engine_path` | `""` | Caller-managed Python engine dir; empty uses the release's own source and, from v3.6.1, its hash lock |
 
-**Pinned image (v3.6.0):** `fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033`
+**Pinned image (v3.6.1):** `fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387`
 
 ---
 

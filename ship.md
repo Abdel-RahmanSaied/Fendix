@@ -33,7 +33,10 @@ git add CHANGELOG.md
 git commit -m "chore(release): roll CHANGELOG to vX.Y.Z"
 git push origin main
 
-# 4. Annotated tag — the multi-line message becomes the GitHub Release body
+# 4. Annotated tag. The message is the tag annotation only: release.yml
+#    publishes with generate_release_notes: true, so the GitHub Release body
+#    starts as GitHub's generated notes, not this message. Set the approved
+#    body after the workflow finishes (see below).
 git tag -a vX.Y.Z -m "vX.Y.Z — short headline
 
 What changed:
@@ -57,7 +60,7 @@ The pipeline at `.github/workflows/release.yml` runs end-to-end on every `vX.Y.Z
 |---|---|---|
 | `enforce-signing` | Gate: fails the tag unless `vars.COSIGN_ENABLED=true` (or the explicit `allow-unsigned` escape hatch). Runs first; everything else `needs` it | Pass/fail — an unsigned official release cannot happen by accident |
 | `release` (×4 matrix) | Cross-compiles for linux/amd64, **linux/arm64**, darwin/amd64, darwin/arm64 (no embedded Python engine since TASK-118 — `make embed-engine` resets the embed dir to a placeholder); builds `.deb` + `.rpm` via nfpm on the linux targets; cosign-signs binaries + packages + SBOMs; emits CycloneDX + SPDX SBOMs and SLSA v1.0 provenance; computes sha256 | Workflow artifacts `fendix-{linux,darwin}-{amd64,arm64}` plus `.deb`/`.rpm`/`.sig`/`.crt`/`.cdx.json`/`.spdx.json`/`.intoto.jsonl` sidecars |
-| `publish` | Downloads matrix artifacts, creates the engine-repository GitHub Release | <https://github.com/Fendix-app/Fendix/releases/tag/vX.Y.Z> |
+| `publish` | Downloads matrix artifacts, creates the engine-repository GitHub Release with GitHub-generated notes (`generate_release_notes: true`; the tag message is not used) | <https://github.com/Fendix-app/Fendix/releases/tag/vX.Y.Z> |
 | `docker` | Gates a multi-architecture candidate, publishes the immutable version to Docker Hub, verifies its clean pull and attestations, then moves convenience tags | `docker.io/fendixapp/fendix:X.Y.Z`, `:X.Y`, `:X`, and `:latest` for stable releases |
 | `mirror` | Creates the public mirror release with binaries and checksums, then updates `Formula/fendix.rb` with fresh SHA-256 values | <https://github.com/Fendix-app/homebrew-fendix/releases/tag/vX.Y.Z> |
 
@@ -73,11 +76,30 @@ release assets independently of the source repository.
 gh release view vX.Y.Z -R Fendix-app/Fendix
 gh release view vX.Y.Z -R Fendix-app/homebrew-fendix
 docker pull docker.io/fendixapp/fendix:X.Y.Z  # multi-arch manifest picks the right platform
+
+# Replace the generated Release body with the approved notes, then read it back
+gh release edit vX.Y.Z -R Fendix-app/Fendix --notes-file release-notes-vX.Y.Z.txt
+gh release view vX.Y.Z -R Fendix-app/Fendix --json body --jq .body | diff - release-notes-vX.Y.Z.txt && echo "release body matches"
 ```
 
 Optional: spot-check that `brew install fendix` (with the tap already added) picks up the new version.
 
-No README update needed for normal patch/minor releases — the install commands in `README.md` are version-agnostic. Only update the README install section when adding a brand-new install path (e.g., `.deb`/`.rpm` in Phase 13).
+The install commands in `README.md` are version-agnostic, but several
+documents pin the released artifacts and need a follow-up PR once the
+release is verified:
+
+- `Formula/fendix.rb`: render it with `scripts/release/render-homebrew-formula.sh`
+  from the four binary SHA-256 values; it must equal the formula the
+  `mirror` job published to `Fendix-app/homebrew-fendix`.
+- The immutable image digest and the `release.yml@refs/tags/vX.Y.Z` identity in
+  `README.md`, `SECURITY.md`, `docs/trust-center.md`, `docs/install.md` and the
+  `docs/INTEGRATION_GUIDE.md` Docker examples, plus the README digest check in
+  `scripts/check-public-claims.sh`. Run each documented `cosign verify` and
+  `cosign verify-attestation` command against the new digest before
+  committing it.
+- The reference workflow (`examples/github-actions/fendix-scan.yml`) and the
+  copies of it in the docs move in their own PR, followed by its end-to-end
+  run.
 
 ---
 
