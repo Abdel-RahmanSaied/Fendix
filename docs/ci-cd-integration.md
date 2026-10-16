@@ -4,8 +4,8 @@ Fendix produces SARIF 2.1.0 output for GitHub code scanning: PR annotations and 
 
 ## Quick start — copy this workflow
 
-A complete, digest-pinned v3.6.0 container workflow lives at
-[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/7cf1960f321c497e0b15da7e5e1f02d87988743e/examples/github-actions/fendix-scan.yml).
+A complete, digest-pinned v3.6.1 container workflow lives at
+[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml).
 Install it from that tested commit, not from `main`, as shown in
 [INTEGRATION_GUIDE §3.1](INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit);
 do not use `uses: Fendix-app/Fendix@v1` (see §3.2 there). Dropped into
@@ -50,7 +50,7 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     env:
-      FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:c0912dd6cd3ea20d81c688bdcda09d34ecabafbc38d5cfede2e8ecf3e9028033
+      FENDIX_IMAGE: docker.io/fendixapp/fendix@sha256:1bd55a63bbf0be80fa0bb4d25994e506fc0bedc9e998521e29a2558046c10387
     permissions:
       actions: read           # Required for SARIF upload on a private repository
       security-events: write  # Required for SARIF upload
@@ -78,15 +78,6 @@ jobs:
             --output results.sarif \
             --fail-on HIGH
         continue-on-error: true  # Upload SARIF even if findings exist
-
-      # Temporary, v3.6.0: a scan with no findings writes "rules": null,
-      # which upload-sarif rejects. Drop this step once your release's
-      # exporter writes "rules": [].
-      - name: Normalize empty SARIF rules
-        if: hashFiles('results.sarif') != ''
-        run: |
-          jq '(.runs[]?.tool.driver | select(has("rules") and .rules == null) | .rules) = []' results.sarif > results.sarif.tmp
-          mv results.sarif.tmp results.sarif
 
       # A private repository needs GitHub Code Security for this upload.
       - name: Upload SARIF to GitHub

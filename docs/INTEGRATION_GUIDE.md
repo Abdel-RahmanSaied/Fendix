@@ -410,15 +410,15 @@ The engine runs in CI from the official container image (§3.1, §3.4), or as th
 
 ### 3.1 Recommended — the reference workflow at a fixed commit
 
-[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/7cf1960f321c497e0b15da7e5e1f02d87988743e/examples/github-actions/fendix-scan.yml) at commit `7cf1960f321c497e0b15da7e5e1f02d87988743e` is the recommended GitHub Actions setup until the released v3.6.1 Action passes its end-to-end validation. It runs the official v3.6.0 image by immutable digest and pins every third-party Action to a full commit SHA.
+[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml) at commit `46dd52e4880a06c3ebc7852ba572bb71f69a2644` is the recommended GitHub Actions setup until the released v3.6.1 Action passes its end-to-end validation. It runs the official v3.6.1 image by immutable digest and pins every third-party Action to a full commit SHA.
 
 Install it from that commit, not from `main`:
 
 ```bash
 mkdir -p .github/workflows
 curl -fsSL -o .github/workflows/fendix-scan.yml \
-  https://raw.githubusercontent.com/Fendix-app/Fendix/7cf1960f321c497e0b15da7e5e1f02d87988743e/examples/github-actions/fendix-scan.yml
-echo "f28a61ab14217274a4ef95be65b53de7ec2d723d4837a28ef055d6eafcb476fb  .github/workflows/fendix-scan.yml" | sha256sum -c -
+  https://raw.githubusercontent.com/Fendix-app/Fendix/46dd52e4880a06c3ebc7852ba572bb71f69a2644/examples/github-actions/fendix-scan.yml
+echo "2feeec9841df574a2adcaeca52fe2271572fb81bc6538a1c4567fd6b92d31abc  .github/workflows/fendix-scan.yml" | sha256sum -c -
 ```
 
 On macOS, use `shasum -a 256 -c -` in place of `sha256sum -c -`.
@@ -456,9 +456,7 @@ A failing reporting step (SARIF upload, PR comment) still fails the job, but it 
 - **Private repository without Code Security:** the workflow skips the upload and writes a notice. The scan, the PR comment and the gate run as usual, and the comment says that no SARIF was uploaded.
 - **Private repository with Code Security:** set the repository variable `FENDIX_UPLOAD_SARIF` to `true` (Settings → Secrets and variables → Actions → Variables) to upload. This path has not yet been verified end to end.
 
-**Temporary step.** The v3.6.0 SARIF exporter writes `"rules": null` for a scan with no findings, which `upload-sarif` rejects as invalid SARIF. The step *Normalize empty SARIF rules (temporary, v3.6.0)* replaces that `null` with `[]` and changes nothing else. It will be removed when the workflow moves to a release whose exporter writes `"rules": []`.
-
-This file was tested end to end on 2026-10-15, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. A variant that changed only `runs-on` passed the core scenarios on `ubuntu-26.04` (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`), the image `ubuntu-latest` moves to from 2026-10-19; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
+This file was tested end to end on 2026-10-16, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. The scan with no findings uploaded its SARIF as the engine wrote it, with `"rules": []`. The previous version of this file (commit `7cf1960f321c497e0b15da7e5e1f02d87988743e`: the v3.6.0 image and a temporary step that rewrote a `null` rules value) also passed the core scenarios on `ubuntu-26.04`, the image `ubuntu-latest` moves to from 2026-10-19 (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`). This version has not yet run there; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
 
 ### 3.2 The composite GitHub Action — do not use `@v1`
 
