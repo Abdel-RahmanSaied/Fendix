@@ -13,7 +13,7 @@ Last reviewed: 2026-06-28 (v0.21 — Earn Trust).
 | Topic | Where |
 |-------|-------|
 | Threat model (assets, trust boundaries, attacker model) | [docs/threat-model.md](threat-model.md) |
-| Reporting a vulnerability + coordinated-disclosure timeline | [SECURITY.md](../SECURITY.md) — `security@fendix.dev`, PGP on request |
+| Reporting a vulnerability + coordinated-disclosure timeline | [SECURITY.md](../SECURITY.md) — GitHub private vulnerability reporting |
 | Supported versions / patch policy | [SECURITY.md](../SECURITY.md) |
 
 ### HIGH-severity findings — status

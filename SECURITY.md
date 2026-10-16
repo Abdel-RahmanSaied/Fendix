@@ -35,11 +35,11 @@ A patch release on the supported branch is the delivery vehicle for a fix
 
 **Please do not open a public GitHub issue.**
 
-Use one of the following private channels:
+Report it privately through GitHub private vulnerability reporting:
+<https://github.com/Fendix-app/Fendix/security/advisories/new>
 
-- **GitHub private vulnerability report** (preferred):
-  <https://github.com/Fendix-app/Fendix/security/advisories/new>
-- **Email**: `security@fendix.dev` (PGP key on request)
+This is the only reporting channel at present. There is no security email
+address yet; this policy will list one once it is set up and tested.
 
 Include in your report:
 
@@ -56,7 +56,7 @@ You will receive an acknowledgement within **72 hours**, and a full
 triage response within **7 days**. If we accept the report we'll work
 with you on a fix and a release timeline; if we decline, you'll get a
 written reason. If you don't hear back in 7 days, please escalate by
-emailing the maintainer directly.
+adding a comment to your private report.
 
 ## Scope
 
