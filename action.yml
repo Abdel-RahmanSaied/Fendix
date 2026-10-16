@@ -15,25 +15,34 @@
 # outbound access to GitHub releases and to Sigstore (proxies through the
 # standard HTTPS_PROXY variables; a ~/.curlrc is ignored).
 #
-# Usage: pin this Action to the full commit SHA of a validated release, with
-# version set to that same release.
+# Usage: `@v1` follows compatible stable releases of the v1 Action; set
+# `version` to the Fendix release to install.
 #
 #   - uses: actions/checkout@<full-commit-sha> # v6
 #     with: { fetch-depth: 0 }          # diff mode compares against the base ref
-#   - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
+#   - uses: Fendix-app/Fendix@v1
 #     with:
-#       version: <that release, for example v3.6.2>
+#       version: v3.6.2
 #       code: .
+#
+# High-assurance or reproducible pipelines: pin the full commit of the
+# validated release instead, which is immutable.
+#
+#   - uses: Fendix-app/Fendix@b9e1fad6e1d9531ac899ab44b01f413424f30a7a # v3.6.2
+#     with:
+#       version: v3.6.2
 #
 # Usage (full: add a DAST target and fail the build on HIGH):
 #
-#   - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
+#   - uses: Fendix-app/Fendix@v1
 #     with:
-#       version: <that release>
+#       version: v3.6.2
 #       url: ${{ secrets.STAGING_API_URL }}
 #       code: .
 #       spec: openapi.yaml
 #       fail-on: HIGH
+#
+# Never reference @main; it changes without review.
 name: "Fendix Security Scan"
 description: "Evidence-backed application security decisions for CI/CD."
 author: "Fendix"

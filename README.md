@@ -626,40 +626,59 @@ also accepts an optional `FENDIX_SHA256` pin.
 > release binary, which carries no Python analyzer tree, and do not install
 > Semgrep, so their scans record both analyzers as unavailable and report
 > coverage as incomplete. The GitLab starter also labels SARIF as GitLab's
-> different SAST JSON schema. For full analyzer coverage use the checked-in
-> reference GitHub container workflow, or author a current pinned container job.
+> different SAST JSON schema. For full analyzer coverage on GitHub use the
+> Fendix Action, which prepares the Python engine and Semgrep from the
+> release's hash lock, or the reference container workflow; elsewhere, author a
+> current pinned container job.
 
 ### GitHub Actions
 
-**Recommended until the released v3.6.2 Action is validated: the reference
-workflow at a fixed commit.** It runs
-the official v3.6.2 container by digest, pins every third-party Action to a
-full commit SHA, and was tested end to end from fresh repositories. Install it
-from that commit, not from `main`:
+**Recommended: the Fendix Action.** Use `Fendix-app/Fendix@v1` with an
+explicit `version`:
 
-```bash
-mkdir -p .github/workflows
-curl -fsSL -o .github/workflows/fendix-scan.yml \
-  https://raw.githubusercontent.com/Fendix-app/Fendix/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml
+```yaml
+name: Security Scan
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write    # SARIF upload
+  actions: read             # SARIF upload in a private or internal repository
+
+jobs:
+  fendix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0      # diff mode compares against the PR base ref
+
+      - uses: Fendix-app/Fendix@v1
+        with:
+          version: v3.6.2
+          code: .
+          url: ${{ secrets.STAGING_API_URL }}   # optional, adds DAST
+          spec: openapi.yaml                     # optional
+          fail-on: HIGH
 ```
 
-The [integration guide](docs/INTEGRATION_GUIDE.md#31-recommended--the-reference-workflow-at-a-fixed-commit)
-gives the checksum, the permissions, how the gate fails closed, and the
-private-repository behaviour: a private repository needs GitHub Code Security
-for the SARIF upload, so the workflow skips the upload there unless the
-repository variable `FENDIX_UPLOAD_SARIF` is `true`. The scan, the PR comment
-and the gate run either way.
+`@v1` follows compatible stable releases of the v1 Action; `version` pins the
+Fendix release it installs. For high-assurance or reproducible pipelines, pin
+the Action to the full commit of the validated release instead, which is
+immutable:
 
-> **Do not use `uses: Fendix-app/Fendix@v1`.** The `v1` tag points to an
-> outdated revision of the Action with known defects; see the
-> [warning in the integration guide](docs/INTEGRATION_GUIDE.md#32-the-composite-github-action--do-not-use-v1).
-> Do not reference `@main` either.
+```yaml
+      - uses: Fendix-app/Fendix@b9e1fad6e1d9531ac899ab44b01f413424f30a7a # v3.6.2
+        with:
+          version: v3.6.2
+```
 
-#### The composite Action
+Never reference `@main`; it changes without review. The permissions above are
+all the Action needs; it uses the job token only for the SARIF upload. The
+v3.6.2 Action, by its release commit and as literal `@v1`, passed the
+external-user end-to-end matrix in public and private repositories.
 
-The [Fendix Action](action.yml) as shipped in v3.6.2. Until this release has
-passed its own post-release end-to-end validation, use the reference workflow
-above. What the Action does:
+#### What the Action does
 
 - **Verified install.** cosign is installed first. The installer bundled with
   the Action revision (never fetched live) installs one exact release from
@@ -705,36 +724,6 @@ above. What the Action does:
   read-only token and no secrets, so the upload cannot succeed there and a
   secret-based DAST URL is empty.
 
-The permissions below are all the Action needs; it uses the job token only
-for the SARIF upload. The example pins a placeholder: use the full commit SHA
-of a validated release, with `version` set to that release.
-
-```yaml
-name: Security Scan
-on: [push, pull_request]
-
-permissions:
-  contents: read
-  security-events: write    # SARIF upload
-  actions: read             # SARIF upload in a private or internal repository
-
-jobs:
-  fendix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0      # diff mode compares against the PR base ref
-
-      - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
-        with:
-          version: <that release>
-          code: .
-          url: ${{ secrets.STAGING_API_URL }}   # optional, adds DAST
-          spec: openapi.yaml                     # optional
-          fail-on: HIGH
-```
-
 <details>
 <summary>Or wire it by hand (install script + raw CLI)</summary>
 
@@ -768,6 +757,26 @@ jobs:
 ```
 
 </details>
+
+#### Alternative: the digest-pinned reference workflow
+
+For teams that want the container-based path and to own the workflow file
+directly, the reference workflow runs the official v3.6.2 container by digest,
+pins every third-party Action to a full commit SHA, and was tested end to end
+from fresh repositories. Install it from its tested commit, not from `main`:
+
+```bash
+mkdir -p .github/workflows
+curl -fsSL -o .github/workflows/fendix-scan.yml \
+  https://raw.githubusercontent.com/Fendix-app/Fendix/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml
+```
+
+The [integration guide](docs/INTEGRATION_GUIDE.md#32-alternative--the-digest-pinned-reference-workflow)
+gives the checksum, the permissions, how the gate fails closed, and the
+private-repository behaviour: a private repository needs GitHub Code Security
+for the SARIF upload, so the workflow skips the upload there unless the
+repository variable `FENDIX_UPLOAD_SARIF` is `true`. The scan, the PR comment
+and the gate run either way.
 
 ### Baseline diff in PRs
 

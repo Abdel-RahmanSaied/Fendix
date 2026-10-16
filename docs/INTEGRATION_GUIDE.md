@@ -19,7 +19,7 @@ Fendix has **three supported integration paths**. They share the same engine and
 ### Quick decision guide
 
 - **"I just want to scan something once."** → Path 1. Run the local CLI.
-- **"I want every PR gated and findings in the GitHub Security tab."** → Path 2. Use the reference workflow (§3.1), which runs the official container.
+- **"I want every PR gated and findings in the GitHub Security tab."** → Path 2. Use the Fendix Action (§3.1); the reference workflow (§3.2) runs the official container directly.
 - **"I want persistent history, organization workspaces, and governed release decisions."** → Use the hosted workspace and its documented product integrations.
 - **"My target is inside a private network / behind a VPN."** → Use the Enterprise customer-hosted runner through Fendix onboarding. It executes inside your network and connects outward to the hosted workspace.
 
@@ -404,65 +404,48 @@ Key facts:
 
 Goal: fail the build when a scan finds something at/above a severity threshold, and surface the findings to reviewers.
 
-> **GitHub Actions:** the reference workflow at a fixed commit (§3.1) and the composite Action (§3.2) have both passed end-to-end validation with v3.6.2. `uses: Fendix-app/Fendix@v1` now resolves to the v3.6.2 release commit. Do not reference `@main`; it changes without review.
+> **GitHub Actions: use the Fendix Action, `uses: Fendix-app/Fendix@v1` with an explicit `version` (§3.1).** For high-assurance or reproducible pipelines, pin it to the full commit of the validated release instead. The digest-pinned reference workflow (§3.2) is a tested alternative. Never reference `@main`; it changes without review.
 
-The engine runs in CI from the official container image (§3.1, §3.4), or as the composite GitHub Action (§3.2).
+The engine runs in CI as the composite GitHub Action (§3.1), or from the official container image (§3.2, §3.4).
 
-### 3.1 Recommended — the reference workflow at a fixed commit
+<a id="32-the-composite-github-action"></a>
+<a id="32-the-composite-github-action--do-not-use-v1"></a>
 
-[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml) at commit `41da3ae48fc17412893112061175120958b8b91e` is a tested GitHub Actions setup. It runs the official v3.6.2 image by immutable digest and pins every third-party Action to a full commit SHA.
+### 3.1 Recommended — the composite GitHub Action
 
-Install it from that commit, not from `main`:
+Use the Fendix Action with `@v1` and an explicit `version`:
 
-```bash
-mkdir -p .github/workflows
-curl -fsSL -o .github/workflows/fendix-scan.yml \
-  https://raw.githubusercontent.com/Fendix-app/Fendix/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml
-echo "5d5cce3bf02f72971d70f7b3dcde4b3a66b7a9fec39ebbba8183a1e53a8f915c  .github/workflows/fendix-scan.yml" | sha256sum -c -
+```yaml
+permissions:
+  contents: read
+  security-events: write    # SARIF upload
+  actions: read             # SARIF upload in a private or internal repository
+
+jobs:
+  fendix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0      # diff mode compares against the PR base ref
+      - uses: Fendix-app/Fendix@v1
+        with:
+          version: v3.6.2
+          code: .
+          fail-on: HIGH
 ```
 
-On macOS, use `shasum -a 256 -c -` in place of `sha256sum -c -`.
+`@v1` follows compatible stable releases of the v1 Action. `version` pins the Fendix release the Action installs. For high-assurance or reproducible pipelines, pin the Action to the full commit of the validated release instead, which is immutable:
 
-The workflow runs on pull requests to `main` and on pushes to `main`. Each run:
+```yaml
+      - uses: Fendix-app/Fendix@b9e1fad6e1d9531ac899ab44b01f413424f30a7a # v3.6.2
+        with:
+          version: v3.6.2
+```
 
-1. scans the checkout with the pinned image (`--code ./ --fail-on HIGH`), restoring and saving a baseline through `actions/cache`;
-2. re-renders the JSON report as SARIF and uploads it to code scanning (private repositories: see below);
-3. posts a summary comment on the pull request;
-4. ends with a gate step that decides the check from the scan's exit code.
+Never reference `@main`; it changes without review. On a private repository without GitHub Code Security, set `upload-sarif: 'false'`: the scan and the gate still run. The v3.6.2 Action, by its release commit and as literal `@v1`, passed the external-user end-to-end matrix in public and private repositories on 2026-10-16. Until then `v1` pointed to the June 2026 revision `d59a901`; a workflow pinned to that revision should move to `@v1` or to the release commit.
 
-**The gate.** The final step runs even when an earlier step failed, and it reads only the scan's exit code:
-
-| Scan exit code | Gate |
-|---|---|
-| `0` | passes |
-| `1` | fails: a finding reached `BLOCK` |
-| `2` | fails: the scan did not complete |
-| missing, or any other value | fails closed |
-
-A failing reporting step (SARIF upload, PR comment) still fails the job, but it cannot skip the gate or turn a `BLOCK` or a scan error into a pass.
-
-**Permissions.**
-
-| Permission | Why |
-|---|---|
-| `actions: read` | SARIF upload on a private repository (`upload-sarif` reads the workflow run) |
-| `contents: read` | checkout |
-| `security-events: write` | SARIF upload to code scanning |
-| `pull-requests: write` | the PR comment. Without it, the comment step fails with "Resource not accessible by integration" and the job fails; the gate still reports the scan result. |
-
-**Private repositories and GitHub Code Security.** Code scanning on a private repository requires GitHub Code Security. Without it, GitHub rejects the upload with "Advanced Security must be enabled for this repository to use code scanning".
-
-- **Public repository:** SARIF is uploaded, and findings appear in the Security tab and as PR annotations.
-- **Private repository without Code Security:** the workflow skips the upload and writes a notice. The scan, the PR comment and the gate run as usual, and the comment says that no SARIF was uploaded.
-- **Private repository with Code Security:** set the repository variable `FENDIX_UPLOAD_SARIF` to `true` (Settings → Secrets and variables → Actions → Variables) to upload. This path has not yet been verified end to end.
-
-This file, at commit `41da3ae48fc17412893112061175120958b8b91e` with the v3.6.2 image `sha256:7a8234194fa963f894e1fb77f2b728272230ab9b1ac5c05ffd75c0ab10ea2529`, was tested end to end on 2026-10-16, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. The scan with no findings uploaded its SARIF as the engine wrote it, with `"rules": []`. The previous version of this file (commit `7cf1960f321c497e0b15da7e5e1f02d87988743e`: the v3.6.0 image and a temporary step that rewrote a `null` rules value) also passed the core scenarios on `ubuntu-26.04`, the image `ubuntu-latest` moves to from 2026-10-19 (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`). This version has not yet run there; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
-
-### 3.2 The composite GitHub Action
-
-> **`v1` points to the validated v3.6.2 release.** Since 2026-10-16, `uses: Fendix-app/Fendix@v1` resolves to the v3.6.2 release commit `b9e1fad6e1d9531ac899ab44b01f413424f30a7a`, and it passed the external-user end-to-end matrix in public and private repositories. Before that date `v1` pointed to the June 2026 revision `d59a901`, which interpolated its inputs into shell scripts, ignored its `version` input and used the unpinned `upload-sarif@v3`; a workflow pinned to that revision should move to `@v1` or to the release commit.
-
-This section documents the Action as shipped in v3.6.2. Never reference `@main`.
+This section documents the Action as shipped in v3.6.2.
 
 A **composite** action. Its steps, in order:
 
@@ -511,10 +494,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0      # diff mode compares against the PR base ref
-      # Not @v1 and not @main: pin the full commit SHA of a validated release.
-      - uses: Fendix-app/Fendix@<full-commit-sha-of-a-validated-release>
+      # @v1, or the full release commit for reproducibility; never @main.
+      - uses: Fendix-app/Fendix@v1
         with:
-          version: "<that release>"
+          version: "v3.6.2"
           code: "."           # white-box SAST/secrets/SCA (default ".")
           url: ""             # optional: black-box DAST target
           spec: ""            # optional: OpenAPI spec to seed discovery
@@ -546,9 +529,61 @@ jobs:
 
 Outside the Action, the same verification is available to any workflow: install cosign first and run the installer with `FENDIX_REQUIRE_SIGNATURE=1` and an exact `FENDIX_VERSION`.
 
+<a id="31-recommended--the-reference-workflow-at-a-fixed-commit"></a>
+
+### 3.2 Alternative — the digest-pinned reference workflow
+
+[`examples/github-actions/fendix-scan.yml`](https://github.com/Fendix-app/Fendix/blob/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml) at commit `41da3ae48fc17412893112061175120958b8b91e` is an alternative for teams that want the container-based path and to own the workflow file directly. It runs the official v3.6.2 image by immutable digest and pins every third-party Action to a full commit SHA.
+
+Install it from that commit, not from `main`:
+
+```bash
+mkdir -p .github/workflows
+curl -fsSL -o .github/workflows/fendix-scan.yml \
+  https://raw.githubusercontent.com/Fendix-app/Fendix/41da3ae48fc17412893112061175120958b8b91e/examples/github-actions/fendix-scan.yml
+echo "5d5cce3bf02f72971d70f7b3dcde4b3a66b7a9fec39ebbba8183a1e53a8f915c  .github/workflows/fendix-scan.yml" | sha256sum -c -
+```
+
+On macOS, use `shasum -a 256 -c -` in place of `sha256sum -c -`.
+
+The workflow runs on pull requests to `main` and on pushes to `main`. Each run:
+
+1. scans the checkout with the pinned image (`--code ./ --fail-on HIGH`), restoring and saving a baseline through `actions/cache`;
+2. re-renders the JSON report as SARIF and uploads it to code scanning (private repositories: see below);
+3. posts a summary comment on the pull request;
+4. ends with a gate step that decides the check from the scan's exit code.
+
+**The gate.** The final step runs even when an earlier step failed, and it reads only the scan's exit code:
+
+| Scan exit code | Gate |
+|---|---|
+| `0` | passes |
+| `1` | fails: a finding reached `BLOCK` |
+| `2` | fails: the scan did not complete |
+| missing, or any other value | fails closed |
+
+A failing reporting step (SARIF upload, PR comment) still fails the job, but it cannot skip the gate or turn a `BLOCK` or a scan error into a pass.
+
+**Permissions.**
+
+| Permission | Why |
+|---|---|
+| `actions: read` | SARIF upload on a private repository (`upload-sarif` reads the workflow run) |
+| `contents: read` | checkout |
+| `security-events: write` | SARIF upload to code scanning |
+| `pull-requests: write` | the PR comment. Without it, the comment step fails with "Resource not accessible by integration" and the job fails; the gate still reports the scan result. |
+
+**Private repositories and GitHub Code Security.** Code scanning on a private repository requires GitHub Code Security. Without it, GitHub rejects the upload with "Advanced Security must be enabled for this repository to use code scanning".
+
+- **Public repository:** SARIF is uploaded, and findings appear in the Security tab and as PR annotations.
+- **Private repository without Code Security:** the workflow skips the upload and writes a notice. The scan, the PR comment and the gate run as usual, and the comment says that no SARIF was uploaded.
+- **Private repository with Code Security:** set the repository variable `FENDIX_UPLOAD_SARIF` to `true` (Settings → Secrets and variables → Actions → Variables) to upload. This path has not yet been verified end to end.
+
+This file, at commit `41da3ae48fc17412893112061175120958b8b91e` with the v3.6.2 image `sha256:7a8234194fa963f894e1fb77f2b728272230ab9b1ac5c05ffd75c0ab10ea2529`, was tested end to end on 2026-10-16, installed with the commands above in fresh public and private repositories (the private one without Code Security), against scans with no findings, a held `WARN` finding, a `BLOCK` finding and a scan error, on GitHub-hosted `ubuntu-24.04` runners. The scan with no findings uploaded its SARIF as the engine wrote it, with `"rules": []`. The previous version of this file (commit `7cf1960f321c497e0b15da7e5e1f02d87988743e`: the v3.6.0 image and a temporary step that rewrote a `null` rules value) also passed the core scenarios on `ubuntu-26.04`, the image `ubuntu-latest` moves to from 2026-10-19 (public: no findings, `WARN`, `BLOCK`, scan error; private: no findings, `BLOCK`). This version has not yet run there; the workflow stays on `ubuntu-latest`. Not yet tested: a private repository with Code Security, and pull requests from forks.
+
 ### 3.3 Public Action availability
 
-The engine source repository (`Fendix-app/Fendix`) is public, so the Action resolves from public and private consumers. Resolving is not the same as being safe to use: see the warning in §3.2. Once a validated release exists, pin the Action to that release's full commit SHA and update the pin deliberately. Never reference `@main`.
+The engine source repository (`Fendix-app/Fendix`) is public, so the Action resolves from public and private consumers. Use `@v1`, which resolves to the validated v3.6.2 release, or pin the release's full commit for reproducibility (§3.1). Never reference `@main`.
 
 The canonical Docker Hub image is public and can be pulled anonymously. The previous GHCR image remains a compatibility path for existing consumers.
 
@@ -636,7 +671,7 @@ In a custom workflow, run the scan under `set +e`, capture `$?`, surface the rep
 
 ### 3.6 Surfacing findings without GitHub Code Security
 
-**Live-verified:** code scanning on a **private** repository requires GitHub Code Security (part of GitHub Advanced Security). Without it, `upload-sarif` fails with "Advanced Security must be enabled for this repository to use code scanning"; without `actions: read` it fails earlier with "Resource not accessible by integration". The GitHub App's SARIF upload has the same requirement. The reference workflow therefore skips the upload on a private repository unless it opts in (§3.1). Two alternatives that need no Code Security:
+**Live-verified:** code scanning on a **private** repository requires GitHub Code Security (part of GitHub Advanced Security). Without it, `upload-sarif` fails with "Advanced Security must be enabled for this repository to use code scanning"; without `actions: read` it fails earlier with "Resource not accessible by integration". The GitHub App's SARIF upload has the same requirement. The reference workflow therefore skips the upload on a private repository unless it opts in (§3.2). Two alternatives that need no Code Security:
 
 1. **Job summary** — render the HTML report into `$GITHUB_STEP_SUMMARY` (shown above). Always works, no permissions.
 2. **PR comment** — the engine ships a byte-for-byte-identical PR-comment recipe in both the reference workflow (`actions/github-script@v7`) and the GitHub App. The comment has a `## Fendix scan: N finding(s)` header, a Mode/Endpoints/Duration line, a severity×source table, a `_No new findings vs. baseline. ✅_` line when clean, else a "Top findings" list of the top 5. The App version additionally emits a one-click `.fendix-ignore` suppression snippet under each finding. Requires `pull-requests: write`.
@@ -772,9 +807,9 @@ automation contract.
 
 3. **SEC-NNN finding-ID instability.** `SEC-NNN` IDs reassign across scans. Use the report's versioned `fingerprint` for baselines, `fingerprint:` ignore rules, and persistent mappings. Current builds emit `fendix/v2` semantic fingerprints; line/column coordinates and evidence wording do not re-key a finding.
 
-4. **The Python taint engine resolution.** The flag default is false, but `--code` auto-enables the Python engine unless `--python-engine=false` is explicit. Official v3.6.2 standalone binaries **do not bundle** the tree: the release runs `make embed-engine`, whose current target intentionally resets the embedded directory to a placeholder. Resolution order is explicit dir → `FENDIX_ENGINE` → the pin in `~/.fendix/config` → optional legacy/custom embedded payload → `./python`. A missing tree on the implicit `--code` path is recorded as `python-engine: skipped/dependency_missing` and the native analyzers continue; a missing tree after explicitly passing `--python-engine` is fatal (exit 2). The official Docker image ships `/opt/fendix/python/` and sets the engine environment, so hybrid/white-box works there. The v3.6.0 Action's unconditional `engine sync` with an empty `engine_path` is the known defect described in §3.2.
+4. **The Python taint engine resolution.** The flag default is false, but `--code` auto-enables the Python engine unless `--python-engine=false` is explicit. Official v3.6.2 standalone binaries **do not bundle** the tree: the release runs `make embed-engine`, whose current target intentionally resets the embedded directory to a placeholder. Resolution order is explicit dir → `FENDIX_ENGINE` → the pin in `~/.fendix/config` → optional legacy/custom embedded payload → `./python`. A missing tree on the implicit `--code` path is recorded as `python-engine: skipped/dependency_missing` and the native analyzers continue; a missing tree after explicitly passing `--python-engine` is fatal (exit 2). The official Docker image ships `/opt/fendix/python/` and sets the engine environment, so hybrid/white-box works there. The v3.6.0 Action ran `fendix engine sync` unconditionally when `engine_path` was empty, which failed the job; from v3.6.1 the Action prepares the engine from the release's signed build record (§3.1).
 
-5. **SARIF upload differs by repository.** Upload to code scanning needs `security-events: write`, plus `actions: read` on a private repository, and a private repository also needs GitHub Code Security. Where Code Security is unavailable, skip the upload and rely on the PR comment or a `$GITHUB_STEP_SUMMARY` report, as the reference workflow does (§3.1). Never let a failed upload skip the gate.
+5. **SARIF upload differs by repository.** Upload to code scanning needs `security-events: write`, plus `actions: read` on a private repository, and a private repository also needs GitHub Code Security. Where Code Security is unavailable, skip the upload and rely on the PR comment or a `$GITHUB_STEP_SUMMARY` report, as the reference workflow does (§3.2). Never let a failed upload skip the gate.
 
 6. **Exit codes (memorize these for CI):** `0` = clean / nothing reached `BLOCK`; `1` = `--fail-on` gate tripped (severity **and**, since v2.0, a confidence band that supports the claim — `--enforce-confidence=false` restores the old severity-only gate); `2` = scan error (engine unresolvable, discovery failed, render failure, or `--fail-on-scanner-error` + a scanner failed), or `--fail-on-coverage-gap` (`configured_complete=false`) / `--require-analyzers` (an undelivered name). `fendix verify` uses its own scheme: `0` resolved, `1` still-present, `2` unknown/not-found — `2` now also covers a partial dependency lookup failure (`pip`/`npm` return a lookup error rather than a silent resolve), a fail-closed change from earlier builds that could answer "resolved" on the same partial failure.
 
@@ -830,7 +865,7 @@ automation contract.
 
 ### 6.2 GitHub Action input quick reference
 
-These inputs belong to the composite Action (§3.2).
+These inputs belong to the composite Action (§3.1).
 
 | Input | Default | One-liner |
 |---|---|---|
@@ -852,4 +887,4 @@ These inputs belong to the composite Action (§3.2).
 
 ### Worked-example note (TwiScope)
 
-TwiScope is a Django/DRF backend, so the natural integration is: (1) a developer `fendix hook install --fail-on HIGH` for commit-time secret/IaC gating; (2) a CI job using the public GitHub Action (`Fendix-app/Fendix`), which resolves for public and private repositories, or the canonical Docker Hub image, running `fendix scan --code . --fail-on HIGH` against a fresh checkout and surfacing findings through `$GITHUB_STEP_SUMMARY`; and, if internal/staging API targets must be scanned, (3) an Enterprise-org **runner** inside the network performing `mode=hybrid` scans (`--url` staging + `--code` repo) and POSTing results back so they land in the dashboard with full TrackedFinding lifecycle. Use the validated v3.6.2 Action (§3.2) or the reference workflow (§3.1); the older v3.6.0 Action needs a version-matched Python engine tree through `engine_path`. SARIF upload from a private repository needs GitHub Code Security, but its absence does not stop the scan or the gate. A fresh checkout narrows the scanned files; review the report before publishing it because secret values are redacted at capture time while file locations, safe identifiers, and security structure remain visible.
+TwiScope is a Django/DRF backend, so the natural integration is: (1) a developer `fendix hook install --fail-on HIGH` for commit-time secret/IaC gating; (2) a CI job using the public GitHub Action (`Fendix-app/Fendix`), which resolves for public and private repositories, or the canonical Docker Hub image, running `fendix scan --code . --fail-on HIGH` against a fresh checkout and surfacing findings through `$GITHUB_STEP_SUMMARY`; and, if internal/staging API targets must be scanned, (3) an Enterprise-org **runner** inside the network performing `mode=hybrid` scans (`--url` staging + `--code` repo) and POSTing results back so they land in the dashboard with full TrackedFinding lifecycle. Use the validated v3.6.2 Action (§3.1) or the reference workflow (§3.2); the older v3.6.0 Action needs a version-matched Python engine tree through `engine_path`. SARIF upload from a private repository needs GitHub Code Security, but its absence does not stop the scan or the gate. A fresh checkout narrows the scanned files; review the report before publishing it because secret values are redacted at capture time while file locations, safe identifiers, and security structure remain visible.
