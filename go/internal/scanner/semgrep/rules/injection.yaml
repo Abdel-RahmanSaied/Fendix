@@ -1,13 +1,16 @@
 rules:
   # Rule 1: SQL injection via string formatting / concatenation
+  # The alternatives must sit under pattern-either: as sibling `pattern:` entries
+  # of `patterns:` Semgrep ANDs them, so the rule could never match (v3.6.3).
   - id: python-sql-injection-string-format
     patterns:
-      - pattern: |
-          $CURSOR.execute("..." % ...)
-      - pattern: |
-          $CURSOR.execute("..." + ...)
-      - pattern: |
-          $CURSOR.execute(f"...{$VAR}...")
+      - pattern-either:
+          - pattern: $CURSOR.execute("..." % ..., ...)
+          - pattern: $CURSOR.execute("..." + ..., ...)
+          - pattern: $CURSOR.execute(f"...{$VAR}...", ...)
+          - pattern: $CURSOR.execute("...".format(...), ...)
+      - pattern-not: $CURSOR.execute("..." % "...", ...)
+      - pattern-not: $CURSOR.execute("..." + "...", ...)
     message: >
       SQL query built via string formatting — SQL injection risk.
       Use parameterized queries: cursor.execute("SELECT ... WHERE x = %s", (value,))
@@ -20,13 +23,17 @@ rules:
       fendix_severity: CRITICAL
 
   # Rule 2: Command injection via os.system or subprocess with shell=True
+  # os.system / os.popen with a non-literal command. The subprocess(..., shell=True)
+  # shapes belong to python-subprocess-shell-true-with-variable; listing them here
+  # as sibling `pattern:` entries ANDed every alternative, so this rule never
+  # matched, and repeating them would report each such call twice (v3.6.3).
   - id: python-command-injection-shell-true
     patterns:
-      - pattern: subprocess.run($CMD, shell=True, ...)
-      - pattern: subprocess.call($CMD, shell=True, ...)
-      - pattern: subprocess.Popen($CMD, shell=True, ...)
-      - pattern: os.system($CMD)
-      - pattern: os.popen($CMD)
+      - pattern-either:
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD, ...)
+      - pattern-not: os.system("...")
+      - pattern-not: os.popen("...", ...)
     message: >
       Command execution with user-controlled input — command injection risk.
       Use subprocess.run() with a list of arguments and shell=False.
@@ -40,13 +47,15 @@ rules:
       fendix_severity: CRITICAL
 
   # Rule 3: eval() with potentially dynamic/user-controlled input
+  # eval()/exec() with a non-literal argument. The two calls were sibling
+  # `pattern:` entries, which Semgrep ANDs, so the rule never matched (v3.6.3).
   - id: python-eval-injection
     patterns:
-      - pattern: eval($X)
-      - pattern: exec($X)
-    pattern-not-inside: |
-      def $FUNC():
-          eval("...")
+      - pattern-either:
+          - pattern: eval($X, ...)
+          - pattern: exec($X, ...)
+      - pattern-not: eval("...", ...)
+      - pattern-not: exec("...", ...)
     message: >
       eval()/exec() with dynamic argument — code injection risk.
       Avoid eval/exec entirely. If required, validate input strictly

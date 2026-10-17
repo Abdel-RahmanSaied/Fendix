@@ -154,10 +154,14 @@ rules:
   # parsers (yaml.v3, ruamel-yaml --rt). Semgrep itself was tolerant of
   # the unquoted form, but Sprint 18's rulepack-catalog audit test in
   # scanner_rulepack_test.go can't parse the file otherwise.
+  # Either disabling signature verification or allowing the "none" algorithm.
+  # The two were sibling `pattern:` entries, which Semgrep ANDs, so the rule
+  # never matched (v3.6.3).
   - id: python-jwt-decode-no-verification
     patterns:
-      - pattern: 'jwt.decode($TOKEN, options={"verify_signature": False, ...}, ...)'
-      - pattern: 'jwt.decode($TOKEN, algorithms=["none"], ...)'
+      - pattern-either:
+          - pattern: 'jwt.decode(..., options={"verify_signature": False, ...}, ...)'
+          - pattern: 'jwt.decode(..., algorithms=[..., "none", ...], ...)'
     message: >
       JWT decoded with signature verification disabled.
       This allows an attacker to forge tokens.
