@@ -31,12 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `os.system()` / `os.popen()` with a non-literal command.
   - `subprocess(..., shell=True)` stays with
     `python-subprocess-shell-true-with-variable`, so it is reported once.
-  - The Python analyzer already covered most of these shapes, and a finding
-    both analyzers report at one location is still reported once. The
-    exceptions, where these rules add the first detection:
-    - `jwt.decode(..., algorithms=["none"])`;
-    - every one of these shapes when the Python analyzer does not run, such
-      as a standalone binary without its Python engine.
+  - The Python analyzer already detects most of these shapes. Where it and
+    these rules flag one location in the same category, the location is
+    still reported once.
+  - These rules add the first detection of
+    `jwt.decode(..., algorithms=["none"])`, which no analyzer caught.
+  - Where the Python analyzer does not run, they are the only detection for
+    every shape above, for example in a standalone binary without its
+    Python engine.
+  - **One shape is now reported twice when the Python analyzer runs:**
+    `jwt.decode(..., options={"verify_signature": False})`.
+    - The Python analyzer files it under `auth_bypass` at HIGH, and this rule
+      under `auth` at CRITICAL with HIGH confidence, so the two findings are
+      not merged.
+    - The CRITICAL finding blocks under `--fail-on HIGH`; until now that
+      shape only warned.
 - **The public security catalog printed raw Semgrep metavariables.** Eleven
   checks published titles and remediation such as "found in '$VAR'" or
   "Flask route '$FUNC'". Rules whose message interpolates a metavariable now
