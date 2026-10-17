@@ -18,6 +18,14 @@ A security-correctness patch:
 Report schema, SARIF structure, fingerprints, finding identity, exit codes and
 the Action's inputs and outputs are unchanged.
 
+> **Correction, 2026-10-17.** This entry first said the repaired JWT rule
+> blocks under `--fail-on HIGH`, and that scans can now block where v3.6.2
+> passed. Under the default confidence-gated `--fail-on`, neither is true: an
+> uncorroborated Semgrep finding remains WARN, as
+> [docs/semgrep-rules.md](docs/semgrep-rules.md) describes, so the
+> release-gate outcome is unchanged from v3.6.2. The two passages below are
+> corrected. The v3.6.3 tag message keeps the original wording.
+
 ### Fixed
 
 - **`flask-route-no-auth-decorator` gave inverted advice.** Its finding said
@@ -56,14 +64,17 @@ the Action's inputs and outputs are unchanged.
     - a Python-analyzer finding (`python.ast/PY_JWT_WEAK`, category
       `auth_bypass`, HIGH);
     - a Semgrep finding (`python-jwt-decode-no-verification`, category
-      `auth`, CRITICAL, HIGH confidence).
+      `auth`, CRITICAL).
 
     Both describe the same real insecure call. Each keeps its own evidence and
     analyzer provenance, and the second finding does not mean the code ran
-    twice. The Semgrep finding blocks under `--fail-on HIGH`, which this shape
-    did not do before. v3.6.3 does not change how findings from different
-    analyzers are correlated or which verdict takes precedence. Merging the two
-    without lowering the verdict is tracked in
+    twice. Under the default confidence-gated `--fail-on`, both are WARN. The
+    Semgrep finding is CRITICAL severity, but without qualifying
+    corroboration a Semgrep-only finding stays in the MEDIUM confidence band
+    and does not block. This shape's release-gate outcome is unchanged from
+    v3.6.2. v3.6.3 does not change how findings from different analyzers are
+    correlated or which verdict takes precedence. Merging the two without
+    lowering the verdict is tracked in
     [#127](https://github.com/Fendix-app/Fendix/issues/127).
 - **The public security catalog printed raw Semgrep metavariables.** Eleven
   checks published titles and remediation such as "found in '$VAR'" or
@@ -95,8 +106,8 @@ the Action's inputs and outputs are unchanged.
 
 ### Upgrading
 
-- **New findings.** Scans can now report findings, and block, where v3.6.2
-  passed. These are findings v3.6.2 should have reported:
+- **New findings.** Scans can now report findings that v3.6.2 did not.
+  These are findings v3.6.2 should have reported:
   - `eval()` / `exec()` with a non-literal argument;
   - SQL built by string formatting;
   - `os.system()` / `os.popen()` with a non-literal command;
@@ -108,6 +119,12 @@ the Action's inputs and outputs are unchanged.
   `algorithms=["none"]`, and the Semgrep `verify_signature: False` finding
   described above. Without the Python analyzer, every one of these shapes is
   new.
+
+  These findings carry their rule severity: CRITICAL, or HIGH for `eval()` /
+  `exec()`. Under the default confidence-gated `--fail-on`, an uncorroborated
+  Semgrep finding remains WARN, so the release-gate outcome is unchanged from
+  v3.6.2. With `--enforce-confidence=false`, the legacy severity-only gate,
+  they block at or above the threshold and are marked `policy_override`.
 - **Finding identity is unchanged.** No title, fingerprint, grouping key,
   baseline entry or `.fendix-ignore` match changes. The
   `flask-route-no-auth-decorator` Fix text and SARIF help change for new scans;
