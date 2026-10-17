@@ -219,10 +219,17 @@ rules:
           @login_required
           def $FUNC(...):
               ...
+    # The runtime Title is the first 120 bytes of this message, so everything up
+    # to "directly " must stay byte-identical: the v3.6.3 correction (the auth
+    # decorator belongs BELOW @app.route; above it, it does not protect the
+    # route) changes only the Fix text, never a finding's identity or grouping.
     message: >
       Flask route '$FUNC' has no auth-style decorator (@login_required,
-      @requires_auth, @jwt_required, or @auth.login_required) directly above
-      the @app.route(...) line. Confirm authentication is enforced.
+      @requires_auth, @jwt_required, or @auth.login_required) directly below
+      the @app.route(...) line. Confirm authentication is enforced. The auth
+      decorator must sit below @app.route(...), because route() must be the
+      outermost decorator: one placed above @app.route(...) does not protect
+      the route.
     languages: [python]
     severity: WARNING
     metadata:
