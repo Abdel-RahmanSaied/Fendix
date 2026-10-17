@@ -170,5 +170,13 @@ jobs:
       - name: Install Python runtime dependencies
         run: pip install -r python/requirements.txt
 
+      # The rule-behaviour tests need semgrep and skip without it, which is
+      # every runner of the go job. This job installs it (python/requirements.txt),
+      # so run them here and fail rather than skip if it is missing.
+      - name: Semgrep rule-behaviour tests
+        env:
+          FENDIX_REQUIRE_SEMGREP: "1"
+        run: cd go && go test -count=1 ./internal/scanner/semgrep/
+
       - name: Run e2e tests
         run: make e2e

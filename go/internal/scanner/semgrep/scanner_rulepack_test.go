@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -54,11 +55,14 @@ type ruleYAML struct {
 	ID        string `yaml:"id"`
 	Severity  string `yaml:"severity"`
 	Languages []any  `yaml:"languages"`
+	Message   string `yaml:"message"`
 	Metadata  struct {
-		Category       string `yaml:"category"`
-		CWE            any    `yaml:"cwe"` // string or []string per resolveCWE
-		Confidence     string `yaml:"confidence"`
-		FendixSeverity string `yaml:"fendix_severity"`
+		Category          string `yaml:"category"`
+		CWE               any    `yaml:"cwe"` // string or []string per resolveCWE
+		Confidence        string `yaml:"confidence"`
+		FendixSeverity    string `yaml:"fendix_severity"`
+		FendixTitle       string `yaml:"fendix_title"`
+		FendixRemediation string `yaml:"fendix_remediation"`
 	} `yaml:"metadata"`
 }
 
@@ -117,6 +121,30 @@ func TestRulepack_TotalCountMatchesConstant(t *testing.T) {
 		sort.Strings(ids)
 		t.Errorf("rulepack has %d rules; rulepackTotalCount = %d. IDs: %s",
 			len(rules), rulepackTotalCount, strings.Join(ids, ", "))
+	}
+}
+
+// semgrepMetavariable matches a metavariable Semgrep fills in at match time
+// ($FUNC, $...ARGS). Rule messages may use them; published copy may not.
+var semgrepMetavariable = regexp.MustCompile(`\$(?:\.\.\.)?[A-Z_][A-Z0-9_]*\b`)
+
+// TestRulepack_MetavariableMessagesHaveStaticCopy requires every rule whose
+// runtime message interpolates a metavariable to ship placeholder-free
+// metadata.fendix_title and fendix_remediation. The public security catalog
+// prints those instead of the raw message (v3.6.3: eleven rules published
+// '$VAR', '$FUNC' and similar on the documentation site).
+func TestRulepack_MetavariableMessagesHaveStaticCopy(t *testing.T) {
+	for id, r := range loadAllRules(t) {
+		if !semgrepMetavariable.MatchString(r.Message) {
+			continue
+		}
+		for field, value := range map[string]string{"fendix_title": r.Metadata.FendixTitle, "fendix_remediation": r.Metadata.FendixRemediation} {
+			if strings.TrimSpace(value) == "" {
+				t.Errorf("rule %q: message interpolates %v but metadata.%s is empty", id, semgrepMetavariable.FindAllString(r.Message, -1), field)
+			} else if token := semgrepMetavariable.FindString(value); token != "" {
+				t.Errorf("rule %q: metadata.%s carries metavariable %q; static copy must read without interpolation", id, field, token)
+			}
+		}
 	}
 }
 
