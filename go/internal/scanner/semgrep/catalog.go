@@ -12,14 +12,21 @@ import (
 // CatalogRule is the public contract metadata encoded in a bundled Semgrep
 // rule. Pattern bodies stay private to the executable rule pack.
 type CatalogRule struct {
-	ID         string
-	Pack       string
-	Message    string
-	Severity   string
-	Confidence string
-	Category   string
-	CWEs       []string
-	Languages  []string
+	ID      string
+	Pack    string
+	Message string
+	// Title and Remediation are the rule's static public copy
+	// (metadata.fendix_title / fendix_remediation). The runtime message may
+	// carry Semgrep metavariables ('$FUNC') that only a real finding fills in,
+	// so the published catalog must not print it raw. Empty when the message
+	// is already static.
+	Title       string
+	Remediation string
+	Severity    string
+	Confidence  string
+	Category    string
+	CWEs        []string
+	Languages   []string
 }
 
 type catalogRuleYAML struct {
@@ -28,10 +35,12 @@ type catalogRuleYAML struct {
 	Severity  string   `yaml:"severity"`
 	Languages []string `yaml:"languages"`
 	Metadata  struct {
-		Category       string      `yaml:"category"`
-		CWE            interface{} `yaml:"cwe"`
-		Confidence     string      `yaml:"confidence"`
-		FendixSeverity string      `yaml:"fendix_severity"`
+		Category          string      `yaml:"category"`
+		CWE               interface{} `yaml:"cwe"`
+		Confidence        string      `yaml:"confidence"`
+		FendixSeverity    string      `yaml:"fendix_severity"`
+		FendixTitle       string      `yaml:"fendix_title"`
+		FendixRemediation string      `yaml:"fendix_remediation"`
 	} `yaml:"metadata"`
 }
 
@@ -60,7 +69,8 @@ func CatalogRules() ([]CatalogRule, error) {
 		for _, rule := range doc.Rules {
 			out = append(out, CatalogRule{
 				ID: rule.ID, Pack: filepath.Base(path[:len(path)-len(filepath.Ext(path))]),
-				Message: rule.Message, Severity: rule.Metadata.FendixSeverity,
+				Message: rule.Message, Title: rule.Metadata.FendixTitle,
+				Remediation: rule.Metadata.FendixRemediation, Severity: rule.Metadata.FendixSeverity,
 				Confidence: rule.Metadata.Confidence, Category: rule.Metadata.Category,
 				CWEs: normalizeCatalogCWEs(rule.Metadata.CWE), Languages: rule.Languages,
 			})

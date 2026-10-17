@@ -118,3 +118,11 @@ rules:
       cwe: CWE-338
       confidence: MEDIUM
       fendix_severity: HIGH
+      fendix_title: >-
+        random module used inside a function whose name suggests a security-sensitive
+        value.
+      fendix_remediation: >-
+        random module used inside a function whose name suggests a security-sensitive
+        value. The `random` module is NOT cryptographically secure. Use
+        `secrets.token_urlsafe()`, `secrets.token_bytes()`, or `secrets.choice()`
+        instead.

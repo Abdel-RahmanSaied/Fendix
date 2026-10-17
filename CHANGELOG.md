@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`flask-route-no-auth-decorator` gave inverted advice.** Its finding said
+  an auth decorator belongs "directly above the @app.route(...) line". Flask's
+  `route()` must be the outermost decorator, so following that advice
+  registered the unwrapped view and left the route unauthenticated. The
+  finding's fix text, SARIF help and catalog remediation now say the decorator
+  goes directly below `@app.route(...)` and that one placed above it does not
+  protect the route. Only the text after "directly" changed, so every finding
+  keeps its title, fingerprint, grouping and baseline match.
+- **Four bundled Semgrep rules never matched.**
+  - `python-eval-injection`, `python-jwt-decode-no-verification`,
+    `python-sql-injection-string-format` and
+    `python-command-injection-shell-true` listed their alternative patterns
+    as sibling `pattern:` entries. Semgrep requires all of those to match at
+    once, so none of the four ever fired.
+  - Each now uses `pattern-either`:
+    - `eval()` / `exec()` with a non-literal argument;
+    - `jwt.decode()` with `verify_signature: False` or `"none"` among the
+      algorithms;
+    - an `execute()` query built with `%`, `+`, an f-string or `.format()`;
+    - `os.system()` / `os.popen()` with a non-literal command.
+  - `subprocess(..., shell=True)` stays with
+    `python-subprocess-shell-true-with-variable`, so it is reported once.
+  - The Python analyzer already covered most of these shapes, and a finding
+    both analyzers report at one location is still reported once. The
+    exceptions, where these rules add the first detection:
+    - `jwt.decode(..., algorithms=["none"])`;
+    - every one of these shapes when the Python analyzer does not run, such
+      as a standalone binary without its Python engine.
+- **The public security catalog printed raw Semgrep metavariables.** Eleven
+  checks published titles and remediation such as "found in '$VAR'" or
+  "Flask route '$FUNC'". Rules whose message interpolates a metavariable now
+  carry static `fendix_title` and `fendix_remediation` metadata, which the
+  catalog publishes in their place. Runtime findings still name the matched
+  symbol.
+- **A Semgrep rule clause was silently ignored.** A `pattern-not` sat
+  outside `patterns:` in `python-hardcoded-secret-assignment`, so Semgrep
+  skipped it with a warning. It was redundant and is removed; detection is
+  unchanged.
+
 ### Changed
 
 - **The Fendix Action is the recommended GitHub integration.** The README,
