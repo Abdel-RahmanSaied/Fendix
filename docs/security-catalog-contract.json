@@ -1083,7 +1083,7 @@
     },
     {
       "id": "django-view-missing-login-required",
-      "title": "Django view '$VIEW' does not use LoginRequiredMixin.",
+      "title": "Django view does not use LoginRequiredMixin.",
       "analyzer": "semgrep",
       "category": "auth",
       "default_severity": "MEDIUM",
@@ -1096,12 +1096,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Django view '$VIEW' does not use LoginRequiredMixin. Add LoginRequiredMixin or @login_required to protect this view.",
+      "remediation": "Django view does not use LoginRequiredMixin. Add LoginRequiredMixin as the leftmost base class, or apply login_required with method_decorator(login_required, name=\"dispatch\") on the view class or login_required(View.as_view()) in the URLconf, to protect this view.",
       "availability": "stable"
     },
     {
       "id": "fastapi-route-missing-auth-dependency",
-      "title": "FastAPI route '$FUNC' has no authentication dependency (Depends(...)).",
+      "title": "FastAPI route has no authentication dependency (Depends(...)).",
       "analyzer": "semgrep",
       "category": "auth",
       "default_severity": "MEDIUM",
@@ -1114,12 +1114,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "FastAPI route '$FUNC' has no authentication dependency (Depends(...)). Inject a dependency such as Depends(get_current_user) to enforce auth.",
+      "remediation": "FastAPI route has no authentication dependency (Depends(...)). Inject a dependency such as Depends(get_current_user), as a route parameter or in dependencies=[...], to enforce auth.",
       "availability": "stable"
     },
     {
       "id": "flask-missing-login-required",
-      "title": "Flask route '$FUNC' is missing @login_required decorator.",
+      "title": "Flask route is missing @login_required decorator.",
       "analyzer": "semgrep",
       "category": "auth",
       "default_severity": "HIGH",
@@ -1132,12 +1132,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Flask route '$FUNC' is missing @login_required decorator. Any user can access this endpoint without authentication.",
+      "remediation": "Flask route is missing @login_required decorator. Any user can access this endpoint without authentication. Add @login_required directly below @app.route(...); route() must stay the outermost decorator.",
       "availability": "stable"
     },
     {
       "id": "flask-route-no-auth-decorator",
-      "title": "Flask route '$FUNC' has no auth-style decorator (@login_required, @requires_auth, @jwt_required, or @auth.login_required) directly above the @app.route(...) line.",
+      "title": "Flask route has no auth-style decorator (@login_required, @requires_auth, @jwt_required, or @auth.login_required) directly below the @app.route(...) line.",
       "analyzer": "semgrep",
       "category": "auth",
       "default_severity": "MEDIUM",
@@ -1150,7 +1150,7 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Flask route '$FUNC' has no auth-style decorator (@login_required, @requires_auth, @jwt_required, or @auth.login_required) directly above the @app.route(...) line. Confirm authentication is enforced.",
+      "remediation": "Flask route has no auth-style decorator (@login_required, @requires_auth, @jwt_required, or @auth.login_required) directly below the @app.route(...) line. Confirm authentication is enforced. The auth decorator must sit below @app.route(...), because route() must be the outermost decorator: one placed above @app.route(...) does not protect the route.",
       "availability": "stable"
     },
     {
@@ -1209,7 +1209,7 @@
     },
     {
       "id": "python-random-for-token-generation",
-      "title": "random module used inside a function whose name suggests a security-sensitive value ('$FN').",
+      "title": "random module used inside a function whose name suggests a security-sensitive value.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "HIGH",
@@ -1222,7 +1222,7 @@
       "applicability": [
         "python"
       ],
-      "remediation": "random module used inside a function whose name suggests a security-sensitive value ('$FN'). The `random` module is NOT cryptographically secure. Use `secrets.token_urlsafe()`, `secrets.token_bytes()`, or `secrets.choice()` instead.",
+      "remediation": "random module used inside a function whose name suggests a security-sensitive value. The `random` module is NOT cryptographically secure. Use `secrets.token_urlsafe()`, `secrets.token_bytes()`, or `secrets.choice()` instead.",
       "availability": "stable"
     },
     {
@@ -1389,7 +1389,7 @@
     },
     {
       "id": "python-aws-access-key-id-literal",
-      "title": "AWS access-key ID literal detected in assignment to '$VAR'.",
+      "title": "AWS access-key ID literal detected in a variable assignment.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "CRITICAL",
@@ -1402,12 +1402,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "AWS access-key ID literal detected in assignment to '$VAR'. Use the AWS SDK's credential provider chain (env vars, ~/.aws/credentials, instance role) instead of hardcoding. If the key is real, revoke it now.",
+      "remediation": "AWS access-key ID literal detected in a variable assignment. Use the AWS SDK's credential provider chain (env vars, ~/.aws/credentials, instance role) instead of hardcoding. If the key is real, revoke it now.",
       "availability": "stable"
     },
     {
       "id": "python-gcp-service-account-inline",
-      "title": "Inline GCP service-account JSON detected in assignment to '$VAR'.",
+      "title": "Inline GCP service-account JSON detected in a variable assignment.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "CRITICAL",
@@ -1420,12 +1420,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Inline GCP service-account JSON detected in assignment to '$VAR'. Load the credential from an external file via GOOGLE_APPLICATION_CREDENTIALS or a secrets manager. Rotate the key in Google Cloud IAM immediately.",
+      "remediation": "Inline GCP service-account JSON detected in a variable assignment. Load the credential from an external file via GOOGLE_APPLICATION_CREDENTIALS or a secrets manager. Rotate the key in Google Cloud IAM immediately.",
       "availability": "stable"
     },
     {
       "id": "python-hardcoded-db-url",
-      "title": "Hardcoded database connection string with embedded credentials found in '$VAR'.",
+      "title": "Hardcoded database connection string with embedded credentials found in a variable assignment.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "HIGH",
@@ -1438,12 +1438,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Hardcoded database connection string with embedded credentials found in '$VAR'. Store connection strings in environment variables (e.g., DATABASE_URL). Rotate the database password immediately.",
+      "remediation": "Hardcoded database connection string with embedded credentials found in a variable assignment. Store connection strings in environment variables (e.g., DATABASE_URL). Rotate the database password immediately.",
       "availability": "stable"
     },
     {
       "id": "python-hardcoded-secret-assignment",
-      "title": "Hardcoded secret found in assignment to '$KEY'.",
+      "title": "Hardcoded secret found in an assignment to a credential-named variable.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "CRITICAL",
@@ -1456,12 +1456,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Hardcoded secret found in assignment to '$KEY'. Move secrets to environment variables or a secrets manager. Rotate the exposed credential immediately.",
+      "remediation": "Hardcoded secret found in an assignment to a credential-named variable. Move secrets to environment variables or a secrets manager. Rotate the exposed credential immediately.",
       "availability": "stable"
     },
     {
       "id": "python-pem-private-key-literal",
-      "title": "PEM-encoded private key literal detected in assignment to '$VAR'.",
+      "title": "PEM-encoded private key literal detected in a variable assignment.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "CRITICAL",
@@ -1474,12 +1474,12 @@
       "applicability": [
         "python"
       ],
-      "remediation": "PEM-encoded private key literal detected in assignment to '$VAR'. Move the key out of source control immediately, rotate it on the server, and reload from disk or a secrets manager at runtime.",
+      "remediation": "PEM-encoded private key literal detected in a variable assignment. Move the key out of source control immediately, rotate it on the server, and reload from disk or a secrets manager at runtime.",
       "availability": "stable"
     },
     {
       "id": "python-slack-webhook-url-literal",
-      "title": "Slack incoming-webhook URL hardcoded in '$VAR'.",
+      "title": "Slack incoming-webhook URL hardcoded in a variable assignment.",
       "analyzer": "semgrep",
       "category": "secrets",
       "default_severity": "HIGH",
@@ -1492,7 +1492,7 @@
       "applicability": [
         "python"
       ],
-      "remediation": "Slack incoming-webhook URL hardcoded in '$VAR'. Anyone with this URL can post into the bound channel. Rotate the webhook in Slack's app config and store the new URL in an env var (e.g. SLACK_WEBHOOK_URL).",
+      "remediation": "Slack incoming-webhook URL hardcoded in a variable assignment. Anyone with this URL can post into the bound channel. Rotate the webhook in Slack's app config and store the new URL in an env var (e.g. SLACK_WEBHOOK_URL).",
       "availability": "stable"
     }
   ],

@@ -25,6 +25,12 @@ rules:
       cwe: CWE-306
       confidence: MEDIUM
       fendix_severity: HIGH
+      fendix_title: >-
+        Flask route is missing @login_required decorator.
+      fendix_remediation: >-
+        Flask route is missing @login_required decorator. Any user can access this
+        endpoint without authentication. Add @login_required directly below
+        @app.route(...); route() must stay the outermost decorator.
 
   # Rule 2: Django class-based view missing login_required mixin
   - id: django-view-missing-login-required
@@ -46,6 +52,13 @@ rules:
       cwe: CWE-306
       confidence: LOW
       fendix_severity: MEDIUM
+      fendix_title: >-
+        Django view does not use LoginRequiredMixin.
+      fendix_remediation: >-
+        Django view does not use LoginRequiredMixin. Add LoginRequiredMixin as the
+        leftmost base class, or apply login_required with
+        method_decorator(login_required, name="dispatch") on the view class or
+        login_required(View.as_view()) in the URLconf, to protect this view.
 
   # Rule 3: FastAPI route missing a Depends()/Security() auth dependency.
   #
@@ -146,6 +159,12 @@ rules:
       cwe: CWE-306
       confidence: LOW
       fendix_severity: MEDIUM
+      fendix_title: >-
+        FastAPI route has no authentication dependency (Depends(...)).
+      fendix_remediation: >-
+        FastAPI route has no authentication dependency (Depends(...)). Inject a
+        dependency such as Depends(get_current_user), as a route parameter or in
+        dependencies=[...], to enforce auth.
 
   # Rule 4: jwt.decode called without verify_signature / algorithms.
   # Patterns are single-quoted to make the inline {"verify_signature": ...}
@@ -154,10 +173,14 @@ rules:
   # parsers (yaml.v3, ruamel-yaml --rt). Semgrep itself was tolerant of
   # the unquoted form, but Sprint 18's rulepack-catalog audit test in
   # scanner_rulepack_test.go can't parse the file otherwise.
+  # Either disabling signature verification or allowing the "none" algorithm.
+  # The two were sibling `pattern:` entries, which Semgrep ANDs, so the rule
+  # never matched (v3.6.3).
   - id: python-jwt-decode-no-verification
     patterns:
-      - pattern: 'jwt.decode($TOKEN, options={"verify_signature": False, ...}, ...)'
-      - pattern: 'jwt.decode($TOKEN, algorithms=["none"], ...)'
+      - pattern-either:
+          - pattern: 'jwt.decode(..., options={"verify_signature": False, ...}, ...)'
+          - pattern: 'jwt.decode(..., algorithms=[..., "none", ...], ...)'
     message: >
       JWT decoded with signature verification disabled.
       This allows an attacker to forge tokens.
@@ -215,10 +238,17 @@ rules:
           @login_required
           def $FUNC(...):
               ...
+    # The runtime Title is the first 120 bytes of this message, so everything up
+    # to "directly " must stay byte-identical: the v3.6.3 correction (the auth
+    # decorator belongs BELOW @app.route; above it, it does not protect the
+    # route) changes only the Fix text, never a finding's identity or grouping.
     message: >
       Flask route '$FUNC' has no auth-style decorator (@login_required,
-      @requires_auth, @jwt_required, or @auth.login_required) directly above
-      the @app.route(...) line. Confirm authentication is enforced.
+      @requires_auth, @jwt_required, or @auth.login_required) directly below
+      the @app.route(...) line. Confirm authentication is enforced. The auth
+      decorator must sit below @app.route(...), because route() must be the
+      outermost decorator: one placed above @app.route(...) does not protect
+      the route.
     languages: [python]
     severity: WARNING
     metadata:
@@ -226,3 +256,13 @@ rules:
       cwe: CWE-306
       confidence: LOW
       fendix_severity: MEDIUM
+      fendix_title: >-
+        Flask route has no auth-style decorator (@login_required, @requires_auth,
+        @jwt_required, or @auth.login_required) directly below the @app.route(...)
+        line.
+      fendix_remediation: >-
+        Flask route has no auth-style decorator (@login_required, @requires_auth,
+        @jwt_required, or @auth.login_required) directly below the @app.route(...)
+        line. Confirm authentication is enforced. The auth decorator must sit below
+        @app.route(...), because route() must be the outermost decorator: one placed
+        above @app.route(...) does not protect the route.

@@ -143,11 +143,20 @@ func semgrepChecks() ([]Check, error) {
 	}
 	out := make([]Check, 0, len(rules))
 	for _, rule := range rules {
+		// Static public copy wins over the runtime message, which can hold
+		// Semgrep metavariables that only a real finding fills in.
+		title, remediation := firstSentence(rule.Message), strings.TrimSpace(rule.Message)
+		if rule.Title != "" {
+			title = strings.TrimSpace(rule.Title)
+		}
+		if rule.Remediation != "" {
+			remediation = strings.TrimSpace(rule.Remediation)
+		}
 		out = append(out, Check{
-			ID: rule.ID, Title: firstSentence(rule.Message), Analyzer: engine.AnalyzerSemgrep,
+			ID: rule.ID, Title: title, Analyzer: engine.AnalyzerSemgrep,
 			Category: rule.Category, DefaultSeverity: rule.Severity, Confidence: rule.Confidence,
 			CWEs: compactStrings(rule.CWEs), ExecutionMode: "passive", AuthRequirement: "none",
-			Applicability: append([]string{}, rule.Languages...), Remediation: strings.TrimSpace(rule.Message),
+			Applicability: append([]string{}, rule.Languages...), Remediation: remediation,
 			Availability: "stable",
 		})
 	}
