@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.3] - 2026-10-17
+
+A security-correctness patch:
+- one Flask finding gave remediation advice that, if followed, left a route
+  unauthenticated;
+- four bundled Semgrep rules could never match;
+- the public security catalog printed raw Semgrep metavariables.
+
+Report schema, SARIF structure, fingerprints, finding identity, exit codes and
+the Action's inputs and outputs are unchanged.
+
 ### Fixed
 
 - **`flask-route-no-auth-decorator` gave inverted advice.** Its finding said
@@ -39,13 +50,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Where the Python analyzer does not run, they are the only detection for
     every shape above, for example in a standalone binary without its
     Python engine.
-  - **One shape is now reported twice when the Python analyzer runs:**
-    `jwt.decode(..., options={"verify_signature": False})`.
-    - The Python analyzer files it under `auth_bypass` at HIGH, and this rule
-      under `auth` at CRITICAL with HIGH confidence, so the two findings are
-      not merged.
-    - The CRITICAL finding blocks under `--fail-on HIGH`; until now that
-      shape only warned.
+  - **Known overlap.** When both analyzers run,
+    `jwt.decode(..., options={"verify_signature": False})` can produce two
+    findings for the same call:
+    - a Python-analyzer finding (`python.ast/PY_JWT_WEAK`, category
+      `auth_bypass`, HIGH);
+    - a Semgrep finding (`python-jwt-decode-no-verification`, category
+      `auth`, CRITICAL, HIGH confidence).
+
+    Both describe the same real insecure call. Each keeps its own evidence and
+    analyzer provenance, and the second finding does not mean the code ran
+    twice. The Semgrep finding blocks under `--fail-on HIGH`, which this shape
+    did not do before. v3.6.3 does not change how findings from different
+    analyzers are correlated or which verdict takes precedence. Merging the two
+    without lowering the verdict is tracked in
+    [#127](https://github.com/Fendix-app/Fendix/issues/127).
 - **The public security catalog printed raw Semgrep metavariables.** Eleven
   checks published titles and remediation such as "found in '$VAR'" or
   "Flask route '$FUNC'". Rules whose message interpolates a metavariable now
@@ -73,6 +92,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the integration guide and `docs/ci-cd-integration.md` link the listing, and
   the public-claims check no longer treats "public Marketplace Action" as an
   obsolete claim.
+
+### Upgrading
+
+- **New findings.** Scans can now report findings, and block, where v3.6.2
+  passed. These are findings v3.6.2 should have reported:
+  - `eval()` / `exec()` with a non-literal argument;
+  - SQL built by string formatting;
+  - `os.system()` / `os.popen()` with a non-literal command;
+  - JWT decoding with signature verification disabled or the `"none"`
+    algorithm.
+
+  The default `--code` scan, the official image and the Action run the Python
+  analyzer, which already reported most of these. There, two findings are new:
+  `algorithms=["none"]`, and the Semgrep `verify_signature: False` finding
+  described above. Without the Python analyzer, every one of these shapes is
+  new.
+- **Finding identity is unchanged.** No title, fingerprint, grouping key,
+  baseline entry or `.fendix-ignore` match changes. The
+  `flask-route-no-auth-decorator` Fix text and SARIF help change for new scans;
+  stored scans and existing Jira tickets keep the old text.
+- **The GitHub Action is unchanged,** and `@v1` still points to the v3.6.2
+  release commit. To install this release, set `version: v3.6.3`, or leave
+  `version` unset to install the latest release.
 
 ## [3.6.2] - 2026-10-16
 
